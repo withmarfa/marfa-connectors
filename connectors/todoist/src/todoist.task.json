@@ -1,0 +1,62 @@
+{
+  "id": "todoist.task",
+  "label": "Todoist Task",
+  "description": "A task in a Todoist account, as the Todoist connector reads it through the Sync API. Its fields keep Todoist's own meanings, so `priority` is Todoist's integer and a promoted copy maps it to the core type's enum.",
+  "version": 1,
+  "fields": {
+    "title": {
+      "type": "string",
+      "required": true,
+      "description": "The task's content."
+    },
+    "description": {
+      "type": "string",
+      "description": "The task's description, absent when it has none."
+    },
+    "project_id": {
+      "type": "string",
+      "description": "The Todoist project the task is in."
+    },
+    "section_id": {
+      "type": "string",
+      "description": "The section within the project, when the task is in one."
+    },
+    "parent_id": {
+      "type": "string",
+      "description": "The parent task, when this one is a subtask."
+    },
+    "labels": {
+      "type": "array",
+      "items_type": "string",
+      "description": "The task's label names."
+    },
+    "priority": {
+      "type": "integer",
+      "description": "Todoist's priority, from 1 for none to 4 for urgent."
+    },
+    "due": {
+      "type": "object",
+      "description": "Todoist's due object, as `date`, `timezone`, `string`, `lang` and `is_recurring`."
+    },
+    "child_order": {
+      "type": "integer",
+      "description": "The task's order among its siblings."
+    },
+    "completed": {
+      "type": "boolean",
+      "description": "Whether the task is completed in Todoist."
+    },
+    "url": {
+      "type": "url",
+      "description": "The task in Todoist's web app."
+    },
+    "comment_count": {
+      "type": "integer",
+      "description": "How many comments the task has."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "description"
+  }
+}
