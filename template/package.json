@@ -1,0 +1,14 @@
+{
+  "name": "example",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@withmarfa/connector": "workspace:*"
+  }
+}

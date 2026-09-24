@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  One run every fifteen minutes. The secrets tool puts MARFA_KEY and the
+  vendor's token into the connector's environment, so neither is written
+  here. Replace every path, the label and the secrets tool's arguments.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.marfa-connector.example</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/secrets-tool</string>
+    <string>run</string>
+    <string>--</string>
+    <string>/path/to/node</string>
+    <string>/path/to/marfa-connectors/connectors/example/dist/main.js</string>
+    <string>--once</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MARFA_URL</key>
+    <string>https://marfa.example.com</string>
+    <key>MARFA_STATE_DIR</key>
+    <string>/path/to/state</string>
+    <key>EXAMPLE_URL</key>
+    <string>https://vendor.example.com/</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/path/to/marfa-connectors/connectors/example</string>
+
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>StandardErrorPath</key>
+  <string>/path/to/logs/example.log</string>
+</dict>
+</plist>

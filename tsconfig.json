@@ -1,4 +1,8 @@
 {
   "files": [],
-  "references": [{ "path": "kit" }, { "path": "scripts" }]
+  "references": [
+    { "path": "kit" },
+    { "path": "template" },
+    { "path": "scripts" }
+  ]
 }
