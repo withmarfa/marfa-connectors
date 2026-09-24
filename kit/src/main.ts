@@ -77,15 +77,18 @@ async function checkType<E extends EnvDeclaration>(
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
-): Promise<{ id: string; problem: string | undefined }> {
-  const id = await marfa.register(connector.name, connector.description);
+): Promise<{ id: string; source: string; problem: string | undefined }> {
+  const { id, source } = await marfa.register(
+    connector.name,
+    connector.description,
+  );
   const served = await marfa.type(connector.type.id);
   if (served !== undefined) {
-    return { id, problem: await checkType(connector, marfa, served) };
+    return { id, source, problem: await checkType(connector, marfa, served) };
   }
   try {
     await marfa.registerType(connector.type);
-    return { id, problem: undefined };
+    return { id, source, problem: undefined };
   } catch (error) {
     if (transient(error)) throw error;
     // Another process holding the key registered it first, which is as good
@@ -93,10 +96,11 @@ async function registerAndCheck<E extends EnvDeclaration>(
     if (error instanceof Refusal && error.status === 409) {
       const now = await marfa.type(connector.type.id);
       if (now !== undefined)
-        return { id, problem: await checkType(connector, marfa, now) };
+        return { id, source, problem: await checkType(connector, marfa, now) };
     }
     return {
       id,
+      source,
       problem: `the type ${connector.type.id} could not be registered: ${describe(error)}`,
     };
   }
@@ -139,7 +143,8 @@ export async function start<E extends EnvDeclaration>(
   );
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
-  let started: { id: string; problem: string | undefined } | undefined;
+  let started:
+    { id: string; source: string; problem: string | undefined } | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
       started = await registerAndCheck(connector, marfa);
@@ -202,7 +207,7 @@ export async function start<E extends EnvDeclaration>(
     environment,
     marfa,
     connectorId,
-    stateFile: new StateFile(environment.stateDir, connector.name, logger),
+    stateFile: new StateFile(environment.stateDir, started.source, logger),
     logger,
     clock,
     signal: stop.signal,

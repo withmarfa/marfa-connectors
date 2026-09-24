@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
@@ -189,11 +189,36 @@ describe("a row's own time", () => {
 });
 
 describe("a connector's name", () => {
-  it("is refused when it cannot name a state file", async () => {
-    const connector = { ...testConnector(vendor()), name: "Test Connector" };
+  it("is refused past the server's 200 characters, before any request", async () => {
+    const connector = { ...testConnector(vendor()), name: "t".repeat(201) };
     expect(await start(connector, harness.runtime(["--once"]))).toBe(2);
     expect(harness.server.requests).toEqual([]);
-    expect(await harness.once(vendor())).toBe(0);
+    const fits = { ...testConnector(vendor()), name: "Test Connector" };
+    expect(await start(fits, harness.runtime(["--once"]))).toBe(0);
     expect(harness.server.requests.length).toBeGreaterThan(0);
+  });
+});
+
+describe("the state file", () => {
+  it("is the key's own, so two accounts sharing a directory keep theirs apart", async () => {
+    const first = vendor([one]);
+    first.token = "t-first";
+    expect(await harness.once(first)).toBe(0);
+
+    harness.server.keySource = "test/account 2";
+    const second = vendor([{ source_id: "b:1", properties: { title: "B" } }]);
+    second.token = "t-second";
+    expect(await harness.once(second)).toBe(0);
+
+    expect(await harness.stateFile()).toMatchObject({
+      state: { token: "t-first" },
+    });
+    expect(await harness.stateFile("test/account 2")).toMatchObject({
+      state: { token: "t-second" },
+    });
+    expect((await readdir(harness.stateDir)).sort()).toEqual([
+      "test%2Faccount%202.json",
+      "test.json",
+    ]);
   });
 });

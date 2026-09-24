@@ -91,8 +91,7 @@ export function readEnvironment<E extends EnvDeclaration>(
 
 /**
  * The kit's own rules for a connector's definition: the server's bounds on
- * a registration and a source, and a name that is safe as a file name,
- * since it names the state file.
+ * a registration and a source.
  */
 export function checkDefinition<E extends EnvDeclaration>(
   connector: Connector<E>,
@@ -100,11 +99,6 @@ export function checkDefinition<E extends EnvDeclaration>(
   const problems: string[] = [];
   if (connector.name.length < 1 || connector.name.length > 200) {
     problems.push("a name of 1 to 200 characters");
-  }
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(connector.name)) {
-    problems.push(
-      "a name of lowercase letters, digits, dots, hyphens and underscores",
-    );
   }
   if ((connector.description?.length ?? 0) > 2000) {
     problems.push("a description of at most 2000 characters");

@@ -180,8 +180,14 @@ export class Harness {
     return start(testConnector(held), this.runtime(["--once"], env));
   }
 
-  async stateFile(): Promise<unknown> {
-    return JSON.parse(await readFile(join(this.stateDir, "test.json"), "utf8"));
+  /** The state file kept for a key whose own source is `keySource`. */
+  async stateFile(keySource = "test"): Promise<unknown> {
+    return JSON.parse(
+      await readFile(
+        join(this.stateDir, `${encodeURIComponent(keySource)}.json`),
+        "utf8",
+      ),
+    );
   }
 
   lastRun() {

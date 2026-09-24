@@ -52,15 +52,16 @@ export interface NewRow {
 export class Marfa {
   constructor(private readonly client: MarfaClient) {}
 
+  /** Registers the key, and answers its registration and its own source. */
   async register(
     name: string,
     description: string | undefined,
-  ): Promise<string> {
+  ): Promise<{ id: string; source: string }> {
     const { data, error, response } = await this.client.POST("/connectors", {
       body: { name, ...(description !== undefined && { description }) },
     });
     if (data === undefined) throw refusal(response, error);
-    return data.id;
+    return { id: data.id, source: data.source };
   }
 
   async heartbeat(id: string, signal: AbortSignal): Promise<void> {

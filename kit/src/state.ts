@@ -32,12 +32,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class StateFile {
   private readonly path: string;
 
+  /**
+   * Named for the key's own source, which no other live key holds: two
+   * accounts' processes may share one directory, and two processes under
+   * one key share one account's state.
+   */
   constructor(
     private readonly dir: string,
-    name: string,
+    keySource: string,
     private readonly logger: Logger,
   ) {
-    this.path = join(dir, `${name}.json`);
+    this.path = join(dir, `${encodeURIComponent(keySource)}.json`);
   }
 
   async load(): Promise<Stored> {

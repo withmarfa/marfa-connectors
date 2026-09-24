@@ -62,7 +62,7 @@ export interface RunContext<E extends EnvDeclaration> {
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
-  /** The registration's name, and the name of the state file. */
+  /** The registration's name, as the server lists it. */
   readonly name: string;
   readonly description?: string;
   /** Named on every create and on every read of the connector's own rows. */

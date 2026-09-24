@@ -72,6 +72,8 @@ function changedKeys(
 export class ScriptedServer {
   readonly key = "marfa_k1_scripted";
   readonly source: string;
+  /** The calling key's own source, the connector's unless a test says not. */
+  keySource: string;
   url = "";
   rows: Row[] = [];
   types = new Map<string, Record<string, unknown>>();
@@ -102,6 +104,7 @@ export class ScriptedServer {
 
   constructor(source: string) {
     this.source = source;
+    this.keySource = source;
   }
 
   async start(): Promise<this> {
@@ -268,7 +271,7 @@ export class ScriptedServer {
       send(this.registrations === 1 ? 201 : 200, {
         id: "connector-1",
         key_id: "key-1",
-        source: this.source,
+        source: this.keySource,
         name: input["name"],
         description: input["description"] ?? null,
         registered_at: at,
