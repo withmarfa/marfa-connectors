@@ -13,7 +13,7 @@ export function interrupt(): void {
  */
 export async function check(
   statement: string,
-  observe: () => Promise<string>,
+  observe: () => Promise<string> | string,
 ): Promise<void> {
   if (interrupted()) throw new Error("stopped before this statement");
   let observed: string;
