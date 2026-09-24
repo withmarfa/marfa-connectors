@@ -58,6 +58,11 @@ export class ManualClock implements Clock {
     }
   }
 
+  /** How many sleeps are waiting to be ended. */
+  get waiting(): number {
+    return this.pending.length;
+  }
+
   /** Waits for a sleep of `ms`, then ends it. */
   async wake(ms: number): Promise<void> {
     await this.sleeping(ms);

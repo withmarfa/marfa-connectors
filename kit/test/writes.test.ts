@@ -76,6 +76,51 @@ describe("new rows", () => {
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, later",
     });
+    expect(harness.lastRun().summary).toBe(
+      "created 2, updated 0, archived 0, unchanged 0, skipped 0",
+    );
+  });
+
+  it("go through the bulk door in pages of 500, and all compare unchanged after", async () => {
+    const many = Array.from({ length: 1201 }, (_, index) => ({
+      source_id: `a:${String(index)}`,
+      properties: { title: `Entry ${String(index)}` },
+    }));
+    expect(await harness.once(vendor(many))).toBe(0);
+    expect(
+      bulks().map(
+        (request) => (request.body as { items: unknown[] }).items.length,
+      ),
+    ).toEqual([500, 500, 201]);
+    expect(harness.server.rows).toHaveLength(1201);
+    expect(await harness.once(vendor(many))).toBe(0);
+    expect(bulks()).toHaveLength(3);
+    expect(harness.lastRun().summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 1201, skipped 0",
+    );
+  });
+
+  it("write the connector's own type alone, never a row of a type inheriting from it", async () => {
+    harness.server.types.set("test.entry.child", {
+      id: "test.entry.child",
+      parent: "test.entry",
+    });
+    harness.server.insert("c:1", { title: "A child" }, "test.entry.child");
+    const held = vendor([
+      { source_id: "c:1", properties: { title: "From the vendor" } },
+    ]);
+    held.archived = ["c:1"];
+    expect(await harness.once(held)).toBe(0);
+    const child = harness.server.rows.find(
+      (row) => row.type === "test.entry.child",
+    );
+    expect(child?.properties).toEqual({ title: "A child" });
+    expect(child?.state).toBe("active");
+    expect(
+      harness.server.requestsTo("GET", "/items")[0]?.query.get("type"),
+    ).toBe("test.entry");
+    expect(harness.lastRun().summary).toContain("skipped 1");
+    expect(harness.lastRun().summary).toContain("type_mismatch");
   });
 });
 
@@ -267,9 +312,38 @@ describe("the state", () => {
     expect(
       harness.server.rows.filter((row) => row.source_id === "a:3"),
     ).toHaveLength(1);
+    // The server merged the two writes, which the replace did not survive.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, changed",
+      note: "by another writer",
+    });
 
     expect(await harness.once(held)).toBe(0);
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t2" } });
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, changed",
+    });
+    expect(harness.server.row("a:3").properties).toEqual({ title: "Three" });
+  });
+
+  it("is held when a stale write collides with another writer's change to the same field", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { title: "One, by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [
+      { ...one, properties: { title: "One, by the vendor", note: "first" } },
+    ];
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by another writer",
+    );
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
   });
 
   it("is lost at no cost but a full read: no row is written twice", async () => {

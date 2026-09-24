@@ -8,8 +8,13 @@ export class Logger {
     private readonly clock: Clock,
     secrets: readonly string[] = [],
   ) {
-    // Longest first, so a secret that contains another is replaced whole.
-    this.secrets = [...secrets].sort((a, b) => b.length - a.length);
+    // Each also as it appears inside a URL, and longest first, so a secret
+    // that contains another is replaced whole.
+    const spellings = secrets.flatMap((secret) => [
+      secret,
+      encodeURIComponent(secret),
+    ]);
+    this.secrets = [...new Set(spellings)].sort((a, b) => b.length - a.length);
   }
 
   redact(text: string): string {

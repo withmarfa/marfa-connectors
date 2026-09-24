@@ -8,10 +8,15 @@ import { CONTRACT_VERSION } from "@withmarfa/client";
 
 /**
  * The doors a connector uses, answering as the real server does for the
- * cases the kit's rules turn on: a create at version 0 over an existing
- * row, a trashed row under a bulk upsert, a stale version, a replacing
- * update. The proof holds the kit to the real server; this holds each rule
- * to a test that can script what the real server cannot be asked for.
+ * cases the kit's rules turn on:
+ * - a create at version 0 over an existing row answers `ancestor_unavailable`;
+ * - a bulk upsert over a trashed row skips it;
+ * - an update on the current version replaces or merges as asked;
+ * - an update on a stale version merges with what landed since, ignoring
+ *   `properties_mode`, unless a field it changes also changed there, when
+ *   it answers `version_conflict`.
+ * It lets a test script what the real server cannot be asked for: another
+ * writer between a read and a write, a refusal, a delay.
  */
 
 export interface Row {
@@ -49,6 +54,21 @@ interface Refusal {
   message: string;
 }
 
+type Send = (status: number, payload: unknown) => void;
+type Refuse = (status: number, code: string, message?: string) => void;
+
+function changedKeys(
+  from: Record<string, unknown>,
+  to: Record<string, unknown>,
+  keys: Iterable<string>,
+): Set<string> {
+  const changed = new Set<string>();
+  for (const key of keys) {
+    if (JSON.stringify(from[key]) !== JSON.stringify(to[key])) changed.add(key);
+  }
+  return changed;
+}
+
 export class ScriptedServer {
   readonly key = "marfa_k1_scripted";
   readonly source: string;
@@ -59,12 +79,19 @@ export class ScriptedServer {
   heartbeats = 0;
   registrations = 0;
   requests: Request[] = [];
-  /** Keyed `METHOD /path`, answered once each in place of the door. */
-  private readonly refusals = new Map<string, Refusal[]>();
   /** Bulk entries refused by `source_id`, as the server refuses one entry. */
   readonly entryRefusals = new Map<string, Refusal>();
   /** Called after an own-rows page is answered, before the next request. */
   afterList: (() => void) | undefined;
+  /** Awaited before a request is answered, with the request as it arrived. */
+  beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
+  /** Keyed `METHOD /path`, answered once each in place of the door. */
+  private readonly refusals = new Map<string, Refusal[]>();
+  /** Each row's properties at every version it has had. */
+  private readonly snapshots = new Map<
+    string,
+    Map<number, Record<string, unknown>>
+  >();
   private readonly http = createServer((req, res) => {
     void this.answer(req, res);
   });
@@ -114,9 +141,7 @@ export class ScriptedServer {
   /** Another writer changes a row, moving its version. */
   touch(sourceId: string, properties: Record<string, unknown>): void {
     const row = this.row(sourceId);
-    row.properties = { ...row.properties, ...properties };
-    row.version += 1;
-    row.updated_at = this.now();
+    this.write(row, { ...row.properties, ...properties });
   }
 
   /** A row created by another process holding the same key. */
@@ -148,6 +173,13 @@ export class ScriptedServer {
     return new Date(this.clock).toISOString();
   }
 
+  private write(row: Row, properties: Record<string, unknown>): void {
+    row.properties = properties;
+    row.version += 1;
+    row.updated_at = this.now();
+    this.snapshots.get(row.id)?.set(row.version, properties);
+  }
+
   private newRow(
     type: string,
     source: string,
@@ -158,7 +190,7 @@ export class ScriptedServer {
   ): Row {
     const at = this.now();
     this.sequence += 1;
-    return {
+    const row: Row = {
       id: `0190a000-0000-7000-8000-${String(this.sequence).padStart(12, "0")}`,
       type,
       source,
@@ -171,6 +203,8 @@ export class ScriptedServer {
       created_at: at,
       updated_at: at,
     };
+    this.snapshots.set(row.id, new Map([[1, properties]]));
+    return row;
   }
 
   private async answer(
@@ -183,21 +217,22 @@ export class ScriptedServer {
     const text = Buffer.concat(chunks).toString("utf8");
     const body: unknown = text === "" ? undefined : JSON.parse(text);
     const method = req.method ?? "GET";
-    this.requests.push({
+    const request = {
       method,
       path: url.pathname,
       query: url.searchParams,
       body,
-    });
+    };
+    this.requests.push(request);
 
-    const send = (status: number, payload: unknown): void => {
+    const send: Send = (status, payload) => {
       res.writeHead(status, {
         "Content-Type": "application/json",
         "X-Marfa-Contract": String(CONTRACT_VERSION),
       });
       res.end(JSON.stringify(payload));
     };
-    const refuse = (status: number, code: string, message = code): void => {
+    const refuse: Refuse = (status, code, message = code) => {
       send(status, { error: { code, message } });
     };
 
@@ -205,6 +240,7 @@ export class ScriptedServer {
       refuse(401, "unauthorized");
       return;
     }
+    await this.beforeAnswer?.(request);
     const route = `${method} ${url.pathname}`;
     const scripted = this.refusals.get(route)?.shift();
     if (scripted !== undefined) {
@@ -272,7 +308,7 @@ export class ScriptedServer {
     if (method === "POST" && url.pathname === "/types") {
       const id = String(input["id"]);
       if (this.types.has(id)) {
-        refuse(409, "conflict");
+        refuse(409, "type_already_exists");
         return;
       }
       this.types.set(id, input);
@@ -308,7 +344,6 @@ export class ScriptedServer {
         return;
       }
       row.state = state;
-      row.version += 1;
       row.updated_at = this.now();
       send(200, {
         item: row,
@@ -319,14 +354,17 @@ export class ScriptedServer {
     refuse(404, "not_found", `no scripted door for ${route}`);
   }
 
-  private listItems(
-    query: URLSearchParams,
-    send: (status: number, payload: unknown) => void,
-  ): void {
+  private listItems(query: URLSearchParams, send: Send): void {
     const state = query.get("state") ?? "active";
+    const type = query.get("type");
+    // A type filter answers the types that inherit from it too.
+    const ofType = (row: Row): boolean =>
+      type === null ||
+      row.type === type ||
+      this.types.get(row.type)?.["parent"] === type;
     const matches = this.rows.filter(
       (row) =>
-        (query.get("type") === null || row.type === query.get("type")) &&
+        ofType(row) &&
         (query.get("source") === null || row.source === query.get("source")) &&
         (state === "any" || row.state === state),
     );
@@ -354,6 +392,16 @@ export class ScriptedServer {
       const existing = this.rows.find(
         (row) => row.source === source && row.source_id === sourceId,
       );
+      if (existing !== undefined && existing.type !== entry["type"]) {
+        return {
+          index,
+          outcome: "errored",
+          error: {
+            code: "type_mismatch",
+            message: `the key names a ${existing.type}`,
+          },
+        };
+      }
       if (existing?.state === "trashed") {
         return {
           index,
@@ -373,11 +421,10 @@ export class ScriptedServer {
             },
           };
         }
-        existing.properties = {
+        this.write(existing, {
           ...existing.properties,
           ...(entry["properties"] as Record<string, unknown>),
-        };
-        existing.version += 1;
+        });
         return { index, outcome: "updated", id: existing.id };
       }
       const row = this.newRow(
@@ -407,31 +454,48 @@ export class ScriptedServer {
   private update(
     id: string,
     input: Record<string, unknown>,
-    send: (status: number, payload: unknown) => void,
-    refuse: (status: number, code: string, message?: string) => void,
+    send: Send,
+    refuse: Refuse,
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
     if (row === undefined || row.state === "trashed") {
       refuse(404, "item_not_found");
       return;
     }
-    if (typeof input["version"] !== "number") {
+    const version = input["version"];
+    if (typeof version !== "number") {
       refuse(400, "missing_required_field");
       return;
     }
-    if (input["version"] !== row.version) {
-      refuse(409, "version_conflict");
-      return;
-    }
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
-    row.properties =
-      input["properties_mode"] === "replace"
-        ? properties
-        : { ...row.properties, ...properties };
+    if (version !== row.version) {
+      const ancestor = this.snapshots.get(row.id)?.get(version);
+      if (ancestor === undefined) {
+        refuse(409, "ancestor_unavailable");
+        return;
+      }
+      const mine = changedKeys(ancestor, properties, Object.keys(properties));
+      const theirs = changedKeys(ancestor, row.properties, [
+        ...Object.keys(ancestor),
+        ...Object.keys(row.properties),
+      ]);
+      if ([...mine].some((key) => theirs.has(key))) {
+        refuse(409, "version_conflict");
+        return;
+      }
+      const merged = { ...row.properties };
+      for (const key of mine) merged[key] = properties[key];
+      this.write(row, merged);
+    } else {
+      this.write(
+        row,
+        input["properties_mode"] === "replace"
+          ? properties
+          : { ...row.properties, ...properties },
+      );
+    }
     if (typeof input["occurred_at"] === "string")
       row.occurred_at = input["occurred_at"];
-    row.version += 1;
-    row.updated_at = this.now();
     send(200, {
       item: { ...row },
       metadata: { item_id: row.id, tags: [], extensions: {} },

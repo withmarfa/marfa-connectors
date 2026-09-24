@@ -15,21 +15,34 @@ export interface Runtime {
   onStop(listener: () => void): void;
 }
 
+/** The longest delay a timer holds; a longer one fires at once. */
+const longestTimer = 2 ** 31 - 1;
+
 export const systemClock: Clock = {
   now: () => new Date(),
   sleep: (ms, signal) =>
     new Promise((resolve) => {
-      if (signal.aborted) {
-        resolve();
-        return;
-      }
+      const until = Date.now() + ms;
+      let timer: NodeJS.Timeout | undefined;
       const done = (): void => {
         clearTimeout(timer);
         signal.removeEventListener("abort", done);
         resolve();
       };
-      const timer = setTimeout(done, ms);
+      const wait = (): void => {
+        const left = until - Date.now();
+        if (left <= 0) {
+          done();
+          return;
+        }
+        timer = setTimeout(wait, Math.min(left, longestTimer));
+      };
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
       signal.addEventListener("abort", done, { once: true });
+      wait();
     }),
 };
 

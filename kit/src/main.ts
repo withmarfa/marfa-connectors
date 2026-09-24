@@ -20,6 +20,9 @@ import { typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
+/** A request the server has not answered in this long is given up on. */
+const requestTimeoutMs = 60_000;
+
 /** Worth another attempt: the server was unreachable, overloaded or failing. */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
@@ -28,7 +31,40 @@ function transient(error: unknown): boolean {
       (error.status >= 500 || error.status === 429)
     );
   }
-  return error instanceof TypeError;
+  return (
+    error instanceof TypeError ||
+    (error instanceof DOMException && error.name === "TimeoutError")
+  );
+}
+
+function withTimeout(
+  input: Request | string | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const request = new Request(input, init);
+  return fetch(
+    new Request(request, {
+      signal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(requestTimeoutMs),
+      ]),
+    }),
+  );
+}
+
+async function checkType<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  marfa: Marfa,
+  served: Record<string, unknown>,
+): Promise<string | undefined> {
+  const parent = connector.type.parent;
+  const inherited =
+    parent === undefined
+      ? []
+      : Object.keys((await marfa.type(parent))?.["fields"] ?? {});
+  const differences = typeDifferences(connector.type, served, inherited);
+  if (differences.length === 0) return undefined;
+  return `the type ${connector.type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
 }
 
 async function registerAndCheck<E extends EnvDeclaration>(
@@ -37,24 +73,26 @@ async function registerAndCheck<E extends EnvDeclaration>(
 ): Promise<{ id: string; problem: string | undefined }> {
   const id = await marfa.register(connector.name, connector.description);
   const served = await marfa.type(connector.type.id);
-  if (served === undefined) {
-    try {
-      await marfa.registerType(connector.type);
-    } catch (error) {
-      if (transient(error)) throw error;
-      return {
-        id,
-        problem: `the type ${connector.type.id} could not be registered: ${describe(error)}`,
-      };
-    }
-    return { id, problem: undefined };
+  if (served !== undefined) {
+    return { id, problem: await checkType(connector, marfa, served) };
   }
-  const differences = typeDifferences(connector.type, served);
-  if (differences.length === 0) return { id, problem: undefined };
-  return {
-    id,
-    problem: `the type ${connector.type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`,
-  };
+  try {
+    await marfa.registerType(connector.type);
+    return { id, problem: undefined };
+  } catch (error) {
+    if (transient(error)) throw error;
+    // Another process holding the key registered it first, which is as good
+    // as registering it, if it is the same type.
+    if (error instanceof Refusal && error.status === 409) {
+      const now = await marfa.type(connector.type.id);
+      if (now !== undefined)
+        return { id, problem: await checkType(connector, marfa, now) };
+    }
+    return {
+      id,
+      problem: `the type ${connector.type.id} could not be registered: ${describe(error)}`,
+    };
+  }
 }
 
 /** Runs the connector as the arguments say, and answers the exit code. */
@@ -63,6 +101,9 @@ export async function start<E extends EnvDeclaration>(
   runtime: Runtime,
 ): Promise<number> {
   const { clock } = runtime;
+  const write = (line: string): void => {
+    runtime.write(line);
+  };
   let schedule: Schedule;
   let environment;
   try {
@@ -71,18 +112,10 @@ export async function start<E extends EnvDeclaration>(
     environment = readEnvironment(connector, runtime.env);
   } catch (error) {
     if (!(error instanceof ConfigurationError)) throw error;
-    new Logger((line) => {
-      runtime.write(line);
-    }, clock).error(error.message);
+    new Logger(write, clock).error(error.message);
     return 2;
   }
-  const logger = new Logger(
-    (line) => {
-      runtime.write(line);
-    },
-    clock,
-    environment.secrets,
-  );
+  const logger = new Logger(write, clock, environment.secrets);
 
   const stop = new AbortController();
   const stopped = (): boolean => stop.signal.aborted;
@@ -91,7 +124,11 @@ export async function start<E extends EnvDeclaration>(
     stop.abort();
   });
   const marfa = new Marfa(
-    createClient({ baseUrl: environment.url, credential: environment.key }),
+    createClient({
+      baseUrl: environment.url,
+      credential: environment.key,
+      fetch: withTimeout,
+    }),
   );
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
@@ -130,19 +167,24 @@ export async function start<E extends EnvDeclaration>(
     }
     return 1;
   }
+  if (stopped()) return 0;
 
   const beating = new AbortController();
   const beat = AbortSignal.any([beating.signal, stop.signal]);
+  const beatingEnded = (): boolean => beat.aborted;
   const heartbeat = (async () => {
     let failing = false;
-    while (!beat.aborted) {
+    while (!beatingEnded()) {
       try {
-        await marfa.heartbeat(connectorId);
+        await marfa.heartbeat(connectorId, beat);
         if (failing) logger.info("the heartbeat is answered again");
         failing = false;
       } catch (error) {
-        if (!failing) logger.warn(`the heartbeat failed: ${describe(error)}`);
-        failing = true;
+        // A heartbeat cut short because beating ended is not a failure.
+        if (!beatingEnded() && !failing) {
+          logger.warn(`the heartbeat failed: ${describe(error)}`);
+          failing = true;
+        }
       }
       await clock.sleep(heartbeatMs, beat);
     }
@@ -169,8 +211,9 @@ export async function start<E extends EnvDeclaration>(
         failures = (await runOnce(setup)) ? 0 : failures + 1;
         if (stopped()) break;
         const wait = backoff(schedule.intervalMs, failures);
-        if (failures > 0)
+        if (failures > 0) {
           logger.info(`the next run is in ${describeDuration(wait)}`);
+        }
         await clock.sleep(wait, stop.signal);
       }
     }

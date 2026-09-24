@@ -1,8 +1,10 @@
 import type { components } from "@withmarfa/client";
 
 /**
- * A type as `POST /types` takes it. A connector carries its type in the form
- * the server answers it, so the check on start compares like with like.
+ * A type as `POST /types` takes it. The check on start compares it with the
+ * server's in the form the server stores: a format that is a field type of
+ * its own, such as `url`, counts as that type, and a `required` list as
+ * per-field flags.
  */
 export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 

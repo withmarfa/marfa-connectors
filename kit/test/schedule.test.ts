@@ -164,10 +164,43 @@ describe("--once", () => {
     await until(() => held.runs === 1 && harness.server.heartbeats === 1);
     await harness.clock.wake(minute);
     await until(() => harness.server.heartbeats === 2);
+    expect(harness.clock.waiting).toBe(1);
     release();
     expect(await exit).toBe(0);
-    const beats = harness.server.heartbeats;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(harness.server.heartbeats).toBe(beats);
+    expect(harness.clock.waiting).toBe(0);
+  });
+
+  it("finishes a write in flight when told to stop, and makes no other", async () => {
+    await harness.once(
+      vendor([one, { source_id: "a:2", properties: { title: "Two" } }]),
+    );
+    let arrived = false;
+    let letThrough!: () => void;
+    const held = new Promise<void>((resolve) => {
+      letThrough = resolve;
+    });
+    harness.server.beforeAnswer = async (request) => {
+      if (request.method !== "PATCH") return;
+      arrived = true;
+      await held;
+    };
+    const exit = harness.once(
+      vendor([
+        { source_id: "a:1", properties: { title: "One, changed" } },
+        { source_id: "a:2", properties: { title: "Two, changed" } },
+      ]),
+    );
+    await until(() => arrived);
+    harness.stop();
+    letThrough();
+    expect(await exit).toBe(0);
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, changed",
+    });
+    expect(harness.server.row("a:2").properties).toEqual({ title: "Two" });
+    expect(
+      harness.server.requests.filter((request) => request.method === "PATCH"),
+    ).toHaveLength(1);
+    expect(harness.lastRun().error).toContain("stopped");
   });
 });

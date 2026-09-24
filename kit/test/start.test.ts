@@ -59,12 +59,54 @@ describe("configuration", () => {
       );
     }
     expect(harness.server.requests).toEqual([]);
+    expect(
+      await start(testConnector(vendor()), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(harness.server.requests.length).toBeGreaterThan(0);
   });
 
   it("refuses a source under a reserved prefix", async () => {
     const connector = { ...testConnector(vendor()), source: "Connector:test" };
     expect(await start(connector, harness.runtime(["--once"]))).toBe(2);
     expect(harness.server.requests).toEqual([]);
+    expect(
+      await start(testConnector(vendor()), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(harness.server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a MARFA_URL it cannot use, without showing what it holds", async () => {
+    const pasted = "marfa_k1_pasted_into_the_wrong_variable";
+    expect(await harness.once(vendor(), { MARFA_URL: pasted })).toBe(2);
+    expect(
+      await harness.once(vendor(), { MARFA_URL: "ftp://marfa.example.com" }),
+    ).toBe(2);
+    const said = harness.lines.join("\n");
+    expect(said).toContain("MARFA_URL");
+    expect(said).not.toContain(pasted);
+    expect(harness.server.requests).toEqual([]);
+    expect(await harness.once(vendor())).toBe(0);
+    expect(harness.server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a secret too short to keep out of the logs", async () => {
+    expect(await harness.once(vendor(), { TEST_TOKEN: "abc" })).toBe(2);
+    expect(harness.lines.join("\n")).toContain("TEST_TOKEN");
+    expect(harness.server.requests).toEqual([]);
+  });
+
+  it("starts no run once told to stop while registering", async () => {
+    const held = vendor([entry]);
+    harness.server.beforeAnswer = (request) => {
+      if (request.path === "/connectors") harness.stop();
+    };
+    expect(await harness.once(held)).toBe(0);
+    expect(held.runs).toBe(0);
+    expect(harness.server.runs).toEqual([]);
+
+    harness.server.beforeAnswer = undefined;
+    expect(await harness.once(held)).toBe(0);
+    expect(held.runs).toBe(1);
   });
 });
 
@@ -165,6 +207,67 @@ describe("the type check on start", () => {
     expect(harness.lastRun().outcome).toBe("failed");
     expect(harness.lastRun().error).toContain("metadata.types:write");
     expect(harness.server.rows).toEqual([]);
+  });
+
+  it("carries on when another process registered the same type first", async () => {
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "POST" && request.path === "/types") {
+        harness.server.types.set("test.entry", testType);
+      }
+    };
+    expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
+  });
+
+  it("stops when another process registered a different type first", async () => {
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "POST" && request.path === "/types") {
+        harness.server.types.set("test.entry", {
+          id: "test.entry",
+          fields: { title: { type: "integer" } },
+        });
+      }
+    };
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    expect(harness.lastRun().error).toContain('field "title" has type');
+    expect(harness.server.rows).toEqual([]);
+  });
+
+  it("reads a format that is a field type of its own as that type", async () => {
+    const connector = testConnector(vendor([entry]));
+    const carried = {
+      ...connector,
+      type: {
+        ...testType,
+        fields: {
+          title: { type: "string" as const, required: true },
+          note: { type: "string" as const },
+          link: { type: "string" as const, format: "url" as const },
+        },
+      },
+    };
+    harness.server.types.set("test.entry", testType);
+    expect(await start(carried, harness.runtime(["--once"]))).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
+  });
+
+  it("takes the fields the server answers from a parent as the parent's", async () => {
+    harness.server.types.set("test.base", {
+      id: "test.base",
+      fields: { origin: { type: "string", required: true } },
+    });
+    harness.server.types.set("test.entry", {
+      ...testType,
+      parent: "test.base",
+      fields: {
+        ...testType.fields,
+        origin: { type: "string", required: true },
+      },
+    });
+    const connector = testConnector(vendor([entry]));
+    const child = { ...connector, type: { ...testType, parent: "test.base" } };
+    expect(await start(child, harness.runtime(["--once"]))).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
   });
 });
 

@@ -15,6 +15,9 @@ const defaults: Partial<Record<(typeof shape)[number], unknown>> = {
   searchable: true,
 };
 
+/** Formats the server stores as a field type of their own. */
+const typeFormats = new Set(["url", "email", "datetime", "date", "thumbnail"]);
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -26,6 +29,21 @@ function names(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((v): v is string => typeof v === "string").sort()
     : [];
+}
+
+/** A field as the server stores it: `{type: string, format: url}` is `{type: url}`. */
+function normalized(field: unknown): Record<string, unknown> {
+  const out = { ...record(field) };
+  const format = out["format"];
+  if (
+    out["type"] === "string" &&
+    typeof format === "string" &&
+    typeFormats.has(format)
+  ) {
+    out["type"] = format;
+    delete out["format"];
+  }
+  return out;
 }
 
 /** A top-level list and per-field flags are two spellings of one thing. */
@@ -44,11 +62,14 @@ function show(value: unknown): string {
 /**
  * How the server's type differs from the one a connector carries, in shape:
  * fields, what each field is, which are required, its parent and what it
- * declares itself compatible with. An empty list means they agree.
+ * declares itself compatible with. The server answers a type with its
+ * parent's fields merged in, named by `inherited`. An empty list means the
+ * two agree.
  */
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,
+  inherited: readonly string[] = [],
 ): string[] {
   const differences: string[] = [];
   const mine = record(carried.fields);
@@ -60,7 +81,7 @@ export function typeDifferences(
     differences.push(`field "${name}" is missing on the server`);
   }
   for (const name of Object.keys(theirs)
-    .filter((n) => !(n in mine))
+    .filter((n) => !(n in mine) && !inherited.includes(n))
     .sort()) {
     differences.push(
       `field "${name}" is on the server and not in this connector`,
@@ -69,8 +90,8 @@ export function typeDifferences(
   for (const name of Object.keys(mine)
     .filter((n) => n in theirs)
     .sort()) {
-    const here = record(mine[name]);
-    const there = record(theirs[name]);
+    const here = normalized(mine[name]);
+    const there = normalized(theirs[name]);
     for (const attribute of shape) {
       const a = here[attribute] ?? defaults[attribute];
       const b = there[attribute] ?? defaults[attribute];
@@ -83,7 +104,9 @@ export function typeDifferences(
   }
 
   const required = requiredSet(carried);
-  const requiredThere = requiredSet(served);
+  const requiredThere = requiredSet(served).filter(
+    (n) => n in mine || !inherited.includes(n),
+  );
   for (const name of required.filter((n) => !requiredThere.includes(n))) {
     differences.push(`field "${name}" is required here and not on the server`);
   }
@@ -91,7 +114,7 @@ export function typeDifferences(
     differences.push(`field "${name}" is required on the server and not here`);
   }
 
-  if ((carried.parent ?? undefined) !== (served["parent"] ?? undefined)) {
+  if (carried.parent !== served["parent"]) {
     differences.push(
       `parent is ${show(carried.parent)} here and ${show(served["parent"])} on the server`,
     );

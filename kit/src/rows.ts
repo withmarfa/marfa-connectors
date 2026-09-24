@@ -1,6 +1,6 @@
 import type { Entry } from "./define.js";
 import { Refusal, type BulkResult, type Marfa, type NewRow } from "./marfa.js";
-import { cleaned, same, sameInstant } from "./values.js";
+import { cleaned, instant, same, sameInstant } from "./values.js";
 
 export interface Counts {
   created: number;
@@ -32,14 +32,23 @@ const raced = new Set([
   "invalid_transition",
 ]);
 
-/** The row itself is what the server refused, not the key or the request. */
-const refusedRow = new Set([
+/**
+ * What the server answers about one row: its contents, or a natural key
+ * that a row of another type already holds. On an update the other
+ * validation codes describe the request rather than the row, so they end
+ * the run instead of hiding a request the kit got wrong.
+ */
+const refusedUpdate = new Set(["invalid_properties"]);
+const refusedCreate = new Set([
   "invalid_properties",
   "validation_error",
-  "missing_required_field",
+  "type_mismatch",
 ]);
 
-/** Big enough that a first read is a handful of requests, small enough to stay well under the door's cap. */
+/**
+ * Entries per bulk request. The door takes 5000 and 16 MiB; a page of this
+ * many stays under the byte cap for rows of a few kilobytes each.
+ */
 const createPage = 500;
 
 /**
@@ -58,7 +67,7 @@ export class Rows {
   };
   /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
-  private rows: Map<string, Row> | undefined;
+  private rows: Promise<Map<string, Row>> | undefined;
 
   constructor(
     private readonly marfa: Marfa,
@@ -75,14 +84,13 @@ export class Rows {
     const creates: NewRow[] = [];
     for (const entry of latest.values()) {
       const properties = cleaned(entry.properties);
+      const occurredAt = instant(entry.occurred_at);
       const row = rows.get(entry.source_id);
       if (row === undefined) {
         creates.push({
           source_id: entry.source_id,
           properties,
-          ...(entry.occurred_at !== undefined && {
-            occurred_at: entry.occurred_at,
-          }),
+          ...(occurredAt !== undefined && { occurred_at: occurredAt }),
         });
         continue;
       }
@@ -91,8 +99,7 @@ export class Rows {
         continue;
       }
       const timeUnchanged =
-        entry.occurred_at === undefined ||
-        sameInstant(row.occurred_at, entry.occurred_at);
+        occurredAt === undefined || sameInstant(row.occurred_at, occurredAt);
       if (same(row.properties, properties) && timeUnchanged) {
         this.counts.unchanged += 1;
         continue;
@@ -103,7 +110,7 @@ export class Rows {
           row.id,
           row.version,
           properties,
-          entry.occurred_at,
+          occurredAt,
         );
         rows.set(entry.source_id, {
           id: item.id,
@@ -112,9 +119,16 @@ export class Rows {
           version: item.version,
           occurred_at: item.occurred_at,
         });
-        this.counts.updated += 1;
+        // More than one step means another write landed between the read
+        // and this one, and the server merged the two rather than replacing.
+        if (item.version === row.version + 1) {
+          this.counts.updated += 1;
+        } else {
+          this.counts.skipped += 1;
+          this.held += 1;
+        }
       } catch (error) {
-        this.absorb(error, entry.source_id);
+        this.absorb(error, entry.source_id, refusedUpdate);
       }
     }
     for (let start = 0; start < creates.length; start += createPage) {
@@ -147,17 +161,24 @@ export class Rows {
         row.state = "archived";
         this.counts.archived += 1;
       } catch (error) {
-        this.absorb(error, sourceId);
+        this.absorb(error, sourceId, refusedUpdate);
       }
     }
   }
 
-  private async load(): Promise<Map<string, Row>> {
-    if (this.rows !== undefined) return this.rows;
+  /** Read once, however many calls ask for it at once. */
+  private load(): Promise<Map<string, Row>> {
+    this.rows ??= this.read();
+    return this.rows;
+  }
+
+  private async read(): Promise<Map<string, Row>> {
     const items = await this.marfa.ownRows(this.type, this.source);
     const rows = new Map<string, Row>();
     for (const item of items) {
-      if (item.source_id === undefined) continue;
+      // The type filter also answers types that inherit from this one,
+      // whose rows are not this connector's to write.
+      if (item.type !== this.type || item.source_id === undefined) continue;
       rows.set(item.source_id, {
         id: item.id,
         properties: item.properties,
@@ -166,7 +187,6 @@ export class Rows {
         occurred_at: item.occurred_at,
       });
     }
-    this.rows = rows;
     return rows;
   }
 
@@ -202,14 +222,22 @@ export class Rows {
     }
     const code = result.error?.code ?? "unknown";
     const message = result.error?.message ?? result.outcome;
-    this.absorb(new Refusal(undefined, code, message), created.source_id);
+    this.absorb(
+      new Refusal(undefined, code, message),
+      created.source_id,
+      refusedCreate,
+    );
   }
 
   /**
    * A refusal that concerns one row is counted and holds the state; any
    * other ends the run, since it would refuse every row after it too.
    */
-  private absorb(error: unknown, sourceId: string): void {
+  private absorb(
+    error: unknown,
+    sourceId: string,
+    refusedRow: ReadonlySet<string>,
+  ): void {
     if (
       error instanceof Refusal &&
       (raced.has(error.code) || refusedRow.has(error.code))

@@ -63,10 +63,10 @@ export class Marfa {
     return data.id;
   }
 
-  async heartbeat(id: string): Promise<void> {
+  async heartbeat(id: string, signal: AbortSignal): Promise<void> {
     const { data, error, response } = await this.client.POST(
       "/connectors/{id}/heartbeat",
-      { params: { path: { id } } },
+      { params: { path: { id } }, signal },
     );
     if (data === undefined) throw refusal(response, error);
   }
@@ -99,7 +99,10 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** Every row under the type and source, in every state. */
+  /**
+   * Every row under the source whose type is this one or inherits from it,
+   * in every state.
+   */
   async ownRows(type: string, source: string): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -151,7 +154,11 @@ export class Marfa {
     return data.results;
   }
 
-  /** Replaces a row's properties, on the version it was read at. */
+  /**
+   * Replaces a row's properties on the version it was read at. On a version
+   * another write has since moved, the server merges the two instead and
+   * ignores the replace, which the version it answers shows.
+   */
   async update(
     id: string,
     version: number,

@@ -90,28 +90,10 @@ export async function runOnce<E extends EnvDeclaration>(
       "the state is held, so the next run reads the vendor again: a write did not land",
     );
   }
+  // Kept redacted, since the state file is written to disk as it stands.
+  for (const [key, message] of raised) raised.set(key, logger.redact(message));
   const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
   for (const [, message] of fresh) logger.warn(message);
-  let conditions: Record<string, string>;
-  if (failure === undefined) {
-    for (const [key, message] of Object.entries(stored.conditions)) {
-      if (!raised.has(key)) logger.info(`cleared: ${message}`);
-    }
-    conditions = Object.fromEntries(raised);
-  } else {
-    // A run that failed may not have reached what raises a condition, so
-    // nothing it did not raise is taken to have cleared.
-    conditions = { ...stored.conditions, ...Object.fromEntries(raised) };
-  }
-  const landed = failure === undefined && rows.held === 0;
-  try {
-    await setup.stateFile.save({
-      state: landed ? draft : stored.state,
-      conditions,
-    });
-  } catch (error) {
-    logger.warn(`the state file could not be written: ${describe(error)}`);
-  }
 
   const counts = tally(rows.counts);
   const summary = [counts, ...fresh.map(([, message]) => message)].join(". ");
@@ -121,6 +103,7 @@ export async function runOnce<E extends EnvDeclaration>(
   } else {
     logger.error(`run failed: ${describe(failure)}; ${counts}`);
   }
+  let reported = false;
   try {
     await setup.marfa.report(setup.connectorId, {
       outcome,
@@ -131,8 +114,31 @@ export async function runOnce<E extends EnvDeclaration>(
         error: cap(logger.redact(describe(failure))),
       }),
     });
+    reported = true;
   } catch (error) {
     logger.warn(`the run could not be reported: ${describe(error)}`);
+  }
+
+  // A condition counts as reported only once a report carrying it landed.
+  // A run that failed may not have reached what raises one, so nothing it
+  // did not raise is taken to have cleared.
+  let conditions = stored.conditions;
+  if (reported && failure === undefined) {
+    for (const [key, message] of Object.entries(stored.conditions)) {
+      if (!raised.has(key)) logger.info(`cleared: ${message}`);
+    }
+    conditions = Object.fromEntries(raised);
+  } else if (reported) {
+    conditions = { ...stored.conditions, ...Object.fromEntries(raised) };
+  }
+  const landed = failure === undefined && rows.held === 0;
+  try {
+    await setup.stateFile.save({
+      state: landed ? draft : stored.state,
+      conditions,
+    });
+  } catch (error) {
+    logger.warn(`the state file could not be written: ${describe(error)}`);
   }
   return failure === undefined;
 }

@@ -16,6 +16,24 @@ export interface Environment {
 
 const reservedSourcePrefixes = ["oauth:", "connector:"];
 
+/**
+ * Shorter than this, a secret cannot be redacted without the redaction
+ * showing where each of its characters falls in ordinary text.
+ */
+const shortestSecret = 8;
+
+function isServerUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      !/[?#]/.test(value)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function readEnvironment<E extends EnvDeclaration>(
   connector: Connector<E>,
   env: Readonly<Record<string, string | undefined>>,
@@ -35,7 +53,7 @@ export function readEnvironment<E extends EnvDeclaration>(
   const key = need("MARFA_KEY");
   const stateDir = need("MARFA_STATE_DIR");
   const values: Record<string, string | undefined> = {};
-  const secrets = [key];
+  const secrets = new Map([["MARFA_KEY", key]]);
   for (const [name, kind] of Object.entries(connector.env ?? {})) {
     if (kind === "optional") {
       values[name] = present(name);
@@ -43,23 +61,36 @@ export function readEnvironment<E extends EnvDeclaration>(
     }
     const value = need(name);
     values[name] = value;
-    if (kind === "secret") secrets.push(value);
+    if (kind === "secret") secrets.set(name, value);
   }
   if (missing.length > 0) {
     throw new ConfigurationError(
       `cannot start without ${missing.join(", ")} in the environment`,
     );
   }
-  return {
-    url,
-    key,
-    stateDir,
-    values,
-    secrets: secrets.filter((s) => s !== ""),
-  };
+  // Named and not shown: a value pasted into the wrong variable is often
+  // the key itself.
+  if (!isServerUrl(url)) {
+    throw new ConfigurationError(
+      "MARFA_URL is not an http or https address without a query or fragment",
+    );
+  }
+  const short = [...secrets].filter(
+    ([, value]) => value.length < shortestSecret,
+  );
+  if (short.length > 0) {
+    throw new ConfigurationError(
+      `${short.map(([name]) => name).join(", ")} is shorter than ${String(shortestSecret)} characters, too short to keep out of the logs`,
+    );
+  }
+  return { url, key, stateDir, values, secrets: [...secrets.values()] };
 }
 
-/** What the server would refuse later, refused before it is asked. */
+/**
+ * The kit's own rules for a connector's definition: the server's bounds on
+ * a registration and a source, and a name that is safe as a file name,
+ * since it names the state file.
+ */
 export function checkDefinition<E extends EnvDeclaration>(
   connector: Connector<E>,
 ): void {
@@ -69,7 +100,7 @@ export function checkDefinition<E extends EnvDeclaration>(
   }
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(connector.name)) {
     problems.push(
-      "a name of lowercase letters, digits, dots, hyphens and underscores, which names its state file",
+      "a name of lowercase letters, digits, dots, hyphens and underscores",
     );
   }
   if ((connector.description?.length ?? 0) > 2000) {

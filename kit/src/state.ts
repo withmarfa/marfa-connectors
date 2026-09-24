@@ -62,7 +62,7 @@ export class StateFile {
         };
       }
     } catch {
-      // Reported below with the shape problem, as one condition.
+      // Said below in the one warning for any file this kit did not write.
     }
     this.logger.warn(
       "the state file is not one this kit wrote, so this run starts from nothing",
