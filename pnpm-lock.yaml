@@ -39,8 +39,8 @@ importers:
   kit:
     dependencies:
       '@withmarfa/client':
-        specifier: file:../vendor/withmarfa-client
-        version: file:vendor/withmarfa-client
+        specifier: file:../vendor/withmarfa-client.tar
+        version: file:vendor/withmarfa-client.tar
 
   scripts:
     dependencies:

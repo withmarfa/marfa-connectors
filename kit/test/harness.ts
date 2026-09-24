@@ -8,7 +8,7 @@ import { ScriptedServer } from "./scripted-server.js";
 
 interface Sleep {
   ms: number;
-  wake(): void;
+  wake: () => void;
 }
 
 /**
@@ -80,8 +80,8 @@ export interface Vendor {
   archived: string[];
   token: string | undefined;
   /** Awaited inside the run, so a test can hold a run open. */
-  gate?: Promise<void>;
-  fail?: Error;
+  gate?: Promise<void> | undefined;
+  fail?: Error | undefined;
   conditions?: [string, string][];
   logs?: string[];
   runs: number;

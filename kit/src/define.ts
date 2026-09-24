@@ -68,8 +68,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   run(context: RunContext<E>): Promise<void>;
 }
 
-export function defineConnector<
-  const E extends EnvDeclaration = Record<never, EnvKind>,
->(connector: Connector<E>): Connector<E> {
+export function defineConnector<const E extends EnvDeclaration = EnvDeclaration>(
+  connector: Connector<E>,
+): Connector<E> {
   return connector;
 }
