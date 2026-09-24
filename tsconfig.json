@@ -3,6 +3,7 @@
   "references": [
     { "path": "kit" },
     { "path": "template/connector" },
+    { "path": "connectors/rss" },
     { "path": "scripts" }
   ]
 }

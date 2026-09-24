@@ -1,0 +1,64 @@
+{
+  "id": "rss.entry",
+  "label": "Feed Entry",
+  "description": "An entry from an Atom or RSS 2.0 feed, as the RSS connector reads it. Its fields are named as `core.bookmark` names them, so an entry reads as a bookmark and a promoted copy is a bookmark.",
+  "version": 1,
+  "fields": {
+    "url": {
+      "type": "url",
+      "description": "The entry's own link."
+    },
+    "title": {
+      "type": "string",
+      "description": "The entry's title."
+    },
+    "description": {
+      "type": "string",
+      "description": "The entry's summary."
+    },
+    "body": {
+      "type": "string",
+      "description": "The entry's full content, where the feed carries it."
+    },
+    "author": {
+      "type": "string",
+      "description": "Who wrote the entry."
+    },
+    "published_at": {
+      "type": "datetime",
+      "description": "When the feed says the entry was published."
+    },
+    "image_url": {
+      "type": "url",
+      "description": "An image the entry encloses."
+    },
+    "language": {
+      "type": "string",
+      "format": "bcp47",
+      "description": "The feed's language."
+    },
+    "source_url": {
+      "type": "url",
+      "description": "The site the feed belongs to."
+    },
+    "source_title": {
+      "type": "string",
+      "description": "The feed's title."
+    },
+    "entry_id": {
+      "type": "string",
+      "required": true,
+      "description": "The entry's id in its feed: its Atom id or RSS guid, else its link."
+    },
+    "feed_url": {
+      "type": "url",
+      "required": true,
+      "description": "The feed's address, as the connector was given it."
+    }
+  },
+  "compatible_with": ["core.bookmark"],
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "body"
+  }
+}
