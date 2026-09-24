@@ -33,23 +33,47 @@ const raced = new Set([
 ]);
 
 /**
- * What the server answers about one row: its contents, or a natural key
- * that a row of another type already holds. On an update the other
- * validation codes describe the request rather than the row, so they end
- * the run instead of hiding a request the kit got wrong.
+ * What the server answers about one row: its contents, its size, or a
+ * natural key that a row of another type already holds. On an update the
+ * other validation codes describe the request rather than the row, so they
+ * end the run instead of hiding a request the kit got wrong.
  */
-const refusedUpdate = new Set(["invalid_properties"]);
+const refusedUpdate = new Set(["invalid_properties", "request_too_large"]);
 const refusedCreate = new Set([
   "invalid_properties",
   "validation_error",
   "type_mismatch",
+  "request_too_large",
 ]);
 
 /**
- * Entries per bulk request. The door takes 5000 and 16 MiB; a page of this
- * many stays under the byte cap for rows of a few kilobytes each.
+ * A bulk request's bounds, well inside the door's 5000 entries and 16 MiB,
+ * so a page is rarely refused for its size; one that is is split in two.
  */
-const createPage = 500;
+const pageEntries = 500;
+const pageBytes = 4 * 1024 * 1024;
+
+/** Creates in pages bounded by count and by bytes, in the order given. */
+function paged(creates: readonly NewRow[]): NewRow[][] {
+  const pages: NewRow[][] = [];
+  let page: NewRow[] = [];
+  let bytes = 0;
+  for (const row of creates) {
+    const size = Buffer.byteLength(JSON.stringify(row));
+    if (
+      page.length > 0 &&
+      (page.length === pageEntries || bytes + size > pageBytes)
+    ) {
+      pages.push(page);
+      page = [];
+      bytes = 0;
+    }
+    page.push(row);
+    bytes += size;
+  }
+  if (page.length > 0) pages.push(page);
+  return pages;
+}
 
 /**
  * The connector's own rows, read once per run, and every write compared
@@ -68,14 +92,31 @@ export class Rows {
   /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
   private rows: Promise<Map<string, Row>> | undefined;
+  private seen: Map<string, Row> | undefined;
 
   constructor(
     private readonly marfa: Marfa,
     private readonly type: string,
     private readonly source: string,
     private readonly signal: AbortSignal,
+    /** Rows a person had in the bin when a run last saw them. */
+    private readonly remembered: ReadonlySet<string>,
     private readonly refused: (sourceId: string, reason: string) => void,
   ) {}
+
+  /**
+   * The bin as this run leaves it remembered: every row seen trashed, and
+   * every remembered one the server no longer holds, which a person purged.
+   */
+  trashed(): string[] {
+    if (this.seen === undefined) return [...this.remembered];
+    const seen = this.seen;
+    const kept = [...this.remembered].filter((id) => !seen.has(id));
+    const now = [...seen]
+      .filter(([, row]) => row.state === "trashed")
+      .map(([id]) => id);
+    return [...new Set([...kept, ...now])];
+  }
 
   async upsert(entries: readonly Entry[]): Promise<void> {
     const rows = await this.load();
@@ -86,6 +127,10 @@ export class Rows {
       const properties = cleaned(entry.properties);
       const occurredAt = instant(entry.occurred_at);
       const row = rows.get(entry.source_id);
+      if (row === undefined && this.remembered.has(entry.source_id)) {
+        this.counts.skipped += 1;
+        continue;
+      }
       if (row === undefined) {
         creates.push({
           source_id: entry.source_id,
@@ -131,14 +176,38 @@ export class Rows {
         this.absorb(error, entry.source_id, refusedUpdate);
       }
     }
-    for (let start = 0; start < creates.length; start += createPage) {
-      this.checkStopped();
-      const page = creates.slice(start, start + createPage);
-      const results = await this.marfa.create(this.type, this.source, page);
-      for (const result of results) {
-        const created = page[result.index];
-        if (created !== undefined) this.settle(result, created, rows);
+    for (const page of paged(creates)) await this.createPage(page, rows);
+  }
+
+  private async createPage(
+    page: NewRow[],
+    rows: Map<string, Row>,
+  ): Promise<void> {
+    this.checkStopped();
+    let results;
+    try {
+      results = await this.marfa.create(this.type, this.source, page);
+    } catch (error) {
+      const first = page[0];
+      if (
+        !(error instanceof Refusal) ||
+        error.status !== 413 ||
+        first === undefined
+      ) {
+        throw error;
       }
+      if (page.length === 1) {
+        this.absorb(error, first.source_id, refusedCreate);
+        return;
+      }
+      const half = Math.ceil(page.length / 2);
+      await this.createPage(page.slice(0, half), rows);
+      await this.createPage(page.slice(half), rows);
+      return;
+    }
+    for (const result of results) {
+      const created = page[result.index];
+      if (created !== undefined) this.settle(result, created, rows);
     }
   }
 
@@ -187,6 +256,7 @@ export class Rows {
         occurred_at: item.occurred_at,
       });
     }
+    this.seen = rows;
     return rows;
   }
 

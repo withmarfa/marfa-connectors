@@ -5,7 +5,7 @@ import type {
   RunContext,
 } from "./define.js";
 import type { Environment } from "./environment.js";
-import { cap, type Logger } from "./log.js";
+import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
 import { Rows, type Counts } from "./rows.js";
 import type { Clock } from "./runtime.js";
@@ -22,12 +22,50 @@ export interface RunSetup<E extends EnvDeclaration> {
   signal: AbortSignal;
 }
 
+/** An error's message, with the cause beneath it where there is one. */
 export function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  const cause: unknown = error.cause;
+  if (!(cause instanceof Error)) return error.message;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return `${error.message} (${code ?? cause.message})`;
 }
 
 function tally(counts: Counts): string {
   return `created ${String(counts.created)}, updated ${String(counts.updated)}, archived ${String(counts.archived)}, unchanged ${String(counts.unchanged)}, skipped ${String(counts.skipped)}`;
+}
+
+/** Room left in a summary for saying that more conditions wait. */
+const moreNote = 80;
+
+/** The longest a single condition may be, so one never crowds out the rest. */
+const conditionCap = 500;
+
+/**
+ * The counts, then as many of the new conditions as the server's cap on a
+ * summary takes, in the order they were raised. The rest wait for a later
+ * run's report.
+ */
+function summarize(
+  counts: string,
+  fresh: [string, string][],
+): {
+  summary: string;
+  carried: Set<string>;
+} {
+  let summary = counts;
+  const carried = new Set<string>();
+  for (const [key, message] of fresh) {
+    const longer = `${summary}. ${message}`;
+    if (longer.length > reportCap - moreNote) break;
+    summary = longer;
+    carried.add(key);
+  }
+  const waiting = fresh.length - carried.size;
+  if (waiting > 0) {
+    summary += `. ${String(waiting)} more ${waiting === 1 ? "condition waits" : "conditions wait"} for a later report`;
+  }
+  return { summary, carried };
 }
 
 /**
@@ -47,6 +85,7 @@ export async function runOnce<E extends EnvDeclaration>(
     connector.type.id,
     connector.source,
     setup.signal,
+    new Set(stored.trashed),
     (sourceId, reason) =>
       raised.set(
         `refused:${sourceId}`,
@@ -91,12 +130,14 @@ export async function runOnce<E extends EnvDeclaration>(
     );
   }
   // Kept redacted, since the state file is written to disk as it stands.
-  for (const [key, message] of raised) raised.set(key, logger.redact(message));
+  for (const [key, message] of raised) {
+    raised.set(key, cap(logger.redact(message), conditionCap));
+  }
   const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
   for (const [, message] of fresh) logger.warn(message);
 
   const counts = tally(rows.counts);
-  const summary = [counts, ...fresh.map(([, message]) => message)].join(". ");
+  const { summary, carried } = summarize(counts, fresh);
   const outcome = failure === undefined ? "succeeded" : "failed";
   if (failure === undefined) {
     logger.info(`run succeeded: ${counts}`);
@@ -122,20 +163,24 @@ export async function runOnce<E extends EnvDeclaration>(
   // A condition counts as reported only once a report carrying it landed.
   // A run that failed may not have reached what raises one, so nothing it
   // did not raise is taken to have cleared.
+  const known = [...raised].filter(
+    ([key]) => key in stored.conditions || carried.has(key),
+  );
   let conditions = stored.conditions;
   if (reported && failure === undefined) {
     for (const [key, message] of Object.entries(stored.conditions)) {
       if (!raised.has(key)) logger.info(`cleared: ${message}`);
     }
-    conditions = Object.fromEntries(raised);
+    conditions = Object.fromEntries(known);
   } else if (reported) {
-    conditions = { ...stored.conditions, ...Object.fromEntries(raised) };
+    conditions = { ...stored.conditions, ...Object.fromEntries(known) };
   }
   const landed = failure === undefined && rows.held === 0;
   try {
     await setup.stateFile.save({
       state: landed ? draft : stored.state,
       conditions,
+      trashed: rows.trashed(),
     });
   } catch (error) {
     logger.warn(`the state file could not be written: ${describe(error)}`);

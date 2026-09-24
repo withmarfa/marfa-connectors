@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "./log.js";
@@ -7,10 +8,16 @@ export interface Stored {
   state: Record<string, unknown>;
   /** Lasting conditions by key, as last reported. */
   conditions: Record<string, string>;
+  /**
+   * Rows last seen in the bin, by source id. A row purged from it is gone
+   * from the server, and this is what stops the vendor's copy being written
+   * again.
+   */
+  trashed: string[];
 }
 
 function empty(): Stored {
-  return { state: {}, conditions: {} };
+  return { state: {}, conditions: {}, trashed: [] };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,6 +58,7 @@ export class StateFile {
         isRecord(parsed["state"]) &&
         isRecord(parsed["conditions"])
       ) {
+        const trashed = parsed["trashed"];
         return {
           state: parsed["state"],
           conditions: Object.fromEntries(
@@ -59,6 +67,9 @@ export class StateFile {
                 typeof entry[1] === "string",
             ),
           ),
+          trashed: Array.isArray(trashed)
+            ? trashed.filter((id): id is string => typeof id === "string")
+            : [],
         };
       }
     } catch {
@@ -73,7 +84,8 @@ export class StateFile {
   /** Replaced whole by a rename, so a reader never sees half a file. */
   async save(stored: Stored): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    const partial = `${this.path}.${String(process.pid)}.partial`;
+    // Named apart, since two processes sharing the directory may both write.
+    const partial = `${this.path}.${randomUUID()}.partial`;
     await writeFile(partial, `${JSON.stringify(stored, null, 2)}\n`);
     await rename(partial, this.path);
   }

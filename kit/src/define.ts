@@ -65,7 +65,7 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   /** The registration's name, and the name of the state file. */
   readonly name: string;
   readonly description?: string;
-  /** Named on every write and on every read of the connector's own rows. */
+  /** Named on every create and on every read of the connector's own rows. */
   readonly source: string;
   readonly type: TypeDefinition;
   readonly env?: E;

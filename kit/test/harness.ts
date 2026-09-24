@@ -127,6 +127,7 @@ export const secretToken = "tok_vendor_secret_value";
 export class Harness {
   readonly lines: string[] = [];
   readonly clock = new ManualClock();
+  requestTimeoutMs = 5000;
   private stopListener: (() => void) | undefined;
 
   constructor(
@@ -160,6 +161,7 @@ export class Harness {
       },
       write: (line) => this.lines.push(line),
       clock: this.clock,
+      requestTimeoutMs: this.requestTimeoutMs,
       onStop: (listener) => {
         this.stopListener = listener;
       },

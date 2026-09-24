@@ -85,6 +85,8 @@ export class ScriptedServer {
   afterList: (() => void) | undefined;
   /** Awaited before a request is answered, with the request as it arrived. */
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
+  /** A body over this many bytes is refused whole, as the server's cap refuses it. */
+  bodyCap: number | undefined;
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties at every version it has had. */
@@ -142,6 +144,11 @@ export class ScriptedServer {
   touch(sourceId: string, properties: Record<string, unknown>): void {
     const row = this.row(sourceId);
     this.write(row, { ...row.properties, ...properties });
+  }
+
+  /** A person empties the bin of this row. */
+  purge(sourceId: string): void {
+    this.rows = this.rows.filter((row) => row.source_id !== sourceId);
   }
 
   /** A row created by another process holding the same key. */
@@ -241,6 +248,10 @@ export class ScriptedServer {
       return;
     }
     await this.beforeAnswer?.(request);
+    if (this.bodyCap !== undefined && Buffer.byteLength(text) > this.bodyCap) {
+      refuse(413, "request_too_large");
+      return;
+    }
     const route = `${method} ${url.pathname}`;
     const scripted = this.refusals.get(route)?.shift();
     if (scripted !== undefined) {

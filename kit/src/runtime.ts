@@ -11,6 +11,8 @@ export interface Runtime {
   /** One log line, without its newline. */
   write(line: string): void;
   readonly clock: Clock;
+  /** How long a request to the server may go unanswered. */
+  readonly requestTimeoutMs: number;
   /** Called once when the process is asked to stop. */
   onStop(listener: () => void): void;
 }
@@ -54,6 +56,7 @@ export function nodeRuntime(): Runtime {
       process.stderr.write(`${line}\n`);
     },
     clock: systemClock,
+    requestTimeoutMs: 60_000,
     onStop: (listener) => {
       let called = false;
       const once = (): void => {

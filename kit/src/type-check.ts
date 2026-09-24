@@ -31,15 +31,14 @@ function names(value: unknown): string[] {
     : [];
 }
 
-/** A field as the server stores it: `{type: string, format: url}` is `{type: url}`. */
+/**
+ * A field as the server stores it: a format that is a field type of its own
+ * replaces the declared type, whatever that was, and is dropped.
+ */
 function normalized(field: unknown): Record<string, unknown> {
   const out = { ...record(field) };
   const format = out["format"];
-  if (
-    out["type"] === "string" &&
-    typeof format === "string" &&
-    typeFormats.has(format)
-  ) {
+  if (typeof format === "string" && typeFormats.has(format)) {
     out["type"] = format;
     delete out["format"];
   }

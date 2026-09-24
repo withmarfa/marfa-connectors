@@ -20,10 +20,11 @@ import { typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
-/** A request the server has not answered in this long is given up on. */
-const requestTimeoutMs = 60_000;
-
-/** Worth another attempt: the server was unreachable, overloaded or failing. */
+/**
+ * Worth another attempt: the server was unreachable, overloaded, failing or
+ * too slow. `fetch failed` is the network's own refusal; any other
+ * TypeError is a request the kit built wrong, which no retry mends.
+ */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
     return (
@@ -32,24 +33,30 @@ function transient(error: unknown): boolean {
     );
   }
   return (
-    error instanceof TypeError ||
+    (error instanceof TypeError && error.message === "fetch failed") ||
     (error instanceof DOMException && error.name === "TimeoutError")
   );
 }
 
-function withTimeout(
-  input: Request | string | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  const request = new Request(input, init);
-  return fetch(
-    new Request(request, {
-      signal: AbortSignal.any([
-        request.signal,
-        AbortSignal.timeout(requestTimeoutMs),
-      ]),
-    }),
-  );
+/** A fetch that gives up on a request the server has not answered in `ms`. */
+function timedFetch(ms: number): typeof fetch {
+  return (input, init) => {
+    const request = new Request(input, init);
+    // Handed to fetch as its own option: built into a copy of the request,
+    // the timer's signal is collected before it fires.
+    return fetch(request, {
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(ms)]),
+    });
+  };
+}
+
+/**
+ * The wait before another attempt at a start that could not reach the
+ * server: a minute or the interval, whichever is shorter, doubled on each
+ * attempt, so a long interval does not delay the first run by as much.
+ */
+function startBackoff(intervalMs: number, attempts: number): number {
+  return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
 }
 
 async function checkType<E extends EnvDeclaration>(
@@ -127,7 +134,7 @@ export async function start<E extends EnvDeclaration>(
     createClient({
       baseUrl: environment.url,
       credential: environment.key,
-      fetch: withTimeout,
+      fetch: timedFetch(runtime.requestTimeoutMs),
     }),
   );
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
@@ -141,7 +148,7 @@ export async function start<E extends EnvDeclaration>(
         logger.error(`could not start: ${describe(error)}`);
         return 1;
       }
-      const wait = backoff(intervalMs, failures);
+      const wait = startBackoff(intervalMs, failures);
       logger.warn(
         `could not reach the server, trying again in ${describeDuration(wait)}: ${describe(error)}`,
       );

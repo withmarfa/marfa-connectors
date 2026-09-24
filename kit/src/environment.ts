@@ -22,11 +22,14 @@ const reservedSourcePrefixes = ["oauth:", "connector:"];
  */
 const shortestSecret = 8;
 
+/** An address a request can be sent to: no credentials, query or fragment. */
 function isServerUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return (
       (url.protocol === "http:" || url.protocol === "https:") &&
+      url.username === "" &&
+      url.password === "" &&
       !/[?#]/.test(value)
     );
   } catch {
@@ -72,7 +75,7 @@ export function readEnvironment<E extends EnvDeclaration>(
   // the key itself.
   if (!isServerUrl(url)) {
     throw new ConfigurationError(
-      "MARFA_URL is not an http or https address without a query or fragment",
+      "MARFA_URL is not an http or https address without credentials, a query or a fragment",
     );
   }
   const short = [...secrets].filter(

@@ -46,6 +46,6 @@ export class Logger {
 /** The longest text the server takes in a run's summary or error. */
 export const reportCap = 2000;
 
-export function cap(text: string): string {
-  return text.length <= reportCap ? text : `${text.slice(0, reportCap - 1)}…`;
+export function cap(text: string, limit = reportCap): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
