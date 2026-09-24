@@ -61,7 +61,9 @@ describe("the tree", () => {
     expect(personalDetail(`cd ${someHome}/code`)).toBe(someHome);
     expect(personalDetail(`mail ${someAddress}`)).toBe(someAddress);
     expect(personalDetail("me@example.com and /usr/local/bin")).toBeUndefined();
-    const found = treeFiles()
+    const files = treeFiles();
+    expect(files.length).toBeGreaterThan(0);
+    const found = files
       .map((path) => ({
         path,
         detail: personalDetail(readFileSync(resolve(root, path), "utf8")),
@@ -69,4 +71,27 @@ describe("the tree", () => {
       .filter((entry) => entry.detail !== undefined);
     expect(found).toEqual([]);
   });
+
+  it("runs every workflow job on the self-hosted pool", () => {
+    expect(hostedRunners("    runs-on: ubuntu-latest\n")).toEqual([
+      "ubuntu-latest",
+    ]);
+    const workflows = treeFiles().filter((path) =>
+      /^\.github\/workflows\/.+\.ya?ml$/.test(path),
+    );
+    expect(workflows.length).toBeGreaterThan(0);
+    const hosted = workflows.flatMap((path) =>
+      hostedRunners(readFileSync(resolve(root, path), "utf8")).map(
+        (runner) => `${path}: ${runner}`,
+      ),
+    );
+    expect(hosted).toEqual([]);
+  });
 });
+
+/** Every `runs-on` that names something other than the pool. */
+function hostedRunners(workflow: string): string[] {
+  return [...workflow.matchAll(/^\s*runs-on:\s*(.+?)\s*$/gm)]
+    .map((match) => match[1] ?? "")
+    .filter((runner) => runner !== "self-hosted");
+}

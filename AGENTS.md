@@ -7,15 +7,15 @@ The connectors for Marfa: a small kit that makes a connector a page of code, a t
 - `kit/`: the package `@withmarfa/connector`, the only thing here that is imported.
 - `template/`: what a new connector starts from.
 - `connectors/<name>/`: one folder per connector, run and never published.
-- `scripts/`: the pinned monorepo checkout, the client tarball, the proof harness, and the tests that hold the tree to the rules below.
+- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness, and tests holding the tree to three of the rules below: no version, no personal detail, every workflow on the pool.
 
 ## Commands
 
-`scripts/monorepo.sh` fetches the monorepo at the commit `scripts/monorepo.commit` pins into `vendor/marfa` and installs it. `scripts/vendor-client.sh` packs `@withmarfa/client` from that checkout into `vendor/`, which the override in `pnpm-workspace.yaml` names. Both run before `pnpm install`. Then `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm test`. After a build, `pnpm proof` boots the pinned server and holds each connector to it.
+`scripts/monorepo.sh` fetches the monorepo at the commit `scripts/monorepo.commit` pins into `vendor/marfa` and installs it. `scripts/vendor-client.sh` packs `@withmarfa/client` from that checkout into `vendor/withmarfa-client.tar`, which the override in `pnpm-workspace.yaml` names. Both run before `pnpm install`. Then `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm test`. After a build, `pnpm proof` boots the pinned server and proves against it.
 
 ## Secrets
 
-A connector reads its secrets from the environment, and nothing here holds a value. A run by hand that needs one runs under `aic-infisical-run -- <command>` from the checkout, which reads `.infisical.json` and puts the values into the command's environment without printing them.
+A connector reads its secrets from the environment, and nothing here holds a value. `.infisical.json` maps this repository to its Infisical project, environment and path, so a run by hand that needs a secret takes it from there with a command such as `infisical run -- <command>`, which puts the values into the command's environment without printing them.
 
 ## Versions
 

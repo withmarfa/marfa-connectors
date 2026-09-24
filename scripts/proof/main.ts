@@ -1,17 +1,33 @@
 import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
-import { check } from "./check.js";
-import { bootServer } from "./server.js";
+import { check, interruption } from "./check.js";
+import { ProofServer, type Booted } from "./server.js";
 
-const server = await bootServer();
-const stopOnSignal = (): void => {
-  void server.stop().finally(() => process.exit(1));
+const server = new ProofServer();
+let booting: Promise<unknown> = Promise.resolve();
+
+// Armed before the boot: a signal during it waits for the boot to settle,
+// so the server it started is the one stopped.
+const onSignal = (signal: NodeJS.Signals): void => {
+  interruption.signalled = true;
+  console.log(`stopping on ${signal}`);
+  void booting
+    .catch(() => undefined)
+    .then(() => server.stop())
+    .finally(() => process.exit(1));
 };
-process.once("SIGINT", stopOnSignal);
-process.once("SIGTERM", stopOnSignal);
+process.once("SIGINT", onSignal);
+process.once("SIGTERM", onSignal);
 
 try {
-  console.log(`server at monorepo ${server.commit}, ${server.url}`);
-  const marfa = createClient({ baseUrl: server.url, credential: server.key });
+  let booted: Booted | undefined;
+  await check("the pinned server boots", async () => {
+    const boot = server.boot();
+    booting = boot;
+    booted = await boot;
+    return `monorepo ${booted.commit}, ${booted.url}`;
+  });
+  if (booted === undefined) throw new Error("the boot answered nothing");
+  const marfa = createClient({ baseUrl: booted.url, credential: booted.key });
 
   await check("the server speaks the client's contract", async () => {
     const { data } = await marfa.GET("/");
