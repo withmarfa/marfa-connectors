@@ -1,0 +1,11 @@
+{
+  "id": "example.item",
+  "label": "Example Item",
+  "description": "An item as the example vendor lists it.",
+  "fields": {
+    "title": { "type": "string", "required": true },
+    "url": { "type": "url" },
+    "note": { "type": "string" }
+  },
+  "display_hints": { "title_field": "title" }
+}

@@ -1,4 +1,10 @@
-import { defineConnector, main, type Entry } from "@withmarfa/connector";
+import {
+  defineConnector,
+  main,
+  type Entry,
+  type TypeDefinition,
+} from "@withmarfa/connector";
+import exampleItem from "./example.item.json" with { type: "json" };
 
 interface VendorItem {
   id: string;
@@ -10,7 +16,7 @@ interface VendorItem {
 }
 
 /**
- * A connector reading a vendor's JSON list of items. Replace the type, the
+ * A connector reading a vendor's JSON list of items. Replace the type file, the
  * environment and the body of `run` with your vendor's; the kit does the
  * rest.
  */
@@ -18,17 +24,9 @@ const connector = defineConnector({
   name: "example",
   description: "Items from the example vendor's list.",
   source: "example",
-  type: {
-    id: "example.item",
-    label: "Example Item",
-    description: "An item as the example vendor lists it.",
-    fields: {
-      title: { type: "string", required: true },
-      url: { type: "url" },
-      note: { type: "string" },
-    },
-    display_hints: { title_field: "title" },
-  },
+  // Imported JSON widens every string, so its field types read as `string`
+  // here; the check on start holds the file to the server's type.
+  type: exampleItem as TypeDefinition,
   env: {
     EXAMPLE_URL: "required",
     EXAMPLE_TOKEN: "secret",

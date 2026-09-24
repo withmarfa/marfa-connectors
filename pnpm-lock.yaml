@@ -48,11 +48,11 @@ importers:
         specifier: file:../vendor/withmarfa-client.tar
         version: file:vendor/withmarfa-client.tar
 
-  template:
+  template/connector:
     dependencies:
       '@withmarfa/connector':
         specifier: workspace:*
-        version: link:../kit
+        version: link:../../kit
 
 packages:
 

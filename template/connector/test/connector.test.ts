@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ScriptedServer } from "../../kit/test/scripted-server.js";
+import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
@@ -108,7 +108,7 @@ describe("the template, run as a process", () => {
 
   it("archives an item the vendor deleted", async () => {
     items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
-    await once();
+    expect((await once()).code).toBe(0);
     items = [
       {
         id: "1",
@@ -126,6 +126,9 @@ describe("the template, run as a process", () => {
     expect(code).toBe(1);
     expect(marfa.runs.at(-1)?.outcome).toBe("failed");
     expect(marfa.runs.at(-1)?.error).toContain("401");
+    // The output carries the failure, so the token's absence is not an
+    // empty stream's.
+    expect(output).toContain("answered 401");
     expect(output).not.toContain("wrong-token-value");
   });
 
@@ -134,10 +137,12 @@ describe("the template, run as a process", () => {
       { id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" },
       { id: "2", created: "2026-09-02T10:00:00.000Z" },
     ];
-    await once();
+    expect((await once()).code).toBe(0);
     expect(marfa.rows.map((row) => row.source_id)).toEqual(["acct:1"]);
     expect(marfa.runs.at(-1)?.summary).toContain("an item has no title");
-    await once();
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs).toHaveLength(2);
+    expect(marfa.runs.at(-1)?.summary).toContain("unchanged 1");
     expect(marfa.runs.at(-1)?.summary).not.toContain("no title");
   });
 
@@ -146,5 +151,7 @@ describe("the template, run as a process", () => {
     expect(code).toBe(2);
     expect(output).toContain("EXAMPLE_URL");
     expect(marfa.requests).toEqual([]);
+    expect((await once()).code).toBe(0);
+    expect(marfa.requests.length).toBeGreaterThan(0);
   });
 });

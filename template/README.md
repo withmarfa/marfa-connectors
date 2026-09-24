@@ -1,6 +1,6 @@
 # A new connector
 
-A connector is one file, `src/main.ts`: what the connector is, and what one run reads from its vendor. The kit, `@withmarfa/connector`, does the rest:
+A connector is one file, `src/main.ts`, beside the type it writes: what the connector is, and what one run reads from its vendor. The kit, `@withmarfa/connector`, does the rest:
 
 - registers the connector on every start;
 - checks its type against the instance's;
@@ -9,15 +9,17 @@ A connector is one file, `src/main.ts`: what the connector is, and what one run 
 
 ## Start one
 
-1. Copy this folder to `connectors/<name>/` and set `name` in its `package.json` to `<name>`.
-2. In `src/main.ts`, name the connector, its source and its type, declare the environment it needs, and write `run`.
-3. `pnpm install && pnpm build`.
+1. `cp -R template/connector connectors/<name>`, and set `name` in its `package.json` to `<name>`. The folder sits at a connector's depth, so its paths hold once copied.
+2. Add `{ "path": "connectors/<name>" }` to the references in the root `tsconfig.json`. Until it is there, the tree test fails `pnpm test`, since the build would skip the connector.
+3. Replace `src/example.item.json` with the type the connector writes, and in `src/main.ts` name the connector, its source and that type, declare the environment it needs, and write `run`.
+4. `test/connector.test.ts` runs the example as a process against a scripted server and a stub vendor. Rewrite it for yours.
+5. `pnpm install && pnpm build && pnpm test`.
 
 What a run has to hand:
 
 - **`upsert(entries)`**: each entry is a `source_id`, its properties and its `occurred_at`. Put the vendor account inside the `source_id`, as `<account>:<id>`, so two accounts under one source never share a row. A property that is absent or `null` is cleared from the row.
 - **`archive(sourceIds)`**: for what the vendor deleted. A row is archived, never trashed, and a row a person trashed is never touched.
-- **`state.get` and `state.set`**: a small value kept between runs, such as a sync token. It is kept only when every write in the run landed. The file is safe to lose: losing it costs a full read and never a duplicate.
+- **`state.get` and `state.set`**: a small value kept between runs, such as a sync token. It is kept only when every write in the run landed, in a file in `MARFA_STATE_DIR` named for the key's own source, so two accounts' connectors can share the directory. The file is safe to lose: losing it costs a full read and never a duplicate.
 - **`log.condition(key, message)`**: something that lasts across runs, such as a vendor refusing the token. It is reported on the first run it appears.
 - **`signal`**: hand it to `fetch`, so a stop is prompt.
 - **`env`**: the values the connector declared. A `secret` or `required` value that is missing stops the start, and a secret never reaches a log line or a report.
@@ -43,7 +45,7 @@ marfa keys create --label <name> --source <name> --type-permission <type>=write 
 marfa keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --default-tier feed
 ```
 
-Granting a claim takes a credential that holds that source itself, such as the operator key.
+Mint it with the operator key. A working key can pass on only the sources it writes under itself, its own and its claims, so even one holding every permission is refused `<name>`; the operator key is exempt, which is how a claim starts. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state file.
 
 ## Run it
 

@@ -2,7 +2,7 @@
   "files": [],
   "references": [
     { "path": "kit" },
-    { "path": "template" },
+    { "path": "template/connector" },
     { "path": "scripts" }
   ]
 }
