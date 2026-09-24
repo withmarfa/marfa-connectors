@@ -7,7 +7,7 @@ The connectors for Marfa: a small kit that makes a connector a page of code, a t
 - `kit/`: the package `@withmarfa/connector`, the only thing here that is imported.
 - `template/`: what a new connector starts from.
 - `connectors/<name>/`: one folder per connector, run and never published.
-- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness, and tests holding the tree to three of the rules below: no version, no personal detail, every workflow on the pool.
+- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness, and tests that refuse a version in a manifest or a file holding one, a home directory, machine name or personal address, tracked build output, and a workflow job off the pool.
 
 ## Commands
 

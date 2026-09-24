@@ -11,9 +11,10 @@ const run = promisify(execFile);
 export const monorepo = resolve(import.meta.dirname, "../../../vendor/marfa");
 
 /**
- * Read by the boot script as choices a caller makes on purpose. One
- * inherited from the shell would pin the port or reuse an instance, which
- * two proofs on one machine must not share.
+ * Read by the boot script as choices a caller makes on purpose: a port, an
+ * instance to reuse, the auth secret and the key salt. One inherited from
+ * the shell would have two proofs on one machine share a port or an
+ * instance, or boot this one with a secret nobody chose for it.
  */
 const bootChoices = [
   "PORT",
@@ -91,7 +92,9 @@ export class ProofServer {
 
   private async down(): Promise<void> {
     if (this.dir === undefined) return;
-    // A failed boot has already stopped its own server and removed the file.
+    // The file names the server's process from the moment the boot starts
+    // it, and server-down refuses a file that is not there, which is the
+    // case when the boot never got that far or cleaned up after itself.
     if (existsSync(this.envFile())) {
       try {
         await run(

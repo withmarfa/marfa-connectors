@@ -1,29 +1,44 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
 import { check, interrupt } from "./check.js";
 import { ProofServer, type Booted } from "./server.js";
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
+let stopping = false;
 
-// Armed before the boot: a signal during it waits for the boot to settle,
-// so the server it started is the one stopped.
+// Armed before the boot, and kept armed: a signal during the boot waits for
+// it to settle, so the server it started is the one stopped, and a second
+// signal while that happens must not end the process with the server up.
 const onSignal = (signal: NodeJS.Signals): void => {
   interrupt();
+  if (stopping) return;
+  stopping = true;
   console.log(`stopping on ${signal}`);
   void booting
     .catch(() => undefined)
     .then(() => server.stop())
     .finally(() => process.exit(1));
 };
-process.once("SIGINT", onSignal);
-process.once("SIGTERM", onSignal);
+process.on("SIGINT", onSignal);
+process.on("SIGTERM", onSignal);
 
 try {
+  const pin = (
+    await readFile(
+      resolve(import.meta.dirname, "../../monorepo.commit"),
+      "utf8",
+    )
+  ).trim();
   let booted: Booted | undefined;
   await check("the pinned server boots", async () => {
     const boot = server.boot();
     booting = boot;
     booted = await boot;
+    if (booted.commit !== pin) {
+      throw new Error(`the checkout is at ${booted.commit}, the pin is ${pin}`);
+    }
     return `monorepo ${booted.commit}, ${booted.url}`;
   });
   if (booted === undefined) throw new Error("the boot answered nothing");

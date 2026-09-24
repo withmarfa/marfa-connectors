@@ -1,6 +1,6 @@
 let signalled = false;
 
-/** Marks the proof as told to stop, so what that interrupts is not reported as a failure. */
+/** Marks the proof as told to stop, so what that interrupts is not reported. */
 export function interrupt(): void {
   signalled = true;
 }
@@ -8,13 +8,14 @@ export function interrupt(): void {
 /**
  * One statement of the proof: printed with what it observed when it holds,
  * and thrown when it does not, because every later statement stands on the
- * ones before it.
+ * ones before it. Once the proof is told to stop, no statement is reported
+ * either way.
  */
 export async function check(
   statement: string,
   observe: () => Promise<string>,
 ): Promise<void> {
-  if (signalled) throw new Error("stopped before this statement");
+  if (interrupted()) throw new Error("stopped before this statement");
   let observed: string;
   try {
     observed = await observe();
@@ -25,6 +26,7 @@ export async function check(
     }
     throw error;
   }
+  if (interrupted()) throw new Error("stopped during this statement");
   console.log(`ok   ${statement}: ${observed}`);
 }
 

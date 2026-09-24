@@ -7,3 +7,8 @@ packages:
 # version. A catalog would read better and refuses the `file:` protocol.
 overrides:
   "@withmarfa/client": "file:vendor/withmarfa-client.tar"
+
+# An install that trusts node_modules because the lockfile looks unchanged
+# keeps a client installed from other bytes, after a pin moves back or a
+# branch changes it.
+optimisticRepeatInstall: false
