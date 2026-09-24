@@ -2,8 +2,8 @@ packages:
   - "scripts"
 
 # Every package names the client as `*` and this line says where it comes
-# from: a tarball scripts/vendor-client.sh packs from the pinned monorepo
-# commit, until the client is on the registry and this line names its
-# version. A catalog would read better and refuses the `file:` protocol.
+# from: what scripts/vendor-client.sh packs from the pinned monorepo commit,
+# until the client is on the registry and this line names its version. A
+# catalog would read better and refuses the `file:` protocol.
 overrides:
-  "@withmarfa/client": "file:vendor/withmarfa-client.tgz"
+  "@withmarfa/client": "file:vendor/withmarfa-client"

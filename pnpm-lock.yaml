@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@withmarfa/client': file:vendor/withmarfa-client.tgz
+  '@withmarfa/client': file:vendor/withmarfa-client
 
 importers:
 
@@ -36,8 +36,8 @@ importers:
   scripts:
     dependencies:
       '@withmarfa/client':
-        specifier: file:../vendor/withmarfa-client.tgz
-        version: file:vendor/withmarfa-client.tgz
+        specifier: file:../vendor/withmarfa-client
+        version: file:vendor/withmarfa-client
 
 packages:
 
@@ -318,9 +318,8 @@ packages:
   '@vitest/spy@5.0.1':
     resolution: {integrity: sha512-rbto/mF/SGERxEgYOek7Xm6B9b+y+mVoo+f4b2LymYO8zM1b7uB5nHuhVMTP2hxdzgxvGiZYGxGIaMvL5y180Q==}
 
-  '@withmarfa/client@file:vendor/withmarfa-client.tgz':
-    resolution: {integrity: sha512-FYeRd/Msgug42qTbrePSRKJXr3dhPmKQhNkDRorkYuAxok6bgvK7T05gjM0Hgnstd/9q9O1p3pGkMKuz7a9+XA==, tarball: file:vendor/withmarfa-client.tgz}
-    version: 0.0.0
+  '@withmarfa/client@file:vendor/withmarfa-client':
+    resolution: {directory: vendor/withmarfa-client, type: directory}
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
@@ -1092,7 +1091,7 @@ snapshots:
 
   '@vitest/spy@5.0.1': {}
 
-  '@withmarfa/client@file:vendor/withmarfa-client.tgz':
+  '@withmarfa/client@file:vendor/withmarfa-client':
     dependencies:
       openapi-fetch: 0.17.0
 

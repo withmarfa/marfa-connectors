@@ -62,7 +62,6 @@ describe("the tree", () => {
     expect(personalDetail(`mail ${someAddress}`)).toBe(someAddress);
     expect(personalDetail("me@example.com and /usr/local/bin")).toBeUndefined();
     const found = treeFiles()
-      .filter((path) => !path.endsWith(".tgz"))
       .map((path) => ({
         path,
         detail: personalDetail(readFileSync(resolve(root, path), "utf8")),
