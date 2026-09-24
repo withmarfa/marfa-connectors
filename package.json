@@ -1,0 +1,29 @@
+{
+  "name": "marfa-connectors",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.0.9",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "proof": "node scripts/dist/proof/main.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.4",
+    "eslint": "^10.11.0",
+    "prettier": "^3.9.9",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1",
+    "yaml": "^2.9.1"
+  }
+}

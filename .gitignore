@@ -1,6 +1,7 @@
 node_modules/
 dist/
 vendor/
+.claude/
 _trash/
 _archive/
 .env
