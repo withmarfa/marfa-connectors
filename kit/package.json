@@ -1,0 +1,14 @@
+{
+  "name": "@withmarfa/connector",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@withmarfa/client": "*"
+  }
+}
