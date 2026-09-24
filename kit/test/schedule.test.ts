@@ -135,7 +135,9 @@ describe("--every", () => {
     earlier.token = "t-old";
     await harness.once(earlier);
 
-    const held = vendor([{ source_id: "a:1", properties: { title: "One, changed" } }]);
+    const held = vendor([
+      { source_id: "a:1", properties: { title: "One, changed" } },
+    ]);
     held.token = "t-new";
     const release = gate(held);
     const exit = every(held, "15m");
@@ -148,7 +150,9 @@ describe("--every", () => {
     expect(run.outcome).toBe("failed");
     expect(run.error).toContain("stopped");
     expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t-old" } });
+    expect(await harness.stateFile()).toMatchObject({
+      state: { token: "t-old" },
+    });
   });
 });
 

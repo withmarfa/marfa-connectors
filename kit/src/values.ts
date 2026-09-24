@@ -20,7 +20,12 @@ export function same(a: unknown, b: unknown): boolean {
       a.every((value, index) => same(value, b[index]))
     );
   }
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
+  if (
+    typeof a !== "object" ||
+    typeof b !== "object" ||
+    a === null ||
+    b === null
+  ) {
     return false;
   }
   const left = Object.entries(a).filter(([, value]) => value !== undefined);

@@ -1,11 +1,20 @@
 import { createClient } from "@withmarfa/client";
 import type { Connector, EnvDeclaration } from "./define.js";
-import { checkDefinition, ConfigurationError, readEnvironment } from "./environment.js";
+import {
+  checkDefinition,
+  ConfigurationError,
+  readEnvironment,
+} from "./environment.js";
 import { cap, Logger } from "./log.js";
 import { Marfa, Refusal } from "./marfa.js";
 import { describe, runOnce, type RunSetup } from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
-import { backoff, describeDuration, readSchedule, type Schedule } from "./schedule.js";
+import {
+  backoff,
+  describeDuration,
+  readSchedule,
+  type Schedule,
+} from "./schedule.js";
 import { StateFile } from "./state.js";
 import { typeDifferences } from "./type-check.js";
 
@@ -14,7 +23,10 @@ const heartbeatMs = 60_000;
 /** Worth another attempt: the server was unreachable, overloaded or failing. */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
-    return error.status !== undefined && (error.status >= 500 || error.status === 429);
+    return (
+      error.status !== undefined &&
+      (error.status >= 500 || error.status === 429)
+    );
   }
   return error instanceof TypeError;
 }
@@ -30,7 +42,10 @@ async function registerAndCheck<E extends EnvDeclaration>(
       await marfa.registerType(connector.type);
     } catch (error) {
       if (transient(error)) throw error;
-      return { id, problem: `the type ${connector.type.id} could not be registered: ${describe(error)}` };
+      return {
+        id,
+        problem: `the type ${connector.type.id} could not be registered: ${describe(error)}`,
+      };
     }
     return { id, problem: undefined };
   }
@@ -75,7 +90,9 @@ export async function start<E extends EnvDeclaration>(
     logger.info("asked to stop");
     stop.abort();
   });
-  const marfa = new Marfa(createClient({ baseUrl: environment.url, credential: environment.key }));
+  const marfa = new Marfa(
+    createClient({ baseUrl: environment.url, credential: environment.key }),
+  );
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
   let started: { id: string; problem: string | undefined } | undefined;
@@ -88,7 +105,9 @@ export async function start<E extends EnvDeclaration>(
         return 1;
       }
       const wait = backoff(intervalMs, failures);
-      logger.warn(`could not reach the server, trying again in ${describeDuration(wait)}: ${describe(error)}`);
+      logger.warn(
+        `could not reach the server, trying again in ${describeDuration(wait)}: ${describe(error)}`,
+      );
       await clock.sleep(wait, stop.signal);
       if (stopped()) return 0;
     }
@@ -150,7 +169,8 @@ export async function start<E extends EnvDeclaration>(
         failures = (await runOnce(setup)) ? 0 : failures + 1;
         if (stopped()) break;
         const wait = backoff(schedule.intervalMs, failures);
-        if (failures > 0) logger.info(`the next run is in ${describeDuration(wait)}`);
+        if (failures > 0)
+          logger.info(`the next run is in ${describeDuration(wait)}`);
         await clock.sleep(wait, stop.signal);
       }
     }

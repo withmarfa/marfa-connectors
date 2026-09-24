@@ -17,9 +17,13 @@ describe("a run's report", () => {
     await harness.once(vendor([one, two]));
     const run = harness.lastRun();
     expect(run.outcome).toBe("succeeded");
-    expect(run.summary).toBe("created 2, updated 0, archived 0, unchanged 0, skipped 0");
+    expect(run.summary).toBe(
+      "created 2, updated 0, archived 0, unchanged 0, skipped 0",
+    );
     expect(run.error).toBeUndefined();
-    expect(Date.parse(run.finished_at)).toBeGreaterThanOrEqual(Date.parse(run.started_at));
+    expect(Date.parse(run.finished_at)).toBeGreaterThanOrEqual(
+      Date.parse(run.started_at),
+    );
   });
 
   it("carries a failure's text, capped to what the server takes", async () => {
@@ -30,7 +34,9 @@ describe("a run's report", () => {
     expect(run.outcome).toBe("failed");
     expect(run.error).toMatch(/^the vendor answered: x+/);
     expect(run.error?.length).toBeLessThanOrEqual(2000);
-    expect(run.summary).toBe("created 0, updated 0, archived 0, unchanged 0, skipped 0");
+    expect(run.summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 0, skipped 0",
+    );
   });
 
   it("is reported once per run, and a run is never retried inside itself", async () => {
@@ -50,18 +56,24 @@ describe("a condition", () => {
     expect(harness.lastRun().summary).toBe(
       "created 1, updated 0, archived 0, unchanged 0, skipped 0. the feed x answers 410",
     );
-    const warned = harness.lines.filter((line) => line.includes("the feed x answers 410"));
+    const warned = harness.lines.filter((line) =>
+      line.includes("the feed x answers 410"),
+    );
     expect(warned).toHaveLength(1);
 
     await harness.once(held);
     expect(harness.lastRun().summary).toBe(
       "created 0, updated 0, archived 0, unchanged 1, skipped 0",
     );
-    expect(harness.lines.filter((line) => line.includes("the feed x answers 410"))).toHaveLength(1);
+    expect(
+      harness.lines.filter((line) => line.includes("the feed x answers 410")),
+    ).toHaveLength(1);
 
     held.conditions = [];
     await harness.once(held);
-    expect(harness.lines.filter((line) => line.includes("cleared"))).toHaveLength(1);
+    expect(
+      harness.lines.filter((line) => line.includes("cleared")),
+    ).toHaveLength(1);
 
     held.conditions = [["feed-gone:x", "the feed x answers 410"]];
     await harness.once(held);
@@ -83,16 +95,26 @@ describe("secrets", () => {
   it("never reach a log line, a summary or an error", async () => {
     const leaky = vendor([one]);
     leaky.logs = [`calling the vendor with ${secretToken}`];
-    leaky.conditions = [["token", `the token ${secretToken} is about to expire`]];
-    leaky.fail = new Error(`401 for Bearer ${secretToken} and key ${harness.server.key}`);
+    leaky.conditions = [
+      ["token", `the token ${secretToken} is about to expire`],
+    ];
+    leaky.fail = new Error(
+      `401 for Bearer ${secretToken} and key ${harness.server.key}`,
+    );
     await harness.once(leaky);
 
-    const reported = harness.server.runs.map((run) => `${run.summary ?? ""} ${run.error ?? ""}`);
+    const reported = harness.server.runs.map(
+      (run) => `${run.summary ?? ""} ${run.error ?? ""}`,
+    );
     for (const text of [...harness.lines, ...reported]) {
       expect(text).not.toContain(secretToken);
       expect(text).not.toContain(harness.server.key);
     }
-    expect(harness.lines.join("\n")).toContain("calling the vendor with [redacted]");
-    expect(harness.lastRun().error).toContain("401 for Bearer [redacted] and key [redacted]");
+    expect(harness.lines.join("\n")).toContain(
+      "calling the vendor with [redacted]",
+    );
+    expect(harness.lastRun().error).toContain(
+      "401 for Bearer [redacted] and key [redacted]",
+    );
   });
 });

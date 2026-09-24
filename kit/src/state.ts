@@ -39,17 +39,24 @@ export class StateFile {
       text = await readFile(this.path, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty();
-      this.logger.warn(`the state file could not be read, so this run starts from nothing: ${String(error)}`);
+      this.logger.warn(
+        `the state file could not be read, so this run starts from nothing: ${String(error)}`,
+      );
       return empty();
     }
     try {
       const parsed: unknown = JSON.parse(text);
-      if (isRecord(parsed) && isRecord(parsed["state"]) && isRecord(parsed["conditions"])) {
+      if (
+        isRecord(parsed) &&
+        isRecord(parsed["state"]) &&
+        isRecord(parsed["conditions"])
+      ) {
         return {
           state: parsed["state"],
           conditions: Object.fromEntries(
             Object.entries(parsed["conditions"]).filter(
-              (entry): entry is [string, string] => typeof entry[1] === "string",
+              (entry): entry is [string, string] =>
+                typeof entry[1] === "string",
             ),
           ),
         };
@@ -57,7 +64,9 @@ export class StateFile {
     } catch {
       // Reported below with the shape problem, as one condition.
     }
-    this.logger.warn("the state file is not one this kit wrote, so this run starts from nothing");
+    this.logger.warn(
+      "the state file is not one this kit wrote, so this run starts from nothing",
+    );
     return empty();
   }
 

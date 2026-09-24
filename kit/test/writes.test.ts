@@ -19,7 +19,9 @@ const one = {
 const two = { source_id: "a:2", properties: { title: "Two" } };
 
 function patches() {
-  return harness.server.requests.filter((request) => request.method === "PATCH");
+  return harness.server.requests.filter(
+    (request) => request.method === "PATCH",
+  );
 }
 function bulks() {
   return harness.server.requestsTo("POST", "/items/bulk");
@@ -51,7 +53,9 @@ describe("new rows", () => {
       ],
       atomic: false,
     });
-    expect(harness.server.rows.map((row) => [row.source_id, row.version, row.tier])).toEqual([
+    expect(
+      harness.server.rows.map((row) => [row.source_id, row.version, row.tier]),
+    ).toEqual([
       ["a:1", 1, "feed"],
       ["a:2", 1, "feed"],
     ]);
@@ -69,7 +73,9 @@ describe("new rows", () => {
     const again = { ...one, properties: { title: "One, later" } };
     expect(await harness.once(vendor([one, two, again]))).toBe(0);
     expect(harness.server.rows).toHaveLength(2);
-    expect(harness.server.row("a:1").properties).toEqual({ title: "One, later" });
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, later",
+    });
   });
 });
 
@@ -101,7 +107,10 @@ describe("compare first", () => {
 
   it("updates a changed row alone, with the version it read, replacing its properties", async () => {
     await harness.once(vendor([one, two]));
-    const changed = { ...one, properties: { title: "One, renamed", note: "first" } };
+    const changed = {
+      ...one,
+      properties: { title: "One, renamed", note: "first" },
+    };
     await harness.once(vendor([changed, two]));
 
     expect(patches()).toHaveLength(1);
@@ -122,9 +131,14 @@ describe("compare first", () => {
 
   it("clears a property the vendor no longer has, whether absent or null", async () => {
     await harness.once(vendor([one]));
-    expect(harness.server.row("a:1").properties).toHaveProperty("note", "first");
+    expect(harness.server.row("a:1").properties).toHaveProperty(
+      "note",
+      "first",
+    );
 
-    await harness.once(vendor([{ ...one, properties: { title: "One", note: null } }]));
+    await harness.once(
+      vendor([{ ...one, properties: { title: "One", note: null } }]),
+    );
     expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
     expect(harness.server.row("a:1").version).toBe(2);
 
@@ -134,8 +148,12 @@ describe("compare first", () => {
 
   it("moves a row whose own time changed", async () => {
     await harness.once(vendor([one]));
-    await harness.once(vendor([{ ...one, occurred_at: "2026-09-02T10:00:00.000Z" }]));
-    expect(harness.server.row("a:1").occurred_at).toBe("2026-09-02T10:00:00.000Z");
+    await harness.once(
+      vendor([{ ...one, occurred_at: "2026-09-02T10:00:00.000Z" }]),
+    );
+    expect(harness.server.row("a:1").occurred_at).toBe(
+      "2026-09-02T10:00:00.000Z",
+    );
     expect(harness.server.row("a:1").version).toBe(2);
   });
 });
@@ -150,8 +168,13 @@ describe("a trashed row", () => {
       { ...two, properties: { title: "Two, changed" } },
     ];
     await harness.once(vendor(changed));
-    expect(harness.server.row("a:2").properties).toEqual({ title: "Two, changed" });
-    expect(harness.server.row("a:1").properties).toEqual({ title: "One", note: "first" });
+    expect(harness.server.row("a:2").properties).toEqual({
+      title: "Two, changed",
+    });
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      note: "first",
+    });
     expect(harness.server.row("a:1").state).toBe("trashed");
     expect(harness.server.row("a:1").version).toBe(1);
     expect(harness.lastRun().summary).toBe(
@@ -183,15 +206,24 @@ describe("archive", () => {
     );
 
     await harness.once(held);
-    expect(harness.server.requestsTo("POST", `/items/${harness.server.row("a:1").id}/transition`)).toHaveLength(1);
+    expect(
+      harness.server.requestsTo(
+        "POST",
+        `/items/${harness.server.row("a:1").id}/transition`,
+      ),
+    ).toHaveLength(1);
   });
 
   it("updates an archived row's properties and never makes it active again", async () => {
     await harness.once(vendor([one]));
     harness.server.row("a:1").state = "archived";
-    await harness.once(vendor([{ ...one, properties: { title: "One, again" } }]));
+    await harness.once(
+      vendor([{ ...one, properties: { title: "One, again" } }]),
+    );
     expect(harness.server.row("a:1").state).toBe("archived");
-    expect(harness.server.row("a:1").properties).toEqual({ title: "One, again" });
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, again",
+    });
   });
 });
 
@@ -210,7 +242,11 @@ describe("the state", () => {
 
     harness.server.afterList = () => {
       harness.server.touch("a:1", { note: "by another writer" });
-      harness.server.insert("a:3", { title: "Three, by another writer" }, "test.entry");
+      harness.server.insert(
+        "a:3",
+        { title: "Three, by another writer" },
+        "test.entry",
+      );
       harness.server.afterList = undefined;
     };
     held.token = "t2";
@@ -223,10 +259,14 @@ describe("the state", () => {
 
     const run = harness.lastRun();
     expect(run.outcome).toBe("succeeded");
-    expect(run.summary).toMatch(/^created 0, updated 0, archived 0, unchanged 1, skipped 2\./);
+    expect(run.summary).toMatch(
+      /^created 0, updated 0, archived 0, unchanged 1, skipped 2\./,
+    );
     expect(run.summary).toContain("held");
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
-    expect(harness.server.rows.filter((row) => row.source_id === "a:3")).toHaveLength(1);
+    expect(
+      harness.server.rows.filter((row) => row.source_id === "a:3"),
+    ).toHaveLength(1);
 
     expect(await harness.once(held)).toBe(0);
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t2" } });
@@ -295,8 +335,14 @@ describe("a row the server refuses", () => {
 
   it("fails the run on a server fault", async () => {
     await harness.once(vendor([one]));
-    harness.server.refuseNext(`PATCH /items/${harness.server.row("a:1").id}`, 500, "internal");
-    expect(await harness.once(vendor([{ ...one, properties: { title: "x" } }]))).toBe(1);
+    harness.server.refuseNext(
+      `PATCH /items/${harness.server.row("a:1").id}`,
+      500,
+      "internal",
+    );
+    expect(
+      await harness.once(vendor([{ ...one, properties: { title: "x" } }])),
+    ).toBe(1);
     expect(harness.lastRun().error).toContain("500");
   });
 });

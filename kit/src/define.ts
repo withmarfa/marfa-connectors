@@ -16,7 +16,9 @@ export type EnvKind = "secret" | "required" | "optional";
 export type EnvDeclaration = Readonly<Record<string, EnvKind>>;
 
 export type EnvValues<E extends EnvDeclaration> = {
-  readonly [K in keyof E]: E[K] extends "optional" ? string | undefined : string;
+  readonly [K in keyof E]: E[K] extends "optional"
+    ? string | undefined
+    : string;
 };
 
 /** One row as the vendor has it, before it is compared with the server's. */
@@ -68,8 +70,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   run(context: RunContext<E>): Promise<void>;
 }
 
-export function defineConnector<const E extends EnvDeclaration = EnvDeclaration>(
-  connector: Connector<E>,
-): Connector<E> {
+export function defineConnector<
+  const E extends EnvDeclaration = EnvDeclaration,
+>(connector: Connector<E>): Connector<E> {
   return connector;
 }

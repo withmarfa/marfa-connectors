@@ -33,7 +33,11 @@ const raced = new Set([
 ]);
 
 /** The row itself is what the server refused, not the key or the request. */
-const refusedRow = new Set(["invalid_properties", "validation_error", "missing_required_field"]);
+const refusedRow = new Set([
+  "invalid_properties",
+  "validation_error",
+  "missing_required_field",
+]);
 
 /** Big enough that a first read is a handful of requests, small enough to stay well under the door's cap. */
 const createPage = 500;
@@ -45,7 +49,13 @@ const createPage = 500;
  * the vendor.
  */
 export class Rows {
-  readonly counts: Counts = { created: 0, updated: 0, archived: 0, unchanged: 0, skipped: 0 };
+  readonly counts: Counts = {
+    created: 0,
+    updated: 0,
+    archived: 0,
+    unchanged: 0,
+    skipped: 0,
+  };
   /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
   private rows: Map<string, Row> | undefined;
@@ -70,7 +80,9 @@ export class Rows {
         creates.push({
           source_id: entry.source_id,
           properties,
-          ...(entry.occurred_at !== undefined && { occurred_at: entry.occurred_at }),
+          ...(entry.occurred_at !== undefined && {
+            occurred_at: entry.occurred_at,
+          }),
         });
         continue;
       }
@@ -79,14 +91,20 @@ export class Rows {
         continue;
       }
       const timeUnchanged =
-        entry.occurred_at === undefined || sameInstant(row.occurred_at, entry.occurred_at);
+        entry.occurred_at === undefined ||
+        sameInstant(row.occurred_at, entry.occurred_at);
       if (same(row.properties, properties) && timeUnchanged) {
         this.counts.unchanged += 1;
         continue;
       }
       this.checkStopped();
       try {
-        const item = await this.marfa.update(row.id, row.version, properties, entry.occurred_at);
+        const item = await this.marfa.update(
+          row.id,
+          row.version,
+          properties,
+          entry.occurred_at,
+        );
         rows.set(entry.source_id, {
           id: item.id,
           properties: item.properties,
@@ -152,7 +170,11 @@ export class Rows {
     return rows;
   }
 
-  private settle(result: BulkResult, created: NewRow, rows: Map<string, Row>): void {
+  private settle(
+    result: BulkResult,
+    created: NewRow,
+    rows: Map<string, Row>,
+  ): void {
     if (result.outcome === "created" && result.id !== undefined) {
       rows.set(created.source_id, {
         id: result.id,
@@ -188,7 +210,10 @@ export class Rows {
    * other ends the run, since it would refuse every row after it too.
    */
   private absorb(error: unknown, sourceId: string): void {
-    if (error instanceof Refusal && (raced.has(error.code) || refusedRow.has(error.code))) {
+    if (
+      error instanceof Refusal &&
+      (raced.has(error.code) || refusedRow.has(error.code))
+    ) {
       this.counts.skipped += 1;
       this.held += 1;
       if (refusedRow.has(error.code)) {

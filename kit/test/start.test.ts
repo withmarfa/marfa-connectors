@@ -48,8 +48,15 @@ describe("configuration", () => {
   });
 
   it("refuses a schedule it cannot read", async () => {
-    for (const argv of [[], ["--every"], ["--every", "soon"], ["--once", "--every", "1m"]]) {
-      expect(await start(testConnector(vendor()), harness.runtime(argv))).toBe(2);
+    for (const argv of [
+      [],
+      ["--every"],
+      ["--every", "soon"],
+      ["--once", "--every", "1m"],
+    ]) {
+      expect(await start(testConnector(vendor()), harness.runtime(argv))).toBe(
+        2,
+      );
     }
     expect(harness.server.requests).toEqual([]);
   });
@@ -105,7 +112,11 @@ describe("the type check on start", () => {
     harness.server.types.set("test.entry", {
       id: "test.entry",
       required: ["title"],
-      fields: { title: { type: "string" }, note: { type: "string" }, link: { type: "url" } },
+      fields: {
+        title: { type: "string" },
+        note: { type: "string" },
+        link: { type: "url" },
+      },
     });
     expect(await harness.once(vendor([entry]))).toBe(0);
     expect(harness.server.rows).toHaveLength(1);
@@ -126,17 +137,30 @@ describe("the type check on start", () => {
 
     const run = harness.lastRun();
     expect(run.outcome).toBe("failed");
-    for (const difference of ['"note"', '"link"', '"extra"', '"title"', "compatible_with"]) {
+    for (const difference of [
+      '"note"',
+      '"link"',
+      '"extra"',
+      '"title"',
+      "compatible_with",
+    ]) {
       expect(run.error).toContain(difference);
     }
     expect(harness.server.rows).toEqual([]);
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
-    expect(harness.server.requests.some((request) => request.method === "PUT")).toBe(false);
+    expect(
+      harness.server.requests.some((request) => request.method === "PUT"),
+    ).toBe(false);
     expect(harness.server.types.get("test.entry")).toBe(served);
   });
 
   it("stops when the key may not register the type, saying what it lacks", async () => {
-    harness.server.refuseNext("POST /types", 403, "forbidden", "Missing metadata.types:write");
+    harness.server.refuseNext(
+      "POST /types",
+      403,
+      "forbidden",
+      "Missing metadata.types:write",
+    );
     expect(await harness.once(vendor([entry]))).toBe(1);
     expect(harness.lastRun().outcome).toBe("failed");
     expect(harness.lastRun().error).toContain("metadata.types:write");

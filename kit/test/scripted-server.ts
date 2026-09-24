@@ -1,4 +1,8 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { CONTRACT_VERSION } from "@withmarfa/client";
 
@@ -90,7 +94,12 @@ export class ScriptedServer {
   }
 
   /** The next request to `route` is answered with this refusal. */
-  refuseNext(route: string, status: number, code: string, message = code): void {
+  refuseNext(
+    route: string,
+    status: number,
+    code: string,
+    message = code,
+  ): void {
     const queue = this.refusals.get(route) ?? [];
     queue.push({ status, code, message });
     this.refusals.set(route, queue);
@@ -111,8 +120,19 @@ export class ScriptedServer {
   }
 
   /** A row created by another process holding the same key. */
-  insert(sourceId: string, properties: Record<string, unknown>, type: string): Row {
-    const row = this.newRow(type, this.source, sourceId, properties, undefined, "feed");
+  insert(
+    sourceId: string,
+    properties: Record<string, unknown>,
+    type: string,
+  ): Row {
+    const row = this.newRow(
+      type,
+      this.source,
+      sourceId,
+      properties,
+      undefined,
+      "feed",
+    );
     this.rows.push(row);
     return row;
   }
@@ -153,14 +173,22 @@ export class ScriptedServer {
     };
   }
 
-  private async answer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async answer(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
     const url = new URL(req.url ?? "/", this.url);
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const text = Buffer.concat(chunks).toString("utf8");
     const body: unknown = text === "" ? undefined : JSON.parse(text);
     const method = req.method ?? "GET";
-    this.requests.push({ method, path: url.pathname, query: url.searchParams, body });
+    this.requests.push({
+      method,
+      path: url.pathname,
+      query: url.searchParams,
+      body,
+    });
 
     const send = (status: number, payload: unknown): void => {
       res.writeHead(status, {
@@ -203,7 +231,11 @@ export class ScriptedServer {
       });
       return;
     }
-    if (method === "POST" && parts[0] === "connectors" && parts[2] === "heartbeat") {
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "heartbeat"
+    ) {
       this.heartbeats += 1;
       send(200, { last_heartbeat_at: this.now() });
       return;
@@ -213,11 +245,19 @@ export class ScriptedServer {
       const long = (value: unknown): boolean =>
         typeof value === "string" && value.length > 2000;
       if (long(run.summary) || long(run.error)) {
-        refuse(400, "validation_error", "summary or error over 2000 characters");
+        refuse(
+          400,
+          "validation_error",
+          "summary or error over 2000 characters",
+        );
         return;
       }
       this.runs.push(run);
-      send(201, { ...run, id: `run-${String(this.runs.length)}`, reported_at: this.now() });
+      send(201, {
+        ...run,
+        id: `run-${String(this.runs.length)}`,
+        reported_at: this.now(),
+      });
       return;
     }
     if (method === "GET" && parts[0] === "types" && parts[1] !== undefined) {
@@ -252,7 +292,11 @@ export class ScriptedServer {
       this.update(parts[1], input, send, refuse);
       return;
     }
-    if (method === "POST" && parts[0] === "items" && parts[2] === "transition") {
+    if (
+      method === "POST" &&
+      parts[0] === "items" &&
+      parts[2] === "transition"
+    ) {
       const row = this.rows.find((candidate) => candidate.id === parts[1]);
       if (row === undefined) {
         refuse(404, "item_not_found");
@@ -266,7 +310,10 @@ export class ScriptedServer {
       row.state = state;
       row.version += 1;
       row.updated_at = this.now();
-      send(200, { item: row, metadata: { item_id: row.id, tags: [], extensions: {} } });
+      send(200, {
+        item: row,
+        metadata: { item_id: row.id, tags: [], extensions: {} },
+      });
       return;
     }
     refuse(404, "not_found", `no scripted door for ${route}`);
@@ -294,23 +341,36 @@ export class ScriptedServer {
     const entries = input["items"] as Record<string, unknown>[];
     const results = entries.map((entry, index) => {
       const sourceId = String(entry["source_id"]);
-      const source = typeof entry["source"] === "string" ? entry["source"] : this.source;
+      const source =
+        typeof entry["source"] === "string" ? entry["source"] : this.source;
       const refusal = this.entryRefusals.get(sourceId);
       if (refusal !== undefined) {
-        return { index, outcome: "errored", error: { code: refusal.code, message: refusal.message } };
+        return {
+          index,
+          outcome: "errored",
+          error: { code: refusal.code, message: refusal.message },
+        };
       }
       const existing = this.rows.find(
         (row) => row.source === source && row.source_id === sourceId,
       );
       if (existing?.state === "trashed") {
-        return { index, outcome: "skipped", id: existing.id, reason: "trashed" };
+        return {
+          index,
+          outcome: "skipped",
+          id: existing.id,
+          reason: "trashed",
+        };
       }
       if (existing !== undefined) {
         if (entry["version"] === 0) {
           return {
             index,
             outcome: "errored",
-            error: { code: "ancestor_unavailable", message: "no row was expected" },
+            error: {
+              code: "ancestor_unavailable",
+              message: "no row was expected",
+            },
           };
         }
         existing.properties = {
@@ -368,9 +428,13 @@ export class ScriptedServer {
       input["properties_mode"] === "replace"
         ? properties
         : { ...row.properties, ...properties };
-    if (typeof input["occurred_at"] === "string") row.occurred_at = input["occurred_at"];
+    if (typeof input["occurred_at"] === "string")
+      row.occurred_at = input["occurred_at"];
     row.version += 1;
     row.updated_at = this.now();
-    send(200, { item: { ...row }, metadata: { item_id: row.id, tags: [], extensions: {} } });
+    send(200, {
+      item: { ...row },
+      metadata: { item_id: row.id, tags: [], extensions: {} },
+    });
   }
 }

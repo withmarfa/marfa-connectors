@@ -1,4 +1,9 @@
-import type { Connector, EnvDeclaration, EnvValues, RunContext } from "./define.js";
+import type {
+  Connector,
+  EnvDeclaration,
+  EnvValues,
+  RunContext,
+} from "./define.js";
 import type { Environment } from "./environment.js";
 import { cap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
@@ -30,7 +35,9 @@ function tally(counts: Counts): string {
  * landed; its conditions are kept either way, so a condition is reported on
  * the run it first appears and not on the ones after.
  */
-export async function runOnce<E extends EnvDeclaration>(setup: RunSetup<E>): Promise<boolean> {
+export async function runOnce<E extends EnvDeclaration>(
+  setup: RunSetup<E>,
+): Promise<boolean> {
   const { connector, logger, clock } = setup;
   const stored = await setup.stateFile.load();
   const draft = structuredClone(stored.state);
@@ -40,7 +47,11 @@ export async function runOnce<E extends EnvDeclaration>(setup: RunSetup<E>): Pro
     connector.type.id,
     connector.source,
     setup.signal,
-    (sourceId, reason) => raised.set(`refused:${sourceId}`, `the server refused ${sourceId}: ${reason}`),
+    (sourceId, reason) =>
+      raised.set(
+        `refused:${sourceId}`,
+        `the server refused ${sourceId}: ${reason}`,
+      ),
   );
   const context: RunContext<E> = {
     env: setup.environment.values as EnvValues<E>,
@@ -94,7 +105,10 @@ export async function runOnce<E extends EnvDeclaration>(setup: RunSetup<E>): Pro
   }
   const landed = failure === undefined && rows.held === 0;
   try {
-    await setup.stateFile.save({ state: landed ? draft : stored.state, conditions });
+    await setup.stateFile.save({
+      state: landed ? draft : stored.state,
+      conditions,
+    });
   } catch (error) {
     logger.warn(`the state file could not be written: ${describe(error)}`);
   }
@@ -113,7 +127,9 @@ export async function runOnce<E extends EnvDeclaration>(setup: RunSetup<E>): Pro
       started_at: startedAt.toISOString(),
       finished_at: finishedAt.toISOString(),
       summary: cap(logger.redact(summary)),
-      ...(failure !== undefined && { error: cap(logger.redact(describe(failure))) }),
+      ...(failure !== undefined && {
+        error: cap(logger.redact(describe(failure))),
+      }),
     });
   } catch (error) {
     logger.warn(`the run could not be reported: ${describe(error)}`);

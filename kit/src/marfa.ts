@@ -24,15 +24,21 @@ export class Refusal extends Error {
     readonly code: string,
     readonly detail: string,
   ) {
-    super(`${status === undefined ? "" : `${String(status)} `}${code}: ${detail}`);
+    super(
+      `${status === undefined ? "" : `${String(status)} `}${code}: ${detail}`,
+    );
   }
 }
 
 function refusal(response: Response, error: unknown): Refusal {
-  const envelope = (error as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+  const envelope = (
+    error as { error?: { code?: unknown; message?: unknown } } | undefined
+  )?.error;
   const code = typeof envelope?.code === "string" ? envelope.code : "unknown";
   const message =
-    typeof envelope?.message === "string" ? envelope.message : response.statusText;
+    typeof envelope?.message === "string"
+      ? envelope.message
+      : response.statusText;
   return new Refusal(response.status, code, message);
 }
 
@@ -46,7 +52,10 @@ export interface NewRow {
 export class Marfa {
   constructor(private readonly client: MarfaClient) {}
 
-  async register(name: string, description: string | undefined): Promise<string> {
+  async register(
+    name: string,
+    description: string | undefined,
+  ): Promise<string> {
     const { data, error, response } = await this.client.POST("/connectors", {
       body: { name, ...(description !== undefined && { description }) },
     });
@@ -63,10 +72,13 @@ export class Marfa {
   }
 
   async report(id: string, run: RunReport): Promise<void> {
-    const { data, error, response } = await this.client.POST("/connectors/{id}/runs", {
-      params: { path: { id } },
-      body: run,
-    });
+    const { data, error, response } = await this.client.POST(
+      "/connectors/{id}/runs",
+      {
+        params: { path: { id } },
+        body: run,
+      },
+    );
     if (data === undefined) throw refusal(response, error);
   }
 
@@ -81,7 +93,9 @@ export class Marfa {
   }
 
   async registerType(type: TypeDefinition): Promise<void> {
-    const { data, error, response } = await this.client.POST("/types", { body: type });
+    const { data, error, response } = await this.client.POST("/types", {
+      body: type,
+    });
     if (data === undefined) throw refusal(response, error);
   }
 
@@ -112,7 +126,11 @@ export class Marfa {
    * Creates rows through the bulk door, each claiming at version 0 that no
    * row holds its natural key, and each answered on its own.
    */
-  async create(type: string, source: string, rows: readonly NewRow[]): Promise<BulkResult[]> {
+  async create(
+    type: string,
+    source: string,
+    rows: readonly NewRow[],
+  ): Promise<BulkResult[]> {
     const { data, error, response } = await this.client.POST("/items/bulk", {
       body: {
         items: rows.map((row) => ({
@@ -120,7 +138,9 @@ export class Marfa {
           source,
           source_id: row.source_id,
           properties: row.properties,
-          ...(row.occurred_at !== undefined && { occurred_at: row.occurred_at }),
+          ...(row.occurred_at !== undefined && {
+            occurred_at: row.occurred_at,
+          }),
           tier: "feed" as const,
           version: 0,
         })),
@@ -152,10 +172,13 @@ export class Marfa {
   }
 
   async archive(id: string): Promise<void> {
-    const { data, error, response } = await this.client.POST("/items/{id}/transition", {
-      params: { path: { id } },
-      body: { state: "archived" },
-    });
+    const { data, error, response } = await this.client.POST(
+      "/items/{id}/transition",
+      {
+        params: { path: { id } },
+        body: { state: "archived" },
+      },
+    );
     if (data === undefined) throw refusal(response, error);
   }
 }

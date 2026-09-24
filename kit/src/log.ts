@@ -14,7 +14,8 @@ export class Logger {
 
   redact(text: string): string {
     let out = text;
-    for (const secret of this.secrets) out = out.split(secret).join("[redacted]");
+    for (const secret of this.secrets)
+      out = out.split(secret).join("[redacted]");
     return out;
   }
 
@@ -31,7 +32,9 @@ export class Logger {
   }
 
   private line(level: string, message: string): void {
-    this.write(`${this.clock.now().toISOString()} ${level} ${this.redact(message)}`);
+    this.write(
+      `${this.clock.now().toISOString()} ${level} ${this.redact(message)}`,
+    );
   }
 }
 

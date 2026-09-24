@@ -4,7 +4,8 @@ export type Schedule = { mode: "once" } | { mode: "every"; intervalMs: number };
 
 const units = { s: 1000, m: 60_000, h: 3_600_000 } as const;
 
-const usage = "run with --once, or with --every <interval> such as 30s, 15m or 1h";
+const usage =
+  "run with --once, or with --every <interval> such as 30s, 15m or 1h";
 
 export function readSchedule(argv: readonly string[]): Schedule {
   if (argv.length === 1 && argv[0] === "--once") return { mode: "once" };

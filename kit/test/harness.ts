@@ -1,7 +1,11 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defineConnector, type Entry, type TypeDefinition } from "../src/define.js";
+import {
+  defineConnector,
+  type Entry,
+  type TypeDefinition,
+} from "../src/define.js";
 import { start } from "../src/main.js";
 import type { Clock, Runtime } from "../src/runtime.js";
 import { ScriptedServer } from "./scripted-server.js";
@@ -162,7 +166,10 @@ export class Harness {
     this.stopListener?.();
   }
 
-  once(held: Vendor, env?: Record<string, string | undefined>): Promise<number> {
+  once(
+    held: Vendor,
+    env?: Record<string, string | undefined>,
+  ): Promise<number> {
     return start(testConnector(held), this.runtime(["--once"], env));
   }
 

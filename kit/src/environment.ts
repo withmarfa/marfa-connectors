@@ -50,7 +50,13 @@ export function readEnvironment<E extends EnvDeclaration>(
       `cannot start without ${missing.join(", ")} in the environment`,
     );
   }
-  return { url, key, stateDir, values, secrets: secrets.filter((s) => s !== "") };
+  return {
+    url,
+    key,
+    stateDir,
+    values,
+    secrets: secrets.filter((s) => s !== ""),
+  };
 }
 
 /** What the server would refuse later, refused before it is asked. */
@@ -62,7 +68,9 @@ export function checkDefinition<E extends EnvDeclaration>(
     problems.push("a name of 1 to 200 characters");
   }
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(connector.name)) {
-    problems.push("a name of lowercase letters, digits, dots, hyphens and underscores, which names its state file");
+    problems.push(
+      "a name of lowercase letters, digits, dots, hyphens and underscores, which names its state file",
+    );
   }
   if ((connector.description?.length ?? 0) > 2000) {
     problems.push("a description of at most 2000 characters");
@@ -73,7 +81,9 @@ export function checkDefinition<E extends EnvDeclaration>(
   }
   const lowered = source.toLowerCase();
   if (reservedSourcePrefixes.some((prefix) => lowered.startsWith(prefix))) {
-    problems.push(`a source outside the reserved ${reservedSourcePrefixes.join(" and ")} prefixes`);
+    problems.push(
+      `a source outside the reserved ${reservedSourcePrefixes.join(" and ")} prefixes`,
+    );
   }
   if (problems.length > 0) {
     throw new ConfigurationError(`the connector needs ${problems.join("; ")}`);

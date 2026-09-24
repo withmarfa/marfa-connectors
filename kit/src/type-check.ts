@@ -11,7 +11,9 @@ const shape = [
   "maxItems",
 ] as const;
 
-const defaults: Partial<Record<(typeof shape)[number], unknown>> = { searchable: true };
+const defaults: Partial<Record<(typeof shape)[number], unknown>> = {
+  searchable: true,
+};
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -21,7 +23,9 @@ function record(value: unknown): Record<string, unknown> {
 
 function names(value: unknown): string[] {
   if (typeof value === "string") return [value];
-  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string").sort() : [];
+  return Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string").sort()
+    : [];
 }
 
 /** A top-level list and per-field flags are two spellings of one thing. */
@@ -50,13 +54,21 @@ export function typeDifferences(
   const mine = record(carried.fields);
   const theirs = record(served["fields"]);
 
-  for (const name of Object.keys(mine).filter((n) => !(n in theirs)).sort()) {
+  for (const name of Object.keys(mine)
+    .filter((n) => !(n in theirs))
+    .sort()) {
     differences.push(`field "${name}" is missing on the server`);
   }
-  for (const name of Object.keys(theirs).filter((n) => !(n in mine)).sort()) {
-    differences.push(`field "${name}" is on the server and not in this connector`);
+  for (const name of Object.keys(theirs)
+    .filter((n) => !(n in mine))
+    .sort()) {
+    differences.push(
+      `field "${name}" is on the server and not in this connector`,
+    );
   }
-  for (const name of Object.keys(mine).filter((n) => n in theirs).sort()) {
+  for (const name of Object.keys(mine)
+    .filter((n) => n in theirs)
+    .sort()) {
     const here = record(mine[name]);
     const there = record(theirs[name]);
     for (const attribute of shape) {
@@ -80,7 +92,9 @@ export function typeDifferences(
   }
 
   if ((carried.parent ?? undefined) !== (served["parent"] ?? undefined)) {
-    differences.push(`parent is ${show(carried.parent)} here and ${show(served["parent"])} on the server`);
+    differences.push(
+      `parent is ${show(carried.parent)} here and ${show(served["parent"])} on the server`,
+    );
   }
   const compatible = names(carried.compatible_with);
   const compatibleThere = names(served["compatible_with"]);
