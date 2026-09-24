@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
+import { decodeHTML } from "entities";
 import { parseFeed } from "feedsmith";
 
 const fetchTimeoutMs = 60_000;
@@ -31,16 +32,27 @@ export function feedName(feedUrl: string): string {
   return `${url.host}${url.pathname}`;
 }
 
+/** The address without its credentials or fragment, as each row's `feed_url`. */
+function withoutCredentials(address: string): URL {
+  const url = new URL(address);
+  url.username = "";
+  url.password = "";
+  url.hash = "";
+  return url;
+}
+
 /**
- * The address with its scheme, `www.` and trailing slashes removed, so two
- * spellings of one feed are one feed. Only the host is lowercased, since a
- * path is case-sensitive and two feeds differing in case are two feeds.
+ * The address as its host, path and query, so its scheme, credentials and
+ * fragment fall away, with `www.` and trailing slashes removed: two
+ * spellings of one feed are one feed, and a changed password is not a new
+ * one. A port names another server and stays. Only the host is lowercased,
+ * since a path is case-sensitive and two feeds differing in case are two
+ * feeds.
  */
 export function canonicalFeedUrl(feedUrl: string): string {
-  const trimmed = feedUrl.trim().replace(/\/+$/, "");
-  const match = /^(?:https?:\/\/)?([^/?#]*)(.*)$/i.exec(trimmed);
-  const host = (match?.[1] ?? "").toLowerCase().replace(/^www\./, "");
-  return `${host}${match?.[2] ?? ""}`;
+  const url = new URL(feedUrl.trim());
+  const host = url.host.replace(/^www\./, "");
+  return `${host}${url.pathname.replace(/\/+$/, "")}${url.search}`;
 }
 
 /**
@@ -72,6 +84,37 @@ export type Fetched =
   | { status: 200; text: string; validators: Validators }
   | { status: number };
 
+/**
+ * A feed's bytes as text, in the encoding XML's media types give it: a byte
+ * order mark first, then the Content-Type's charset, then the XML
+ * declaration's, then UTF-8. A name the platform does not know gives way
+ * to the next.
+ */
+export function decodeFeed(
+  bytes: Uint8Array,
+  contentType: string | null,
+): string {
+  const bom =
+    bytes[0] === 0xfe && bytes[1] === 0xff
+      ? "utf-16be"
+      : bytes[0] === 0xff && bytes[1] === 0xfe
+        ? "utf-16le"
+        : undefined;
+  const header = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(contentType ?? "")?.[1];
+  const declaration = /^\s*<\?xml[^>]*\sencoding\s*=\s*["']([^"']+)["']/.exec(
+    new TextDecoder("latin1").decode(bytes.subarray(0, 1024)),
+  )?.[1];
+  for (const label of [bom, header, declaration]) {
+    if (label === undefined) continue;
+    try {
+      return new TextDecoder(label).decode(bytes);
+    } catch {
+      // Not an encoding this platform knows; the next source may name one.
+    }
+  }
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
 export async function fetchFeed(
   feedUrl: string,
   validators: Validators | undefined,
@@ -99,7 +142,10 @@ export async function fetchFeed(
   const lastModified = response.headers.get("Last-Modified") ?? undefined;
   return {
     status: 200,
-    text: await response.text(),
+    text: decodeFeed(
+      new Uint8Array(await response.arrayBuffer()),
+      response.headers.get("Content-Type"),
+    ),
     validators: {
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),
@@ -113,14 +159,33 @@ function isoOf(value: string | undefined): string | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
 }
 
-/** A link resolved against the feed, when it is an http or https address. */
+/**
+ * The base a feed's or an entry's links resolve against: its own
+ * `xml:base`, itself resolved against its parent's, else its parent's. The
+ * parser reads no `xml:base` on a link itself.
+ */
+function baseOf(parent: string, declared: string | undefined): string {
+  const base = declared?.trim();
+  if (base === undefined || base === "") return parent;
+  try {
+    return new URL(base, parent).href;
+  } catch {
+    return parent;
+  }
+}
+
+/**
+ * A link resolved against its base, when it is an http or https address,
+ * and without credentials, which a row never carries.
+ */
 function linkOf(value: string | undefined, base: string): string | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   try {
     const url = new URL(value.trim(), base);
-    return url.protocol === "http:" || url.protocol === "https:"
-      ? url.href
-      : undefined;
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    url.username = "";
+    url.password = "";
+    return url.href;
   } catch {
     return undefined;
   }
@@ -139,6 +204,34 @@ function textOf(value: string | undefined): string | undefined {
   return text === undefined || text === "" ? undefined : text;
 }
 
+/** Elements that break a line, whose tags read as a space. */
+const blockTags =
+  /<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>/gi;
+
+/**
+ * Markup as the text a reader sees: scripts, styles and comments dropped,
+ * a block's tags read as a space and any other tag as nothing, entities
+ * decoded, and whitespace run together.
+ */
+function plainOf(markup: string | undefined): string | undefined {
+  if (markup === undefined) return undefined;
+  const stripped = markup
+    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(blockTags, " ")
+    .replace(/<[^>]*>/g, "");
+  return textOf(decodeHTML(stripped).replace(/\s+/g, " "));
+}
+
+/** An Atom text construct as plain text, whichever of its three types it is. */
+function atomTextOf(
+  text: { value?: string; type?: string } | undefined,
+): string | undefined {
+  return text?.type === "html" || text?.type === "xhtml"
+    ? plainOf(text.value)
+    : textOf(text?.value);
+}
+
 export interface Read {
   entries: Entry[];
   /** Entries with neither an id nor a link, which nothing can key. */
@@ -148,10 +241,7 @@ export interface Read {
 /** Reads an Atom or RSS 2.0 document into entries, or throws if it is neither. */
 export function readFeed(feedUrl: string, text: string): Read {
   const parsed = parseFeed(text);
-  const address = new URL(feedUrl);
-  address.username = "";
-  address.password = "";
-  const feedAddress = address.href;
+  const feedAddress = withoutCredentials(feedUrl).href;
   let unkeyed = 0;
   const entries: Entry[] = [];
   const keep = (
@@ -175,15 +265,17 @@ export function readFeed(feedUrl: string, text: string): Read {
   if (parsed.format === "atom") {
     const feed = parsed.feed;
     const key = feedKey(feedUrl, feed.id);
+    const feedBase = baseOf(feedUrl, feed.xml?.base);
     const alternate = (
       links: { href?: string; rel?: string }[] | undefined,
     ): string | undefined =>
       links?.find((link) => link.rel === undefined || link.rel === "alternate")
         ?.href;
-    const siteUrl = linkOf(alternate(feed.links), feedUrl);
+    const siteUrl = linkOf(alternate(feed.links), feedBase);
     const language = languageOf(feed.xml?.lang);
     for (const entry of feed.entries ?? []) {
-      const url = linkOf(alternate(entry.links), feedUrl);
+      const entryBase = baseOf(feedBase, entry.xml?.base);
+      const url = linkOf(alternate(entry.links), entryBase);
       const image = entry.links?.find(
         (link) =>
           link.rel === "enclosure" && link.type?.startsWith("image/") === true,
@@ -193,15 +285,15 @@ export function readFeed(feedUrl: string, text: string): Read {
         entry.id ?? url,
         {
           url,
-          title: textOf(entry.title?.value),
-          description: textOf(entry.summary?.value),
+          title: atomTextOf(entry.title),
+          description: atomTextOf(entry.summary),
           body: textOf(entry.content?.value),
           author: textOf(entry.authors?.[0]?.name ?? feed.authors?.[0]?.name),
           published_at: published,
-          image_url: linkOf(image, feedUrl),
+          image_url: linkOf(image, entryBase),
           language,
           source_url: siteUrl,
-          source_title: textOf(feed.title?.value),
+          source_title: atomTextOf(feed.title),
         },
         published ?? isoOf(entry.updated),
         key,
@@ -212,24 +304,28 @@ export function readFeed(feedUrl: string, text: string): Read {
   if (parsed.format === "rss") {
     const feed = parsed.feed;
     const key = feedKey(feedUrl, undefined);
-    const siteUrl = linkOf(feed.link, feedUrl);
+    const channelBase = baseOf(feedUrl, feed.xml?.base);
+    const siteUrl = linkOf(feed.link, channelBase);
     const language = languageOf(feed.language);
     for (const item of feed.items ?? []) {
-      const url = linkOf(item.link, feedUrl);
+      const itemBase = baseOf(channelBase, item.xml?.base);
+      const url = linkOf(item.link, itemBase);
       const image = item.enclosures?.find(
         (enclosure) => enclosure.type?.startsWith("image/") === true,
       )?.url;
       const published = isoOf(item.pubDate);
       keep(
-        item.guid?.value ?? item.link,
+        item.guid?.value ?? url,
         {
           url,
           title: textOf(item.title),
-          description: textOf(item.description),
+          // RSS 2.0 lets a description carry entity-encoded HTML, and
+          // feeds do.
+          description: plainOf(item.description),
           body: textOf(item.content?.encoded),
           author: textOf(item.authors?.[0]?.name ?? item.dc?.creators?.[0]),
           published_at: published,
-          image_url: linkOf(image, feedUrl),
+          image_url: linkOf(image, itemBase),
           language,
           source_url: siteUrl,
           source_title: textOf(feed.title),

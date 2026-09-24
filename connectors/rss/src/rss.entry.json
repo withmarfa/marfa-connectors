@@ -10,15 +10,15 @@
     },
     "title": {
       "type": "string",
-      "description": "The entry's title."
+      "description": "The entry's title, as plain text."
     },
     "description": {
       "type": "string",
-      "description": "The entry's summary."
+      "description": "The entry's summary, as plain text."
     },
     "body": {
       "type": "string",
-      "description": "The entry's full content, where the feed carries it."
+      "description": "The entry's full content, where the feed carries it, markup and all."
     },
     "author": {
       "type": "string",
@@ -53,7 +53,7 @@
     "feed_url": {
       "type": "url",
       "required": true,
-      "description": "The feed's address, as the connector was given it."
+      "description": "The feed's address, as the connector was given it, without credentials."
     }
   },
   "compatible_with": ["core.bookmark"],

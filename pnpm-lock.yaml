@@ -41,6 +41,9 @@ importers:
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../../kit
+      entities:
+        specifier: ^7.0.1
+        version: 7.0.1
       feedsmith:
         specifier: ^3.0.0
         version: 3.0.0
