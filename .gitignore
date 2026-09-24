@@ -1,6 +1,8 @@
 node_modules/
 dist/
 vendor/
+*.tsbuildinfo
+.claude/
 _trash/
 _archive/
 .env
