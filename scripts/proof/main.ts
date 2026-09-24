@@ -1,5 +1,5 @@
 import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
-import { check, interruption } from "./check.js";
+import { check, interrupt } from "./check.js";
 import { ProofServer, type Booted } from "./server.js";
 
 const server = new ProofServer();
@@ -8,7 +8,7 @@ let booting: Promise<unknown> = Promise.resolve();
 // Armed before the boot: a signal during it waits for the boot to settle,
 // so the server it started is the one stopped.
 const onSignal = (signal: NodeJS.Signals): void => {
-  interruption.signalled = true;
+  interrupt();
   console.log(`stopping on ${signal}`);
   void booting
     .catch(() => undefined)
