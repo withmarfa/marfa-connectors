@@ -20,7 +20,6 @@ export interface TodoistItem {
 
 export interface SyncAnswer {
   sync_token: string;
-  full_sync: boolean;
   items: TodoistItem[];
   user?: { id?: unknown };
 }
@@ -58,8 +57,8 @@ export async function sync(
  */
 export function accountOf(user: SyncAnswer["user"]): string | undefined {
   const id = user?.id;
-  if (typeof id !== "string" && typeof id !== "number") return undefined;
-  const account = String(id).trim();
+  if (typeof id !== "string") return undefined;
+  const account = id.trim();
   // A colon would make `<account>:<task>` read two ways.
   return account === "" || account.includes(":") ? undefined : account;
 }

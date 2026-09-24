@@ -73,7 +73,6 @@ beforeEach(async () => {
   received = [];
   answer = () => ({
     sync_token: "t1",
-    full_sync: true,
     items: [],
     user: { id: "2671355" },
   });
@@ -197,11 +196,12 @@ describe("the mapping", () => {
   });
 
   it("refuses an account it could not key a task by", () => {
-    expect(accountOf({ id: 2671355 })).toBe("2671355");
     expect(accountOf({ id: "2671355" })).toBe("2671355");
+    // The v1 API's ids are strings; a number is an older API's answer.
     for (const user of [
       undefined,
       {},
+      { id: 2671355 },
       { id: null },
       { id: "" },
       { id: "a:b" },
@@ -215,7 +215,6 @@ describe("the connector, run as a process", () => {
   it("writes a full sync's tasks at the feed tier, keyed by account, with the token and account kept", async () => {
     answer = () => ({
       sync_token: "t1",
-      full_sync: true,
       items: [
         task("a", { content: "One" }),
         task("b", { content: "Two", priority: 3 }),
@@ -246,14 +245,12 @@ describe("the connector, run as a process", () => {
   it("follows a delta: a change updated, a completion kept active, a deletion archived", async () => {
     answer = () => ({
       sync_token: "t1",
-      full_sync: true,
       items: [task("a"), task("b"), task("c"), task("d")],
       user: { id: "2671355" },
     });
-    await once();
+    expect((await once()).code).toBe(0);
     answer = () => ({
       sync_token: "t2",
-      full_sync: false,
       items: [
         task("a", { content: "Task a, renamed" }),
         task("b", { checked: true }),
@@ -277,28 +274,25 @@ describe("the connector, run as a process", () => {
   it("clears a due date Todoist removed", async () => {
     answer = () => ({
       sync_token: "t1",
-      full_sync: true,
       items: [task("a", { due: { date: "2026-09-30", is_recurring: false } })],
       user: { id: "2671355" },
     });
-    await once();
+    expect((await once()).code).toBe(0);
     expect(marfa.row("2671355:a").properties["due"]).toEqual({
       date: "2026-09-30",
       is_recurring: false,
     });
     answer = () => ({
       sync_token: "t2",
-      full_sync: false,
       items: [task("a", { due: null })],
     });
-    await once();
+    expect((await once()).code).toBe(0);
     expect(marfa.row("2671355:a").properties).not.toHaveProperty("due");
   });
 
   it("holds the token when a write did not land, and asks for the same delta again", async () => {
     answer = () => ({
       sync_token: "t1",
-      full_sync: true,
       items: [task("a"), task("b")],
       user: { id: "2671355" },
     });
@@ -311,14 +305,14 @@ describe("the connector, run as a process", () => {
     expect(await state()).toEqual({});
 
     marfa.entryRefusals.delete("2671355:b");
-    await once();
+    expect((await once()).code).toBe(0);
     expect(received.map((request) => request.syncToken)).toEqual(["*", "*"]);
     expect(marfa.rows).toHaveLength(2);
     expect(await state()).toEqual({ account: "2671355", sync_token: "t1" });
   });
 
   it("writes nothing when Todoist names no account", async () => {
-    answer = () => ({ sync_token: "t1", full_sync: true, items: [task("a")] });
+    answer = () => ({ sync_token: "t1", items: [task("a")] });
     const { code } = await once();
     expect(code).toBe(1);
     expect(marfa.rows).toEqual([]);
@@ -331,6 +325,9 @@ describe("the connector, run as a process", () => {
     });
     expect(code).toBe(1);
     expect(marfa.runs.at(-1)?.error).toContain("refused the token");
+    // The output carries the failure, so the token's absence is not an
+    // empty stream's.
+    expect(output).toContain("refused the token");
     expect(output).not.toContain("a-wrong-token-value");
   });
 
