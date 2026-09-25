@@ -414,6 +414,61 @@ describe("the state", () => {
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
   });
 
+  it("clears a property named like a member every object has, by what the row holds", async () => {
+    const entry = {
+      source_id: "a:1",
+      properties: { title: "One", toString: "x" },
+    };
+    const held = vendor([entry]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      toString: "x",
+    });
+
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { title: "One, by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...entry, properties: { title: "One" } }];
+    expect(await harness.once(held)).toBe(0);
+    // Cleared as any other property is, and never taken from what every
+    // object answers for the name.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by another writer",
+    });
+  });
+
+  it("takes a clear of such a property both writers made as an echo", async () => {
+    const entry = {
+      source_id: "a:1",
+      properties: { title: "One", toString: "x" },
+    };
+    const held = vendor([entry]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      toString: "x",
+    });
+
+    harness.server.afterList = () => {
+      harness.server.rewrite("a:1", { title: "One" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...entry, properties: { title: "One, by the vendor" } }];
+    expect(await harness.once(held)).toBe(0);
+    // Judged by what the row holds: the other writer already cleared it,
+    // so the vendor's clear is nothing new and its title lands.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by the vendor",
+    });
+    expect(harness.server.row("a:1").version).toBe(3);
+  });
+
   it("takes a clear both writers made as an echo, and lands the rest", async () => {
     const held = vendor([one]);
     held.token = "t1";
@@ -486,10 +541,12 @@ describe("the state", () => {
     held.entries = [{ ...one, occurred_at: "2026-09-03T10:00:00.000Z" }];
     expect(await harness.once(held)).toBe(0);
 
-    // Two changes to the own time collide as two changes to a field do.
+    // Two changes to the own time collide as two changes to a field do:
+    // refused, so the row's version stands where the other writer left it.
     expect(harness.server.row("a:1").occurred_at).toBe(
       "2026-09-02T10:00:00.000Z",
     );
+    expect(harness.server.row("a:1").version).toBe(2);
     expect(harness.lastRun().summary).toMatch(/skipped 1\./);
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
   });
