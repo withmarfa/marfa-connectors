@@ -8,6 +8,8 @@ import {
   ConnectorUnderProof,
   derivedFrom,
   fieldsOf,
+  registeredAsKindOf,
+  typeHeld,
   item,
   lastRun,
   mintAsReadmeSays,
@@ -121,9 +123,8 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
     await check(
       "rss: a first run registers rss.entry as a kind of core.bookmark and writes both feeds' entries at the feed tier",
       async () => {
+        const wasHeld = await typeHeld(marfa, "rss.entry");
         await runOnce();
-        const entryType = await fieldsOf(marfa, "rss.entry");
-        const bookmark = await fieldsOf(marfa, "core.bookmark");
         const written = await rows();
         const tiers = [...new Set([...written.values()].map((r) => r.tier))];
         if (written.size !== 4 || tiers.join() !== "feed") {
@@ -131,26 +132,17 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
             `${String(written.size)} rows at ${tiers.join(", ")}`,
           );
         }
-        if (
-          entryType.parent !== "core.bookmark" ||
-          entryType.compatible_with !== undefined
-        ) {
-          throw new Error(
-            `parent ${String(entryType.parent)}, compatible_with ${JSON.stringify(entryType.compatible_with)}`,
-          );
-        }
-        const own = entryType.fields.filter(
-          (field) => !bookmark.fields.includes(field),
+        const { own, inherited } = await registeredAsKindOf(
+          marfa,
+          "rss.entry",
+          "core.bookmark",
+          wasHeld,
+          written.values(),
         );
-        const unknown = [...written.values()]
-          .flatMap((row) => Object.keys(row.properties))
-          .filter((field) => !entryType.fields.includes(field));
-        if (own.join() !== "entry_id,feed_url" || unknown.length > 0) {
-          throw new Error(
-            `own fields ${own.join(", ")}; written outside the type: ${unknown.join(", ")}`,
-          );
+        if (own.join() !== "entry_id,feed_url") {
+          throw new Error(`own fields ${own.join(", ")}`);
         }
-        return `rss.entry has parent core.bookmark, inherits its ${String(bookmark.fields.length)} fields and adds ${own.join(", ")}; ${String(written.size)} rows, tier feed, every property a field of the type`;
+        return `rss.entry, absent before the run, registered with parent core.bookmark, all ${String(inherited)} of its fields and ${own.join(", ")} beside them; ${String(written.size)} rows, tier feed, every property a field of the type`;
       },
     );
 

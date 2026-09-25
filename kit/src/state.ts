@@ -27,7 +27,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * One small file per connector. Losing it costs a full read of the vendor
  * and never a duplicate row, because every write is compared with the rows
- * the server already holds.
+ * the server already holds; but a row a person trashed and then purged is
+ * written again, since only this file remembers it.
  */
 export class StateFile {
   private readonly path: string;
