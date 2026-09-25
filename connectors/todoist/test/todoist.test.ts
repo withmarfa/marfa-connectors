@@ -299,14 +299,16 @@ describe("the mapping", () => {
     );
     expect(completed("2026-02-30T08:30:00Z")).toBeUndefined();
     expect(completed("yesterday")).toBeUndefined();
+    expect(completed("2026-09-02T08:30:00.000000")).toBeUndefined();
+    expect(dueOf({ date: "2026-09-30Z" }, "UTC")).toBeUndefined();
+    expect(dueOf({ date: "2026-09-30T23:59:60" }, "UTC")).toBeUndefined();
+    expect(dueOf({ date: "0050-06-01" }, "UTC")?.due_at).toBe(
+      "0050-06-01T00:00:00.000Z",
+    );
   });
 
   it("reads an item carrying null where Todoist sends a value without failing", () => {
-    const odd = {
-      ...task("a"),
-      labels: null,
-      due: { date: null },
-    } as unknown as TodoistItem;
+    const odd = task("a", { labels: null, due: { date: null } });
     const { properties } = entryOf("1", "UTC", odd);
     expect(properties["title"]).toBe("Task a");
     expect(properties["labels"]).toBeUndefined();
@@ -428,6 +430,10 @@ describe("the connector, run as a process", () => {
       ["2671355:b", "feed", "Two", "2026-09-01T10:00:00.000Z"],
     ]);
     expect(marfa.requestsTo("POST", "/types")).toEqual([]);
+    // With the account's zone named, no timezone condition rides the report.
+    expect(marfa.runs.at(-1)?.summary).toBe(
+      "created 2, updated 0, archived 0, unchanged 0, skipped 0",
+    );
     expect(await state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
@@ -667,6 +673,55 @@ describe("the connector, run as a process", () => {
       completed_at: "2026-10-02T10:00:00.000Z",
     });
     expect(marfa.row("2671355:c").state).toBe("archived");
+    expect(await state()).toMatchObject({ sync_token: "t-delta" });
+  });
+
+  it("lets a moved zone's full sync win over the delta, and keeps the delta's token for what lands between", async () => {
+    let zone = "Europe/London";
+    let fulls = 0;
+    let deltas = 0;
+    answer = (syncToken) => {
+      const user = { id: "2671355", tz_info: { timezone: zone } };
+      if (syncToken === "*") {
+        fulls += 1;
+        return {
+          sync_token: `t-full-${String(fulls)}`,
+          // The second full sync is served after the delta, and holds a
+          // newer title for a than the delta did.
+          items: [task("a", { content: fulls === 1 ? "One" : "One, newer" })],
+          user,
+        };
+      }
+      deltas += 1;
+      return {
+        sync_token: `t-delta-${String(deltas)}`,
+        // The first delta carries an older a; the next, a completion that
+        // landed between the first delta and the full sync.
+        items:
+          deltas === 1
+            ? [task("a", { content: "One, older" })]
+            : [
+                task("a", {
+                  content: "One, newer",
+                  checked: true,
+                  completed_at: "2026-10-02T10:00:00.000000Z",
+                }),
+              ],
+        user,
+      };
+    };
+    expect((await once()).code).toBe(0);
+    zone = "America/New_York";
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["title"]).toBe("One, newer");
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full-1",
+      "*",
+      "t-delta-1",
+    ]);
+    expect(marfa.row("2671355:a").properties["status"]).toBe("completed");
   });
 
   it("names an unknown zone even with one held, and reads in the one held", async () => {
@@ -705,6 +760,19 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toContain(
       "named the timezone Mars/Olympus",
     );
+    tzInfo = { timezone: "Venus/Maxwell" };
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "named the timezone Venus/Maxwell",
+    );
+    tzInfo = { timezone: "" };
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toContain("named no timezone");
+    tzInfo = { timezone: "Europe/London" };
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs).toHaveLength(5);
+    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 0, /);
+    expect(marfa.runs.at(-1)?.summary).not.toContain("timezone");
   });
 
   it("names a timezone the platform does not know, rather than saying none was named", async () => {

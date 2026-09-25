@@ -41,7 +41,14 @@ const connector = defineConnector({
       const full = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
       const byId = new Map(answer.items.map((item) => [item.id, item]));
       for (const item of full.items) byId.set(item.id, item);
-      answer = { ...full, items: [...byId.values()] };
+      answer = {
+        ...full,
+        items: [...byId.values()],
+        // The delta's token, older than the full sync's: a change that
+        // landed between the two requests comes back in the next delta
+        // rather than being skipped, and what comes back again is unchanged.
+        sync_token: answer.sync_token,
+      };
     }
     const known = state.get("account");
     const account =

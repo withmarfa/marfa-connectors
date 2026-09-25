@@ -12,9 +12,9 @@ export interface TodoistItem {
   project_id?: string | null;
   section_id?: string | null;
   parent_id?: string | null;
-  labels?: string[];
+  labels?: string[] | null;
   priority?: number;
-  due?: { date?: string } | null;
+  due?: { date?: string | null } | null;
   child_order?: number;
   checked?: boolean;
   completed_at?: string | null;
@@ -72,7 +72,7 @@ export function accountOf(user: SyncAnswer["user"]): string | undefined {
 /** The timezone the Sync API's `user` names, known to this platform or not. */
 export function namedZoneOf(user: SyncAnswer["user"]): string | undefined {
   const zone = user?.tz_info?.timezone;
-  return typeof zone === "string" ? zone : undefined;
+  return typeof zone === "string" && zone !== "" ? zone : undefined;
 }
 
 /** The account's IANA timezone, from the Sync API's `user`, if it names one this platform knows. */
@@ -125,7 +125,7 @@ function inZone(
   [year, month, day, hour, minute, second]: Wall,
   timeZone: string,
 ): Date {
-  const wall = Date.UTC(year, month - 1, day, hour, minute, second);
+  const wall = utcOf([year, month, day, hour, minute, second]);
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hourCycle: "h23",
@@ -142,14 +142,14 @@ function inZone(
       read[part.type] = Number(part.value);
     }
     return (
-      Date.UTC(
+      utcOf([
         read["year"] ?? 0,
-        (read["month"] ?? 1) - 1,
+        read["month"] ?? 1,
         read["day"] ?? 1,
         read["hour"] ?? 0,
         read["minute"] ?? 0,
         read["second"] ?? 0,
-      ) - at
+      ]) - at
     );
   };
   // The offsets either side of the wall time; a change of offset inside
@@ -188,7 +188,10 @@ export function dueOf(
 }
 
 function utcOf([year, month, day, hour, minute, second]: Wall): number {
-  return Date.UTC(year, month - 1, day, hour, minute, second);
+  const at = new Date(Date.UTC(2000, month - 1, day, hour, minute, second));
+  // Date.UTC reads a year below 100 as 19xx; the year is set apart.
+  at.setUTCFullYear(year, month - 1, day);
+  return at.getTime();
 }
 
 /**
