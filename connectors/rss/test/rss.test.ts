@@ -411,13 +411,15 @@ describe("the connector, run as a process", () => {
     return found;
   }
 
-  it("registers rss.entry as readable as a bookmark, and writes both feeds' entries at the feed tier", async () => {
+  it("registers rss.entry as a kind of bookmark, and writes both feeds' entries at the feed tier", async () => {
     expect((await once()).code).toBe(0);
     const registered = marfa.types.get("rss.entry");
-    expect(registered?.["compatible_with"]).toEqual(["core.bookmark"]);
-    expect(Object.keys(registered?.["fields"] as object)).not.toContain(
-      "source",
-    );
+    expect(registered?.["parent"]).toBe("core.bookmark");
+    expect(registered).not.toHaveProperty("compatible_with");
+    expect(Object.keys(registered?.["fields"] as object)).toEqual([
+      "entry_id",
+      "feed_url",
+    ]);
     expect(marfa.rows).toHaveLength(4);
     expect(marfa.rows.every((candidate) => candidate.tier === "feed")).toBe(
       true,
