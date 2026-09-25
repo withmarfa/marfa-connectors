@@ -4,6 +4,7 @@ import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
 import { check, Failed, interrupt, interrupted } from "./check.js";
 import { witnessTypeAnswers } from "./connector.js";
 import { proveRss } from "./rss.js";
+import { proveTodoist } from "./todoist.js";
 import { ProofServer, type Booted } from "./server.js";
 
 const server = new ProofServer();
@@ -68,6 +69,7 @@ try {
   );
 
   await proveRss(marfa, booted.url);
+  await proveTodoist(marfa, booted.url);
 } catch (error) {
   // A statement that failed has said so; anything else has not.
   if (!(error instanceof Failed) && !interrupted()) {
