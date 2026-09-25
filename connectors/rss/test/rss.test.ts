@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -176,6 +176,20 @@ describe("reading a feed", () => {
     );
   });
 
+  it("writes no credentials a feed's own links carry", () => {
+    const { entries } = readFeed(
+      "https://example.org/feed.xml",
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://site:key@example.org/</link>
+        <item><title>A</title><link>https://viewer:secret@example.org/a</link><guid>a</guid></item>
+      </channel></rss>`,
+    );
+    expect(entries[0]?.properties).toMatchObject({
+      url: "https://example.org/a",
+      source_url: "https://example.org/",
+    });
+    expect(JSON.stringify(entries)).not.toMatch(/viewer|secret|site:key/);
+  });
+
   it("reads Atom's html and xhtml text as plain text, and its text as it is", () => {
     const { entries } = readFeed(
       "https://example.com/atom.xml",
@@ -290,6 +304,43 @@ describe("reading a feed", () => {
     expect(decodeFeed(utf16, "application/xml; charset=utf-8")).toContain(
       "Résumé",
     );
+    // The header's charset is read before the declaration's.
+    const latinDeclaredUtf8 = Buffer.from(
+      '<?xml version="1.0" encoding="utf-8"?><t>Résumé</t>',
+      "latin1",
+    );
+    expect(
+      decodeFeed(latinDeclaredUtf8, "text/xml; charset=ISO-8859-1"),
+    ).toContain("Résumé");
+    // A UTF-8 byte order mark outranks the header.
+    const markedUtf8 = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from("<?xml version='1.0'?><t>Résumé</t>", "utf8"),
+    ]);
+    expect(decodeFeed(markedUtf8, "text/xml; charset=ISO-8859-1")).toContain(
+      "Résumé",
+    );
+    // UTF-16 with no mark shows itself by its zero bytes.
+    const unmarked16 = Buffer.from(
+      "<?xml version='1.0'?><t>Résumé</t>",
+      "utf16le",
+    );
+    expect(decodeFeed(unmarked16, null)).toContain("Résumé");
+  });
+
+  it("reads a UTF-8 feed whose declaration names UTF-16 out of habit", () => {
+    const text = decodeFeed(
+      Buffer.from(
+        '<?xml version="1.0" encoding="utf-16"?><rss version="2.0"><channel><title>T</title><link>https://example.org/</link><item><title>Résumé</title><guid>r</guid></item></channel></rss>',
+        "utf8",
+      ),
+      "application/rss+xml",
+    );
+    expect(
+      readFeed("https://example.org/rss.xml", text).entries.map(
+        (entry) => entry.properties["title"],
+      ),
+    ).toEqual(["Résumé"]);
   });
 
   it("refuses what is neither Atom nor RSS 2.0", () => {
@@ -306,12 +357,101 @@ describe("reading a feed", () => {
     ).toEqual(["https://a.example.com/1", "https://b.example.com/2"]);
     expect(() =>
       feedList("https://a.example.com/1 ftp://b.example.com/2"),
-    ).toThrow(/1 entries/);
+    ).toThrow("an entry that is not an http or https address");
+    expect(() => feedList("ftp://a.example.com/1 mailto:b")).toThrow(
+      "2 entries that are not",
+    );
+  });
+
+  it("lists a feed once however it is spelled, keeping the first spelling", () => {
+    expect(
+      feedList(
+        "https://a.example.com/feed https://a.example.com/feed/ http://www.a.example.com/feed https://a.example.com/feed?page=2",
+      ),
+    ).toEqual([
+      "https://a.example.com/feed",
+      "https://a.example.com/feed?page=2",
+    ]);
+  });
+
+  it("keeps a feed's query and path out of the rows, where a token rides", () => {
+    const { entries } = readFeed(
+      "https://example.org/feed.xml?token=s3cr3t-token",
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://example.org/</link>
+        <item><title>A</title><link>#frag</link><guid>a</guid></item>
+      </channel></rss>`,
+    );
+    expect(entries[0]?.properties).toMatchObject({
+      url: "https://example.org/feed.xml#frag",
+      feed_url: "https://example.org/feed.xml",
+    });
+    expect(JSON.stringify(entries)).not.toContain("s3cr3t");
+  });
+
+  it("reads markup as text, and a < that opens no tag as text", () => {
+    const description = (html: string): unknown =>
+      readFeed(
+        "https://example.org/rss.xml",
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://example.org/</link>
+          <item><title>A</title><guid>a</guid><description>${html}</description></item>
+        </channel></rss>`,
+      ).entries[0]?.properties["description"];
+    expect(description("1 &lt; 2 and 3 &gt; 2")).toBe("1 < 2 and 3 > 2");
+    expect(
+      description("&lt;![CDATA[x &lt; y and y &gt; z]]&gt; and more"),
+    ).toBe("x < y and y > z and more");
+    expect(description('&lt;img alt="a &gt; b" src="x.png"&gt;Caption')).toBe(
+      "Caption",
+    );
+    expect(
+      description("&lt;script&gt;var t = 'hidden';&lt;/script&gt;Shown"),
+    ).toBe("Shown");
+    expect(
+      description("&lt;style&gt;p { color: red }&lt;/style&gt;Shown"),
+    ).toBe("Shown");
+    expect(description("&lt;!-- a &gt; b, hidden --&gt;Shown")).toBe("Shown");
+  });
+
+  it("resolves an RSS 2.0 feed's links against its rss, channel and item xml:base", () => {
+    const { entries } = readFeed(
+      "https://example.org/rss.xml",
+      `<?xml version="1.0"?><rss version="2.0" xml:base="https://a.example.org/root/">
+        <channel xml:base="chan/"><title>T</title><link>site</link>
+          <item><title>A</title><guid>a</guid><link>p</link>
+            <enclosure url="img.jpg" type="image/jpeg" length="1"/></item>
+          <item xml:base="/items/"><title>B</title><guid>b</guid><link>q</link></item>
+        </channel></rss>`,
+    );
+    expect(entries.map((entry) => entry.properties["url"])).toEqual([
+      "https://a.example.org/root/chan/p",
+      "https://a.example.org/items/q",
+    ]);
+    expect(entries[0]?.properties["source_url"]).toBe(
+      "https://a.example.org/root/chan/site",
+    );
+    expect(entries[0]?.properties["image_url"]).toBe(
+      "https://a.example.org/root/chan/img.jpg",
+    );
+  });
+
+  it("resolves links against where a redirect took the fetch", () => {
+    const { entries } = readFeed(
+      "https://example.org/old/feed",
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>/</link>
+        <item><title>A</title><guid>a</guid><link>post-a</link></item>
+      </channel></rss>`,
+      "https://example.org/new/blog/feed",
+    );
+    expect(entries[0]?.properties).toMatchObject({
+      url: "https://example.org/new/blog/post-a",
+      feed_url: "https://example.org/old/feed",
+    });
   });
 });
 
 interface Served {
   body: string | Buffer;
+  redirect?: string;
   contentType?: string;
   etag?: string;
   lastModified?: string;
@@ -336,7 +476,7 @@ describe("the connector, run as a process", () => {
     };
     asked = [];
     feeds = createServer((req, res) => {
-      const path = req.url ?? "/";
+      const path = new URL(req.url ?? "/", "http://feeds.test").pathname;
       const feed = served[path];
       const answer = (
         status: number,
@@ -348,6 +488,10 @@ describe("the connector, run as a process", () => {
       };
       if (feed === undefined) {
         answer(404);
+        return;
+      }
+      if (feed.redirect !== undefined) {
+        answer(301, { Location: feed.redirect });
         return;
       }
       const unchanged =
@@ -521,6 +665,57 @@ describe("the connector, run as a process", () => {
       "created 0, updated 0, archived 0, unchanged 0, skipped 0",
       "created 0, updated 1, archived 0, unchanged 1, skipped 0",
     ]);
+  });
+
+  it("writes a feed reached at two addresses once, and says so once", async () => {
+    const atom = served["/atom.xml"];
+    if (typeof atom?.body !== "string") throw new Error("no atom fixture");
+    served["/mirror.xml"] = { body: atom.body };
+    served["/atom.xml"] = { body: atom.body };
+    for (let run = 0; run < 3; run += 1) {
+      expect((await once(["/atom.xml", "/mirror.xml"])).code).toBe(0);
+    }
+    expect(asked.map((request) => request.answered)).toEqual([
+      200, 200, 200, 200, 200, 200,
+    ]);
+    expect(marfa.rows).toHaveLength(2);
+    expect(marfa.rows.map((candidate) => candidate.version)).toEqual([1, 1]);
+    expect(
+      marfa.rows.map((candidate) => candidate.properties["feed_url"]),
+    ).toEqual([`${base}/atom.xml`, `${base}/atom.xml`]);
+    expect(marfa.runs.map((reported) => reported.summary)).toEqual([
+      expect.stringContaining("/mirror.xml is the feed"),
+      "created 0, updated 0, archived 0, unchanged 2, skipped 0",
+      "created 0, updated 0, archived 0, unchanged 2, skipped 0",
+    ]);
+  });
+
+  it("keeps a token in a feed's query out of the rows and the state file", async () => {
+    expect((await once(["/rss.xml?token=s3cr3t-token"])).code).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([200]);
+    expect(marfa.rows).toHaveLength(2);
+    expect(JSON.stringify(marfa.rows)).not.toContain("s3cr3t");
+    const stored = await readFile(join(stateDir, "rss.json"), "utf8");
+    expect(stored).toContain("last_modified");
+    expect(stored).not.toContain("s3cr3t");
+  });
+
+  it("resolves a redirected feed's links where the redirect took it", async () => {
+    served["/old/feed"] = { body: "", redirect: "/new/blog/feed" };
+    served["/new/blog/feed"] = {
+      body: `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>/</link>
+        <item><title>A</title><guid>a</guid><link>post-a</link></item>
+      </channel></rss>`,
+    };
+    expect((await once(["/old/feed"])).code).toBe(0);
+    expect(asked.map((request) => [request.path, request.answered])).toEqual([
+      ["/old/feed", 301],
+      ["/new/blog/feed", 200],
+    ]);
+    expect(row("a").properties).toMatchObject({
+      url: `${base}/new/blog/post-a`,
+      feed_url: `${base}/old/feed`,
+    });
   });
 
   it("reads a feed in the charset its server names", async () => {

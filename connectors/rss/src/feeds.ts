@@ -5,12 +5,14 @@ import { parseFeed } from "feedsmith";
 
 const fetchTimeoutMs = 60_000;
 
-/** The addresses in `RSS_FEEDS`, one per line or separated by commas or spaces. */
+/**
+ * The addresses in `RSS_FEEDS`, one per line or separated by commas or
+ * spaces, each feed once however many ways it is spelled: two spellings
+ * would write the same rows, each rewriting the other's `feed_url`.
+ */
 export function feedList(value: string): string[] {
-  const feeds = [
-    ...new Set(value.split(/[\s,]+/).filter((part) => part !== "")),
-  ];
-  const bad = feeds.filter((feed) => {
+  const parts = value.split(/[\s,]+/).filter((part) => part !== "");
+  const bad = parts.filter((feed) => {
     try {
       const url = new URL(feed);
       return url.protocol !== "http:" && url.protocol !== "https:";
@@ -20,10 +22,17 @@ export function feedList(value: string): string[] {
   });
   if (bad.length > 0) {
     throw new Error(
-      `RSS_FEEDS holds ${String(bad.length)} entries that are not http or https addresses`,
+      bad.length === 1
+        ? "RSS_FEEDS holds an entry that is not an http or https address"
+        : `RSS_FEEDS holds ${String(bad.length)} entries that are not http or https addresses`,
     );
   }
-  return feeds;
+  const byFeed = new Map<string, string>();
+  for (const feed of parts) {
+    const canonical = canonicalFeedUrl(feed);
+    if (!byFeed.has(canonical)) byFeed.set(canonical, feed);
+  }
+  return [...byFeed.values()];
 }
 
 /** A feed as a log line or a report names it: its host and path, never its query. */
@@ -32,13 +41,30 @@ export function feedName(feedUrl: string): string {
   return `${url.host}${url.pathname}`;
 }
 
-/** The address without its credentials or fragment, as each row's `feed_url`. */
-function withoutCredentials(address: string): URL {
+/**
+ * The address without its credentials, query or fragment: each row's
+ * `feed_url`, and what a feed's relative links resolve against. A private
+ * feed carries its token in the userinfo or the query, and neither may
+ * reach a row; a token in the path cannot be told from the path.
+ */
+function withoutSecrets(address: string): URL {
   const url = new URL(address);
   url.username = "";
   url.password = "";
+  url.search = "";
   url.hash = "";
   return url;
+}
+
+/**
+ * What the connector's state keeps a feed under, so the state file holds
+ * no token the address carries.
+ */
+export function feedStateKey(feedUrl: string): string {
+  return createHash("sha256")
+    .update(`feed-state:${feedUrl}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 /**
@@ -81,12 +107,32 @@ export interface Validators {
 
 export type Fetched =
   | { status: 304 }
-  | { status: 200; text: string; validators: Validators }
+  | {
+      status: 200;
+      text: string;
+      validators: Validators;
+      /** Where the document came from, after any redirect. */
+      url: string;
+    }
   | { status: number };
 
 /**
- * A feed's bytes as text, in the encoding XML's media types give it: a byte
- * order mark first, then the Content-Type's charset, then the XML
+ * The encoding a document's first bytes show: a byte order mark, or, with
+ * none, the zero bytes of `<?` written in UTF-16 (XML 1.0, appendix F).
+ */
+function sniffed(bytes: Uint8Array): string | undefined {
+  const [a, b, c, d] = bytes;
+  if (a === 0xef && b === 0xbb && c === 0xbf) return "utf-8";
+  if (a === 0xfe && b === 0xff) return "utf-16be";
+  if (a === 0xff && b === 0xfe) return "utf-16le";
+  if (a === 0x3c && b === 0x00 && c === 0x3f && d === 0x00) return "utf-16le";
+  if (a === 0x00 && b === 0x3c && c === 0x00 && d === 0x3f) return "utf-16be";
+  return undefined;
+}
+
+/**
+ * A feed's bytes as text, in the encoding XML's media types give it: what
+ * its first bytes show, then the Content-Type's charset, then the XML
  * declaration's, then UTF-8. A name the platform does not know gives way
  * to the next.
  */
@@ -94,17 +140,17 @@ export function decodeFeed(
   bytes: Uint8Array,
   contentType: string | null,
 ): string {
-  const bom =
-    bytes[0] === 0xfe && bytes[1] === 0xff
-      ? "utf-16be"
-      : bytes[0] === 0xff && bytes[1] === 0xfe
-        ? "utf-16le"
-        : undefined;
   const header = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(contentType ?? "")?.[1];
-  const declaration = /^\s*<\?xml[^>]*\sencoding\s*=\s*["']([^"']+)["']/.exec(
+  const declared = /^\s*<\?xml[^>]*\sencoding\s*=\s*["']([^"']+)["']/.exec(
     new TextDecoder("latin1").decode(bytes.subarray(0, 1024)),
   )?.[1];
-  for (const label of [bom, header, declaration]) {
+  // A declaration read from single-byte text cannot be true of UTF-16 or
+  // UTF-32, whatever it says; generators write one out of habit.
+  const declaration =
+    declared !== undefined && /^utf-?(16|32)/i.test(declared)
+      ? undefined
+      : declared;
+  for (const label of [sniffed(bytes), header, declaration]) {
     if (label === undefined) continue;
     try {
       return new TextDecoder(label).decode(bytes);
@@ -150,6 +196,7 @@ export async function fetchFeed(
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),
     },
+    url: response.url === "" ? feedUrl : response.url,
   };
 }
 
@@ -162,7 +209,7 @@ function isoOf(value: string | undefined): string | undefined {
 /**
  * The base a feed's or an entry's links resolve against: its own
  * `xml:base`, itself resolved against its parent's, else its parent's. The
- * parser reads no `xml:base` on a link itself.
+ * parser reads no `xml:base` on an Atom link itself.
  */
 function baseOf(parent: string, declared: string | undefined): string {
   const base = declared?.trim();
@@ -205,21 +252,40 @@ function textOf(value: string | undefined): string | undefined {
 }
 
 /** Elements that break a line, whose tags read as a space. */
-const blockTags =
-  /<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>/gi;
+/** A tag's inside: up to the `>` that is not within a quoted attribute value. */
+const tagBody = String.raw`(?:[^>"']|"[^"]*"|'[^']*')*>`;
+
+const blockTags = new RegExp(
+  String.raw`<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b` +
+    tagBody,
+  "gi",
+);
+
+/** A tag opens with a letter, `/`, `!` or `?`; any other `<` is text. */
+const anyTag = new RegExp(String.raw`<[A-Za-z/!?]` + tagBody, "g");
+
+function escapeText(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 /**
- * Markup as the text a reader sees: scripts, styles and comments dropped,
- * a block's tags read as a space and any other tag as nothing, entities
- * decoded, and whitespace run together.
+ * Markup as the text a reader sees: a CDATA section's text kept as text,
+ * scripts, styles and comments dropped, a block's tags read as a space and
+ * any other tag as nothing, entities decoded, and whitespace run together.
  */
 function plainOf(markup: string | undefined): string | undefined {
   if (markup === undefined) return undefined;
   const stripped = markup
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, text: string) =>
+      escapeText(text),
+    )
     .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(blockTags, " ")
-    .replace(/<[^>]*>/g, "");
+    .replace(anyTag, "");
   return textOf(decodeHTML(stripped).replace(/\s+/g, " "));
 }
 
@@ -233,15 +299,34 @@ function atomTextOf(
 }
 
 export interface Read {
+  /** The feed's part of its entries' `source_id`s. */
+  key: string;
   entries: Entry[];
   /** Entries with neither an id nor a link, which nothing can key. */
   unkeyed: number;
 }
 
-/** Reads an Atom or RSS 2.0 document into entries, or throws if it is neither. */
-export function readFeed(feedUrl: string, text: string): Read {
+/** The `xml:base` on an RSS 2.0 `<channel>`, which the parser does not read. */
+function channelBaseOf(text: string): string | undefined {
+  const match = /<channel\b[^>]*\sxml:base\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(
+    text,
+  );
+  return match?.[1] ?? match?.[2];
+}
+
+/**
+ * Reads an Atom or RSS 2.0 document into entries, or throws if it is
+ * neither. Its links resolve against where the document came from, which
+ * a redirect can move away from the address the connector was given.
+ */
+export function readFeed(
+  feedUrl: string,
+  text: string,
+  documentUrl: string = feedUrl,
+): Read {
   const parsed = parseFeed(text);
-  const feedAddress = withoutCredentials(feedUrl).href;
+  const feedAddress = withoutSecrets(feedUrl).href;
+  const documentBase = withoutSecrets(documentUrl).href;
   let unkeyed = 0;
   const entries: Entry[] = [];
   const keep = (
@@ -265,7 +350,7 @@ export function readFeed(feedUrl: string, text: string): Read {
   if (parsed.format === "atom") {
     const feed = parsed.feed;
     const key = feedKey(feedUrl, feed.id);
-    const feedBase = baseOf(feedUrl, feed.xml?.base);
+    const feedBase = baseOf(documentBase, feed.xml?.base);
     const alternate = (
       links: { href?: string; rel?: string }[] | undefined,
     ): string | undefined =>
@@ -299,12 +384,15 @@ export function readFeed(feedUrl: string, text: string): Read {
         key,
       );
     }
-    return { entries, unkeyed };
+    return { key, entries, unkeyed };
   }
   if (parsed.format === "rss") {
     const feed = parsed.feed;
     const key = feedKey(feedUrl, undefined);
-    const channelBase = baseOf(feedUrl, feed.xml?.base);
+    const channelBase = baseOf(
+      baseOf(documentBase, feed.xml?.base),
+      channelBaseOf(text),
+    );
     const siteUrl = linkOf(feed.link, channelBase);
     const language = languageOf(feed.language);
     for (const item of feed.items ?? []) {
@@ -334,7 +422,7 @@ export function readFeed(feedUrl: string, text: string): Read {
         key,
       );
     }
-    return { entries, unkeyed };
+    return { key, entries, unkeyed };
   }
   throw new Error(
     `a ${parsed.format} feed, where this connector reads Atom and RSS 2.0`,

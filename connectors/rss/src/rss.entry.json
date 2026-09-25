@@ -13,7 +13,7 @@
     "feed_url": {
       "type": "url",
       "required": true,
-      "description": "The feed's address, as the connector was given it, without credentials."
+      "description": "The feed's address, as the connector was given it, without credentials or query, where a private feed carries its token."
     }
   },
   "display_hints": {
