@@ -3,7 +3,14 @@ import {
   main,
   type TypeDefinition,
 } from "@withmarfa/connector";
-import { accountOf, entryOf, firstSync, sourceId, sync } from "./todoist.js";
+import {
+  accountOf,
+  entryOf,
+  firstSync,
+  sourceId,
+  sync,
+  timezoneOf,
+} from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
 
 const connector = defineConnector({
@@ -17,7 +24,7 @@ const connector = defineConnector({
     TODOIST_API_TOKEN: "secret",
     TODOIST_API_URL: "optional",
   },
-  async run({ env, signal, state, upsert, archive }) {
+  async run({ env, signal, state, log, upsert, archive }) {
     const held = state.get("sync_token");
     const answer = await sync(
       env.TODOIST_API_URL ?? "https://api.todoist.com",
@@ -33,14 +40,25 @@ const connector = defineConnector({
         "Todoist named no account for the token, so no task can be keyed to one",
       );
     }
+    const knownZone = state.get("timezone");
+    const named =
+      timezoneOf(answer.user) ??
+      (typeof knownZone === "string" ? knownZone : undefined);
+    if (named === undefined) {
+      log.condition(
+        "timezone",
+        "Todoist named no timezone for the account, so its due dates are read in UTC",
+      );
+    }
+    const timeZone = named ?? "UTC";
 
-    // A deleted task is archived, and a completed one stays active with
-    // `completed` set. A full sync lists only active tasks, so a task it
-    // leaves out is left as it is.
+    // A deleted task is archived, and a completed one stays active with its
+    // status and completion set. A full sync lists only active tasks, so a
+    // task it leaves out is left as it is.
     await upsert(
       answer.items
         .filter((item) => item.is_deleted !== true)
-        .map((item) => entryOf(account, item)),
+        .map((item) => entryOf(account, timeZone, item)),
     );
     await archive(
       answer.items
@@ -48,6 +66,7 @@ const connector = defineConnector({
         .map((item) => sourceId(account, item.id)),
     );
     state.set("account", account);
+    if (named !== undefined) state.set("timezone", named);
     state.set("sync_token", answer.sync_token);
   },
 });

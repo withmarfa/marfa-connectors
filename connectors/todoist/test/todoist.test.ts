@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import {
   accountOf,
+  dueOf,
   entryOf,
+  timezoneOf,
   type SyncAnswer,
   type TodoistItem,
 } from "../src/todoist.js";
@@ -18,23 +20,18 @@ const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const token = "todoist-test-token-value";
 
-/** `todoist.task` as the pinned server answers `GET /types/todoist.task`, descriptions aside. */
+/** `todoist.task` as the connector carries it, which the scripted server answers as it was registered. */
 const served = {
   id: "todoist.task",
   version: 1,
   label: "Todoist Task",
+  parent: "core.task",
   fields: {
-    title: { type: "string", required: true },
-    description: { type: "string" },
     project_id: { type: "string" },
     section_id: { type: "string" },
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
-    priority: { type: "integer" },
-    due: { type: "object" },
     child_order: { type: "integer" },
-    completed: { type: "boolean" },
-    url: { type: "url" },
     comment_count: { type: "integer" },
   },
   display_hints: { title_field: "title", body_field: "description" },
@@ -74,7 +71,7 @@ beforeEach(async () => {
   answer = () => ({
     sync_token: "t1",
     items: [],
-    user: { id: "2671355" },
+    user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
   });
   todoist = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -141,9 +138,10 @@ async function state(): Promise<Record<string, unknown>> {
 }
 
 describe("the mapping", () => {
-  it("keys a task by the account the Sync API names, and carries Todoist's own fields", () => {
+  it("keys a task by the account the Sync API names, as a core task with Todoist's own fields beside it", () => {
     const entry = entryOf(
       "2671355",
+      "Europe/London",
       task("6X7r", {
         content: "Buy milk",
         description: "Organic",
@@ -159,6 +157,7 @@ describe("the mapping", () => {
         section_id: "s1",
         note_count: 2,
         checked: true,
+        completed_at: "2026-09-02T08:30:00.000000Z",
       }),
     );
     expect(entry).toEqual({
@@ -166,33 +165,99 @@ describe("the mapping", () => {
       properties: {
         title: "Buy milk",
         description: "Organic",
+        priority: "urgent",
+        due_at: "2026-09-29T23:00:00.000Z",
+        precision: "day",
+        status: "completed",
+        completed_at: "2026-09-02T08:30:00.000Z",
+        url: "https://app.todoist.com/app/task/6X7r",
         project_id: "p1",
         section_id: "s1",
         parent_id: undefined,
         labels: ["Food"],
-        priority: 4,
-        due: {
-          date: "2026-09-30",
-          is_recurring: false,
-          string: "Sep 30",
-          lang: "en",
-          timezone: null,
-        },
         child_order: 1,
-        completed: true,
-        url: "https://app.todoist.com/app/task/6X7r",
         comment_count: 2,
       },
       occurred_at: "2026-09-01T10:00:00.000000Z",
     });
   });
 
+  it("maps Todoist's priorities 1 to 4 onto the core's, as ruled", () => {
+    expect(
+      [1, 2, 3, 4].map(
+        (priority) =>
+          entryOf("1", "UTC", task("a", { priority })).properties["priority"],
+      ),
+    ).toEqual(["low", "medium", "high", "urgent"]);
+  });
+
+  it("reads each kind of due date: a whole day, a floating time and a fixed one", () => {
+    const zone = "America/New_York";
+    expect(dueOf({ date: "2026-09-30" }, zone)).toEqual({
+      due_at: "2026-09-30T04:00:00.000Z",
+      precision: "day",
+    });
+    expect(dueOf({ date: "2026-12-06T12:00:00.000000" }, zone)).toEqual({
+      due_at: "2026-12-06T17:00:00.000Z",
+      precision: "time",
+    });
+    expect(
+      dueOf(
+        { date: "2026-12-06T13:00:00.000000Z", timezone: "Europe/Madrid" },
+        zone,
+      ),
+    ).toEqual({ due_at: "2026-12-06T13:00:00.000Z", precision: "time" });
+    // Either side of the clocks going forward in New York, 8 March 2026.
+    expect(dueOf({ date: "2026-03-08T01:30:00" }, zone)?.due_at).toBe(
+      "2026-03-08T06:30:00.000Z",
+    );
+    expect(dueOf({ date: "2026-03-08T03:30:00" }, zone)?.due_at).toBe(
+      "2026-03-08T07:30:00.000Z",
+    );
+    expect(dueOf({ date: "next week" }, zone)).toBeUndefined();
+    expect(dueOf(null, zone)).toBeUndefined();
+  });
+
+  it("reads the account's timezone only where the platform knows it", () => {
+    expect(timezoneOf({ tz_info: { timezone: "Europe/London" } })).toBe(
+      "Europe/London",
+    );
+    for (const user of [
+      undefined,
+      {},
+      { tz_info: {} },
+      { tz_info: { timezone: "" } },
+      { tz_info: { timezone: "Mars/Olympus" } },
+      { tz_info: { timezone: 60 } },
+    ]) {
+      expect(timezoneOf(user)).toBeUndefined();
+    }
+  });
+
   it("clears what Todoist leaves empty", () => {
-    const { properties } = entryOf("1", task("a"));
-    expect(properties["description"]).toBeUndefined();
-    expect(properties["labels"]).toBeUndefined();
-    expect(properties["due"]).toBeUndefined();
-    expect(properties["section_id"]).toBeUndefined();
+    const set = entryOf(
+      "1",
+      "UTC",
+      task("a", {
+        description: "D",
+        labels: ["L"],
+        due: { date: "2026-09-30" },
+        section_id: "s",
+      }),
+    ).properties;
+    const { properties } = entryOf("1", "UTC", task("a"));
+    for (const field of [
+      "description",
+      "labels",
+      "due_at",
+      "precision",
+      "section_id",
+    ]) {
+      expect(set[field]).toBeDefined();
+      expect(properties[field]).toBeUndefined();
+    }
+    expect(properties["status"]).toBe("pending");
+    expect(properties["completed_at"]).toBeUndefined();
   });
 
   it("refuses an account it could not key a task by", () => {
@@ -219,7 +284,7 @@ describe("the connector, run as a process", () => {
         task("a", { content: "One" }),
         task("b", { content: "Two", priority: 3 }),
       ],
-      user: { id: "2671355" },
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     expect((await once()).code).toBe(0);
     expect(received[0]).toEqual({
@@ -239,14 +304,18 @@ describe("the connector, run as a process", () => {
       ["2671355:b", "feed", "Two", "2026-09-01T10:00:00.000Z"],
     ]);
     expect(marfa.requestsTo("POST", "/types")).toEqual([]);
-    expect(await state()).toEqual({ account: "2671355", sync_token: "t1" });
+    expect(await state()).toEqual({
+      account: "2671355",
+      timezone: "Europe/London",
+      sync_token: "t1",
+    });
   });
 
   it("follows a delta: a change updated, a completion kept active, a deletion archived", async () => {
     answer = () => ({
       sync_token: "t1",
       items: [task("a"), task("b"), task("c"), task("d")],
-      user: { id: "2671355" },
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     expect((await once()).code).toBe(0);
     answer = () => ({
@@ -261,40 +330,73 @@ describe("the connector, run as a process", () => {
     expect(received.map((request) => request.syncToken)).toEqual(["*", "t1"]);
     expect(marfa.row("2671355:a").properties["title"]).toBe("Task a, renamed");
     expect(marfa.row("2671355:a").version).toBe(2);
-    expect(marfa.row("2671355:b").properties["completed"]).toBe(true);
+    expect(marfa.row("2671355:b").properties["status"]).toBe("completed");
     expect(marfa.row("2671355:b").state).toBe("active");
     expect(marfa.row("2671355:c").state).toBe("archived");
     expect(marfa.row("2671355:d").version).toBe(1);
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 0, updated 2, archived 1, unchanged 0, skipped 0",
     );
-    expect(await state()).toEqual({ account: "2671355", sync_token: "t2" });
+    expect(await state()).toEqual({
+      account: "2671355",
+      timezone: "Europe/London",
+      sync_token: "t2",
+    });
   });
 
   it("clears a due date Todoist removed", async () => {
     answer = () => ({
       sync_token: "t1",
       items: [task("a", { due: { date: "2026-09-30", is_recurring: false } })],
-      user: { id: "2671355" },
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     expect((await once()).code).toBe(0);
-    expect(marfa.row("2671355:a").properties["due"]).toEqual({
-      date: "2026-09-30",
-      is_recurring: false,
+    expect(marfa.row("2671355:a").properties).toMatchObject({
+      due_at: "2026-09-29T23:00:00.000Z",
+      precision: "day",
     });
+    // A delta names no user; the timezone kept from the full sync reads it.
     answer = () => ({
       sync_token: "t2",
+      items: [task("a", { due: { date: "2026-10-01T09:00:00" } })],
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties).toMatchObject({
+      due_at: "2026-10-01T08:00:00.000Z",
+      precision: "time",
+    });
+    answer = () => ({
+      sync_token: "t3",
       items: [task("a", { due: null })],
     });
     expect((await once()).code).toBe(0);
-    expect(marfa.row("2671355:a").properties).not.toHaveProperty("due");
+    expect(marfa.row("2671355:a").properties).not.toHaveProperty("due_at");
+    expect(marfa.row("2671355:a").properties).not.toHaveProperty("precision");
+  });
+
+  it("reads due dates in UTC when Todoist names no timezone, and says so once", async () => {
+    answer = () => ({
+      sync_token: "t1",
+      items: [task("a", { due: { date: "2026-10-01T09:00:00" } })],
+      user: { id: "2671355" },
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T09:00:00.000Z",
+    );
+    expect(marfa.runs.at(-1)?.summary).toContain("named no timezone");
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs).toHaveLength(2);
+    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 0, /);
+    expect(marfa.runs.at(-1)?.summary).not.toContain("timezone");
+    expect(await state()).toEqual({ account: "2671355", sync_token: "t1" });
   });
 
   it("holds the token when a write did not land, and asks for the same delta again", async () => {
     answer = () => ({
       sync_token: "t1",
       items: [task("a"), task("b")],
-      user: { id: "2671355" },
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     marfa.entryRefusals.set("2671355:b", {
       status: 400,
@@ -308,7 +410,11 @@ describe("the connector, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(received.map((request) => request.syncToken)).toEqual(["*", "*"]);
     expect(marfa.rows).toHaveLength(2);
-    expect(await state()).toEqual({ account: "2671355", sync_token: "t1" });
+    expect(await state()).toEqual({
+      account: "2671355",
+      timezone: "Europe/London",
+      sync_token: "t1",
+    });
   });
 
   it("writes nothing when Todoist names no account", async () => {
