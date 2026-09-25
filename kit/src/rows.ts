@@ -303,7 +303,16 @@ export class Rows {
       ) {
         return true;
       }
-      change = { kind: "updated", item: row.item };
+      // What moved is what the row shows: a state the record does not
+      // hold is a transition, decided as one; a version moved is an
+      // update, decided by the times.
+      const kind =
+        row.state !== record.state
+          ? row.state === "archived"
+            ? "archived"
+            : "restored"
+          : "updated";
+      change = { kind, item: row.item };
       pending.set(row.id, change);
     }
     if (transition(change)) return true;

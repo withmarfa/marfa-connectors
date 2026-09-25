@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Harness, vendor, type Vendor } from "./harness.js";
@@ -215,15 +215,27 @@ describe("what is carried back", () => {
   });
 
   it("is every row once, with a condition, when the log no longer holds the cursor", async () => {
+    harness.server.types.set("test.sub", {
+      id: "test.sub",
+      parent: "test.entry",
+      fields: {},
+    });
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
+    // Listed under the type's filter with the rest, and not the
+    // connector's to carry.
+    harness.server.insert(undefined, { title: "Sub" }, "test.sub", "person");
 
     harness.server.tooOld = true;
     await quietRun(held);
     expect(held.changes.map((change) => change.kind).sort()).toEqual([
       "updated",
       "updated",
+    ]);
+    expect(held.changes.map((change) => change.item.type)).toEqual([
+      "test.entry",
+      "test.entry",
     ]);
     expect(harness.lastRun().summary).toContain("every row of the type");
     expect((await watchState()).cursor).toBe(String(harness.server.head));
@@ -265,13 +277,11 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // A stream that never says it is live, the frame that would show the
-    // head reached withheld too, so nothing but the request's own timeout
-    // ends the read; what was read stands and the cursor is the last id
-    // received.
+    // The stream stalls after the first frame, never saying it is live,
+    // so nothing but the request's own timeout ends the read; what was
+    // read stands and the cursor is the last id received.
     held.entries = [];
-    harness.server.withholdHead = true;
-    harness.server.withholdLive = true;
+    harness.server.stallAfter = 1;
     harness.requestTimeoutMs = 200;
     await quietRun(held);
     expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
@@ -280,8 +290,7 @@ describe("a read that ends early", () => {
       expect.stringContaining("the read timed out"),
     );
 
-    harness.server.withholdHead = false;
-    harness.server.withholdLive = false;
+    harness.server.stallAfter = undefined;
     harness.requestTimeoutMs = 5000;
     await quietRun(held);
     expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
@@ -296,25 +305,63 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The head is a frame this reader is never sent. The marker names it
-    // all the same, so the read ends there and the next run does not walk
-    // the withheld frame again.
+    // The head is another type's frame, which this reader is never sent.
+    // The marker names it all the same, so the read ends there and the
+    // next run resumes past it.
+    harness.server.insert(
+      undefined,
+      { title: "Other" },
+      "test.other",
+      "person",
+    );
     held.entries = [];
-    harness.server.withholdHead = true;
     expect(await quietRun(held)).toBe(0);
-    expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
+    expect(held.changes.map((change) => change.item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
     expect((await watchState()).cursor).toBe(String(harness.server.head));
     // The read was whole, so nothing is deferred to the next run.
     expect(harness.lines).not.toContainEqual(
       expect.stringContaining("is read next run"),
     );
 
-    harness.server.withholdHead = false;
     await quietRun(held);
     expect(held.changes).toEqual([]);
     expect(streams().at(-1)?.headers["last-event-id"]).toBe(
       String(harness.server.head),
     );
+  });
+
+  it("keeps the last id read where the marker names no position", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+    // A server whose head read outran its budget sends the marker with no
+    // cursor; the read still ends there, and resumes from the last frame.
+    harness.server.liveCursorNull = true;
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes.map((change) => change.item.id)).toEqual([row.id]);
+    expect((await watchState()).cursor).toBe(String(harness.server.head));
+  });
+
+  it("fails the run and holds the cursor when the events request is refused", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const before = (await watchState()).cursor;
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+    harness.server.refuseNext("GET /events", 503, "unavailable");
+    expect(await quietRun(held)).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(held.changes).toEqual([]);
+    expect((await watchState()).cursor).toBe(before);
+    // The witness: the next run reads the change.
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes.map((change) => change.item.id)).toEqual([row.id]);
   });
 });
 
@@ -579,9 +626,17 @@ describe("what the memory holds", () => {
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { title: "One, by a person" });
 
-    // The log's only frame is withheld, so the read shows nothing; the
-    // row's version is past the connector's last write all the same.
-    harness.server.withholdHead = true;
+    // The stream never says it is live and the request times out before
+    // the edit's frame arrives, so the read shows nothing; the row's
+    // version is past the connector's last write all the same.
+    harness.server.withholdLive = true;
+    harness.server.beforeAnswer = async (request) => {
+      if (request.path === "/events") {
+        // Long enough that the request's timeout ends the read first.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    };
+    harness.requestTimeoutMs = 200;
     held.entries = [
       {
         ...one,
@@ -589,6 +644,11 @@ describe("what the memory holds", () => {
       },
     ];
     await quietRun(held);
+    harness.server.beforeAnswer = undefined;
+    harness.requestTimeoutMs = 5000;
+    expect(harness.lines).toContainEqual(
+      expect.stringContaining("the read timed out"),
+    );
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, by a person",
     );
@@ -640,12 +700,21 @@ describe("what the memory holds", () => {
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
 
-    // The next read shows the person's edit and the connector's write over
-    // it; the write is the row's latest frame, and it is the connector's.
+    // A read from the start of the log shows the person's edit before the
+    // connector's write over it. The edit is from before the two sides
+    // last agreed and the write is the connector's: neither is carried,
+    // and the earlier frame does not make the later one read as
+    // somebody else's.
+    const file = join(harness.stateDir, "test.json");
+    const stored = JSON.parse(await readFile(file, "utf8")) as {
+      watch: { cursor?: string };
+    };
+    delete stored.watch.cursor;
+    await writeFile(file, JSON.stringify(stored));
     held.entries = [];
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
-    expect(harness.lastRun().summary).toMatch(/own 1/);
+    expect(harness.lastRun().summary).toMatch(/pushed 0, own 3/);
   });
 });
 
@@ -820,5 +889,209 @@ describe("a tie between the two sides", () => {
       "One, by a person",
     );
     expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+  });
+});
+
+describe("what echoes after a conflict", () => {
+  // Each case ends with a quiet run: the connector's own last write is
+  // read back, and it is nobody else's.
+  it("is nothing, where the vendor won over a person's edit made between the read and the pull", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "GET" && request.path === "/items") {
+        harness.server.edit(row.id, { note: "by a person" });
+        harness.server.beforeAnswer = undefined;
+      }
+    };
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: "2027-01-01T00:00:00.000Z",
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    expect(harness.lastRun().summary).toMatch(/conflicts 1/);
+
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toMatch(/pushed 0, own 2, conflicts 0/);
+  });
+
+  it("is nothing, after a put-back", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    const earlier = new Date(
+      Date.parse(row.updated_at) - 120_000,
+    ).toISOString();
+    harness.server.afterList = () => {
+      harness.server.edit(row.id, { note: "by a person, since the read" });
+      harness.server.afterList = undefined;
+    };
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: earlier,
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toMatch(/pushed 0, own 3, conflicts 0/);
+  });
+
+  it("is nothing, after the vendor's change was written again over a merge", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    const later = new Date(Date.parse(row.updated_at) + 120_000).toISOString();
+    harness.server.afterList = () => {
+      harness.server.edit(row.id, { note: "by a person, since the read" });
+      harness.server.afterList = undefined;
+    };
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: later,
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.changes).toEqual([]);
+
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toMatch(/pushed 0, own 3, conflicts 0/);
+  });
+});
+
+describe("the person's moment, after a merge", () => {
+  it("is the person's write, not the merge over it: a vendor later than the one and earlier than the other wins", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    let personsWrite: string | undefined;
+    harness.server.afterList = () => {
+      personsWrite = harness.server.edit(row.id, {
+        note: "by a person, since the read",
+      }).updated_at;
+      harness.server.afterList = undefined;
+    };
+    // The server's clock moves a second per write, so half a second past
+    // the person's write is before the merge that follows it.
+    const entry = {
+      ...one,
+      properties: { ...one.properties, title: "One, by the vendor" },
+      changed_at: "",
+    };
+    held.entries = [entry];
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "PATCH" && personsWrite !== undefined) {
+        entry.changed_at = new Date(
+          Date.parse(personsWrite) + 500,
+        ).toISOString();
+      }
+    };
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    harness.server.beforeAnswer = undefined;
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by the vendor",
+      note: "first",
+      vendor_id: "v1",
+    });
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toMatch(/conflicts 1/);
+  });
+});
+
+describe("a purge and a transition met by the memory", () => {
+  it("carries a purge back after the trash it already carried", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
+    // The purge's frame shows the version and state the trash left, which
+    // the memory holds as its own; the row is gone all the same.
+    harness.server.purgeById(row.id);
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 0/);
+    expect((await watchState()).written[row.id]).toBeUndefined();
+  });
+
+  it("does not create a person's linked row again after they purged it", async () => {
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs", vendor_id: "v-theirs" },
+      "test.entry",
+      "person",
+    );
+    const held = vendor([]);
+    await harness.twoWay(held);
+    harness.server.trash(theirs.id);
+    harness.server.purgeById(theirs.id);
+    // The vendor still lists the entry, by the link the row carried.
+    held.entries = [
+      {
+        source_id: "v-theirs",
+        properties: { title: "Theirs", vendor_id: "v-theirs" },
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.rows).toHaveLength(0);
+    expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
+    expect(harness.lastRun().summary).toMatch(/created 0, .*skipped 1/);
+  });
+
+  it("carries a person's archive made between the read and the pull as the transition it is", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    // Between the log's read and the rows' listing, so the listing shows
+    // the row in a state the memory does not hold, at the same version.
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "GET" && request.path === "/items") {
+        harness.server.transition(row.id, "archived");
+        harness.server.beforeAnswer = undefined;
+      }
+    };
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: "2026-09-01T00:00:00.000Z",
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    // A transition touches no property: the vendor's write proceeds, the
+    // archive is carried back, and nothing is a conflict.
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    expect(harness.server.row("a:1").state).toBe("archived");
+    expect(held.changes.map((change) => change.kind)).toEqual(["archived"]);
+    expect(harness.lastRun().summary).toMatch(/conflicts 0/);
   });
 });

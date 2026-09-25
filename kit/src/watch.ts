@@ -35,10 +35,26 @@ export class Memory {
     Reflect.deleteProperty(this.written, id);
   }
 
-  /** Whether the event is the connector's own, forgetting what is past. */
+  /**
+   * Whether the event is nothing new to the vendor: the connector's own
+   * write, or a frame from before the two sides last agreed. Forgets a
+   * record the event has moved past.
+   */
   own(kind: ChangeKind, item: Item): boolean {
     const record = this.written[item.id];
     if (record === undefined) return false;
+    // A purge carries the version and state the row had, which can be
+    // those of a trash the connector carried back; the row is gone all
+    // the same.
+    if (kind === "purged") {
+      Reflect.deleteProperty(this.written, item.id);
+      return false;
+    }
+    // A frame from before the record: a person's change the connector has
+    // since written over, or its own earlier write. The log shows it
+    // before the write that superseded it, and forgetting the record on
+    // it would make that write read as somebody else's.
+    if (item.version < record.version) return true;
     if (item.version === record.version && item.state === record.state) {
       return true;
     }

@@ -130,6 +130,15 @@ describe("setLink", () => {
       "test.entry",
       "person",
     );
+    // The row moves as the first write is on its way and the write is
+    // refused as colliding, so the retry has to name the version the row
+    // moved to: one at the version the change showed would be stale too.
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "PATCH" && request.path.endsWith(theirs.id)) {
+        harness.server.edit(theirs.id, { title: "Theirs, moved" });
+        harness.server.beforeAnswer = undefined;
+      }
+    };
     harness.server.refuseNext(
       `PATCH /items/${theirs.id}`,
       409,
@@ -138,10 +147,14 @@ describe("setLink", () => {
     const held = vendor([]);
     held.vendorIdFor = () => "v-theirs";
     expect(await harness.twoWay(held)).toBe(0);
-    expect(patches()).toHaveLength(2);
-    expect(harness.server.byId(theirs.id).properties["vendor_id"]).toBe(
-      "v-theirs",
-    );
+    expect(
+      patches().map((request) => (request.body as { version: number }).version),
+    ).toEqual([1, 2]);
+    expect(harness.server.byId(theirs.id).properties).toEqual({
+      title: "Theirs, moved",
+      vendor_id: "v-theirs",
+    });
+    expect(harness.server.byId(theirs.id).version).toBe(3);
   });
 
   it("refuses a value another row of the type carries, naming both", async () => {
@@ -168,5 +181,81 @@ describe("setLink", () => {
       harness.server.byId(theirs.id).properties["vendor_id"],
     ).toBeUndefined();
     expect(patches()).toHaveLength(0);
+  });
+});
+
+describe("a row the vendor has not been told about", () => {
+  it("is carried before the vendor is read, so a run that failed after the vendor answered makes no twin", async () => {
+    const held = vendor([]);
+    expect(await harness.twoWay(held)).toBe(0);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    // The vendor makes its copy and answers an id, then the write of that
+    // id onto the row is refused, so the run fails with the vendor ahead
+    // of Marfa.
+    held.vendorIdFor = (change) =>
+      change.item.id === theirs.id ? "v-theirs" : undefined;
+    harness.server.refuseNext(`PATCH /items/${theirs.id}`, 503, "unavailable");
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(
+      harness.server.byId(theirs.id).properties["vendor_id"],
+    ).toBeUndefined();
+
+    // The vendor now lists what it made. Read first, that would be a new
+    // entry and a second row; carried first, the row is linked and the
+    // entry finds it.
+    held.entries = [
+      {
+        source_id: "v-theirs",
+        properties: { title: "Theirs", vendor_id: "v-theirs" },
+        changed_at: "2026-09-24T00:00:00.000Z",
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      harness.server.rows.filter(
+        (row) => row.properties["vendor_id"] === "v-theirs",
+      ),
+    ).toHaveLength(1);
+    expect(harness.server.byId(theirs.id).properties["vendor_id"]).toBe(
+      "v-theirs",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual([
+      "created",
+      "created",
+    ]);
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 1/,
+    );
+  });
+
+  it("is carried before the rest, which follow the vendor's read in log order", async () => {
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    const mine = harness.server.row("a:1");
+    harness.server.edit(mine.id, { title: "One, edited" });
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.vendorIdFor = (change) =>
+      change.item.id === theirs.id ? "v-theirs" : undefined;
+    held.changes.length = 0;
+    // The vendor sends nothing this run, so the edit is not contested.
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    // The edit was logged before the create, and is carried after it.
+    expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
+      [
+        ["created", theirs.id],
+        ["updated", mine.id],
+      ],
+    );
   });
 });

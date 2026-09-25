@@ -172,32 +172,39 @@ export async function runOnce<E extends EnvDeclaration>(
         logger.warn(`${read.incomplete}; the rest of the log is read next run`);
       }
     }
+    const carry = async (change: Change): Promise<void> => {
+      // A stop here fails the run, as one inside a write does: the
+      // cursor then holds, and the changes not yet carried are offered
+      // again.
+      if (setup.signal.aborted) throw new Stopped();
+      if (connector.onChange === undefined) return;
+      await connector.onChange(change, watchContext);
+      pushed += 1;
+      // The vendor now has the row as this change showed it, so the two
+      // sides agree at this version and state; a purged row has none.
+      // A write the push made itself, the link, is a later agreement
+      // and stands.
+      const record = memory.written[change.item.id];
+      if (change.kind === "purged") memory.forget(change.item.id);
+      else if (record === undefined || record.version <= change.item.version) {
+        memory.remember(change.item.id, change.item.version, change.item.state);
+      }
+    };
+    if (pending !== undefined && connector.onChange !== undefined) {
+      // A row the vendor has not been told about is carried before the
+      // vendor is read. Nothing the vendor sends can concern it, and a
+      // run that failed between the vendor's answer and the link would
+      // otherwise read the vendor's copy first and create the row's twin,
+      // leaving the link nowhere to go.
+      for (const change of pending.values()) {
+        if (change.kind !== "created") continue;
+        await carry(change);
+        pending.delete(change.item.id);
+      }
+    }
     await connector.run(context);
     if (pending !== undefined && connector.onChange !== undefined) {
-      for (const change of pending.values()) {
-        // A stop here fails the run, as one inside a write does: the
-        // cursor then holds, and the changes not yet carried are offered
-        // again.
-        if (setup.signal.aborted) throw new Stopped();
-        await connector.onChange(change, watchContext);
-        pushed += 1;
-        // The vendor now has the row as this change showed it, so the two
-        // sides agree at this version and state; a purged row has none.
-        // A write the push made itself, the link, is a later agreement
-        // and stands.
-        const record = memory.written[change.item.id];
-        if (change.kind === "purged") memory.forget(change.item.id);
-        else if (
-          record === undefined ||
-          record.version <= change.item.version
-        ) {
-          memory.remember(
-            change.item.id,
-            change.item.version,
-            change.item.state,
-          );
-        }
-      }
+      for (const change of pending.values()) await carry(change);
     }
   } catch (error) {
     failure = error;

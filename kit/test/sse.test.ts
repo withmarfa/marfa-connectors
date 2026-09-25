@@ -40,9 +40,14 @@ describe("the frame reader", () => {
     ]);
   });
 
-  it("drops comments, keeps a value without a leading space, and yields a last frame with no blank line after it", async () => {
-    const read = await all([": keep-alive\n", "event:ping\ndata:x"]);
-    expect(read).toEqual([{ id: undefined, event: "ping", data: "x" }]);
+  it("drops comments, keeps a value without a leading space, and drops a last frame the stream ended inside", async () => {
+    // The blank line is what says the server finished the frame; one cut
+    // off before it may be cut off mid-value. The witness: the same frame
+    // ended is yielded.
+    expect(await all([": keep-alive\n", "event:ping\ndata:x\n\n"])).toEqual([
+      { id: undefined, event: "ping", data: "x" },
+    ]);
+    expect(await all([": keep-alive\n", "event:ping\ndata:x"])).toEqual([]);
   });
 
   it("yields nothing for a stream of comments alone", async () => {

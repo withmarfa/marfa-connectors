@@ -57,11 +57,9 @@ export async function* frames(
         field(line);
       }
     }
-    // A stream that ends mid-line ends the line, and a frame it was
-    // holding is still a frame.
-    if (text !== "") field(text.replace(/\r$/, ""));
-    const last = closed();
-    if (last !== undefined) yield last;
+    // A frame the stream ended inside is not a frame: the blank line is
+    // what says the server finished writing it, and a stream cut off
+    // mid-frame may have been cut off mid-value.
   } finally {
     await reader.cancel().catch(() => undefined);
   }
