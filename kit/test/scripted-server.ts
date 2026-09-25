@@ -16,16 +16,20 @@ import { CONTRACT_VERSION } from "@withmarfa/client";
  *   and under `replace` a field the ancestor had and the body leaves out is
  *   one of them, cleared, unless the row no longer holds it; a field or the
  *   own time it changes that also changed there answers `version_conflict`,
- *   and a value echoed from the version named is not a change.
+ *   and a value echoed from the version named is not a change;
+ * - every write reaches a log the stream replays from a cursor, ids in the
+ *   order the writes were made, each frame carrying the row as it then was,
+ *   narrowed to a type and its subtree, the first frame naming the head.
  * It lets a test script what the real server cannot be asked for: another
- * writer between a read and a write, a refusal, a delay.
+ * writer between a read and a write, a refusal, a delay, a cursor the log
+ * no longer holds, a stream that ends early or never reaches its head.
  */
 
 export interface Row {
   id: string;
   type: string;
   source: string;
-  source_id: string;
+  source_id: string | undefined;
   properties: Record<string, unknown>;
   state: "active" | "archived" | "trashed";
   tier: "feed" | "library";
@@ -47,7 +51,15 @@ export interface Request {
   method: string;
   path: string;
   query: URLSearchParams;
+  headers: Record<string, string | undefined>;
   body: unknown;
+}
+
+/** One event as the log holds it. */
+export interface Event {
+  id: number;
+  event: string;
+  item: Row;
 }
 
 interface Refusal {
@@ -56,9 +68,16 @@ interface Refusal {
   message: string;
 }
 
+/**
+ * What a version held, written when a write leaves the version, at that
+ * write's moment; a transition writes one of its own version too, without
+ * moving it, as the real server does.
+ */
 interface Snapshot {
+  version: number;
   properties: Record<string, unknown>;
   occurred_at: string;
+  created_at: string;
 }
 
 type Send = (status: number, payload: unknown) => void;
@@ -88,6 +107,8 @@ export class ScriptedServer {
   heartbeats = 0;
   registrations = 0;
   requests: Request[] = [];
+  /** Every write, in the order made. */
+  readonly log: Event[] = [];
   /** Bulk entries refused by `source_id`, as the server refuses one entry. */
   readonly entryRefusals = new Map<string, Refusal>();
   /** Called after an own-rows page is answered, before the next request. */
@@ -96,10 +117,20 @@ export class ScriptedServer {
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
   /** A body over this many bytes is refused whole, as the server's cap refuses it. */
   bodyCap: number | undefined;
+  /** The stream answers `catchup_too_old` to any cursor. */
+  tooOld = false;
+  /** The stream ends with `stream_incomplete` after this many frames. */
+  incompleteAfter: number | undefined;
+  /** The stream never says it is live, and stays open: a server without the marker. */
+  withholdLive = false;
+  /** The stream stops writing after this many frames and stays open, as a slow server does. */
+  stallAfter: number | undefined;
+  /** The marker names no position, as the server's does when its head read outran its budget. */
+  liveCursorNull = false;
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
-  private readonly snapshots = new Map<string, Map<number, Snapshot>>();
+  private readonly snapshots = new Map<string, Snapshot[]>();
   private readonly http = createServer((req, res) => {
     void this.answer(req, res);
   });
@@ -147,6 +178,12 @@ export class ScriptedServer {
     return row;
   }
 
+  byId(id: string): Row {
+    const row = this.rows.find((candidate) => candidate.id === id);
+    if (row === undefined) throw new Error(`no row with id ${id}`);
+    return row;
+  }
+
   /** Another writer changes a row, moving its version. */
   touch(sourceId: string, properties: Record<string, unknown>): void {
     const row = this.row(sourceId);
@@ -163,30 +200,78 @@ export class ScriptedServer {
     occurredAt?: string,
   ): void {
     const row = this.row(sourceId);
-    if (occurredAt !== undefined) row.occurred_at = occurredAt;
-    this.write(row, properties);
+    this.write(row, properties, occurredAt);
+  }
+
+  /** A person edits a row, by its id, laying properties over its own. */
+  edit(id: string, properties: Record<string, unknown>): Row {
+    const row = this.byId(id);
+    this.write(row, { ...row.properties, ...properties });
+    return row;
+  }
+
+  /** A person moves a row to a state, as the transition door does. */
+  transition(id: string, state: Row["state"]): Row {
+    const row = this.byId(id);
+    this.snapshot(row);
+    row.state = state;
+    row.updated_at = this.now();
+    this.announce("item.state_changed", row);
+    return row;
+  }
+
+  /** A person puts a row in the bin. */
+  trash(id: string): Row {
+    const row = this.byId(id);
+    this.snapshot(row);
+    row.state = "trashed";
+    row.updated_at = this.now();
+    this.announce("item.deleted", row);
+    return row;
+  }
+
+  /** A person brings a row back from the bin. */
+  restore(id: string): Row {
+    const row = this.byId(id);
+    this.snapshot(row);
+    row.state = "active";
+    row.updated_at = this.now();
+    this.announce("item.restored", row);
+    return row;
   }
 
   /** A person empties the bin of this row. */
   purge(sourceId: string): void {
-    this.rows = this.rows.filter((row) => row.source_id !== sourceId);
+    const row = this.row(sourceId);
+    this.purgeById(row.id);
   }
 
-  /** A row created by another process holding the same key. */
+  purgeById(id: string): void {
+    const row = this.byId(id);
+    this.rows = this.rows.filter((candidate) => candidate.id !== id);
+    this.announce("item.purged", row);
+  }
+
+  /**
+   * A row created by another process holding the same key, or, under
+   * another source, by a person.
+   */
   insert(
-    sourceId: string,
+    sourceId: string | undefined,
     properties: Record<string, unknown>,
     type: string,
+    source = this.source,
   ): Row {
     const row = this.newRow(
       type,
-      this.source,
+      source,
       sourceId,
       properties,
       undefined,
       "feed",
     );
     this.rows.push(row);
+    this.announce("item.created", row);
     return row;
   }
 
@@ -196,24 +281,52 @@ export class ScriptedServer {
     );
   }
 
+  /** The log's head: the id of the last event, or 0 with none. */
+  get head(): number {
+    return this.log[this.log.length - 1]?.id ?? 0;
+  }
+
   private now(): string {
     this.clock += 1000;
     return new Date(this.clock).toISOString();
   }
 
-  private write(row: Row, properties: Record<string, unknown>): void {
+  /** Moves the server's clock on, so a later write is later by that much. */
+  advance(ms: number): void {
+    this.clock += ms;
+  }
+
+  private announce(event: string, row: Row): void {
+    this.log.push({ id: this.log.length + 1, event, item: { ...row } });
+  }
+
+  /** A snapshot of the row as it stands, at this moment. */
+  private snapshot(row: Row): void {
+    this.snapshots.get(row.id)?.push({
+      version: row.version,
+      properties: row.properties,
+      occurred_at: row.occurred_at,
+      created_at: this.now(),
+    });
+  }
+
+  private write(
+    row: Row,
+    properties: Record<string, unknown>,
+    occurredAt?: string,
+  ): void {
+    this.snapshot(row);
     row.properties = properties;
+    if (occurredAt !== undefined) row.occurred_at = occurredAt;
     row.version += 1;
     row.updated_at = this.now();
-    this.snapshots
-      .get(row.id)
-      ?.set(row.version, { properties, occurred_at: row.occurred_at });
+    this.announce("item.updated", row);
   }
 
   private newRow(
     type: string,
     source: string,
-    sourceId: string,
+    sourceId: string | undefined,
     properties: Record<string, unknown>,
     occurredAt: string | undefined,
     tier: "feed" | "library",
@@ -233,11 +346,15 @@ export class ScriptedServer {
       created_at: at,
       updated_at: at,
     };
-    this.snapshots.set(
-      row.id,
-      new Map([[1, { properties, occurred_at: row.occurred_at }]]),
-    );
+    this.snapshots.set(row.id, []);
     return row;
+  }
+
+  private wire(row: Row): Record<string, unknown> {
+    return {
+      ...row,
+      ...(row.source_id === undefined && { source_id: undefined }),
+    };
   }
 
   private async answer(
@@ -250,10 +367,15 @@ export class ScriptedServer {
     const text = Buffer.concat(chunks).toString("utf8");
     const body: unknown = text === "" ? undefined : JSON.parse(text);
     const method = req.method ?? "GET";
+    const headers: Record<string, string | undefined> = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      headers[name] = Array.isArray(value) ? value.join(", ") : value;
+    }
     const request = {
       method,
       path: url.pathname,
       query: url.searchParams,
+      headers,
       body,
     };
     this.requests.push(request);
@@ -352,56 +474,148 @@ export class ScriptedServer {
       send(201, { type: input });
       return;
     }
+    if (method === "GET" && url.pathname === "/events") {
+      this.stream(url.searchParams, headers["last-event-id"], res);
+      return;
+    }
     if (method === "GET" && url.pathname === "/items") {
       this.listItems(url.searchParams, send);
       this.afterList?.();
+      return;
+    }
+    if (method === "POST" && url.pathname === "/items") {
+      const source =
+        typeof input["source"] === "string" ? input["source"] : this.keySource;
+      const row = this.newRow(
+        String(input["type"]),
+        source,
+        typeof input["source_id"] === "string" ? input["source_id"] : undefined,
+        (input["properties"] ?? {}) as Record<string, unknown>,
+        input["occurred_at"] as string | undefined,
+        input["tier"] === "feed" ? "feed" : "library",
+      );
+      this.rows.push(row);
+      this.announce("item.created", row);
+      send(201, {
+        item: this.wire(row),
+        metadata: { item_id: row.id, tags: [], extensions: {} },
+      });
       return;
     }
     if (method === "POST" && url.pathname === "/items/bulk") {
       send(200, this.bulk(input));
       return;
     }
-    if (method === "PATCH" && parts[0] === "items" && parts[1] !== undefined) {
-      this.update(parts[1], input, send, refuse);
-      return;
-    }
-    if (
-      method === "POST" &&
-      parts[0] === "items" &&
-      parts[2] === "transition"
-    ) {
-      const row = this.rows.find((candidate) => candidate.id === parts[1]);
-      if (row === undefined) {
-        refuse(404, "item_not_found");
+    const id = parts[1];
+    if (parts[0] === "items" && id !== undefined) {
+      const row = this.rows.find((candidate) => candidate.id === id);
+      if (method === "GET" && parts.length === 2) {
+        // A trashed row is read back by no door but its restore.
+        if (row === undefined || row.state === "trashed") {
+          refuse(404, "item_not_found");
+          return;
+        }
+        send(200, {
+          item: this.wire(row),
+          metadata: { item_id: row.id, tags: [], extensions: {} },
+        });
         return;
       }
-      const state = input["state"] as Row["state"];
-      if (row.state === "trashed" && state === "archived") {
-        refuse(400, "invalid_transition");
+      if (method === "GET" && parts[2] === "versions") {
+        if (row === undefined) {
+          refuse(404, "item_not_found");
+          return;
+        }
+        // The snapshots of what each update left behind: every version but
+        // the current one.
+        const data = (this.snapshots.get(id) ?? []).map((snapshot, at) => ({
+          id: `${id}-${String(at)}`,
+          item_id: id,
+          version: snapshot.version,
+          properties: snapshot.properties,
+          created_at: snapshot.created_at,
+        }));
+        send(200, { data, next_cursor: null });
         return;
       }
-      row.state = state;
-      row.updated_at = this.now();
-      send(200, {
-        item: row,
-        metadata: { item_id: row.id, tags: [], extensions: {} },
-      });
-      return;
+      if (method === "PATCH" && parts.length === 2) {
+        this.update(id, input, send, refuse);
+        return;
+      }
+      if (method === "DELETE" && parts.length === 2) {
+        if (row === undefined) {
+          refuse(404, "item_not_found");
+          return;
+        }
+        this.trash(id);
+        send(200, { ok: true });
+        return;
+      }
+      if (method === "POST" && parts[2] === "restore") {
+        if (row === undefined) {
+          refuse(404, "item_not_found");
+          return;
+        }
+        if (row.state !== "trashed") {
+          refuse(400, "invalid_transition");
+          return;
+        }
+        this.restore(id);
+        send(200, {
+          item: this.wire(row),
+          metadata: { item_id: row.id, tags: [], extensions: {} },
+        });
+        return;
+      }
+      if (method === "DELETE" && parts[2] === "purge") {
+        if (row === undefined) {
+          refuse(404, "item_not_found");
+          return;
+        }
+        if (row.state !== "trashed") {
+          refuse(400, "invalid_transition");
+          return;
+        }
+        this.purgeById(id);
+        send(200, { ok: true });
+        return;
+      }
+      if (method === "POST" && parts[2] === "transition") {
+        if (row === undefined) {
+          refuse(404, "item_not_found");
+          return;
+        }
+        const state = input["state"] as Row["state"];
+        if (row.state === "trashed" && state === "archived") {
+          refuse(400, "invalid_transition");
+          return;
+        }
+        this.transition(id, state);
+        send(200, {
+          item: this.wire(row),
+          metadata: { item_id: row.id, tags: [], extensions: {} },
+        });
+        return;
+      }
     }
     refuse(404, "not_found", `no scripted door for ${route}`);
+  }
+
+  /** Whether a row's type is the one named or inherits from it. */
+  private ofType(row: Row, type: string | null): boolean {
+    return (
+      type === null ||
+      row.type === type ||
+      this.types.get(row.type)?.["parent"] === type
+    );
   }
 
   private listItems(query: URLSearchParams, send: Send): void {
     const state = query.get("state") ?? "active";
     const type = query.get("type");
-    // A type filter answers the types that inherit from it too.
-    const ofType = (row: Row): boolean =>
-      type === null ||
-      row.type === type ||
-      this.types.get(row.type)?.["parent"] === type;
     const matches = this.rows.filter(
       (row) =>
-        ofType(row) &&
+        this.ofType(row, type) &&
         (query.get("source") === null || row.source === query.get("source")) &&
         (state === "any" || row.state === state),
     );
@@ -409,7 +623,82 @@ export class ScriptedServer {
     const start = Number(query.get("cursor") ?? "0");
     const page = matches.slice(start, start + limit);
     const next = start + limit < matches.length ? String(start + limit) : null;
-    send(200, { data: page.map((row) => ({ ...row })), next_cursor: next });
+    send(200, { data: page.map((row) => this.wire(row)), next_cursor: next });
+  }
+
+  /**
+   * The stream: a comment, the head, then every event after the cursor of
+   * the type asked for, each frame carrying the row as it then was; and
+   * then it stays open, as the real one does, until the reader closes it.
+   */
+  private stream(
+    query: URLSearchParams,
+    lastEventId: string | undefined,
+    res: ServerResponse,
+  ): void {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "X-Marfa-Contract": String(CONTRACT_VERSION),
+    });
+    const frame = (event: string, data: unknown, id?: number): void => {
+      res.write(
+        `${id === undefined ? "" : `id: ${String(id)}\n`}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+      );
+    };
+    res.write(": connected\n\n");
+    const cursor = lastEventId === undefined ? undefined : Number(lastEventId);
+    if (cursor !== undefined && this.tooOld) {
+      // Carries the oldest retained id as its own, as the real frame does.
+      frame(
+        "catchup_too_old",
+        {
+          type: "catchup_too_old",
+          min_retained_id: String(this.head + 1),
+          requested: String(cursor),
+        },
+        this.head + 1,
+      );
+      res.end();
+      return;
+    }
+    frame("stream_cursor", {
+      type: "stream_cursor",
+      cursor: String(this.head),
+    });
+    const type = query.get("type");
+    let sent = 0;
+    let lastSent: number | undefined;
+    for (const event of this.log) {
+      if (cursor === undefined || event.id <= cursor) continue;
+      if (!this.ofType(event.item, type)) continue;
+      if (this.stallAfter !== undefined && sent === this.stallAfter) return;
+      if (this.incompleteAfter !== undefined && sent === this.incompleteAfter) {
+        frame("stream_incomplete", {
+          type: "stream_incomplete",
+          reason: "replay_failed",
+          cursor: lastSent === undefined ? null : String(lastSent),
+        });
+        res.end();
+        return;
+      }
+      frame(
+        event.event,
+        { type: event.event, item: this.wire(event.item) },
+        event.id,
+      );
+      sent += 1;
+      lastSent = event.id;
+    }
+    // The replay is done: the marker names the furthest of the announced
+    // head and the rows walked, withheld rows included, as the server's
+    // does, and carries no id of its own. Never sent after a stream that
+    // ended short.
+    if (this.withholdLive) return;
+    frame("stream_live", {
+      type: "stream_live",
+      cursor: this.liveCursorNull ? null : String(this.head),
+    });
   }
 
   private bulk(input: Record<string, unknown>): unknown {
@@ -473,6 +762,7 @@ export class ScriptedServer {
         entry["tier"] === "library" ? "library" : "feed",
       );
       this.rows.push(row);
+      this.announce("item.created", row);
       return { index, outcome: "created", id: row.id };
     });
     const count = (outcome: string): number =>
@@ -495,8 +785,12 @@ export class ScriptedServer {
     refuse: Refuse,
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
-    if (row === undefined || row.state === "trashed") {
+    if (row === undefined) {
       refuse(404, "item_not_found");
+      return;
+    }
+    if (row.state === "trashed") {
+      refuse(400, "invalid_transition");
       return;
     }
     const version = input["version"];
@@ -507,7 +801,9 @@ export class ScriptedServer {
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
     const occurredAt = input["occurred_at"];
     if (version !== row.version) {
-      const ancestor = this.snapshots.get(row.id)?.get(version);
+      const ancestor = this.snapshots
+        .get(row.id)
+        ?.find((snapshot) => snapshot.version === version);
       if (ancestor === undefined) {
         refuse(409, "ancestor_unavailable");
         return;
@@ -549,19 +845,18 @@ export class ScriptedServer {
         if (Object.hasOwn(properties, key)) merged[key] = properties[key];
         else Reflect.deleteProperty(merged, key);
       }
-      if (movesTime) row.occurred_at = occurredAt;
-      this.write(row, merged);
+      this.write(row, merged, movesTime ? occurredAt : undefined);
     } else {
-      if (typeof occurredAt === "string") row.occurred_at = occurredAt;
       this.write(
         row,
         input["properties_mode"] === "replace"
           ? properties
           : { ...row.properties, ...properties },
+        typeof occurredAt === "string" ? occurredAt : undefined,
       );
     }
     send(200, {
-      item: { ...row },
+      item: this.wire(row),
       metadata: { item_id: row.id, tags: [], extensions: {} },
     });
   }

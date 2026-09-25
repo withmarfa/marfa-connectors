@@ -1,15 +1,20 @@
 import type {
+  Change,
   Connector,
   EnvDeclaration,
   EnvValues,
+  Log,
   RunContext,
+  State,
+  WatchContext,
 } from "./define.js";
 import type { Environment } from "./environment.js";
 import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
-import { Rows, type Counts } from "./rows.js";
+import { Rows, Stopped, type Counts } from "./rows.js";
 import type { Clock } from "./runtime.js";
 import type { StateFile } from "./state.js";
+import { Memory, Watch, type WatchRead } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
   connector: Connector<E>;
@@ -31,8 +36,14 @@ export function describe(error: unknown): string {
   return `${error.message} (${code ?? cause.message})`;
 }
 
-function tally(counts: Counts): string {
-  return `created ${String(counts.created)}, updated ${String(counts.updated)}, archived ${String(counts.archived)}, unchanged ${String(counts.unchanged)}, skipped ${String(counts.skipped)}`;
+/** The counts as a run's summary opens, the two-way ones for a two-way connector. */
+function tally(
+  counts: Counts,
+  outbound: { pushed: number; own: number } | undefined,
+): string {
+  const inbound = `created ${String(counts.created)}, updated ${String(counts.updated)}, archived ${String(counts.archived)}, unchanged ${String(counts.unchanged)}, skipped ${String(counts.skipped)}`;
+  if (outbound === undefined) return inbound;
+  return `${inbound}, pushed ${String(outbound.pushed)}, own ${String(outbound.own)}, conflicts ${String(counts.conflicts)}`;
 }
 
 /** Room left in a summary for saying that more conditions wait. */
@@ -69,9 +80,12 @@ function summarize(
 }
 
 /**
- * One run, start to report. The run's state is kept only when every write
- * landed; its conditions are kept either way, so a condition is reported on
- * the run it first appears and not on the ones after.
+ * One run, start to report: the log read for what changed in Marfa, the
+ * connector's own pull from its vendor written in, the changes carried
+ * back, the run reported. The run's state, the read's cursor and the
+ * memory of the connector's own writes are kept only when every write and
+ * every push landed; its conditions are kept either way, so a condition is
+ * reported on the run it first appears and not on the ones after.
  */
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
@@ -80,43 +94,118 @@ export async function runOnce<E extends EnvDeclaration>(
   const stored = await setup.stateFile.load();
   const draft = structuredClone(stored.state);
   const raised = new Map<string, string>();
+  const twoWay = connector.onChange !== undefined;
+  const memory = new Memory(structuredClone(stored.watch.written));
+  const pending = twoWay ? new Map<string, Change>() : undefined;
   const rows = new Rows(
     setup.marfa,
     connector.type.id,
     connector.source,
     setup.signal,
-    (sourceId, reason) =>
-      raised.set(
-        `refused:${sourceId}`,
-        `the server refused ${sourceId}: ${reason}`,
-      ),
+    {
+      link: connector.link,
+      memory,
+      pending,
+      refused: (sourceId, reason) =>
+        raised.set(
+          `refused:${sourceId}`,
+          `the server refused ${sourceId}: ${reason}`,
+        ),
+      conflict: (id, message) => raised.set(`conflict:${id}`, message),
+    },
   );
+  const state: State = {
+    get: (key) => draft[key],
+    set: (key, value) => {
+      draft[key] = value;
+    },
+  };
+  const log: Log = {
+    info: (message) => {
+      logger.info(message);
+    },
+    warn: (message) => {
+      logger.warn(message);
+    },
+    condition: (key, message) => raised.set(key, message),
+  };
+  const env = setup.environment.values as EnvValues<E>;
   const context: RunContext<E> = {
-    env: setup.environment.values as EnvValues<E>,
+    env,
     signal: setup.signal,
-    state: {
-      get: (key) => draft[key],
-      set: (key, value) => {
-        draft[key] = value;
-      },
-    },
-    log: {
-      info: (message) => {
-        logger.info(message);
-      },
-      warn: (message) => {
-        logger.warn(message);
-      },
-      condition: (key, message) => raised.set(key, message),
-    },
+    state,
+    log,
     upsert: (entries) => rows.upsert(entries),
-    archive: (sourceIds) => rows.archive(sourceIds),
+    archive: (keys) => rows.archive(keys),
+  };
+  const watchContext: WatchContext<E> = {
+    env,
+    signal: setup.signal,
+    state,
+    log,
+    setLink: (item, value) => rows.setLink(item, value),
   };
 
   const startedAt = clock.now();
   let failure: unknown;
+  let read: WatchRead | undefined;
+  let pushed = 0;
   try {
+    if (pending !== undefined) {
+      const watch = new Watch(
+        setup.marfa,
+        connector.type.id,
+        stored.watch,
+        memory,
+        setup.signal,
+        connector.link,
+      );
+      read = await watch.read();
+      for (const change of read.changes) pending.set(change.item.id, change);
+      if (read.resync) {
+        raised.set(
+          "resync",
+          "the log no longer holds the cursor, so every row of the type is carried to the vendor once",
+        );
+      }
+      if (read.incomplete !== undefined) {
+        logger.warn(`${read.incomplete}; the rest of the log is read next run`);
+      }
+    }
+    const carry = async (change: Change): Promise<void> => {
+      // A stop here fails the run, as one inside a write does: the
+      // cursor then holds, and the changes not yet carried are offered
+      // again.
+      if (setup.signal.aborted) throw new Stopped();
+      if (connector.onChange === undefined) return;
+      await connector.onChange(change, watchContext);
+      pushed += 1;
+      // The vendor now has the row as this change showed it, so the two
+      // sides agree at this version and state; a purged row has none.
+      // A write the push made itself, the link, is a later agreement
+      // and stands.
+      const record = memory.written[change.item.id];
+      if (change.kind === "purged") memory.forget(change.item.id);
+      else if (record === undefined || record.version <= change.item.version) {
+        memory.remember(change.item.id, change.item.version, change.item.state);
+      }
+    };
+    if (pending !== undefined && connector.onChange !== undefined) {
+      // A row the vendor has not been told about is carried before the
+      // vendor is read. Nothing the vendor sends can concern it, and a
+      // run that failed between the vendor's answer and the link would
+      // otherwise read the vendor's copy first and create the row's twin,
+      // leaving the link nowhere to go.
+      for (const change of pending.values()) {
+        if (change.kind !== "created") continue;
+        await carry(change);
+        pending.delete(change.item.id);
+      }
+    }
     await connector.run(context);
+    if (pending !== undefined && connector.onChange !== undefined) {
+      for (const change of pending.values()) await carry(change);
+    }
   } catch (error) {
     failure = error;
   }
@@ -141,7 +230,10 @@ export async function runOnce<E extends EnvDeclaration>(
   const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
   for (const [, message] of fresh) logger.warn(message);
 
-  const counts = tally(rows.counts);
+  const counts = tally(
+    rows.counts,
+    twoWay ? { pushed, own: read?.own ?? 0 } : undefined,
+  );
   const { summary, carried } = summarize(counts, fresh);
   const outcome = failure === undefined ? "succeeded" : "failed";
   if (failure === undefined) {
@@ -185,6 +277,19 @@ export async function runOnce<E extends EnvDeclaration>(
     await setup.stateFile.save({
       state: landed ? draft : stored.state,
       conditions,
+      // The cursor moves only when every write and push landed. The memory
+      // records what did land, whatever else happened, so a held run does
+      // not carry its own writes back next run as somebody else's.
+      watch: !twoWay
+        ? stored.watch
+        : {
+            ...(landed && read?.cursor !== undefined
+              ? { cursor: read.cursor }
+              : stored.watch.cursor !== undefined && {
+                  cursor: stored.watch.cursor,
+                }),
+            written: memory.written,
+          },
     });
   } catch (error) {
     logger.warn(`the state file could not be written: ${describe(error)}`);

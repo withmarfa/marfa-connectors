@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defineConnector,
+  type Change,
   type Entry,
   type TypeDefinition,
 } from "../src/define.js";
@@ -67,11 +68,18 @@ export class ManualClock implements Clock {
     this.time += ms;
   }
 
+  /** Ends a pending sleep of `ms`, waiting for one to be pending. */
   async wake(ms: number): Promise<void> {
-    await this.sleeping(ms);
-    const sleep = this.pending.find((candidate) => candidate.ms === ms);
-    this.time += ms;
-    sleep?.wake();
+    for (;;) {
+      await this.sleeping(ms);
+      const sleep = this.pending.find((candidate) => candidate.ms === ms);
+      // Ended by its own signal between being found and being woken: the
+      // one meant is still to come.
+      if (sleep === undefined) continue;
+      this.time += ms;
+      sleep.wake();
+      return;
+    }
   }
 }
 
@@ -83,6 +91,8 @@ export const testType: TypeDefinition = {
     title: { type: "string", required: true },
     note: { type: "string" },
     link: { type: "url" },
+    /** The vendor's own id for the entry, the link of the two-way connector. */
+    vendor_id: { type: "string" },
   },
 };
 
@@ -98,10 +108,16 @@ export interface Vendor {
   logs?: string[];
   warnings?: string[];
   runs: number;
+  /** What the two-way connector was handed to carry back, in order. */
+  changes: Change[];
+  /** A push that throws, the first time the named row is offered. */
+  pushFail?: { id: string; error: Error } | undefined;
+  /** The vendor's id for a row the vendor has not been told about. */
+  vendorIdFor?: ((change: Change) => string | undefined) | undefined;
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
-  return { entries, archived: [], token: undefined, runs: 0 };
+  return { entries, archived: [], token: undefined, runs: 0, changes: [] };
 }
 
 export function testConnector(held: Vendor) {
@@ -123,6 +139,44 @@ export function testConnector(held: Vendor) {
       if (held.token !== undefined) context.state.set("token", held.token);
       await context.upsert(held.entries);
       if (held.archived.length > 0) await context.archive(held.archived);
+    },
+  });
+}
+
+/**
+ * The two-way connector: the same pull as the one-way one, a link on the
+ * type's `vendor_id`, and a push that records what it was handed, writes
+ * the vendor's id back where the test says one, and throws where the test
+ * says so.
+ */
+export function twoWayConnector(held: Vendor) {
+  return defineConnector({
+    name: "test",
+    description: "A two-way connector the kit's tests drive.",
+    source: "test",
+    type: testType,
+    link: "vendor_id",
+    env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
+    async run(context) {
+      held.runs += 1;
+      if (held.gate !== undefined) await held.gate;
+      for (const [key, message] of held.conditions ?? []) {
+        context.log.condition(key, message);
+      }
+      if (held.fail !== undefined) throw held.fail;
+      if (held.token !== undefined) context.state.set("token", held.token);
+      await context.upsert(held.entries);
+      if (held.archived.length > 0) await context.archive(held.archived);
+    },
+    async onChange(change, context) {
+      held.changes.push(change);
+      if (held.pushFail?.id === change.item.id) {
+        const { error } = held.pushFail;
+        held.pushFail = undefined;
+        throw error;
+      }
+      const id = held.vendorIdFor?.(change);
+      if (id !== undefined) await context.setLink(change.item, id);
     },
   });
 }
@@ -182,6 +236,14 @@ export class Harness {
     env?: Record<string, string | undefined>,
   ): Promise<number> {
     return start(testConnector(held), this.runtime(["--once"], env));
+  }
+
+  /** One run of the two-way connector. */
+  twoWay(
+    held: Vendor,
+    env?: Record<string, string | undefined>,
+  ): Promise<number> {
+    return start(twoWayConnector(held), this.runtime(["--once"], env));
   }
 
   /** The state file kept for a key whose own source is `keySource`. */

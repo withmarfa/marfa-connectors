@@ -208,6 +208,7 @@ describe("the type check on start", () => {
         title: { type: "string", required: true, description: "The title" },
         note: { type: "string" },
         link: { type: "url", description: "Where it lives" },
+        vendor_id: { type: "string" },
       },
     });
     expect(await harness.once(vendor([entry]))).toBe(0);
@@ -223,6 +224,7 @@ describe("the type check on start", () => {
         title: { type: "string" },
         note: { type: "string" },
         link: { type: "url" },
+        vendor_id: { type: "string" },
       },
     });
     expect(await harness.once(vendor([entry]))).toBe(0);
@@ -308,6 +310,7 @@ describe("the type check on start", () => {
           title: { type: "string" as const, required: true },
           note: { type: "string" as const },
           link: { type: "string" as const, format: "url" as const },
+          vendor_id: { type: "string" as const },
         },
       },
     };
