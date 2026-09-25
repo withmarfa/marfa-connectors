@@ -11,7 +11,7 @@ A connector is one file, `src/main.ts`, beside the type it writes: what the conn
 
 1. `cp -R template/connector connectors/<name>`, and set `name` in its `package.json` to `<name>`. The folder sits at a connector's depth, so its paths hold once copied.
 2. Add `{ "path": "connectors/<name>" }` to the references in the root `tsconfig.json`. Until it is there, the tree test fails `pnpm test`, since the build would skip the connector.
-3. Replace `src/example.item.json` with the type the connector writes, and in `src/main.ts` name the connector, its source and that type, declare the environment it needs, and write `run`.
+3. Replace `src/example.item.json` with the type the connector writes, and in `src/main.ts` name the connector, its source and that type, declare the environment it needs, and write `run`. Where the vendor's rows read as a core type, such as a task or a bookmark, the type names that core type as its `parent` and adds only the vendor's own fields, and `run` writes the core type's fields under the core type's names; `compatible_with` is not used.
 4. `test/connector.test.ts` runs the example as a process against a scripted server and a stub vendor. Rewrite it for yours.
 5. `pnpm install && pnpm build && pnpm test`.
 
