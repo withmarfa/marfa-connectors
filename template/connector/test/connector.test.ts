@@ -18,25 +18,69 @@ interface VendorItem {
   url?: string;
   note?: string;
   created: string;
+  updated?: string;
   deleted?: boolean;
+}
+
+/** A write the stub vendor received, for a test to assert on. */
+interface VendorWrite {
+  method: string;
+  path: string;
+  body: Record<string, unknown> | undefined;
 }
 
 let marfa: ScriptedServer;
 let vendor: Server;
 let vendorUrl: string;
 let items: VendorItem[];
+let writes: VendorWrite[];
 let stateDir: string;
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("example").start();
   items = [];
+  writes = [];
+  let made = 0;
   vendor = createServer((req, res) => {
-    if (req.headers.authorization !== `Bearer ${token}`) {
-      res.writeHead(401).end();
-      return;
-    }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ account: "acct", items }));
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      const text = Buffer.concat(chunks).toString("utf8");
+      const body =
+        text === "" ? undefined : (JSON.parse(text) as Record<string, unknown>);
+      const path = req.url ?? "/";
+      const method = req.method ?? "GET";
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (method === "GET") {
+        res.end(JSON.stringify({ account: "acct", items }));
+        return;
+      }
+      writes.push({ method, path, body });
+      const id = decodeURIComponent(path.replace(/^\/items\/?/, ""));
+      if (method === "POST") {
+        made += 1;
+        const item: VendorItem = {
+          id: `made-${String(made)}`,
+          ...(body as Partial<VendorItem>),
+          created: "2026-09-25T09:00:00.000Z",
+        };
+        items.push(item);
+        res.end(JSON.stringify({ id: item.id }));
+        return;
+      }
+      const found = items.find((item) => item.id === id);
+      if (found === undefined) {
+        res.end(JSON.stringify({ error: "no such item" }));
+        return;
+      }
+      if (method === "DELETE") found.deleted = true;
+      else Object.assign(found, body);
+      res.end(JSON.stringify({ id }));
+    });
   });
   await new Promise<void>((done) => vendor.listen(0, "127.0.0.1", done));
   vendorUrl = `http://127.0.0.1:${String((vendor.address() as AddressInfo).port)}/`;
@@ -93,17 +137,24 @@ describe("the template, run as a process", () => {
     expect(
       marfa.rows.map((row) => [row.source_id, row.tier, row.properties]),
     ).toEqual([
-      ["acct:1", "feed", { title: "One", url: "https://example.com/1" }],
-      ["acct:2", "feed", { title: "Two", note: "a note" }],
+      [
+        "acct:1",
+        "feed",
+        { example_id: "1", title: "One", url: "https://example.com/1" },
+      ],
+      ["acct:2", "feed", { example_id: "2", title: "Two", note: "a note" }],
     ]);
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 2, updated 0, archived 0, unchanged 0, skipped 0",
+      "created 2, updated 0, archived 0, unchanged 0, skipped 0, pushed 0, own 0, conflicts 0",
     );
 
+    // The two creates are read back as the connector's own, and nothing
+    // is carried to the vendor.
     expect((await once()).code).toBe(0);
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 2, skipped 0",
+      "created 0, updated 0, archived 0, unchanged 2, skipped 0, pushed 0, own 2, conflicts 0",
     );
+    expect(writes).toEqual([]);
   });
 
   it("archives an item the vendor deleted, which needs no title to be", async () => {
@@ -113,8 +164,46 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(marfa.row("acct:1").state).toBe("archived");
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 0, updated 0, archived 1, unchanged 0, skipped 0",
+      "created 0, updated 0, archived 1, unchanged 0, skipped 0, pushed 0, own 1, conflicts 0",
     );
+  });
+
+  it("carries a row a person made to the vendor and links it, and a change to a row back", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    const theirs = marfa.insert(
+      undefined,
+      { title: "Theirs", note: "made in Marfa" },
+      "example.item",
+      "person",
+    );
+    expect((await once()).code).toBe(0);
+    expect(writes).toEqual([
+      {
+        method: "POST",
+        path: "/items",
+        body: { title: "Theirs", note: "made in Marfa" },
+      },
+    ]);
+    expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
+
+    const mine = marfa.row("acct:1");
+    marfa.edit(mine.id, { title: "One, edited in Marfa" });
+    marfa.trash(theirs.id);
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(writes).toEqual([
+      {
+        method: "PUT",
+        path: "/items/1",
+        body: { title: "One, edited in Marfa" },
+      },
+      { method: "DELETE", path: "/items/made-1", body: undefined },
+    ]);
+    expect(items.find((item) => item.id === "1")?.title).toBe(
+      "One, edited in Marfa",
+    );
+    expect(items.find((item) => item.id === "made-1")?.deleted).toBe(true);
+    expect(marfa.runs.at(-1)?.summary).toMatch(/pushed 2, /);
   });
 
   it("fails the run when the vendor refuses the token, and never prints it", async () => {

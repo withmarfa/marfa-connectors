@@ -3,6 +3,10 @@
   "label": "Example Item",
   "description": "An item as the example vendor lists it.",
   "fields": {
+    "example_id": {
+      "type": "string",
+      "description": "The vendor's own id for the item: set from the vendor's list, and from its answer for a row made in Marfa and carried there."
+    },
     "title": { "type": "string", "required": true },
     "url": { "type": "url" },
     "note": { "type": "string" }

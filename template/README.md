@@ -24,7 +24,24 @@ What a run has to hand:
 - **`signal`**: hand it to `fetch`, so a stop is prompt.
 - **`env`**: the values the connector declared. A `secret` or `required` value that is missing stops the start, and a secret never reaches a log line or a report. A secret that holds a list, such as several addresses, is also kept out part by part, where each part is set apart by whitespace or commas and is at least eight characters long. A value the connector can tell is wrong on sight, such as a malformed address, is refused by throwing from `checkEnv`, which stops the start the same way.
 
-A connector reads from its vendor and never writes to it, and it writes only its own type at the feed tier. Promoting a row into the library is a person's or an app's act.
+A connector writes only its own type at the feed tier. Promoting a row into the library is a person's or an app's act. A connector reads from its vendor; one whose brief says so also carries changes made in Marfa back to it, as the next section describes, and never anything else.
+
+## Carrying changes back
+
+A two-way connector declares two more things, and the kit's watch phase does the rest:
+
+- **`link`**: the property on the type that holds the vendor's own id for a row. With a link, every row of the type is the connector's to read and write, whoever created it and under whatever source: an entry finds its row by the link first and by its natural key second, `archive` takes link values, and a row carrying no value is one the vendor has not been told about. The example declares `example_id`. Say so in the connector's README: a row of the type made by hand is carried to the vendor, and something meant to stay in Marfa is a row of the core type instead.
+- **`onChange(change, context)`**: called once per row that changed in Marfa since the last run, with `change.kind` one of `created`, `updated`, `restored`, `archived`, `trashed` or `purged` and `change.item` the row as the log last showed it. A create and an update are told apart by the link: a row without one is a create to the vendor however it came to change. What of a row travels is the connector's choice; the example sends the title, url and note. `context.setLink(item, id)` writes the vendor's id onto a row the vendor just made, retrying once if the row moved since, and refuses a value another row carries. Resolving means the change landed or was consciously abandoned with a condition naming the row; throwing fails the run and holds the cursor, so the change is offered again next run. A vendor's refusal of one row is a condition; a refused token is a throw.
+
+Every entry `run` hands to `upsert` should carry `changed_at`, when the vendor last changed it: it is what the conflict rule reads.
+
+How a run goes: the log is read, rows the vendor has not been told about are carried first, `run` pulls and writes what the vendor had, the rest of the changes are carried in log order, and the run is reported with `pushed`, `own` and `conflicts` beside the other counts. A create is carried before the vendor is read because nothing the vendor sends can concern such a row, and a run that failed between the vendor's answer and the link would otherwise read the vendor's copy first and create the row's twin.
+
+What the kit keeps, beside the connector's state in the same file: the log cursor and a memory of where the two sides last agreed for each row, its version and state after the connector's own write or a change it carried. An event at or below that record is nothing new to the vendor and is dropped as `own`; the record is forgotten once the row moves past it. The memory and the cursor are saved only when every write and push landed. Losing the file costs one replay of the log, a round of reads and no-op writes at the vendor, and never a duplicate; a cursor the log no longer serves carries every row of the type once, with a condition saying so.
+
+The conflict rule, where a row changed on both sides since the connector last wrote it: the later of the vendor's `changed_at` and the change in Marfa wins, before an inbound write and again after one the server merged or refused; the loser is a condition of the run naming the row, and `conflicts` counts it. Where Marfa wins after a merge, the row is put back whole as the person left it and that state is carried to the vendor. A vendor naming no time loses. A trash in Marfa always wins over the vendor and is carried back; an archive touches no property and travels beside the vendor's write.
+
+A connector without `onChange` makes no events request and its state file gains nothing.
 
 ## The key
 
