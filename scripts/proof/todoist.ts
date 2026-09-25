@@ -245,7 +245,7 @@ export async function proveTodoist(
             `d is ${String(done?.properties["status"])} at ${String(done?.properties["completed_at"])}, ${String(done?.state)}; e is ${String(archived?.state)}; moved ${changed.join(", ") || "nothing"}`,
           );
         }
-        return `d completed at ${String(done.properties["completed_at"])}, still active; e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
+        return `d completed at ${done.properties["completed_at"]}, still active; e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
       },
     );
 
