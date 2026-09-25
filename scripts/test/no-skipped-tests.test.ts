@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TestModule, Vitest } from "vitest/node";
 import config from "../../vitest.config.js";
 import { NoSkippedTests } from "../no-skipped-tests.js";
@@ -44,8 +44,16 @@ function held(
 
 describe("the skipped-test gate", () => {
   const exitCode = process.exitCode;
+  let said: string[] = [];
+  beforeEach(() => {
+    said = [];
+    vi.spyOn(console, "error").mockImplementation((line: string) => {
+      said.push(line);
+    });
+  });
   afterEach(() => {
     process.exitCode = exitCode;
+    vi.restoreAllMocks();
   });
 
   it("fails a run with a skipped test or a skipped suite, and passes one with neither", () => {
@@ -54,6 +62,10 @@ describe("the skipped-test gate", () => {
     expect(held([module([], [passed])])).toBeUndefined();
     expect(held([module([], [passed, skipped])])).toBe(1);
     expect(held([module([skipped], [passed])])).toBe(1);
+    expect(said).toEqual([
+      "skipped: kit/test/example.test.ts > a > waits",
+      "skipped: kit/test/example.test.ts > a > waits",
+    ]);
   });
 
   it("leaves a run given a name filter alone", () => {
