@@ -328,9 +328,11 @@ describe("the state", () => {
     expect(
       harness.server.rows.filter((row) => row.source_id === "a:3"),
     ).toHaveLength(1);
-    // The server merged the two writes, which the replace did not survive.
+    // The vendor's replace left the note out, which is a clear, and the
+    // other writer changed the note since: the two collide, the server
+    // refuses the write, and the row stands as the other writer left it.
     expect(harness.server.row("a:1").properties).toEqual({
-      title: "One, changed",
+      title: "One",
       note: "by another writer",
     });
 
@@ -359,6 +361,56 @@ describe("the state", () => {
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, by another writer",
     );
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("is held when a stale replace clears a field nobody touched since, and the field is cleared", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    // The witness: the field is there to be cleared.
+    expect(harness.server.row("a:1").properties["note"]).toBe("first");
+
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { title: "One, by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, properties: { title: "One" } }];
+    expect(await harness.once(held)).toBe(0);
+
+    // The vendor's clear lands over the other writer's title, which this
+    // run echoed at the value it read; the row holds both writers' changes,
+    // so the state waits for a run that reads it as it now is.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by another writer",
+    });
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(harness.lastRun().summary).toContain("held");
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("is held when a stale replace clears a field the other writer changed since", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties["note"]).toBe("first");
+
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { note: "by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, properties: { title: "One" } }];
+    expect(await harness.once(held)).toBe(0);
+
+    // A clear and a change to the same field collide: the server refuses
+    // the write, the other writer's value stands, and the state is held.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      note: "by another writer",
+    });
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
   });
 

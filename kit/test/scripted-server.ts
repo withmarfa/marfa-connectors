@@ -12,9 +12,10 @@ import { CONTRACT_VERSION } from "@withmarfa/client";
  * - a create at version 0 over an existing row answers `ancestor_unavailable`;
  * - a bulk upsert over a trashed row skips it;
  * - an update on the current version replaces or merges as asked;
- * - an update on a stale version merges with what landed since, ignoring
- *   `properties_mode`, unless a field it changes also changed there, when
- *   it answers `version_conflict`.
+ * - an update on a stale version merges its changes with what landed since,
+ *   and under `replace` a field the ancestor had and the body leaves out is
+ *   one of them, cleared; a field it changes that also changed there answers
+ *   `version_conflict`.
  * It lets a test script what the real server cannot be asked for: another
  * writer between a read and a write, a refusal, a delay.
  */
@@ -488,7 +489,15 @@ export class ScriptedServer {
         refuse(409, "ancestor_unavailable");
         return;
       }
-      const mine = changedKeys(ancestor, properties, Object.keys(properties));
+      // Under `replace` the body is the whole of the caller's properties, so
+      // a key the ancestor had and the body lacks is a change: a clear.
+      const mine = changedKeys(
+        ancestor,
+        properties,
+        input["properties_mode"] === "replace"
+          ? [...Object.keys(ancestor), ...Object.keys(properties)]
+          : Object.keys(properties),
+      );
       const theirs = changedKeys(ancestor, row.properties, [
         ...Object.keys(ancestor),
         ...Object.keys(row.properties),
@@ -498,7 +507,10 @@ export class ScriptedServer {
         return;
       }
       const merged = { ...row.properties };
-      for (const key of mine) merged[key] = properties[key];
+      for (const key of mine) {
+        if (key in properties) merged[key] = properties[key];
+        else Reflect.deleteProperty(merged, key);
+      }
       this.write(row, merged);
     } else {
       this.write(

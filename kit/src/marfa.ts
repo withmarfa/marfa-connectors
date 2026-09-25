@@ -157,8 +157,9 @@ export class Marfa {
 
   /**
    * Replaces a row's properties on the version it was read at. On a version
-   * another write has since moved, the server merges the two instead and
-   * ignores the replace, which the version it answers shows.
+   * another write has since moved, the server merges this write's changes,
+   * a cleared field included, over what landed since, and the version it
+   * answers, more than one step on, shows that it did.
    */
   async update(
     id: string,
