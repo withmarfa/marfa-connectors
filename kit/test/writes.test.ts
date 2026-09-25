@@ -414,6 +414,86 @@ describe("the state", () => {
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
   });
 
+  it("takes a clear both writers made as an echo, and lands the rest", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties["note"]).toBe("first");
+
+    harness.server.afterList = () => {
+      harness.server.rewrite("a:1", { title: "One" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, properties: { title: "One, by the vendor" } }];
+    expect(await harness.once(held)).toBe(0);
+
+    // Both writers cleared the note, so the vendor's clear is nothing new
+    // and its title lands over the row; a merged write still holds the
+    // state.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by the vendor",
+    });
+    expect(harness.server.row("a:1").version).toBe(3);
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("does not move a row's own time back to the value it read when another writer moved it since", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
+
+    harness.server.afterList = () => {
+      harness.server.rewrite(
+        "a:1",
+        harness.server.row("a:1").properties,
+        "2026-09-02T10:00:00.000Z",
+      );
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [
+      { ...one, properties: { title: "One, changed", note: "first" } },
+    ];
+    expect(await harness.once(held)).toBe(0);
+
+    // The run echoed the own time it read, which is not a change, so the
+    // other writer's stands beside the vendor's title.
+    expect(harness.server.row("a:1").occurred_at).toBe(
+      "2026-09-02T10:00:00.000Z",
+    );
+    expect(harness.server.row("a:1").properties["title"]).toBe("One, changed");
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("is held when a stale write moves a row's own time that another writer moved since", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
+
+    harness.server.afterList = () => {
+      harness.server.rewrite(
+        "a:1",
+        harness.server.row("a:1").properties,
+        "2026-09-02T10:00:00.000Z",
+      );
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, occurred_at: "2026-09-03T10:00:00.000Z" }];
+    expect(await harness.once(held)).toBe(0);
+
+    // Two changes to the own time collide as two changes to a field do.
+    expect(harness.server.row("a:1").occurred_at).toBe(
+      "2026-09-02T10:00:00.000Z",
+    );
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
   it("is lost at no cost but a full read: no row is written twice", async () => {
     const held = vendor([one, two]);
     held.token = "t1";
