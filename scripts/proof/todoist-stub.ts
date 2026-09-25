@@ -279,15 +279,16 @@ export class TodoistStub {
   }
 
   /**
-   * A full sync lists the account's active tasks and names the account;
-   * a delta lists what changed since the token, deletions included.
+   * A full sync lists the account's active tasks, completed and deleted
+   * ones left out, and names the account; a delta lists what changed
+   * since the token, completions and deletions included.
    */
   private delta(syncToken: string): unknown {
     const since =
       syncToken === "*" ? 0 : Number(syncToken.replace("token-", ""));
     const items = [...this.tasks.values()].filter((task) =>
       syncToken === "*"
-        ? !task.is_deleted
+        ? !task.is_deleted && !task.checked
         : (this.changed.get(task.id) ?? 0) > since,
     );
     return {

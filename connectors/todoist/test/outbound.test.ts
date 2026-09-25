@@ -222,6 +222,9 @@ describe("a row Todoist has not been told about", () => {
       "made-2",
     ]);
     expect(summary()).toMatch(/pushed 2, own 0, conflicts 0/);
+    // The zone was asked for once for both rows, then the run's own first
+    // sync: two full syncs, not one per row.
+    expect(todoist.received.filter((r) => r.syncToken === "*")).toHaveLength(2);
   });
 
   it("sends the same create again after a run that failed, and Todoist makes one task", async () => {
@@ -266,6 +269,23 @@ describe("a row Todoist has not been told about", () => {
     expect(marfa.byId(unmapped.id).properties["todoist_id"]).toBeUndefined();
     expect(summary()).toContain(`without naming the task it made`);
   });
+
+  it("records a link another row carries, naming both rows, and leaves the task Todoist made", async () => {
+    todoist.put(todoist.task("seed"));
+    // The stub names its next task made-1, which a row already carries.
+    const holder = personsRow({
+      title: "Holder",
+      status: "pending",
+      todoist_id: "made-1",
+    });
+    const taken = personsRow({ title: "Taken", status: "pending" });
+    await landed();
+    expect(marfa.byId(taken.id).properties["todoist_id"]).toBeUndefined();
+    expect(summary()).toContain(
+      `the link made-1 is already carried by ${holder.id}, so it is not written onto ${taken.id}`,
+    );
+    expect([...todoist.tasks.keys()]).toEqual(["seed", "made-1"]);
+  });
 });
 
 describe("a row Todoist knows", () => {
@@ -274,19 +294,24 @@ describe("a row Todoist knows", () => {
     marfa.edit(row.id, {
       title: "Task a, renamed",
       description: "Now with details",
-      due_at: "2026-10-01T09:00:00.000Z",
-      precision: "time",
+      priority: "urgent",
+      due_at: "2026-09-30T23:00:00.000Z",
+      precision: "day",
     });
     await landed();
+    // A whole day as its date in the account's zone: London midnight on
+    // 1 October is 23:00 UTC the day before.
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       {
         id: "a",
         content: "Task a, renamed",
         description: "Now with details",
-        due: { date: "2026-10-01T09:00:00Z" },
+        priority: 4,
+        due: { date: "2026-10-01" },
       },
     ]);
     expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
+    expect(todoist.tasks.get("a")?.priority).toBe(4);
 
     // The row as the person leaves it, whole: no description, no due date.
     const current = marfa.byId(row.id);
@@ -315,7 +340,7 @@ describe("a row Todoist knows", () => {
     expect(todoist.tasks.get("a")?.checked).toBe(true);
 
     // Todoist's task door answers 404 for a completed task, so the reopen
-    // is sent without a read.
+    // is sent on that answer, and the task is read once it is open again.
     const { completed_at, ...reopened } = marfa.byId(row.id).properties;
     expect(completed_at).toBeDefined();
     marfa.rewrite(`${todoist.account}:a`, { ...reopened, status: "pending" });
@@ -409,7 +434,9 @@ describe("a conflict", () => {
     expect(marfa.byId(row.id).properties["title"]).toBe("Task a, from Marfa");
     expect(todoist.tasks.get("a")?.content).toBe("Task a, from Marfa");
     expect(summary()).toMatch(/conflicts 1/);
-    expect(summary()).toContain(row.id);
+    expect(summary()).toContain(
+      `the change made in Marfa to ${row.id} is the later one, so the vendor's is not written and the row's state is carried back`,
+    );
   });
 
   it("is won by Todoist when its change is later, and nothing is carried back", async () => {
@@ -422,7 +449,9 @@ describe("a conflict", () => {
     expect(todoist.tasks.get("a")?.content).toBe("Task a, from Todoist");
     expect(todoist.commands()).toEqual([]);
     expect(summary()).toMatch(/pushed 0, own 1, conflicts 1/);
-    expect(summary()).toContain(row.id);
+    expect(summary()).toContain(
+      `the vendor's change to ${row.id} is the later one, so the change made in Marfa is not carried back`,
+    );
   });
 });
 
@@ -502,5 +531,133 @@ describe("the state file", () => {
     });
     await landed();
     expect((await stored()).watch.cursor).toBe(String(marfa.head));
+  });
+});
+
+describe("transitions over runs", () => {
+  it("closes the task when the row is purged", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    marfa.purgeById(row.id);
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
+      ["item_close", "a"],
+    ]);
+    expect(todoist.tasks.get("a")?.checked).toBe(true);
+  });
+
+  it("reopens the task when the row is restored, and the row stays open", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    expect(todoist.tasks.get("a")?.checked).toBe(true);
+    // The next sync carries the task closed by the trash, stamped before
+    // the restore: the echo is not written over the restored row.
+    marfa.restore(row.id);
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_close",
+      "item_uncomplete",
+    ]);
+    expect(todoist.tasks.get("a")?.checked).toBe(false);
+    expect(marfa.byId(row.id).properties["status"]).toBe("pending");
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(summary()).toMatch(/conflicts 0/);
+
+    // And the run after moves nothing either way.
+    await landed();
+    expect(todoist.commands()).toHaveLength(2);
+    expect(marfa.byId(row.id).properties["status"]).toBe("pending");
+  });
+
+  it("sends a second trash as a command of its own, since a transition moves no version", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    await landed();
+    marfa.trash(row.id);
+    await landed();
+    const closes = todoist.commands("item_close");
+    expect(closes).toHaveLength(2);
+    expect(closes[0]?.uuid).not.toBe(closes[1]?.uuid);
+    expect(todoist.tasks.get("a")?.checked).toBe(true);
+    expect(marfa.byId(row.id).state).toBe("trashed");
+  });
+
+  it("names an edit to a completed row as one Todoist cannot show it", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, {
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    await landed();
+    marfa.edit(row.id, { title: "Task a, edited after completion" });
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual(["item_close"]);
+    expect(summary()).toContain(
+      `Todoist does not answer the completed task a, so a change to row ${row.id} beyond its completion is not carried`,
+    );
+  });
+});
+
+describe("Todoist's answers, continued", () => {
+  it("waits as a command's own refusal asks and sends the command again", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    todoist.scriptCommand("item_update", {
+      error_code: 35,
+      error: "Too many requests",
+      http_code: 429,
+      error_extra: { retry_after: 1 },
+    });
+    await landed();
+    const updates = todoist.commands("item_update");
+    expect(updates).toHaveLength(2);
+    expect(updates[1]?.uuid).toBe(updates[0]?.uuid);
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
+    expect(summary()).toMatch(/conflicts 0/);
+    expect(summary()).not.toContain("refused");
+  });
+
+  it("waits as a 429 naming its wait in the body asks", async () => {
+    todoist.put(todoist.task("seed"));
+    personsRow({ title: "Patient", status: "pending" });
+    todoist.refuseNext(429, {
+      body: { error: "Too many requests", error_extra: { retry_after: 1 } },
+      when: (request) => request.commands !== undefined,
+    });
+    await landed();
+    expect(todoist.commands("item_add")).toHaveLength(2);
+    expect([...todoist.tasks.keys()]).toEqual(["seed", "made-1"]);
+  });
+
+  it("gives up on a server error after three more tries, and the run fails", async () => {
+    todoist.put(todoist.task("seed"));
+    personsRow({ title: "Unlucky", status: "pending" });
+    for (let i = 0; i < 4; i += 1) {
+      todoist.refuseNext(503, {
+        when: (request) => request.commands !== undefined,
+      });
+    }
+    const { code, output } = await once();
+    expect(code).not.toBe(0);
+    expect(output).toContain("answered 503");
+    expect(todoist.commands("item_add")).toHaveLength(4);
+    expect([...todoist.tasks.keys()]).toEqual(["seed"]);
+  }, 20_000);
+
+  it("names a task the token cannot reach as a condition, and the run lands", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    todoist.refuseNext(403, {
+      body: { error: "Forbidden" },
+      when: (request) => request.method === "GET",
+    });
+    await landed();
+    expect(todoist.commands()).toEqual([]);
+    expect(summary()).toContain(
+      `Todoist refuses access to task a for row ${row.id}, so its changes are not carried`,
+    );
   });
 });

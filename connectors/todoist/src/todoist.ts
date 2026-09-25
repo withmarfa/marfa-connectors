@@ -68,27 +68,47 @@ function waitOf(value: string | number | null | undefined): number | undefined {
  * One request to Todoist, with what every door shares: the token, the
  * timeout, a wait on a 429 as told, three more tries on a server error,
  * and a refused token failing the run by name so a token that cannot
- * write is a failed run rather than a quiet one.
+ * write is a failed run rather than a quiet one. A 403 is the token
+ * refused on the sync door; on a task's door it is that one task closed
+ * to the token, which a caller says it will take as an answer.
  */
 async function request(
   base: string,
   token: string,
   path: string,
-  init: { method: "GET" | "POST"; body?: URLSearchParams },
+  init: {
+    method: "GET" | "POST";
+    body?: URLSearchParams;
+    forbiddenIsAnswer?: boolean;
+  },
   signal: AbortSignal,
 ): Promise<Response> {
   let serverErrors = 0;
   for (;;) {
     const response = await fetch(new URL(path, base), {
-      ...init,
+      method: init.method,
+      ...(init.body !== undefined && { body: init.body }),
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]),
     });
-    if (response.status === 401 || response.status === 403) {
+    if (
+      response.status === 401 ||
+      (response.status === 403 && init.forbiddenIsAnswer !== true)
+    ) {
       throw new Error(`Todoist refused the token: ${String(response.status)}`);
     }
     if (response.status === 429) {
-      const wait = waitOf(response.headers.get("Retry-After"));
+      // Named in the header, or in the body as a command's refusal names
+      // it; one that names neither is not waited for blind.
+      let wait = waitOf(response.headers.get("Retry-After"));
+      if (wait === undefined) {
+        try {
+          const body = (await response.json()) as CommandError;
+          wait = waitOf(body.error_extra?.retry_after);
+        } catch {
+          wait = undefined;
+        }
+      }
       if (wait === undefined || wait > longestWaitMs) {
         throw new Error(
           `Todoist asked for a wait of ${wait === undefined ? "unknown length" : `${String(wait / 1000)}s`}, longer than a run holds`,
@@ -229,21 +249,28 @@ export async function send(
   }
 }
 
-/** A task as the REST door answers it: an open task, or none for one completed or deleted. */
+/**
+ * What the task door answers: the task, `missing` for one it does not
+ * answer (completed or deleted), or `forbidden` for one the token cannot
+ * reach, such as another person's in a shared project.
+ */
+export type TaskAnswer = TodoistItem | "missing" | "forbidden";
+
 export async function getTask(
   base: string,
   token: string,
   id: string,
   signal: AbortSignal,
-): Promise<TodoistItem | undefined> {
+): Promise<TaskAnswer> {
   const response = await request(
     base,
     token,
     `/api/v1/tasks/${encodeURIComponent(id)}`,
-    { method: "GET" },
+    { method: "GET", forbiddenIsAnswer: true },
     signal,
   );
-  if (response.status === 404) return undefined;
+  if (response.status === 404) return "missing";
+  if (response.status === 403) return "forbidden";
   if (!response.ok) {
     throw new Error(
       `Todoist answered ${String(response.status)} for task ${id}`,
@@ -254,8 +281,8 @@ export async function getTask(
 
 /**
  * A command's id from what it does, so a replayed run sends Todoist the
- * same command rather than a second one. Laid out as a UUID, which is
- * what the Sync API expects the field to look like.
+ * same command rather than a second one. Laid out as a UUID, the form the
+ * documentation's examples use, though any unique string is taken.
  */
 export function uuidFor(...parts: readonly string[]): string {
   const digest = createHash("sha1").update(parts.join("\u0000")).digest("hex");

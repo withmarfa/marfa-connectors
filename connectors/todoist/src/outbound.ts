@@ -20,6 +20,7 @@ import {
   type CommandAnswer,
   type CommandError,
   type SyncAnswer,
+  type TaskAnswer,
   type TodoistItem,
 } from "./todoist.js";
 
@@ -78,39 +79,46 @@ export function differing(
 }
 
 /**
- * The account's timezone, which a whole-day due date is written in. The
- * sync keeps it in the state; a row carried before the first sync, or
- * after the state was lost, asks Todoist for the account alone and keeps
- * the answer, so the date is never written in the wrong zone.
+ * The account's timezone this run, which a whole-day due date is written
+ * in. The sync keeps it in the state, and only the sync writes it there,
+ * since it reads every whole-day date anew when the zone it kept moves. A
+ * change carried before the first sync, or after the state was lost,
+ * asks Todoist for the account alone, once for the run.
  */
-async function timeZoneFor(
+const zones = new WeakMap<object, Promise<string>>();
+
+function timeZoneFor(
   context: WatchContext<OutboundEnv>,
   todoist: Door,
 ): Promise<string> {
   const held = context.state.get("timezone");
-  if (typeof held === "string") return held;
-  const account = await todoist.user();
-  const zone = timezoneOf(account);
-  if (zone === undefined) {
-    // The conditions the sync raises, under the same keys, so a zone
-    // Todoist does not name or this platform does not know is reported
-    // once however it was found missing.
-    const unknown = namedZoneOf(account);
-    if (unknown === undefined) {
-      context.log.condition(
-        "timezone-none",
-        "Todoist named no timezone for the account, so its due dates are read in UTC",
-      );
-    } else {
-      context.log.condition(
-        `timezone-unknown:${unknown}`,
-        `Todoist named the timezone ${unknown} for the account, which this platform does not know, so its due dates are read in UTC`,
-      );
-    }
-    return "UTC";
+  if (typeof held === "string") return Promise.resolve(held);
+  let asked = zones.get(context);
+  if (asked === undefined) {
+    asked = (async (): Promise<string> => {
+      const account = await todoist.user();
+      const zone = timezoneOf(account);
+      if (zone !== undefined) return zone;
+      // The conditions the sync raises, under the same keys, so a zone
+      // Todoist does not name or this platform does not know is reported
+      // once however it was found missing.
+      const unknown = namedZoneOf(account);
+      if (unknown === undefined) {
+        context.log.condition(
+          "timezone-none",
+          "Todoist named no timezone for the account, so its due dates are read in UTC",
+        );
+      } else {
+        context.log.condition(
+          `timezone-unknown:${unknown}`,
+          `Todoist named the timezone ${unknown} for the account, which this platform does not know, so its due dates are read in UTC`,
+        );
+      }
+      return "UTC";
+    })();
+    zones.set(context, asked);
   }
-  context.state.set("timezone", zone);
-  return zone;
+  return asked;
 }
 
 function linkOf(item: Item): string | undefined {
@@ -120,6 +128,17 @@ function linkOf(item: Item): string | undefined {
 
 function isCompleted(item: Item): boolean {
   return item.properties["status"] === "completed";
+}
+
+/**
+ * A command's id from the row as the change showed it and what the
+ * command does. The row's moment is in it because a transition moves no
+ * version: a trash, a restore and a trash again are three commands, not
+ * one sent three times. A run replayed after a failure shows the same
+ * row, so it sends the same command.
+ */
+function commandId(item: Item, type: string): string {
+  return uuidFor(item.id, String(item.version), item.updated_at, type);
 }
 
 /**
@@ -133,10 +152,10 @@ export async function carry(
   base: string,
 ): Promise<void> {
   const { item, kind } = change;
-  const { env, signal, log } = context;
+  const { env, signal } = context;
   const todoist = new Door(base, env.TODOIST_API_TOKEN, signal);
   const timeZone = await timeZoneFor(context, todoist);
-  const taskId = linkOf(item);
+  let taskId = linkOf(item);
 
   // Archiving keeps a task; Todoist has no state for a task set aside.
   if (kind === "archived") return;
@@ -145,20 +164,23 @@ export async function carry(
     // A row Todoist was never told about and that is gone has nothing to
     // carry: adding a task only to close it would leave one nobody made.
     if (kind === "trashed" || kind === "purged") return;
-    await add(item, timeZone, todoist, context);
-    return;
+    taskId = await add(item, timeZone, todoist, context);
+    if (taskId === undefined) return;
+    // The create carried the row as it was; what the row holds now, after
+    // a run that failed between the create and the link, is compared
+    // against the task like any change, and a completed row closes it.
   }
 
   if (kind === "trashed" || kind === "purged") {
     const answer = await todoist.one(
       "item_close",
-      uuidFor(item.id, String(item.version), "item_close"),
+      commandId(item, "item_close"),
       { id: taskId },
     );
     if (answer !== "ok") {
       // A task already completed or deleted in Todoist is what the row's
       // trash asked for; the refusal is recorded and the change is done.
-      log.condition(
+      context.log.condition(
         `todoist-refused:${item.id}`,
         `Todoist refused closing task ${taskId} for row ${item.id}: ${describeError(answer)}`,
       );
@@ -166,15 +188,45 @@ export async function carry(
     return;
   }
 
-  // Updated or restored: the task as Todoist has it first, so only what
-  // differs travels, and the round after a lost state is a round of reads.
+  await sync(item, taskId, timeZone, todoist, context);
+}
+
+/**
+ * The task as Todoist has it first, so only what differs travels and the
+ * round after a lost state is a round of reads; then completion, which
+ * `item_update` does not carry.
+ */
+async function sync(
+  item: Item,
+  taskId: string,
+  timeZone: string,
+  todoist: Door,
+  context: WatchContext<OutboundEnv>,
+): Promise<void> {
+  const { log } = context;
   let task = await todoist.task(taskId);
-  if (task === undefined) {
+  if (task === "forbidden") {
+    log.condition(
+      `todoist-refused:${item.id}`,
+      `Todoist refuses access to task ${taskId} for row ${item.id}, so its changes are not carried`,
+    );
+    return;
+  }
+  if (task === "missing") {
     // The door answers only open tasks, so none means completed or gone.
-    if (isCompleted(item)) return;
+    if (isCompleted(item)) {
+      // A completed task cannot be read, so an edit to a completed row
+      // has nothing to be compared with; the completion itself was
+      // carried when the row was completed.
+      log.condition(
+        `todoist-completed:${item.id}`,
+        `Todoist does not answer the completed task ${taskId}, so a change to row ${item.id} beyond its completion is not carried`,
+      );
+      return;
+    }
     const answer = await todoist.one(
       "item_uncomplete",
-      uuidFor(item.id, String(item.version), "item_uncomplete"),
+      commandId(item, "item_uncomplete"),
       { id: taskId },
     );
     if (answer !== "ok") {
@@ -185,7 +237,7 @@ export async function carry(
       return;
     }
     task = await todoist.task(taskId);
-    if (task === undefined) {
+    if (typeof task === "string") {
       log.condition(
         `todoist-gone:${item.id}`,
         `Todoist no longer has task ${taskId} for row ${item.id}`,
@@ -198,7 +250,7 @@ export async function carry(
   if (Object.keys(diff).length > 0) {
     const answer = await todoist.one(
       "item_update",
-      uuidFor(item.id, String(item.version), "item_update"),
+      commandId(item, "item_update"),
       { id: taskId, ...diff },
     );
     if (answer !== "ok") {
@@ -209,32 +261,32 @@ export async function carry(
       return;
     }
   }
-  if (isCompleted(item) && task.checked !== true) {
-    const answer = await todoist.one(
-      "item_close",
-      uuidFor(item.id, String(item.version), "item_close"),
-      { id: taskId },
+  const completed = isCompleted(item);
+  if (completed === (task.checked === true)) return;
+  const type = completed ? "item_close" : "item_uncomplete";
+  const answer = await todoist.one(type, commandId(item, type), {
+    id: taskId,
+  });
+  if (answer !== "ok") {
+    log.condition(
+      `todoist-refused:${item.id}`,
+      `Todoist refused ${completed ? "closing" : "reopening"} task ${taskId} for row ${item.id}: ${describeError(answer)}`,
     );
-    if (answer !== "ok") {
-      log.condition(
-        `todoist-refused:${item.id}`,
-        `Todoist refused closing task ${taskId} for row ${item.id}: ${describeError(answer)}`,
-      );
-    }
   }
 }
 
 /**
  * A row Todoist has not been told about becomes a task, and the task's id
  * is written back onto the row. The command's ids come from the row alone,
- * so a run replayed after a failure sends Todoist the same create.
+ * so a run replayed after a failure sends Todoist the same create. Answers
+ * the task's id, or nothing where the row was abandoned with a condition.
  */
 async function add(
   item: Item,
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
-): Promise<void> {
+): Promise<string | undefined> {
   const { log } = context;
   const uuid = uuidFor(item.id, "item_add");
   const tempId = uuidFor(item.id, "temp_id");
@@ -252,7 +304,7 @@ async function add(
       `todoist-refused:${item.id}`,
       `Todoist refused creating a task for row ${item.id}: ${status === undefined ? "no answer for the command" : describeError(status)}`,
     );
-    return;
+    return undefined;
   }
   const taskId = answer.temp_id_mapping?.[tempId];
   if (taskId === undefined) {
@@ -260,31 +312,19 @@ async function add(
       `todoist-unmapped:${item.id}`,
       `Todoist took the create for row ${item.id} without naming the task it made; link the row to its task by hand`,
     );
-    return;
+    return undefined;
   }
   try {
     await context.setLink(item, taskId);
   } catch (error) {
     if (!(error instanceof LinkTaken)) throw error;
     log.condition(`todoist-link-taken:${item.id}`, error.message);
-    return;
+    return undefined;
   }
-  if (isCompleted(item)) {
-    const closed = await todoist.one(
-      "item_close",
-      uuidFor(item.id, String(item.version), "item_close"),
-      { id: taskId },
-    );
-    if (closed !== "ok") {
-      log.condition(
-        `todoist-refused:${item.id}`,
-        `Todoist refused closing the new task ${taskId} for row ${item.id}: ${describeError(closed)}`,
-      );
-    }
-  }
+  return taskId;
 }
 
-/** The two Todoist doors the carry uses, bound to a token and a signal. */
+/** The Todoist doors the carry uses, bound to a token and a signal. */
 class Door {
   constructor(
     private readonly base: string,
@@ -306,7 +346,7 @@ class Door {
     return answer.sync_status[uuid] ?? { error: "no answer for the command" };
   }
 
-  task(id: string): Promise<TodoistItem | undefined> {
+  task(id: string): Promise<TaskAnswer> {
     return getTask(this.base, this.token, id, this.signal);
   }
 

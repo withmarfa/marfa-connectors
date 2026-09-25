@@ -114,9 +114,13 @@ function laterThan(
   return !Number.isNaN(a) && (Number.isNaN(b) || a > b);
 }
 
-/** A transition, which touches no property and is carried back beside any write. */
+/**
+ * A transition the vendor's write proceeds beside whatever the times say:
+ * an archive touches no property and asks nothing of the vendor. A
+ * restore is met on its own below.
+ */
 function transition(change: Change): boolean {
-  return change.kind === "archived" || change.kind === "restored";
+  return change.kind === "archived";
 }
 
 /** How the rows are found and written back: with nothing carried back, or two-way. */
@@ -283,8 +287,8 @@ export class Rows {
    * the connector's own writes and the changes it carried back; a row past
    * it has been changed by somebody else since, whether or not the log
    * read showed it, since a read cut short cannot hide a moved version. A
-   * row the memory knows nothing of takes the vendor's word. A transition
-   * touches no property: the write proceeds and the transition is still
+   * row the memory knows nothing of takes the vendor's word. An archive
+   * touches no property: the write proceeds and the archive is still
    * carried back. Otherwise the later change wins; the loser is a
    * condition, and where the vendor loses its entry is not written and the
    * row's state is carried back. A trash in Marfa is met before this, as
@@ -316,6 +320,15 @@ export class Rows {
       pending.set(row.id, change);
     }
     if (transition(change)) return true;
+    if (change.kind === "restored") {
+      // What the vendor sends after a trash was carried back can be the
+      // echo of what the trash did there. An entry from before the restore
+      // is left unwritten and nothing is lost: carrying the restore moves
+      // the vendor's copy, and a change of the vendor's own comes again
+      // with it. A later entry is a change of its own and is written. The
+      // restore is carried back either way, since it touches no property.
+      return laterThan(entry.changed_at, change.item.updated_at);
+    }
     this.conflict(row.id);
     if (laterThan(entry.changed_at, change.item.updated_at)) {
       pending.delete(row.id);
