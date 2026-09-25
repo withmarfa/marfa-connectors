@@ -204,7 +204,7 @@ async function sync(
   context: WatchContext<OutboundEnv>,
 ): Promise<void> {
   const { log } = context;
-  let task = await todoist.task(taskId);
+  const task = await todoist.task(taskId);
   if (task === "forbidden") {
     log.condition(
       `todoist-refused:${item.id}`,
@@ -214,37 +214,12 @@ async function sync(
   }
   if (task === "missing") {
     // The door answers a completed task as well as an open one, so none
-    // is a task deleted in Todoist. A completed row has nothing more to
-    // ask of it; an open row asks it back all the same, in case the door
-    // withheld a completed task after all, and takes the refusal as the
-    // deletion it is.
-    if (isCompleted(item)) {
-      log.condition(
-        `todoist-gone:${item.id}`,
-        `Todoist no longer has task ${taskId} for row ${item.id}`,
-      );
-      return;
-    }
-    const answer = await todoist.one(
-      "item_uncomplete",
-      commandId(item, "item_uncomplete"),
-      { id: taskId },
+    // is a task deleted in Todoist, and nothing is asked of it.
+    log.condition(
+      `todoist-gone:${item.id}`,
+      `Todoist no longer has task ${taskId} for row ${item.id}`,
     );
-    if (answer !== "ok") {
-      log.condition(
-        `todoist-gone:${item.id}`,
-        `Todoist no longer has task ${taskId} for row ${item.id}: ${describeError(answer)}`,
-      );
-      return;
-    }
-    task = await todoist.task(taskId);
-    if (typeof task === "string") {
-      log.condition(
-        `todoist-gone:${item.id}`,
-        `Todoist no longer has task ${taskId} for row ${item.id}`,
-      );
-      return;
-    }
+    return;
   }
 
   const diff = differing(argsOf(item, timeZone), task, timeZone);

@@ -382,11 +382,12 @@ describe("a row Todoist knows", () => {
 
   it("names a task Todoist no longer has as a condition, and the run lands", async () => {
     const row = await synced("a");
-    // Gone from the account without a delta saying so.
+    // Gone from the account without a delta saying so: nothing is asked
+    // of a task the door does not answer.
     todoist.tasks.delete("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
     await landed();
-    expect(todoist.commands().map((c) => c.type)).toEqual(["item_uncomplete"]);
+    expect(todoist.commands()).toEqual([]);
     expect(summary()).toContain(
       `Todoist no longer has task a for row ${row.id}`,
     );
