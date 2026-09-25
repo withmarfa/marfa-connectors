@@ -620,6 +620,12 @@ describe("Todoist's answers, continued", () => {
     const updates = todoist.commands("item_update");
     expect(updates).toHaveLength(2);
     expect(updates[1]?.uuid).toBe(updates[0]?.uuid);
+    const sends = todoist.received.filter((r) =>
+      r.commands?.some((c) => c.type === "item_update"),
+    );
+    expect((sends[1]?.at ?? 0) - (sends[0]?.at ?? 0)).toBeGreaterThanOrEqual(
+      950,
+    );
     expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
     expect(summary()).toMatch(/conflicts 0/);
     expect(summary()).not.toContain("refused");
@@ -878,15 +884,17 @@ describe("the account's zone", () => {
   it("raises the sync's own condition when a create finds no zone named", async () => {
     todoist.timezone = null;
     todoist.put(todoist.task("seed"));
+    // An instant that is one date in UTC and the next in London, so the
+    // zone the date was written in is what the assertion sees.
     personsRow({
       title: "Whole day",
       status: "pending",
-      due_at: "2026-09-30T00:00:00.000Z",
+      due_at: "2026-09-29T23:30:00.000Z",
       precision: "day",
     });
     await landed();
     expect(todoist.commands("item_add")[0]?.args["due"]).toEqual({
-      date: "2026-09-30",
+      date: "2026-09-29",
     });
     const conditions = summary().split("named no timezone").length - 1;
     expect(conditions).toBe(1);
