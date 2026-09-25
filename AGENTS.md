@@ -17,7 +17,7 @@ Moving the pin: write the commit into `scripts/monorepo.commit`, run both script
 
 ## Secrets
 
-A connector reads its secrets from the environment, and nothing here holds a value. `.infisical.json` maps this repository to its Infisical project, environment and path, so a run by hand that needs a secret takes it from there with a command such as `infisical run -- <command>`, which puts the values into the command's environment without printing them.
+A connector reads its secrets from the environment, and nothing here holds a value. `.infisical.json` maps this repository to its Infisical project, environment and path, so a run by hand that needs a secret takes it from there with `aic-infisical-run -- <command>` from the checkout, which puts the values into the command's environment without printing them.
 
 ## Versions
 

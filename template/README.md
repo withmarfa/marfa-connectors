@@ -19,10 +19,10 @@ What a run has to hand:
 
 - **`upsert(entries)`**: each entry is a `source_id`, its properties and its `occurred_at`. Put the vendor account inside the `source_id`, as `<account>:<id>`, so two accounts under one source never share a row. A property that is absent or `null` is cleared from the row.
 - **`archive(sourceIds)`**: for what the vendor deleted. A row is archived, never trashed, and a row a person trashed is never touched.
-- **`state.get` and `state.set`**: a small value kept between runs, such as a sync token. It is kept only when every write in the run landed, in a file in `MARFA_STATE_DIR` named for the key's own source, so two accounts' connectors can share the directory. Losing it costs a full read and never a duplicate, but it also remembers the rows a person trashed: once one of those is purged, only the state stops the vendor's copy being written again. Keep `MARFA_STATE_DIR` on a disk that lasts.
+- **`state.get` and `state.set`**: a small value kept between runs, such as a sync token. It is kept only when every write in the run landed, in a file in `MARFA_STATE_DIR` named for the key's own source, so two accounts' connectors can share the directory. The state is a cache: losing it costs a full read and never a duplicate, and a trashed row stays in the bin. Nothing remembers a row a person purged, so the vendor's copy is written again the next time the vendor sends it, as it does after the state is lost. Keep `MARFA_STATE_DIR` on a disk that lasts, or every run is a full read.
 - **`log.condition(key, message)`**: something that lasts across runs but lets the run go on, such as a feed that stopped answering among several. It is reported on the first run it appears. What stops the run, such as a vendor refusing the token, is thrown instead, and fails the run.
 - **`signal`**: hand it to `fetch`, so a stop is prompt.
-- **`env`**: the values the connector declared. A `secret` or `required` value that is missing stops the start, and a secret never reaches a log line or a report.
+- **`env`**: the values the connector declared. A `secret` or `required` value that is missing stops the start, and a secret never reaches a log line or a report, nor does any part of one that holds a list. A value the connector can tell is wrong on sight, such as a malformed address, is refused by throwing from `checkEnv`, which stops the start the same way.
 
 A connector reads from its vendor and never writes to it, and it writes only its own type at the feed tier. Promoting a row into the library is a person's or an app's act.
 
@@ -36,16 +36,16 @@ marfa keys create --label <name> --source <name> --type-permission <type>=write 
 
 - `--source <name>`: the connector's source, which every row it writes carries.
 - `--type-permission <type>=write`: reach on the connector's own type and on nothing else.
-- `--metadata-permission types=write`: lets it register its type on its first start. Leave it out for a type the instance already ships.
+- `--metadata-permission types=write`: lets it register its type on its first start.
 - `--default-tier feed`: puts what it writes in the feed.
 
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among live keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 
 ```bash
-marfa keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --default-tier feed
+marfa keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
 ```
 
-Mint it with the operator key. A working key can pass on only the sources it writes under itself, its own and its claims, so even one holding every permission is refused `<name>`; the operator key is exempt, which is how a claim starts. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state file.
+`types=write` is used only when this account's process is the first to start and so registers the type; once the type is on the instance, the key never uses it. Mint the key with the operator key. A working key can pass on only the sources it writes under itself, its own and its claims, so even one holding every permission is refused `<name>`; the operator key is exempt, which is how a claim starts. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state file.
 
 ## Run it
 
@@ -66,4 +66,4 @@ The environment is `MARFA_URL`, `MARFA_KEY`, `MARFA_STATE_DIR` and whatever `env
 docker build -f template/Dockerfile --build-arg CONNECTOR=<name> -t <name> .
 ```
 
-Pass the environment with `-e`, and keep the state on a named volume, `-v <name>-state:/state`: the image sets `MARFA_STATE_DIR` to `/state`, and a container started without the volume would write a row a person purged again.
+Pass the environment with `-e`, and keep the state on a named volume, `-v <name>-state:/state`: the image sets `MARFA_STATE_DIR` to `/state`, and a container started without the volume begins with a full read of the vendor.
