@@ -26,6 +26,7 @@ const served = {
   label: "Todoist Task",
   parent: "core.task",
   fields: {
+    todoist_id: { type: "string" },
     project_id: { type: "string" },
     section_id: { type: "string" },
     parent_id: { type: "string" },
@@ -168,11 +169,13 @@ describe("the mapping", () => {
         note_count: 2,
         checked: true,
         completed_at: "2026-09-02T08:30:00.000000Z",
+        updated_at: "2026-09-02T08:31:00Z",
       }),
     );
     expect(entry).toEqual({
       source_id: "2671355:6X7r",
       properties: {
+        todoist_id: "6X7r",
         title: "Buy milk",
         description: "Organic",
         priority: "urgent",
@@ -189,6 +192,7 @@ describe("the mapping", () => {
         comment_count: 2,
       },
       occurred_at: "2026-09-01T10:00:00.000000Z",
+      changed_at: "2026-09-02T08:31:00.000Z",
     });
   });
 
@@ -431,7 +435,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.requestsTo("POST", "/types")).toEqual([]);
     // With the account's zone named, no timezone condition rides the report.
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 2, updated 0, archived 0, unchanged 0, skipped 0",
+      "created 2, updated 0, archived 0, unchanged 0, skipped 0, pushed 0, own 0, conflicts 0",
     );
     expect(await state()).toEqual({
       account: "2671355",
@@ -478,8 +482,10 @@ describe("the connector, run as a process", () => {
     expect(marfa.row("2671355:b").state).toBe("active");
     expect(marfa.row("2671355:c").state).toBe("archived");
     expect(marfa.row("2671355:d").version).toBe(1);
+    // The four creates of the first run are read back as the connector's
+    // own, and nothing is carried to Todoist.
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 0, updated 2, archived 1, unchanged 0, skipped 0",
+      "created 0, updated 2, archived 1, unchanged 0, skipped 0, pushed 0, own 4, conflicts 0",
     );
     expect(await state()).toEqual({
       account: "2671355",

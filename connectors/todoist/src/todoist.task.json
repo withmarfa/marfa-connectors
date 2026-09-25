@@ -4,6 +4,10 @@
   "description": "A task from a Todoist account, as the Todoist connector reads it through the Sync API: a task whose priority, due date and completion are the core task's, with Todoist's own placing of it beside them.",
   "parent": "core.task",
   "fields": {
+    "todoist_id": {
+      "type": "string",
+      "description": "The Todoist task this row is: set from the sync for a task read from Todoist, and from Todoist's answer for a row created in Marfa and carried there. A row without one has not been told to Todoist."
+    },
     "project_id": {
       "type": "string",
       "description": "The Todoist project the task sits in."

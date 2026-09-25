@@ -1,0 +1,429 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
+/**
+ * A task as the stub holds it and as both doors answer it: the Sync API's
+ * item and the REST door's task carry the same fields for what the
+ * connector reads.
+ */
+export interface StubTask {
+  id: string;
+  content: string;
+  description: string;
+  project_id: string;
+  section_id: string | null;
+  parent_id: string | null;
+  labels: string[];
+  priority: number;
+  due: Record<string, unknown> | null;
+  child_order: number;
+  checked: boolean;
+  completed_at: string | null;
+  is_deleted: boolean;
+  note_count: number;
+  added_at: string;
+  updated_at: string;
+}
+
+/** One command as it arrived, for a test to assert on. */
+export interface ReceivedCommand {
+  type: string;
+  uuid: string;
+  temp_id?: string;
+  args: Record<string, unknown>;
+}
+
+export interface ReceivedRequest {
+  method: string;
+  path: string;
+  authorized: boolean;
+  syncToken?: string;
+  commands?: ReceivedCommand[];
+}
+
+/** A refusal the next request is answered with, in place of the door. */
+interface Refusal {
+  status: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+  /** Only a request this admits is refused; the rest are answered as usual. */
+  when?: (request: ReceivedRequest) => boolean;
+}
+
+type CommandStatus = "ok" | Record<string, unknown>;
+
+/**
+ * Todoist, as far as the connector can tell: a stateful account whose
+ * tasks the Sync API lists whole and by delta, whose commands change them
+ * and answer under `sync_status` and `temp_id_mapping`, and whose REST
+ * door answers an open task and 404 for one completed or deleted.
+ *
+ * A command's `uuid` is remembered with its answer, so a command sent
+ * again is answered as it was and changes nothing, which is the assumption
+ * the connector makes of Todoist for a replayed run. Deltas are by a
+ * sequence each change moves, so a change the connector made comes back
+ * to it on the next sync, as Todoist's does.
+ */
+export class TodoistStub {
+  readonly tasks = new Map<string, StubTask>();
+  readonly received: ReceivedRequest[] = [];
+  account = "1001";
+  timezone: string | null = "Europe/London";
+  /**
+   * The moment a change is stamped with, the connector's own commands
+   * included; a test moves it to place a change in time. It starts a day
+   * before the scripted server's clock, so a command the connector sends
+   * is earlier than any change a person then makes in Marfa, as it is
+   * with real clocks.
+   */
+  now = "2026-09-24T12:00:00.000000Z";
+  url = "";
+  private seq = 0;
+  private readonly changed = new Map<string, number>();
+  private readonly answered = new Map<
+    string,
+    { status: CommandStatus; mapped?: [string, string] }
+  >();
+  private readonly refusals: Refusal[] = [];
+  private readonly scripted = new Map<string, CommandStatus>();
+  private made = 0;
+  private readonly http: Server;
+
+  constructor(private readonly token: string) {
+    this.http = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        this.answer(
+          req.method ?? "GET",
+          req.url ?? "/",
+          req.headers.authorization === `Bearer ${this.token}`,
+          Buffer.concat(chunks).toString("utf8"),
+          (status, body, headers) => {
+            res.writeHead(status, {
+              "Content-Type": "application/json",
+              ...headers,
+            });
+            res.end(body === undefined ? "" : JSON.stringify(body));
+          },
+        );
+      });
+    });
+  }
+
+  async start(): Promise<this> {
+    await new Promise<void>((done) => this.http.listen(0, "127.0.0.1", done));
+    this.url = `http://127.0.0.1:${String((this.http.address() as AddressInfo).port)}`;
+    return this;
+  }
+
+  close(): Promise<void> {
+    return new Promise((done) => {
+      this.http.closeAllConnections();
+      this.http.close(() => {
+        done();
+      });
+    });
+  }
+
+  /** A task with every field, as a test starts one. */
+  task(id: string, overrides: Partial<StubTask> = {}): StubTask {
+    return {
+      id,
+      content: `Task ${id}`,
+      description: "",
+      project_id: "inbox",
+      section_id: null,
+      parent_id: null,
+      labels: [],
+      priority: 1,
+      due: null,
+      child_order: 1,
+      checked: false,
+      completed_at: null,
+      is_deleted: false,
+      note_count: 0,
+      added_at: "2026-09-20T09:00:00.000000Z",
+      updated_at: "2026-09-20T09:00:00.000000Z",
+      ...overrides,
+    };
+  }
+
+  /** Puts tasks in the account, each as a change the next delta carries. */
+  put(...tasks: StubTask[]): void {
+    for (const task of tasks) {
+      this.tasks.set(task.id, task);
+      this.touch(task.id, false);
+    }
+  }
+
+  /** A person changes a task in Todoist, at the stub's moment. */
+  edit(id: string, patch: Partial<StubTask>): StubTask {
+    const task = this.get(id);
+    Object.assign(task, patch);
+    this.touch(id);
+    return task;
+  }
+
+  complete(id: string): StubTask {
+    return this.edit(id, { checked: true, completed_at: this.now });
+  }
+
+  reopen(id: string): StubTask {
+    return this.edit(id, { checked: false, completed_at: null });
+  }
+
+  delete(id: string): StubTask {
+    return this.edit(id, { is_deleted: true });
+  }
+
+  /**
+   * The next request is answered with this status in place of the door,
+   * or the next one `when` admits, so a test can refuse one command and
+   * let the rest through.
+   */
+  refuseNext(
+    status: number,
+    options: {
+      headers?: Record<string, string>;
+      body?: unknown;
+      when?: (request: ReceivedRequest) => boolean;
+    } = {},
+  ): void {
+    this.refusals.push({
+      status,
+      body: options.body,
+      ...(options.headers !== undefined && { headers: options.headers }),
+      ...(options.when !== undefined && { when: options.when }),
+    });
+  }
+
+  /** The next command of this type is answered with this status instead of run. */
+  scriptCommand(type: string, status: CommandStatus): void {
+    this.scripted.set(type, status);
+  }
+
+  /** The commands received, in order, of one type or all. */
+  commands(type?: string): ReceivedCommand[] {
+    return this.received
+      .flatMap((request) => request.commands ?? [])
+      .filter((command) => type === undefined || command.type === type);
+  }
+
+  private get(id: string): StubTask {
+    const task = this.tasks.get(id);
+    if (task === undefined) throw new Error(`the stub holds no task ${id}`);
+    return task;
+  }
+
+  private touch(id: string, stamp = true): void {
+    this.seq += 1;
+    this.changed.set(id, this.seq);
+    if (stamp) this.get(id).updated_at = this.now;
+  }
+
+  private answer(
+    method: string,
+    url: string,
+    authorized: boolean,
+    body: string,
+    reply: (
+      status: number,
+      body?: unknown,
+      headers?: Record<string, string>,
+    ) => void,
+  ): void {
+    const path = new URL(url, "http://stub").pathname;
+    const record: ReceivedRequest = { method, path, authorized };
+    if (method === "POST" && path === "/api/v1/sync") {
+      const form = new URLSearchParams(body);
+      const commands = form.get("commands");
+      if (commands !== null) {
+        record.commands = JSON.parse(commands) as ReceivedCommand[];
+      } else {
+        record.syncToken = form.get("sync_token") ?? "*";
+      }
+    }
+    this.received.push(record);
+    const refusing = this.refusals.findIndex(
+      (refusal) => refusal.when === undefined || refusal.when(record),
+    );
+    if (refusing !== -1) {
+      const [refusal] = this.refusals.splice(refusing, 1);
+      reply(refusal?.status ?? 500, refusal?.body, refusal?.headers);
+      return;
+    }
+    if (!authorized) {
+      reply(401, { error: "Unauthorized" });
+      return;
+    }
+    const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
+    if (method === "GET" && task !== null) {
+      const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
+      if (found === undefined || found.checked || found.is_deleted) {
+        reply(404, { error: "Task not found" });
+        return;
+      }
+      reply(200, found);
+      return;
+    }
+    if (record.commands !== undefined) {
+      reply(200, this.run(record.commands));
+      return;
+    }
+    if (record.syncToken !== undefined) {
+      reply(200, this.delta(record.syncToken));
+      return;
+    }
+    reply(404, { error: "no such door" });
+  }
+
+  /**
+   * A full sync lists the account's active tasks and names the account;
+   * a delta lists what changed since the token, deletions included.
+   */
+  private delta(syncToken: string): unknown {
+    const since =
+      syncToken === "*" ? 0 : Number(syncToken.replace("token-", ""));
+    const items = [...this.tasks.values()].filter((task) =>
+      syncToken === "*"
+        ? !task.is_deleted
+        : (this.changed.get(task.id) ?? 0) > since,
+    );
+    return {
+      sync_token: `token-${String(this.seq)}`,
+      items,
+      ...(syncToken === "*" && {
+        user: {
+          id: this.account,
+          tz_info: { timezone: this.timezone },
+        },
+      }),
+    };
+  }
+
+  private run(commands: ReceivedCommand[]): unknown {
+    const sync_status: Record<string, CommandStatus> = {};
+    const temp_id_mapping: Record<string, string> = {};
+    for (const command of commands) {
+      const before = this.answered.get(command.uuid);
+      if (before !== undefined) {
+        sync_status[command.uuid] = before.status;
+        if (before.mapped !== undefined) {
+          temp_id_mapping[before.mapped[0]] = before.mapped[1];
+        }
+        continue;
+      }
+      const scripted = this.scripted.get(command.type);
+      if (scripted !== undefined) {
+        this.scripted.delete(command.type);
+        sync_status[command.uuid] = scripted;
+        // A refusal is not remembered: Todoist answers a command that
+        // did not run afresh when it is sent again.
+        continue;
+      }
+      const status = this.apply(command);
+      let mapped: [string, string] | undefined;
+      if (
+        status === "ok" &&
+        command.type === "item_add" &&
+        command.temp_id !== undefined
+      ) {
+        mapped = [command.temp_id, this.lastMade];
+        temp_id_mapping[command.temp_id] = this.lastMade;
+      }
+      this.answered.set(command.uuid, {
+        status,
+        ...(mapped !== undefined && { mapped }),
+      });
+      sync_status[command.uuid] = status;
+    }
+    return { sync_status, temp_id_mapping };
+  }
+
+  private lastMade = "";
+
+  private apply(command: ReceivedCommand): CommandStatus {
+    const args = command.args;
+    const id = typeof args["id"] === "string" ? args["id"] : undefined;
+    switch (command.type) {
+      case "item_add": {
+        this.made += 1;
+        const made = `made-${String(this.made)}`;
+        this.tasks.set(
+          made,
+          this.task(made, {
+            ...this.fields(args),
+            added_at: this.now,
+            updated_at: this.now,
+          }),
+        );
+        this.touch(made);
+        this.lastMade = made;
+        return "ok";
+      }
+      case "item_update": {
+        const task = id === undefined ? undefined : this.tasks.get(id);
+        if (task === undefined || task.is_deleted) {
+          return { error_code: 22, error: "Item not found", http_code: 400 };
+        }
+        Object.assign(task, this.fields(args));
+        this.touch(task.id);
+        return "ok";
+      }
+      case "item_close": {
+        const task = id === undefined ? undefined : this.tasks.get(id);
+        if (task === undefined || task.is_deleted) {
+          return { error_code: 22, error: "Item not found", http_code: 400 };
+        }
+        if (!task.checked) this.complete(task.id);
+        return "ok";
+      }
+      case "item_uncomplete": {
+        const task = id === undefined ? undefined : this.tasks.get(id);
+        if (task === undefined || task.is_deleted) {
+          return { error_code: 22, error: "Item not found", http_code: 400 };
+        }
+        if (task.checked) this.reopen(task.id);
+        return "ok";
+      }
+      case "item_delete": {
+        const task = id === undefined ? undefined : this.tasks.get(id);
+        if (task === undefined) {
+          return { error_code: 22, error: "Item not found", http_code: 400 };
+        }
+        this.delete(task.id);
+        return "ok";
+      }
+      default:
+        return {
+          error_code: 16,
+          error: "Invalid command type",
+          http_code: 400,
+        };
+    }
+  }
+
+  /** The task fields a command carries, as Todoist stores them. */
+  private fields(args: Record<string, unknown>): Partial<StubTask> {
+    const out: Partial<StubTask> = {};
+    if (typeof args["content"] === "string") out.content = args["content"];
+    if (typeof args["description"] === "string") {
+      out.description = args["description"];
+    }
+    if (typeof args["priority"] === "number") out.priority = args["priority"];
+    if ("due" in args) {
+      const due = args["due"];
+      out.due =
+        due === null
+          ? null
+          : {
+              ...(due as Record<string, unknown>),
+              is_recurring: false,
+              timezone: null,
+              lang: "en",
+            };
+    }
+    return out;
+  }
+}
