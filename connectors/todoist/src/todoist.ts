@@ -60,7 +60,8 @@ export async function sync(
 
 /**
  * The account a token belongs to, from the Sync API's own `user`. Not an
- * item's `user_id`, which names whoever the task is assigned to.
+ * item's `user_id`, which names the task's owner, who in a shared project
+ * need not be this account.
  */
 export function accountOf(user: SyncAnswer["user"]): string | undefined {
   const id = user?.id;
