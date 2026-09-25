@@ -1,0 +1,16 @@
+{
+  "name": "rss",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@withmarfa/connector": "workspace:*",
+    "entities": "^7.0.1",
+    "feedsmith": "^3.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Example RSS Feed</title>
+    <link>https://example.org/</link>
+    <description>An example RSS 2.0 feed.</description>
+    <language>en_GB</language>
+    <item>
+      <title>Alpha</title>
+      <link>https://example.org/alpha</link>
+      <guid isPermaLink="false">1</guid>
+      <pubDate>Wed, 16 Sep 2026 08:00:00 GMT</pubDate>
+      <description>Alpha summary.</description>
+      <content:encoded><![CDATA[<p>Alpha body.</p>]]></content:encoded>
+      <dc:creator>B. Writer</dc:creator>
+    </item>
+    <item>
+      <title>Beta</title>
+      <link>https://example.org/beta</link>
+      <pubDate>Thu, 17 Sep 2026 08:00:00 +0100</pubDate>
+      <enclosure url="https://example.org/beta.jpg" type="image/jpeg" length="1000"/>
+    </item>
+    <item>
+      <title>Gamma</title>
+      <description>An entry with neither a guid nor a link.</description>
+    </item>
+  </channel>
+</rss>

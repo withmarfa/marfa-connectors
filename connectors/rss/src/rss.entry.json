@@ -1,0 +1,23 @@
+{
+  "id": "rss.entry",
+  "label": "Feed Entry",
+  "description": "An entry from an Atom or RSS 2.0 feed, as the RSS connector reads it: a bookmark whose title and description are plain text and whose body keeps the feed's markup, with the entry's id in its feed and the feed's address beside the bookmark's fields.",
+  "version": 1,
+  "parent": "core.bookmark",
+  "fields": {
+    "entry_id": {
+      "type": "string",
+      "required": true,
+      "description": "The entry's id in its feed: its Atom id or RSS guid, else its link."
+    },
+    "feed_url": {
+      "type": "url",
+      "required": true,
+      "description": "The feed's address, as the connector was given it, without credentials or query, where a private feed carries its token."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "body"
+  }
+}
