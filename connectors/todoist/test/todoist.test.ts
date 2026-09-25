@@ -276,6 +276,43 @@ describe("the mapping", () => {
     expect(dueOf({ date: "2026-13-45T25:61:61" }, "UTC")).toBeUndefined();
   });
 
+  it("reads a fixed time and a completion strictly, as Todoist writes them", () => {
+    expect(dueOf({ date: "2026-09-30T13:00:00.123456Z" }, "UTC")?.due_at).toBe(
+      "2026-09-30T13:00:00.123Z",
+    );
+    for (const date of [
+      "2026-02-30T13:00:00Z",
+      "2026-09-30T24:00:00Z",
+      "Sep 30 Z",
+      "2026-09-30T13:00Z",
+    ]) {
+      expect(dueOf({ date }, "UTC")).toBeUndefined();
+    }
+    const completed = (completedAt: string): unknown =>
+      entryOf(
+        "1",
+        "UTC",
+        task("a", { checked: true, completed_at: completedAt }),
+      ).properties["completed_at"];
+    expect(completed("2026-09-02T08:30:00.000000Z")).toBe(
+      "2026-09-02T08:30:00.000Z",
+    );
+    expect(completed("2026-02-30T08:30:00Z")).toBeUndefined();
+    expect(completed("yesterday")).toBeUndefined();
+  });
+
+  it("reads an item carrying null where Todoist sends a value without failing", () => {
+    const odd = {
+      ...task("a"),
+      labels: null,
+      due: { date: null },
+    } as unknown as TodoistItem;
+    const { properties } = entryOf("1", "UTC", odd);
+    expect(properties["title"]).toBe("Task a");
+    expect(properties["labels"]).toBeUndefined();
+    expect(properties["due_at"]).toBeUndefined();
+  });
+
   it("writes a completion only for a completed task", () => {
     const completedAt = "2026-09-02T08:30:00.000000Z";
     const done = entryOf(
@@ -586,6 +623,87 @@ describe("the connector, run as a process", () => {
     ]);
     expect(marfa.row("2671355:a").properties["due_at"]).toBe(
       "2026-10-01T08:00:00.000Z",
+    );
+  });
+
+  it("keeps a delta's completions and deletions when a moved zone asks for a full sync", async () => {
+    const a = task("a", { due: { date: "2026-10-01T09:00:00" } });
+    let zone = "Europe/London";
+    let fulls = 0;
+    answer = (syncToken) => {
+      if (syncToken === "*") {
+        fulls += 1;
+        return {
+          sync_token: `t-full-${String(fulls)}`,
+          items: fulls === 1 ? [a, task("b"), task("c")] : [a],
+          user: { id: "2671355", tz_info: { timezone: zone } },
+        };
+      }
+      return {
+        sync_token: "t-delta",
+        items: [
+          task("b", {
+            checked: true,
+            completed_at: "2026-10-02T10:00:00.000000Z",
+          }),
+          task("c", { is_deleted: true }),
+        ],
+        user: { id: "2671355", tz_info: { timezone: zone } },
+      };
+    };
+    expect((await once()).code).toBe(0);
+    zone = "America/New_York";
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full-1",
+      "*",
+    ]);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T13:00:00.000Z",
+    );
+    expect(marfa.row("2671355:b").properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-10-02T10:00:00.000Z",
+    });
+    expect(marfa.row("2671355:c").state).toBe("archived");
+  });
+
+  it("names an unknown zone even with one held, and reads in the one held", async () => {
+    let named = "Europe/London";
+    answer = (syncToken) => ({
+      sync_token: syncToken === "*" ? "t-full" : "t-delta",
+      items: [task("a", { due: { date: "2026-10-01T09:00:00" } })],
+      user: { id: "2671355", tz_info: { timezone: named } },
+    });
+    expect((await once()).code).toBe(0);
+    named = "Mars/Olympus";
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full",
+    ]);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T08:00:00.000Z",
+    );
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "Mars/Olympus for the account, which this platform does not know, so its due dates are read in Europe/London",
+    );
+  });
+
+  it("reports a timezone condition anew when what it says changes", async () => {
+    let tzInfo: { timezone?: string } = {};
+    answer = () => ({
+      sync_token: "t1",
+      items: [task("a")],
+      user: { id: "2671355", tz_info: tzInfo },
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toContain("named no timezone");
+    tzInfo = { timezone: "Mars/Olympus" };
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "named the timezone Mars/Olympus",
     );
   });
 

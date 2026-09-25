@@ -34,10 +34,14 @@ const connector = defineConnector({
     const kept = typeof knownZone === "string" ? knownZone : undefined;
     // A timezone that moved, or first became known, reads every floating
     // and whole-day due date anew, and a delta carries only the tasks that
-    // changed; so the run asks for them all.
+    // changed; so the run asks for them all. A full sync lists only active
+    // tasks, so the delta's deletions and completions are kept beside it.
     const newZone = timezoneOf(answer.user);
     if (heldToken !== firstSync && newZone !== undefined && newZone !== kept) {
-      answer = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
+      const full = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
+      const byId = new Map(answer.items.map((item) => [item.id, item]));
+      for (const item of full.items) byId.set(item.id, item);
+      answer = { ...full, items: [...byId.values()] };
     }
     const known = state.get("account");
     const account =
@@ -48,16 +52,20 @@ const connector = defineConnector({
       );
     }
     const named = timezoneOf(answer.user) ?? kept;
-    if (named === undefined) {
-      const unknown = namedZoneOf(answer.user);
+    const timeZone = named ?? "UTC";
+    // Keyed by what they say, so a changed one is reported as it changes.
+    const unknown = namedZoneOf(answer.user);
+    if (unknown !== undefined && timezoneOf(answer.user) === undefined) {
       log.condition(
-        "timezone",
-        unknown === undefined
-          ? "Todoist named no timezone for the account, so its due dates are read in UTC"
-          : `Todoist named the timezone ${unknown} for the account, which this platform does not know, so its due dates are read in UTC`,
+        `timezone-unknown:${unknown}`,
+        `Todoist named the timezone ${unknown} for the account, which this platform does not know, so its due dates are read in ${timeZone}`,
+      );
+    } else if (named === undefined) {
+      log.condition(
+        "timezone-none",
+        "Todoist named no timezone for the account, so its due dates are read in UTC",
       );
     }
-    const timeZone = named ?? "UTC";
 
     // A deleted task is archived, and a completed one stays active with its
     // status and completion set. A full sync lists only active tasks, so a

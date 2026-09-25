@@ -169,26 +169,43 @@ function inZone(
  * account's timezone (`2026-09-30T12:00:00`), and a fixed time in UTC,
  * ending in `Z`. The core task has no whole-day form, so a whole day is the
  * instant it begins in the account's timezone, at `day` precision. A date
- * the calendar does not have, such as 30 February, is no due date.
+ * or time the calendar does not have, such as 30 February or 24:00, is no
+ * due date, in any of the three kinds.
  */
 export function dueOf(
   due: TodoistItem["due"],
   timeZone: string,
 ): { due_at: string; precision: "day" | "time" } | undefined {
-  const date = due?.date;
-  if (date === undefined) return undefined;
-  if (date.endsWith("Z")) {
-    const at = Date.parse(date);
-    return Number.isNaN(at)
-      ? undefined
-      : { due_at: new Date(at).toISOString(), precision: "time" };
-  }
+  const read = timeOf(due?.date);
+  if (read === undefined) return undefined;
+  const at =
+    (read.utc ? utcOf(read.wall) : inZone(read.wall, timeZone).getTime()) +
+    read.millis;
+  return {
+    due_at: new Date(at).toISOString(),
+    precision: read.timed ? "time" : "day",
+  };
+}
+
+function utcOf([year, month, day, hour, minute, second]: Wall): number {
+  return Date.UTC(year, month - 1, day, hour, minute, second);
+}
+
+/**
+ * A Todoist date or time, read strictly: `YYYY-MM-DD`, optionally with
+ * `THH:MM:SS`, a fraction and a `Z`. `Date.parse` would roll 30 February
+ * into March and read far looser text, so it is not used.
+ */
+function timeOf(
+  text: unknown,
+): { wall: Wall; millis: number; timed: boolean; utc: boolean } | undefined {
+  if (typeof text !== "string") return undefined;
   const match =
-    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?)?$/.exec(
-      date,
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z)?)?$/.exec(
+      text,
     );
   if (match === null) return undefined;
-  const [, year, month, day, hour, minute, second] = match;
+  const [, year, month, day, hour, minute, second, fraction, zulu] = match;
   const wall: Wall = [
     Number(year),
     Number(month),
@@ -198,8 +215,7 @@ export function dueOf(
     Number(second ?? 0),
   ];
   const [y, mo, d, h, mi, s] = wall;
-  const read = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
-  // Date.UTC rolls an impossible date over into the next month.
+  const read = new Date(utcOf(wall));
   if (
     read.getUTCFullYear() !== y ||
     read.getUTCMonth() !== mo - 1 ||
@@ -211,15 +227,19 @@ export function dueOf(
     return undefined;
   }
   return {
-    due_at: inZone(wall, timeZone).toISOString(),
-    precision: hour === undefined ? "day" : "time",
+    wall,
+    millis: Number(`${fraction ?? ""}000`.slice(0, 3)),
+    timed: hour !== undefined,
+    utc: zulu !== undefined,
   };
 }
 
+/** A completion time, which Todoist writes in UTC. */
 function instantOf(value: string | null | undefined): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? undefined : new Date(at).toISOString();
+  const read = timeOf(value);
+  return read?.utc === true
+    ? new Date(utcOf(read.wall) + read.millis).toISOString()
+    : undefined;
 }
 
 export function entryOf(
@@ -245,7 +265,7 @@ export function entryOf(
       section_id: present(item.section_id),
       parent_id: present(item.parent_id),
       labels:
-        item.labels !== undefined && item.labels.length > 0
+        Array.isArray(item.labels) && item.labels.length > 0
           ? item.labels
           : undefined,
       child_order: item.child_order,
