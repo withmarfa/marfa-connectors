@@ -58,7 +58,7 @@ type CommandStatus = "ok" | Record<string, unknown>;
  * Todoist, as far as the connector can tell: a stateful account whose
  * tasks the Sync API lists whole and by delta, whose commands change them
  * and answer under `sync_status` and `temp_id_mapping`, and whose REST
- * door answers an open task and 404 for one completed or deleted.
+ * door answers a task open or completed and 404 for one deleted.
  *
  * A command's `uuid` is remembered with its answer, so a command sent
  * again is answered as it was and changes nothing, which is the assumption
@@ -284,8 +284,10 @@ export class TodoistStub {
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
+      // A completed task is answered, checked, as the real door answers
+      // it; only a deleted one is not found.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
-      if (found === undefined || found.checked || found.is_deleted) {
+      if (found === undefined || found.is_deleted) {
         reply(404, { error: "Task not found" });
         return;
       }

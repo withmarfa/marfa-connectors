@@ -260,9 +260,11 @@ export async function send(
 }
 
 /**
- * What the task door answers: the task, `missing` for one it does not
- * answer (completed or deleted), or `forbidden` for one the token cannot
- * reach, such as another person's in a shared project.
+ * What the task door answers: the task, open or completed (the door
+ * answers a completed one too, `checked`, whatever the documentation's
+ * "active task" suggests), `missing` for one deleted, or `forbidden` for
+ * one the token cannot reach, such as another person's in a shared
+ * project.
  */
 export type TaskAnswer = TodoistItem | "missing" | "forbidden";
 

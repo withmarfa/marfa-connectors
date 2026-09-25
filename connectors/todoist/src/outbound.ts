@@ -213,14 +213,15 @@ async function sync(
     return;
   }
   if (task === "missing") {
-    // The door answers only open tasks, so none means completed or gone.
+    // The door answers a completed task as well as an open one, so none
+    // is a task deleted in Todoist. A completed row has nothing more to
+    // ask of it; an open row asks it back all the same, in case the door
+    // withheld a completed task after all, and takes the refusal as the
+    // deletion it is.
     if (isCompleted(item)) {
-      // A completed task cannot be read, so an edit to a completed row
-      // has nothing to be compared with; the completion itself was
-      // carried when the row was completed.
       log.condition(
-        `todoist-completed:${item.id}`,
-        `Todoist does not answer the completed task ${taskId}, so a change to row ${item.id} beyond its completion is not carried`,
+        `todoist-gone:${item.id}`,
+        `Todoist no longer has task ${taskId} for row ${item.id}`,
       );
       return;
     }

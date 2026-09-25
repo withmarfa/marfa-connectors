@@ -344,8 +344,8 @@ describe("a row Todoist knows", () => {
     ]);
     expect(todoist.tasks.get("a")?.checked).toBe(true);
 
-    // Todoist's task door answers 404 for a completed task, so the reopen
-    // is sent on that answer, and the task is read once it is open again.
+    // Todoist's task door answers a completed task, checked, so the reopen
+    // is sent on the read like any other change.
     const { completed_at, ...reopened } = marfa.byId(row.id).properties;
     expect(completed_at).toBeDefined();
     marfa.rewrite(`${todoist.account}:a`, { ...reopened, status: "pending" });
@@ -590,7 +590,7 @@ describe("transitions over runs", () => {
     expect(marfa.byId(row.id).state).toBe("trashed");
   });
 
-  it("names an edit to a completed row as one Todoist cannot show it", async () => {
+  it("carries an edit to a completed row, since Todoist answers the completed task, and names one whose task is gone", async () => {
     const row = await synced("a");
     marfa.edit(row.id, {
       status: "completed",
@@ -599,9 +599,22 @@ describe("transitions over runs", () => {
     await landed();
     marfa.edit(row.id, { title: "Task a, edited after completion" });
     await landed();
-    expect(todoist.commands().map((c) => c.type)).toEqual(["item_close"]);
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_close",
+      "item_update",
+    ]);
+    expect(todoist.tasks.get("a")?.content).toBe(
+      "Task a, edited after completion",
+    );
+    expect(todoist.tasks.get("a")?.checked).toBe(true);
+
+    // Gone from the account: a completed row asks nothing more of it.
+    todoist.tasks.delete("a");
+    marfa.edit(row.id, { title: "Task a, edited again" });
+    await landed();
+    expect(todoist.commands()).toHaveLength(2);
     expect(summary()).toContain(
-      `Todoist does not answer the completed task a, so a change to row ${row.id} beyond its completion is not carried`,
+      `Todoist no longer has task a for row ${row.id}`,
     );
   });
 });
@@ -796,10 +809,12 @@ describe("one change, two commands", () => {
     marfa.restore(row.id);
     marfa.edit(row.id, { title: "Task a, back and renamed" });
     await landed();
+    // The closed task is read, checked: what differs travels first, then
+    // the reopen.
     expect(todoist.commands().map((c) => c.type)).toEqual([
       "item_close",
-      "item_uncomplete",
       "item_update",
+      "item_uncomplete",
     ]);
     expect(todoist.tasks.get("a")?.checked).toBe(false);
     expect(todoist.tasks.get("a")?.content).toBe("Task a, back and renamed");
