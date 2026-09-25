@@ -37,6 +37,8 @@ const requestTimeoutMs = 60_000;
 /** The longest wait a `Retry-After` is honored for; a longer one fails the run instead. */
 const longestWaitMs = 60_000;
 const serverErrorRetries = 3;
+/** How many times a batch is sent again on a command's own rate limit. */
+const commandResends = 5;
 
 /** Resolves after `ms`, or rejects the moment the signal aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -216,6 +218,7 @@ export async function send(
   commands: readonly Command[],
   signal: AbortSignal,
 ): Promise<CommandAnswer> {
+  let resends = 0;
   for (;;) {
     const response = await request(
       base,
@@ -233,18 +236,25 @@ export async function send(
       );
     }
     const answer = (await response.json()) as CommandAnswer;
+    // Only a refusal that is itself a rate limit is waited out and sent
+    // again: a wait named on any other refusal rides a terminal answer,
+    // which Todoist says not to send again. A limit that holds through
+    // every resend is handed back as the refusal it is.
     const waits = Object.values(answer.sync_status)
       .map((status) =>
-        status === "ok" ? undefined : waitOf(status.error_extra?.retry_after),
+        status === "ok" || status.http_code !== 429
+          ? undefined
+          : waitOf(status.error_extra?.retry_after),
       )
       .filter((wait): wait is number => wait !== undefined);
-    if (waits.length === 0) return answer;
+    if (waits.length === 0 || resends === commandResends) return answer;
     const wait = Math.max(...waits);
     if (wait > longestWaitMs) {
       throw new Error(
         `Todoist asked for a wait of ${String(wait / 1000)}s on a command, longer than a run holds`,
       );
     }
+    resends += 1;
     await pause(wait, signal);
   }
 }

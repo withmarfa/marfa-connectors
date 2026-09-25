@@ -340,6 +340,19 @@ describe("the mapping", () => {
     ]);
   });
 
+  it("reads when a task changed strictly, as Todoist writes it, and nothing from a floating time", () => {
+    const at = (updated_at: string | undefined): unknown =>
+      entryOf(
+        "1",
+        "UTC",
+        task("a", updated_at === undefined ? {} : { updated_at }),
+      ).changed_at;
+    expect(at("2026-09-02T08:31:00Z")).toBe("2026-09-02T08:31:00.000Z");
+    expect(at("2026-09-02T08:31:00.250000Z")).toBe("2026-09-02T08:31:00.250Z");
+    expect(at("2026-09-02T08:31:00")).toBeUndefined();
+    expect(at(undefined)).toBeUndefined();
+  });
+
   it("encodes a task's id in its link", () => {
     expect(entryOf("1", "UTC", task("a/b c")).properties["url"]).toBe(
       "https://app.todoist.com/app/task/a%2Fb%20c",

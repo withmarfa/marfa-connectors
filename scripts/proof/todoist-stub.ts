@@ -37,6 +37,8 @@ export interface ReceivedRequest {
   method: string;
   path: string;
   authorized: boolean;
+  /** When it arrived, in milliseconds, so a wait between two can be measured. */
+  at: number;
   syncToken?: string;
   commands?: ReceivedCommand[];
 }
@@ -69,6 +71,8 @@ export class TodoistStub {
   readonly received: ReceivedRequest[] = [];
   account = "1001";
   timezone: string | null = "Europe/London";
+  /** The sequence at which the account itself last changed, for a delta to carry it. */
+  private userSeq = 0;
   /**
    * The moment a change is stamped with, the connector's own commands
    * included; a test moves it to place a change in time. It starts a day
@@ -85,7 +89,11 @@ export class TodoistStub {
     { status: CommandStatus; mapped?: [string, string] }
   >();
   private readonly refusals: Refusal[] = [];
-  private readonly scripted = new Map<string, CommandStatus>();
+  /** Answers scripted for the next commands of a type: a status, or none at all. */
+  private readonly scripted = new Map<
+    string,
+    { status: CommandStatus | "nothing"; times: number }
+  >();
   private made = 0;
   private readonly http: Server;
 
@@ -177,6 +185,13 @@ export class TodoistStub {
     return this.edit(id, { is_deleted: true });
   }
 
+  /** The account's zone moves, which the next delta carries as the account changed. */
+  renameZone(zone: string | null): void {
+    this.timezone = zone;
+    this.seq += 1;
+    this.userSeq = this.seq;
+  }
+
   /**
    * The next request is answered with this status in place of the door,
    * or the next one `when` admits, so a test can refuse one command and
@@ -199,8 +214,13 @@ export class TodoistStub {
   }
 
   /** The next command of this type is answered with this status instead of run. */
-  scriptCommand(type: string, status: CommandStatus): void {
-    this.scripted.set(type, status);
+  scriptCommand(type: string, status: CommandStatus, times = 1): void {
+    this.scripted.set(type, { status, times });
+  }
+
+  /** The next command of this type gets no entry under `sync_status` at all. */
+  answerNothing(type: string): void {
+    this.scripted.set(type, { status: "nothing", times: 1 });
   }
 
   /** The commands received, in order, of one type or all. */
@@ -234,7 +254,12 @@ export class TodoistStub {
     ) => void,
   ): void {
     const path = new URL(url, "http://stub").pathname;
-    const record: ReceivedRequest = { method, path, authorized };
+    const record: ReceivedRequest = {
+      method,
+      path,
+      authorized,
+      at: Date.now(),
+    };
     if (method === "POST" && path === "/api/v1/sync") {
       const form = new URLSearchParams(body);
       const commands = form.get("commands");
@@ -294,7 +319,7 @@ export class TodoistStub {
     return {
       sync_token: `token-${String(this.seq)}`,
       items,
-      ...(syncToken === "*" && {
+      ...((syncToken === "*" || this.userSeq > since) && {
         user: {
           id: this.account,
           tz_info: { timezone: this.timezone },
@@ -317,8 +342,11 @@ export class TodoistStub {
       }
       const scripted = this.scripted.get(command.type);
       if (scripted !== undefined) {
-        this.scripted.delete(command.type);
-        sync_status[command.uuid] = scripted;
+        scripted.times -= 1;
+        if (scripted.times <= 0) this.scripted.delete(command.type);
+        if (scripted.status !== "nothing") {
+          sync_status[command.uuid] = scripted.status;
+        }
         // A refusal is not remembered: Todoist answers a command that
         // did not run afresh when it is sent again.
         continue;

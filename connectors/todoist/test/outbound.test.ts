@@ -45,12 +45,16 @@ beforeEach(async () => {
 
 afterEach(async () => {
   // Whatever the case sent, every command carried a uuid laid out as one,
-  // and no two different commands shared it.
+  // and no two different commands shared it: one type, one task. A create
+  // sent again after a failed run carries the row as it is by then, so
+  // its arguments may differ under the same uuid.
   const sent = todoist.commands();
   for (const command of sent) expect(command.uuid).toMatch(uuidShape);
-  const byUuid = new Map(sent.map((c) => [c.uuid, JSON.stringify(c)]));
+  const what = (c: (typeof sent)[number]): string =>
+    JSON.stringify([c.type, c.temp_id, c.args["id"]]);
+  const byUuid = new Map(sent.map((c) => [c.uuid, what(c)]));
   for (const command of sent) {
-    expect(byUuid.get(command.uuid)).toBe(JSON.stringify(command));
+    expect(byUuid.get(command.uuid)).toBe(what(command));
   }
   await marfa.stop();
   await todoist.close();
@@ -175,7 +179,8 @@ describe("the mapping back", () => {
 
 describe("a row Todoist has not been told about", () => {
   it("is created there with every travelling field, linked to the task it made, and closed if completed", async () => {
-    // The account and its zone come from the first sync, before the push.
+    // The rows are carried before the first sync, so the zone a whole-day
+    // date is written in is asked of Todoist, once for both.
     todoist.put(todoist.task("seed"));
     const timed = personsRow({
       title: "Write the note",
@@ -261,7 +266,7 @@ describe("a row Todoist has not been told about", () => {
     expect(summary()).toMatch(/pushed 2, own 0/);
   });
 
-  it("records a create Todoist took without naming the task, and a link another row carries", async () => {
+  it("records a create Todoist took without naming the task it made", async () => {
     todoist.put(todoist.task("seed"));
     const unmapped = personsRow({ title: "Unmapped", status: "pending" });
     todoist.scriptCommand("item_add", "ok");
@@ -659,5 +664,231 @@ describe("Todoist's answers, continued", () => {
     expect(summary()).toContain(
       `Todoist refuses access to task a for row ${row.id}, so its changes are not carried`,
     );
+  });
+
+  it("does not send a refused command again on the wait it names, unless the refusal is a rate limit", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    // A terminal refusal that names a wait all the same: sent once and
+    // recorded, not sent again and again.
+    todoist.scriptCommand(
+      "item_update",
+      {
+        error_code: 22,
+        error: "Item not found",
+        http_code: 400,
+        error_extra: { retry_after: 1 },
+      },
+      10,
+    );
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(1);
+    expect(summary()).toContain(
+      `Todoist refused updating task a for row ${row.id}: Item not found (22)`,
+    );
+  });
+
+  it("gives up on a rate limit that holds through every resend, and records it", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    todoist.scriptCommand(
+      "item_update",
+      {
+        error_code: 35,
+        error: "Too many requests",
+        http_code: 429,
+        error_extra: { retry_after: 0 },
+      },
+      100,
+    );
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(6);
+    expect(summary()).toContain(
+      `Todoist refused updating task a for row ${row.id}: Too many requests (35)`,
+    );
+  });
+
+  it("waits at least the second a 429 or a server error asks for, and fails a wait longer than a run holds", async () => {
+    todoist.put(todoist.task("seed"));
+    personsRow({ title: "Patient", status: "pending" });
+    todoist.refuseNext(429, {
+      headers: { "Retry-After": "1" },
+      when: (request) => request.commands !== undefined,
+    });
+    await landed();
+    const sends = todoist.received.filter((r) => r.commands !== undefined);
+    expect(sends).toHaveLength(2);
+    expect((sends[1]?.at ?? 0) - (sends[0]?.at ?? 0)).toBeGreaterThanOrEqual(
+      950,
+    );
+
+    personsRow({ title: "Patient too", status: "pending" });
+    todoist.refuseNext(503, {
+      when: (request) => request.commands !== undefined,
+    });
+    await landed();
+    const later = todoist.received.filter((r) => r.commands !== undefined);
+    expect(later).toHaveLength(4);
+    expect((later[3]?.at ?? 0) - (later[2]?.at ?? 0)).toBeGreaterThanOrEqual(
+      950,
+    );
+
+    personsRow({ title: "Too patient", status: "pending" });
+    todoist.refuseNext(429, {
+      headers: { "Retry-After": "120" },
+      when: (request) => request.commands !== undefined,
+    });
+    const { code, output } = await once();
+    expect(code).not.toBe(0);
+    expect(output).toContain("a wait of 120s, longer than a run holds");
+  });
+
+  it("records a create Todoist refused, and a command it did not answer", async () => {
+    todoist.put(todoist.task("seed"));
+    const refused = personsRow({ title: "Refused", status: "pending" });
+    todoist.scriptCommand("item_add", {
+      error_code: 20,
+      error: "Invalid argument value",
+      http_code: 400,
+    });
+    await landed();
+    expect(marfa.byId(refused.id).properties["todoist_id"]).toBeUndefined();
+    expect(summary()).toContain(
+      `Todoist refused creating a task for row ${refused.id}: Invalid argument value (20)`,
+    );
+
+    const row = await synced("a");
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    todoist.answerNothing("item_update");
+    await landed();
+    expect(summary()).toContain(
+      `Todoist refused updating task a for row ${row.id}: no answer for the command`,
+    );
+  });
+});
+
+describe("one change, two commands", () => {
+  it("sends an edit and a completion made in one change as two commands with their own ids", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, {
+      title: "Task a, done and renamed",
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    await landed();
+    const sent = todoist.commands();
+    expect(sent.map((c) => c.type)).toEqual(["item_update", "item_close"]);
+    expect(sent[0]?.uuid).not.toBe(sent[1]?.uuid);
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, done and renamed");
+    expect(todoist.tasks.get("a")?.checked).toBe(true);
+  });
+
+  it("sends a reopen and the edit made with it", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    marfa.edit(row.id, { title: "Task a, back and renamed" });
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_close",
+      "item_uncomplete",
+      "item_update",
+    ]);
+    expect(todoist.tasks.get("a")?.checked).toBe(false);
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, back and renamed");
+  });
+
+  it("carries an edit made after a failed create when the create is sent again, and makes one task", async () => {
+    todoist.put(todoist.task("seed"));
+    const one = personsRow({ title: "One", status: "pending" });
+    marfa.refuseNext(`PATCH /items/${one.id}`, 503, "unavailable");
+    expect((await once()).code).not.toBe(0);
+    marfa.edit(one.id, { title: "One, edited before the replay" });
+    await landed();
+    const adds = todoist.commands("item_add");
+    expect(adds).toHaveLength(2);
+    expect(adds[1]?.uuid).toBe(adds[0]?.uuid);
+    expect([...todoist.tasks.keys()]).toEqual(["seed", "made-1"]);
+    expect(marfa.byId(one.id).properties["todoist_id"]).toBe("made-1");
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "made-1", content: "One, edited before the replay" },
+    ]);
+    expect(todoist.tasks.get("made-1")?.content).toBe(
+      "One, edited before the replay",
+    );
+  });
+});
+
+describe("the account's zone", () => {
+  it("is held from the sync, so a later create asks Todoist for nothing", async () => {
+    todoist.put(todoist.task("seed"));
+    await landed();
+    personsRow({
+      title: "Whole day",
+      status: "pending",
+      due_at: "2026-09-29T23:00:00.000Z",
+      precision: "day",
+    });
+    const before = todoist.received.length;
+    await landed();
+    const since = todoist.received.slice(before);
+    expect(since.filter((r) => r.syncToken === "*")).toEqual([]);
+    expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
+      date: "2026-09-30",
+    });
+  });
+
+  it("is not kept by the carry, so the sync still reads every whole-day date anew when it first learns the zone", async () => {
+    // A state with a token and no zone: a sync that named none, or one
+    // from before the zone was kept.
+    todoist.timezone = null;
+    todoist.put(
+      todoist.task("a", { content: "Whole day", due: { date: "2026-09-30" } }),
+    );
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    expect(row.properties["due_at"]).toBe("2026-09-30T00:00:00.000Z");
+    expect(summary()).toContain("named no timezone");
+
+    // Todoist now names a zone; a create is carried first and learns it,
+    // and the delta carries the account changed.
+    todoist.renameZone("Europe/London");
+    personsRow({
+      title: "Made",
+      status: "pending",
+      due_at: "2026-09-29T23:00:00.000Z",
+      precision: "day",
+    });
+    await landed();
+    expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
+      date: "2026-09-30",
+    });
+    // The sync saw the zone move from none to London and read every task
+    // again, through a full sync beside the delta.
+    const tokens = todoist.received
+      .filter((r) => r.syncToken !== undefined)
+      .map((r) => r.syncToken);
+    expect(tokens.slice(-3)).toEqual(["*", "token-1", "*"]);
+    expect(marfa.row(`${todoist.account}:a`).properties["due_at"]).toBe(
+      "2026-09-29T23:00:00.000Z",
+    );
+  });
+
+  it("raises the sync's own condition when a create finds no zone named", async () => {
+    todoist.timezone = null;
+    todoist.put(todoist.task("seed"));
+    personsRow({
+      title: "Whole day",
+      status: "pending",
+      due_at: "2026-09-30T00:00:00.000Z",
+      precision: "day",
+    });
+    await landed();
+    expect(todoist.commands("item_add")[0]?.args["due"]).toEqual({
+      date: "2026-09-30",
+    });
+    const conditions = summary().split("named no timezone").length - 1;
+    expect(conditions).toBe(1);
   });
 });
