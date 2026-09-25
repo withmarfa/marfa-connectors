@@ -503,6 +503,26 @@ describe("the connector, run as a process", () => {
     expect(row("tag:example.com,2026:entry:2").version).toBe(1);
   });
 
+  it("reports an entry left out once, across a 304 and the feed's next change", async () => {
+    expect((await once(["/rss.xml"])).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toContain("neither an id nor a link");
+    expect((await once(["/rss.xml"])).code).toBe(0);
+    const rss = served["/rss.xml"];
+    if (typeof rss?.body !== "string") throw new Error("no rss fixture");
+    rss.body = rss.body.replace(
+      "<title>Alpha</title>",
+      "<title>Alpha, changed</title>",
+    );
+    rss.lastModified = "Thu, 17 Sep 2026 09:00:00 GMT";
+    expect((await once(["/rss.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([200, 304, 200]);
+    expect(marfa.runs.map((run) => run.summary)).toEqual([
+      expect.stringContaining("neither an id nor a link"),
+      "created 0, updated 0, archived 0, unchanged 0, skipped 0",
+      "created 0, updated 1, archived 0, unchanged 1, skipped 0",
+    ]);
+  });
+
   it("reads a feed in the charset its server names", async () => {
     served["/latin.xml"] = {
       body: Buffer.from(
