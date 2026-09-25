@@ -265,24 +265,29 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The frame that would show the head reached never comes, and the
-    // quiet window is never ended, so the request's own timeout ends it.
+    // A stream that never says it is live, the frame that would show the
+    // head reached withheld too, so nothing but the request's own timeout
+    // ends the read; what was read stands and the cursor is the last id
+    // received.
     held.entries = [];
     harness.server.withholdHead = true;
+    harness.server.withholdLive = true;
     harness.requestTimeoutMs = 200;
-    harness.quietMs = 60_000;
     await quietRun(held);
     expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
     expect((await watchState()).cursor).toBe(String(harness.server.head - 1));
+    expect(harness.lines).toContainEqual(
+      expect.stringContaining("the read timed out"),
+    );
 
     harness.server.withholdHead = false;
+    harness.server.withholdLive = false;
     harness.requestTimeoutMs = 5000;
-    harness.quietMs = 100;
     await quietRun(held);
     expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
   });
 
-  it("takes a stream gone quiet after its announcement as caught up", async () => {
+  it("ends at the marker and adopts its cursor, past a frame it was never sent", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
@@ -291,20 +296,25 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The head is a frame this reader is never sent; the read ends when the
-    // quiet window the test wakes runs out.
+    // The head is a frame this reader is never sent. The marker names it
+    // all the same, so the read ends there and the next run does not walk
+    // the withheld frame again.
     held.entries = [];
     harness.server.withholdHead = true;
-    held.changes.length = 0;
-    const run = harness.twoWay(held);
-    // Every quiet window the read opens is ended by the test, the first
-    // beside a frame that was already there, the last with nothing more.
-    const waking = (async () => {
-      for (;;) await harness.clock.wake(100);
-    })();
-    expect(await Promise.race([run, waking])).toBe(0);
+    expect(await quietRun(held)).toBe(0);
     expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
-    expect((await watchState()).cursor).toBe(String(harness.server.head - 1));
+    expect((await watchState()).cursor).toBe(String(harness.server.head));
+    // The read was whole, so nothing is deferred to the next run.
+    expect(harness.lines).not.toContainEqual(
+      expect.stringContaining("is read next run"),
+    );
+
+    harness.server.withholdHead = false;
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    expect(streams().at(-1)?.headers["last-event-id"]).toBe(
+      String(harness.server.head),
+    );
   });
 });
 
@@ -572,8 +582,6 @@ describe("what the memory holds", () => {
     // The log's only frame is withheld, so the read shows nothing; the
     // row's version is past the connector's last write all the same.
     harness.server.withholdHead = true;
-    harness.requestTimeoutMs = 200;
-    harness.quietMs = 60_000;
     held.entries = [
       {
         ...one,

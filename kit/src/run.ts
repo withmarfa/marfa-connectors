@@ -25,8 +25,6 @@ export interface RunSetup<E extends EnvDeclaration> {
   logger: Logger;
   clock: Clock;
   signal: AbortSignal;
-  /** See `Runtime.quietMs`. */
-  quietMs: number;
 }
 
 /** An error's message, with the cause beneath it where there is one. */
@@ -161,8 +159,6 @@ export async function runOnce<E extends EnvDeclaration>(
         memory,
         setup.signal,
         connector.link,
-        setup.clock,
-        setup.quietMs,
       );
       read = await watch.read();
       for (const change of read.changes) pending.set(change.item.id, change);

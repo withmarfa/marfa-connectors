@@ -121,8 +121,10 @@ export class ScriptedServer {
   tooOld = false;
   /** The stream ends with `stream_incomplete` after this many frames. */
   incompleteAfter: number | undefined;
-  /** The stream withholds the frame that would reach its head, and stays open. */
+  /** The stream withholds the frame that would reach its head, as a projection does. */
   withholdHead = false;
+  /** The stream never says it is live, and stays open: a server without the marker. */
+  withholdLive = false;
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
@@ -686,6 +688,15 @@ export class ScriptedServer {
       sent += 1;
       lastSent = event.id;
     }
+    // The replay is done: the marker names the furthest of the announced
+    // head and the rows walked, withheld rows included, as the server's
+    // does, and carries no id of its own. Never sent after a stream that
+    // ended short.
+    if (this.withholdLive) return;
+    frame("stream_live", {
+      type: "stream_live",
+      cursor: String(this.head),
+    });
   }
 
   private bulk(input: Record<string, unknown>): unknown {

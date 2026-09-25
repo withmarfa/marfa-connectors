@@ -187,7 +187,6 @@ export class Harness {
   readonly lines: string[] = [];
   readonly clock = new ManualClock();
   requestTimeoutMs = 5000;
-  quietMs = 100;
   private stopListener: (() => void) | undefined;
 
   constructor(
@@ -222,7 +221,6 @@ export class Harness {
       write: (line) => this.lines.push(line),
       clock: this.clock,
       requestTimeoutMs: this.requestTimeoutMs,
-      quietMs: this.quietMs,
       onStop: (listener) => {
         this.stopListener = listener;
       },
