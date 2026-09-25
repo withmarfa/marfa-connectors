@@ -14,9 +14,8 @@ import { proveTodoist } from "./todoist.js";
 import { ProofServer, type Booted } from "./server.js";
 
 /**
- * Every statement the proof makes: three here, nine in `rss.ts` and ten in
- * `todoist.ts`. A statement dropped or skipped leaves the proof short, and a
- * short proof fails.
+ * Every statement the proof makes, so one dropped or skipped leaves the
+ * proof short, and a short proof fails.
  */
 const statements = 22;
 

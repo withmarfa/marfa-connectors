@@ -383,7 +383,10 @@ describe("the state", () => {
   });
 
   it("starts empty from a file it cannot read, and says so", async () => {
-    await harness.once(vendor([one]));
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(harness.stateDir, "test.json"), "{ not json");
     expect(await harness.once(vendor([one]))).toBe(0);

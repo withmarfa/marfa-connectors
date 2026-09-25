@@ -8,7 +8,7 @@ const fetchTimeoutMs = 60_000;
 /**
  * The addresses in `RSS_FEEDS`, one per line or separated by commas or
  * spaces, each feed once however many ways it is spelled: two spellings
- * would write the same rows, each rewriting the other's `feed_hash`.
+ * would write the same rows, each rewriting the other's `feed_origin`.
  */
 export function feedList(value: string): string[] {
   const parts = value.split(/[\s,]+/).filter((part) => part !== "");
@@ -36,26 +36,12 @@ export function feedList(value: string): string[] {
 }
 
 /**
- * A feed as a row, a log line, a condition or a report names it: its origin
- * and the hash of its address, never its path or query, since a private
- * feed carries its token in either.
+ * A feed as a log line, a condition or a report names it: its origin and
+ * the hash of its address, never its path or query, since a private feed
+ * carries its token in either.
  */
 export function feedName(feedUrl: string): string {
   return `${new URL(feedUrl).origin} (${feedHash(feedUrl)})`;
-}
-
-/**
- * The address without its credentials, query or fragment: what a feed's
- * relative links resolve against. Its path stays, and a resolved link is an
- * entry's own address rather than the feed's.
- */
-function withoutSecrets(address: string): URL {
-  const url = new URL(address);
-  url.username = "";
-  url.password = "";
-  url.search = "";
-  url.hash = "";
-  return url;
 }
 
 function hashed(input: string): string {
@@ -177,7 +163,16 @@ export async function fetchFeed(
   if (validators?.last_modified !== undefined) {
     headers["If-Modified-Since"] = validators.last_modified;
   }
-  const response = await fetch(feedUrl, {
+  // fetch refuses an address that carries credentials, so they are sent as
+  // the Basic authorization its userinfo stands for.
+  const url = new URL(feedUrl);
+  if (url.username !== "" || url.password !== "") {
+    const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+    headers["Authorization"] = `Basic ${Buffer.from(pair).toString("base64")}`;
+    url.username = "";
+    url.password = "";
+  }
+  const response = await fetch(url, {
     headers,
     signal: AbortSignal.any([signal, AbortSignal.timeout(fetchTimeoutMs)]),
   });
@@ -198,7 +193,7 @@ export async function fetchFeed(
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),
     },
-    url: response.url === "" ? feedUrl : response.url,
+    url: response.url === "" ? url.href : response.url,
   };
 }
 
@@ -208,16 +203,39 @@ function isoOf(value: string | undefined): string | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
 }
 
+interface Base {
+  href: string;
+  /**
+   * Taken from the address the feed was fetched at, whose path may carry a
+   * private feed's token, rather than from an `xml:base` the feed declares.
+   */
+  fromAddress: boolean;
+}
+
+/** A reference that keeps its base's path: not absolute, and not from the root. */
+function pathRelative(reference: string): boolean {
+  if (reference.startsWith("/")) return false;
+  try {
+    new URL(reference);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * The base a feed's or an entry's links resolve against: its own
  * `xml:base`, itself resolved against its parent's, else its parent's. The
  * parser reads no `xml:base` on an Atom link itself.
  */
-function baseOf(parent: string, declared: string | undefined): string {
+function baseOf(parent: Base, declared: string | undefined): Base {
   const base = declared?.trim();
   if (base === undefined || base === "") return parent;
   try {
-    return new URL(base, parent).href;
+    return {
+      href: new URL(base, parent.href).href,
+      fromAddress: parent.fromAddress && pathRelative(base),
+    };
   } catch {
     return parent;
   }
@@ -225,12 +243,16 @@ function baseOf(parent: string, declared: string | undefined): string {
 
 /**
  * A link resolved against its base, when it is an http or https address,
- * and without credentials, which a row never carries.
+ * and without credentials, which a row never carries. A link relative to
+ * the path the feed was fetched at is not written, since it would carry
+ * that path.
  */
-function linkOf(value: string | undefined, base: string): string | undefined {
-  if (value === undefined || value.trim() === "") return undefined;
+function linkOf(value: string | undefined, base: Base): string | undefined {
+  const reference = value?.trim();
+  if (reference === undefined || reference === "") return undefined;
+  if (base.fromAddress && pathRelative(reference)) return undefined;
   try {
-    const url = new URL(value.trim(), base);
+    const url = new URL(reference, base.href);
     if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
     url.username = "";
     url.password = "";
@@ -355,7 +377,7 @@ export function readFeed(
     feed_origin: new URL(feedUrl).origin,
     feed_hash: feedHash(feedUrl),
   };
-  const documentBase = withoutSecrets(documentUrl).href;
+  const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
   const entries: Entry[] = [];
   const keep = (

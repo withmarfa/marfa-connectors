@@ -147,6 +147,19 @@ describe("configuration", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
+  it("waits on a check that answers later, and refuses what it refuses", async () => {
+    const connector = {
+      ...testConnector(vendor([entry])),
+      checkEnv: async () => {
+        await Promise.resolve();
+        throw new Error("the region is refused");
+      },
+    };
+    expect(await start(connector, harness.runtime(["--once"]))).toBe(2);
+    expect(harness.lines.join("\n")).toContain("the region is refused");
+    expect(harness.server.requests).toEqual([]);
+  });
+
   it("starts no run once told to stop while registering", async () => {
     const held = vendor([entry]);
     harness.server.beforeAnswer = (request) => {
