@@ -17,7 +17,7 @@ import { ProofServer, type Booted } from "./server.js";
  * Every statement the proof makes, so one dropped or skipped leaves the
  * proof short, and a short proof fails.
  */
-const statements = 22;
+const statements = 29;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
