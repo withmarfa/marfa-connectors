@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
-import { decodeHTML } from "entities";
 import { parseFeed } from "feedsmith";
+import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 
 const fetchTimeoutMs = 60_000;
 
 /**
  * The addresses in `RSS_FEEDS`, one per line or separated by commas or
  * spaces, each feed once however many ways it is spelled: two spellings
- * would write the same rows, each rewriting the other's `feed_url`.
+ * would write the same rows, each rewriting the other's `feed_origin`.
  */
 export function feedList(value: string): string[] {
   const parts = value.split(/[\s,]+/).filter((part) => part !== "");
@@ -35,36 +35,26 @@ export function feedList(value: string): string[] {
   return [...byFeed.values()];
 }
 
-/** A feed as a log line or a report names it: its host and path, never its query. */
+/**
+ * A feed as a log line, a condition or a report names it: its origin and
+ * the hash of its address, never its path or query, since a private feed
+ * carries its token in either.
+ */
 export function feedName(feedUrl: string): string {
-  const url = new URL(feedUrl);
-  return `${url.host}${url.pathname}`;
+  return `${new URL(feedUrl).origin} (${feedHash(feedUrl)})`;
+}
+
+function hashed(input: string): string {
+  return createHash("sha256").update(input).digest("hex").slice(0, 32);
 }
 
 /**
- * The address without its credentials, query or fragment: each row's
- * `feed_url`, and what a feed's relative links resolve against. A private
- * feed carries its token in the userinfo or the query, and neither may
- * reach a row; a token in the path cannot be told from the path.
+ * The hash of a feed's canonical address, which stands for the address
+ * wherever the address may not go: each row's `feed_hash`, the name in
+ * every log line and report, and the key the state keeps the feed under.
  */
-function withoutSecrets(address: string): URL {
-  const url = new URL(address);
-  url.username = "";
-  url.password = "";
-  url.search = "";
-  url.hash = "";
-  return url;
-}
-
-/**
- * What the connector's state keeps a feed under, so the state file holds
- * no token the address carries.
- */
-export function feedStateKey(feedUrl: string): string {
-  return createHash("sha256")
-    .update(`feed-state:${feedUrl}`)
-    .digest("hex")
-    .slice(0, 32);
+export function feedHash(feedUrl: string): string {
+  return hashed(`feed-url:${canonicalFeedUrl(feedUrl)}`);
 }
 
 /**
@@ -93,11 +83,9 @@ export function feedKey(
   declaredId: string | undefined,
 ): string {
   const declared = declaredId?.trim();
-  const input =
-    declared !== undefined && declared !== ""
-      ? `feed-id:${declared}`
-      : `feed-url:${canonicalFeedUrl(feedUrl)}`;
-  return createHash("sha256").update(input).digest("hex").slice(0, 32);
+  return declared !== undefined && declared !== ""
+    ? hashed(`feed-id:${declared}`)
+    : feedHash(feedUrl);
 }
 
 export interface Validators {
@@ -175,7 +163,16 @@ export async function fetchFeed(
   if (validators?.last_modified !== undefined) {
     headers["If-Modified-Since"] = validators.last_modified;
   }
-  const response = await fetch(feedUrl, {
+  // fetch refuses an address that carries credentials, so they are sent as
+  // the Basic authorization its userinfo stands for.
+  const url = new URL(feedUrl);
+  if (url.username !== "" || url.password !== "") {
+    const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+    headers["Authorization"] = `Basic ${Buffer.from(pair).toString("base64")}`;
+    url.username = "";
+    url.password = "";
+  }
+  const response = await fetch(url, {
     headers,
     signal: AbortSignal.any([signal, AbortSignal.timeout(fetchTimeoutMs)]),
   });
@@ -196,7 +193,7 @@ export async function fetchFeed(
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),
     },
-    url: response.url === "" ? feedUrl : response.url,
+    url: response.url === "" ? url.href : response.url,
   };
 }
 
@@ -206,16 +203,46 @@ function isoOf(value: string | undefined): string | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
 }
 
+interface Base {
+  href: string;
+  /**
+   * Taken from the address the feed was fetched at, whose path may carry a
+   * private feed's token, rather than from an `xml:base` the feed declares.
+   */
+  fromAddress: boolean;
+}
+
+/**
+ * Whether a reference takes something of its base's path or query: it
+ * resolves one way against the base and another against the base's origin
+ * alone. Asked of the resolver, since a spelling such as `https:item` is
+ * absolute on its own and relative against a base of the same scheme.
+ */
+function keepsPath(reference: string, base: string): boolean {
+  const origin = new URL(base);
+  origin.pathname = "/";
+  origin.search = "";
+  origin.hash = "";
+  try {
+    return new URL(reference, base).href !== new URL(reference, origin).href;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * The base a feed's or an entry's links resolve against: its own
  * `xml:base`, itself resolved against its parent's, else its parent's. The
  * parser reads no `xml:base` on an Atom link itself.
  */
-function baseOf(parent: string, declared: string | undefined): string {
+function baseOf(parent: Base, declared: string | undefined): Base {
   const base = declared?.trim();
   if (base === undefined || base === "") return parent;
   try {
-    return new URL(base, parent).href;
+    return {
+      href: new URL(base, parent.href).href,
+      fromAddress: parent.fromAddress && keepsPath(base, parent.href),
+    };
   } catch {
     return parent;
   }
@@ -223,12 +250,16 @@ function baseOf(parent: string, declared: string | undefined): string {
 
 /**
  * A link resolved against its base, when it is an http or https address,
- * and without credentials, which a row never carries.
+ * and without credentials, which a row never carries. A link relative to
+ * the path the feed was fetched at is not written, since it would carry
+ * that path.
  */
-function linkOf(value: string | undefined, base: string): string | undefined {
-  if (value === undefined || value.trim() === "") return undefined;
+function linkOf(value: string | undefined, base: Base): string | undefined {
+  const reference = value?.trim();
+  if (reference === undefined || reference === "") return undefined;
+  if (base.fromAddress && keepsPath(reference, base.href)) return undefined;
   try {
-    const url = new URL(value.trim(), base);
+    const url = new URL(reference, base.href);
     if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
     url.username = "";
     url.password = "";
@@ -251,42 +282,65 @@ function textOf(value: string | undefined): string | undefined {
   return text === undefined || text === "" ? undefined : text;
 }
 
-/** A tag's inside: up to the `>` that is not within a quoted attribute value. */
-const tagBody = String.raw`(?:[^>"']|"[^"]*"|'[^']*')*>`;
-
 /** Elements that break a line, whose tags read as a space. */
-const blockTags = new RegExp(
-  String.raw`<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b` +
-    tagBody,
-  "gi",
-);
+const blockElements = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "br",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "figcaption",
+  "figure",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "td",
+  "th",
+  "tr",
+  "ul",
+]);
 
-/** A tag opens with a letter, `/`, `!` or `?`; any other `<` is text. */
-const anyTag = new RegExp(String.raw`<[A-Za-z/!?]` + tagBody, "g");
+type Markup = ReturnType<typeof parseDocument>["children"];
 
-function escapeText(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+/** The text a reader sees: scripts, styles and comments are not read. */
+function readText(nodes: Markup): string {
+  let text = "";
+  for (const node of nodes) {
+    if (node.type === ElementType.Text) {
+      text += node.data;
+    } else if (node.type === ElementType.CDATA) {
+      text += DomUtils.textContent(node);
+    } else if (node.type === ElementType.Tag) {
+      const inner = readText(node.children);
+      text += blockElements.has(node.name) ? ` ${inner} ` : inner;
+    }
+  }
+  return text;
 }
 
-/**
- * Markup as the text a reader sees: a CDATA section's text kept as text,
- * scripts, styles and comments dropped, a block's tags read as a space and
- * any other tag as nothing, entities decoded, and whitespace run together.
- */
+/** Markup as plain text, its entities decoded and its whitespace run together. */
 function plainOf(markup: string | undefined): string | undefined {
   if (markup === undefined) return undefined;
-  const stripped = markup
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, text: string) =>
-      escapeText(text),
-    )
-    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(blockTags, " ")
-    .replace(anyTag, "");
-  return textOf(decodeHTML(stripped).replace(/\s+/g, " "));
+  const document = parseDocument(markup, { recognizeCDATA: true });
+  return textOf(readText(document.children).replace(/\s+/g, " "));
 }
 
 /** An Atom text construct as plain text, whichever of its three types it is. */
@@ -306,12 +360,13 @@ export interface Read {
   unkeyed: number;
 }
 
-/** The `xml:base` on an RSS 2.0 `<channel>`, which the parser does not read. */
+/** The `xml:base` on an RSS 2.0 `<channel>`, which feedsmith does not read. */
 function channelBaseOf(text: string): string | undefined {
-  const match = /<channel\b[^>]*\sxml:base\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(
-    text,
+  const channel = DomUtils.findOne(
+    (element) => element.name === "channel",
+    parseDocument(text, { xmlMode: true }).children,
   );
-  return match?.[1] ?? match?.[2];
+  return channel?.attribs["xml:base"];
 }
 
 /**
@@ -325,8 +380,11 @@ export function readFeed(
   documentUrl: string = feedUrl,
 ): Read {
   const parsed = parseFeed(text);
-  const feedAddress = withoutSecrets(feedUrl).href;
-  const documentBase = withoutSecrets(documentUrl).href;
+  const named = {
+    feed_origin: new URL(feedUrl).origin,
+    feed_hash: feedHash(feedUrl),
+  };
+  const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
   const entries: Entry[] = [];
   const keep = (
@@ -342,7 +400,7 @@ export function readFeed(
     }
     entries.push({
       source_id: `${key}:${id}`,
-      properties: { ...properties, entry_id: id, feed_url: feedAddress },
+      properties: { ...properties, entry_id: id, ...named },
       occurred_at: occurredAt,
     });
   };

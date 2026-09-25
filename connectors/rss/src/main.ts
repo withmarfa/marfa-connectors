@@ -5,9 +5,9 @@ import {
   type TypeDefinition,
 } from "@withmarfa/connector";
 import {
+  feedHash,
   feedList,
   feedName,
-  feedStateKey,
   fetchFeed,
   readFeed,
   type Validators,
@@ -55,8 +55,12 @@ const connector = defineConnector({
   // Imported JSON widens every string, so its field types read as `string`
   // here; the check on start holds the file to the server's type.
   type: rssEntry as TypeDefinition,
+  // A secret, since a private feed's address carries its token.
   env: {
-    RSS_FEEDS: "required",
+    RSS_FEEDS: "secret",
+  },
+  checkEnv(env) {
+    feedList(env.RSS_FEEDS);
   },
   async run({ env, signal, state, log, upsert }) {
     const feeds = feedList(env.RSS_FEEDS);
@@ -64,7 +68,7 @@ const connector = defineConnector({
     const kept: Record<string, FeedState> = {};
     // Feeds by the key their entries are written under, so a feed reached
     // at two addresses is written once, and does not rewrite its rows'
-    // `feed_url` back and forth.
+    // `feed_hash` back and forth.
     const read = new Map<string, string>();
 
     // A feed that fails is a condition of that feed alone, and the others
@@ -72,7 +76,7 @@ const connector = defineConnector({
     // validators of its last good read.
     for (const feedUrl of feeds) {
       const name = feedName(feedUrl);
-      const id = feedStateKey(feedUrl);
+      const id = feedHash(feedUrl);
       const held = known[id] ?? {};
       kept[id] = held;
       const unread = (): void => {

@@ -129,7 +129,6 @@ export async function proveTodoist(
       label: "todoist",
       source: "todoist",
       typePermission: "todoist.task",
-      registersType: true,
     });
     const runner = new ConnectorUnderProof("todoist", url, key.key, {
       TODOIST_API_TOKEN: "todoist-proof-token",

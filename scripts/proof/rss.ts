@@ -99,7 +99,6 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
       label: "rss",
       source: "rss",
       typePermission: "rss.entry",
-      registersType: true,
     });
     const runner = new ConnectorUnderProof("rss", url, key.key, {
       RSS_FEEDS: `${served.url}/atom.xml\n${served.url}/rss.xml`,
@@ -139,7 +138,7 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
           wasHeld,
           written.values(),
         );
-        if (own.join() !== "entry_id,feed_url") {
+        if (own.join() !== "entry_id,feed_hash,feed_origin") {
           throw new Error(`own fields ${own.join(", ")}`);
         }
         return `rss.entry, absent before the run, registered with parent core.bookmark, all ${String(inherited)} of its fields and ${own.join(", ")} beside them; ${String(written.size)} rows, tier feed, every property a field of the type`;

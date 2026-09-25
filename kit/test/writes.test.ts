@@ -138,6 +138,22 @@ describe("compare first", () => {
     );
   });
 
+  it("reads an instant the server spells another way as unchanged", async () => {
+    await harness.once(vendor([one]));
+    for (const spelling of [
+      "2026-09-01T10:00:00Z",
+      "2026-09-01T10:00:00+00:00",
+    ]) {
+      harness.server.row("a:1").occurred_at = spelling;
+      expect(await harness.once(vendor([one]))).toBe(0);
+      expect(patches()).toEqual([]);
+    }
+    await harness.once(
+      vendor([{ ...one, occurred_at: "2026-09-01T10:00:01.000Z" }]),
+    );
+    expect(patches()).toHaveLength(1);
+  });
+
   it("reads property order and an equal instant as unchanged", async () => {
     await harness.once(vendor([one]));
     const reordered = {
@@ -350,23 +366,38 @@ describe("the state", () => {
     const held = vendor([one, two]);
     held.token = "t1";
     await harness.once(held);
+    harness.server.row("a:1").state = "trashed";
+    await harness.once(held);
     await rm(join(harness.stateDir, "test.json"));
 
+    held.entries = [{ ...one, properties: { title: "One, changed" } }, two];
     expect(await harness.once(held)).toBe(0);
     expect(harness.server.rows).toHaveLength(2);
     expect(bulks()).toHaveLength(1);
+    expect(patches()).toEqual([]);
+    expect(harness.server.row("a:1").state).toBe("trashed");
+    expect(harness.server.row("a:1").version).toBe(1);
     expect(harness.lastRun().summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 2, skipped 0",
+      "created 0, updated 0, archived 0, unchanged 1, skipped 1",
     );
   });
 
   it("starts empty from a file it cannot read, and says so", async () => {
-    await harness.once(vendor([one]));
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(harness.stateDir, "test.json"), "{ not json");
     expect(await harness.once(vendor([one]))).toBe(0);
-    expect(harness.lines.join("\n")).toContain("state");
+    expect(harness.lines.join("\n")).toContain(
+      "the state file is not one this kit wrote, so this run starts from nothing",
+    );
+    expect(harness.lastRun().summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 1, skipped 0",
+    );
     expect(harness.server.rows).toHaveLength(1);
+    expect(await harness.stateFile()).toHaveProperty("state", {});
   });
 });
 

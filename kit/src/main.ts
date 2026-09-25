@@ -1,5 +1,5 @@
 import { createClient } from "@withmarfa/client";
-import type { Connector, EnvDeclaration } from "./define.js";
+import type { Connector, EnvDeclaration, EnvValues } from "./define.js";
 import {
   checkDefinition,
   ConfigurationError,
@@ -127,6 +127,12 @@ export async function start<E extends EnvDeclaration>(
     return 2;
   }
   const logger = new Logger(write, clock, environment.secrets);
+  try {
+    await connector.checkEnv?.(environment.values as EnvValues<E>);
+  } catch (error) {
+    logger.error(`cannot start: ${describe(error)}`);
+    return 2;
+  }
 
   const stop = new AbortController();
   const stopped = (): boolean => stop.signal.aborted;

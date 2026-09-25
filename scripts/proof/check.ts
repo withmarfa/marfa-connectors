@@ -1,4 +1,5 @@
 let signaled = false;
+let held = 0;
 
 /** Marks the proof as told to stop, so what that interrupts is not reported. */
 export function interrupt(): void {
@@ -35,4 +36,10 @@ export async function check(
   }
   if (interrupted()) throw new Error("stopped during this statement");
   console.log(`ok   ${statement}: ${observed}`);
+  held += 1;
+}
+
+/** How many statements have held so far. */
+export function statementsHeld(): number {
+  return held;
 }

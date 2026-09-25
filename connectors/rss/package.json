@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@withmarfa/connector": "workspace:*",
-    "entities": "^7.0.1",
-    "feedsmith": "^3.0.0"
+    "feedsmith": "^3.0.0",
+    "htmlparser2": "^12.0.0"
   }
 }

@@ -20,7 +20,7 @@ const reservedSourcePrefixes = ["oauth:", "connector:"];
  * Shorter than this, a secret cannot be redacted without the redaction
  * showing where each of its characters falls in ordinary text.
  */
-const shortestSecret = 8;
+export const shortestSecret = 8;
 
 /** An address a request can be sent to: no credentials, query or fragment. */
 function isServerUrl(value: string): boolean {

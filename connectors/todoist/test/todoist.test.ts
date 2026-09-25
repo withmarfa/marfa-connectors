@@ -23,7 +23,6 @@ const token = "todoist-test-token-value";
 /** `todoist.task` as the connector carries it, which the scripted server answers as it was registered. */
 const served = {
   id: "todoist.task",
-  version: 1,
   label: "Todoist Task",
   parent: "core.task",
   fields: {
@@ -439,6 +438,21 @@ describe("the connector, run as a process", () => {
       timezone: "Europe/London",
       sync_token: "t1",
     });
+  });
+
+  it("keys a shared project's task by the account, never by the task's owner", async () => {
+    const shared = {
+      ...task("s", { content: "Shared", project_id: "shared-project" }),
+      user_id: "31415926",
+    };
+    answer = () => ({
+      sync_token: "t1",
+      items: [shared],
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.rows.map((row) => row.source_id)).toEqual(["2671355:s"]);
+    expect(await state()).toMatchObject({ account: "2671355" });
   });
 
   it("follows a delta: a change updated, a completion kept active, a deletion archived", async () => {

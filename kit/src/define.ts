@@ -69,6 +69,12 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly source: string;
   readonly type: TypeDefinition;
   readonly env?: E;
+  /**
+   * Refuses, by throwing, an environment the connector can tell on sight it
+   * cannot run with, such as a malformed address list. The start stops as it
+   * does for a missing value, before anything reaches the server.
+   */
+  readonly checkEnv?: (env: EnvValues<E>) => void | Promise<void>;
   run(context: RunContext<E>): Promise<void>;
 }
 

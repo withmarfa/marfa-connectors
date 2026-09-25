@@ -2,7 +2,6 @@
   "id": "todoist.task",
   "label": "Todoist Task",
   "description": "A task from a Todoist account, as the Todoist connector reads it through the Sync API: a task whose priority, due date and completion are the core task's, with Todoist's own placing of it beside them.",
-  "version": 1,
   "parent": "core.task",
   "fields": {
     "project_id": {

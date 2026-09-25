@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Harness, secretToken, vendor } from "./harness.js";
 
 let harness: Harness;
@@ -24,6 +24,23 @@ describe("a run's report", () => {
     expect(Date.parse(run.finished_at)).toBeGreaterThanOrEqual(
       Date.parse(run.started_at),
     );
+  });
+
+  it("is stamped finished when the run finishes, not when it starts", async () => {
+    const held = vendor([one]);
+    let release = (): void => undefined;
+    held.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const running = harness.once(held);
+    await vi.waitFor(() => {
+      expect(held.runs).toBe(1);
+    });
+    harness.clock.advance(5000);
+    release();
+    expect(await running).toBe(0);
+    const run = harness.lastRun();
+    expect(Date.parse(run.finished_at) - Date.parse(run.started_at)).toBe(5000);
   });
 
   it("carries a failure's text, capped to what the server takes", async () => {
@@ -135,6 +152,114 @@ describe("secrets", () => {
     expect(harness.lastRun().error).toContain(
       "401 for Bearer [redacted] and key [redacted]",
     );
+  });
+
+  it("never reach a warning, which is redacted like every other line", async () => {
+    const leaky = vendor([one]);
+    leaky.warnings = [`retrying the vendor with ${secretToken}`];
+    await harness.once(leaky);
+    const warned = harness.lines.filter((line) => line.includes(" warn "));
+    expect(warned.join("\n")).toContain("retrying the vendor with [redacted]");
+    for (const line of harness.lines) expect(line).not.toContain(secretToken);
+  });
+
+  it("never reach a run's reported error, spelled as a URL carries it", async () => {
+    const token = "tok/with+marks=value";
+    const failing = vendor([one]);
+    failing.fail = new Error(
+      `GET https://vendor.example.com/?token=${encodeURIComponent(token)} answered 401`,
+    );
+    expect(await harness.once(failing, { TEST_TOKEN: token })).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain("?token=[redacted] answered 401");
+    expect(error).not.toContain(encodeURIComponent(token));
+  });
+
+  it("never reach a start's reported problem, spelled as a URL carries it", async () => {
+    const token = "tok/with+marks=value";
+    harness.server.refuseNext(
+      "POST /types",
+      403,
+      "forbidden",
+      `no metadata.types:write for ?token=${encodeURIComponent(token)}`,
+    );
+    expect(await harness.once(vendor([one]), { TEST_TOKEN: token })).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain("?token=[redacted]");
+    expect(error).not.toContain(encodeURIComponent(token));
+  });
+
+  it("never reach the state file through a condition's key", async () => {
+    const held = vendor([one]);
+    held.conditions = [[`expiring:${secretToken}`, "the token expires soon"]];
+    await harness.once(held);
+    expect(harness.lastRun().summary).toContain("the token expires soon");
+    await harness.once(held);
+    expect(harness.lastRun().summary).not.toContain("the token expires soon");
+    const stored = JSON.stringify(await harness.stateFile());
+    expect(stored).toContain("expiring:[redacted]");
+    expect(stored).not.toContain(secretToken);
+  });
+
+  it("are replaced whole where one secret holds another", async () => {
+    const token = `${harness.server.key}-and-more`;
+    const leaky = vendor([one]);
+    leaky.logs = [`using ${token} now`];
+    await harness.once(leaky, { TEST_TOKEN: token });
+    const said = harness.lines.join("\n");
+    expect(said).toContain("using [redacted] now");
+    expect(said).not.toContain("-and-more");
+  });
+
+  it("never reach a line in the other spellings a URL or a form carries", async () => {
+    const token = "tok/with+marks=v (1)";
+    const lower = encodeURIComponent(token).replace(/%[0-9A-F]{2}/g, (escape) =>
+      escape.toLowerCase(),
+    );
+    const form = new URLSearchParams({ t: token }).toString().slice(2);
+    expect(form).not.toBe(encodeURIComponent(token));
+    const leaky = vendor([one]);
+    leaky.logs = [`GET /?a=${lower}`, `POST t=${form}`];
+    await harness.once(leaky, { TEST_TOKEN: token });
+    const said = harness.lines.join("\n");
+    expect(said).toContain("GET /?a=[redacted]");
+    expect(said).toContain("POST t=[redacted]");
+    expect(said).not.toContain(lower);
+    expect(said).not.toContain(form);
+  });
+
+  it("are each redacted where a secret holds a list and one of its parts appears alone", async () => {
+    const list =
+      "https://feeds.example.com/private/first-token/a.xml https://feeds.example.com/private/second-token/b.xml";
+    const leaky = vendor([one]);
+    leaky.logs = [
+      "fetching https://feeds.example.com/private/second-token/b.xml",
+      `encoded ${encodeURIComponent("https://feeds.example.com/private/second-token/b.xml")}`,
+    ];
+    leaky.fail = new Error(
+      `https://feeds.example.com/private/first-token/a.xml answered 500`,
+    );
+    await harness.once(leaky, { TEST_TOKEN: list });
+    const reported = harness.lastRun().error ?? "";
+    for (const text of [...harness.lines, reported]) {
+      expect(text).not.toContain("first-token");
+      expect(text).not.toContain("second-token");
+    }
+    expect(harness.lines.join("\n")).toContain("fetching [redacted]");
+    expect(harness.lines.join("\n")).toContain("encoded [redacted]");
+    expect(reported).toContain("[redacted] answered 500");
+  });
+
+  it("are each redacted where a list is set apart by commas, down to eight characters", async () => {
+    const leaky = vendor([one]);
+    leaky.logs = ["first second-part-value", "code 12345678 used"];
+    await harness.once(leaky, {
+      TEST_TOKEN: "first-part-value,second-part-value, 12345678",
+    });
+    const said = harness.lines.join("\n");
+    expect(said).toContain("first [redacted]");
+    expect(said).not.toContain("second-part-value");
+    expect(said).toContain("code [redacted] used");
   });
 
   it("never reach the state file, nor a URL that carries one encoded", async () => {

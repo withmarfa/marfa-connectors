@@ -8,16 +8,10 @@ export interface Stored {
   state: Record<string, unknown>;
   /** Lasting conditions by key, as last reported. */
   conditions: Record<string, string>;
-  /**
-   * Rows last seen in the bin, by source id. A row purged from it is gone
-   * from the server, and this is what stops the vendor's copy being written
-   * again.
-   */
-  trashed: string[];
 }
 
 function empty(): Stored {
-  return { state: {}, conditions: {}, trashed: [] };
+  return { state: {}, conditions: {} };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -25,10 +19,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * One small file per connector. Losing it costs a full read of the vendor
- * and never a duplicate row, because every write is compared with the rows
- * the server already holds; but a row a person trashed and then purged is
- * written again, since only this file remembers it.
+ * One small file per connector, and a cache: losing it costs a full read of
+ * the vendor and never a duplicate row, because every write is compared with
+ * the rows the server already holds, trashed ones included.
  */
 export class StateFile {
   private readonly path: string;
@@ -64,7 +57,6 @@ export class StateFile {
         isRecord(parsed["state"]) &&
         isRecord(parsed["conditions"])
       ) {
-        const trashed = parsed["trashed"];
         return {
           state: parsed["state"],
           conditions: Object.fromEntries(
@@ -73,9 +65,6 @@ export class StateFile {
                 typeof entry[1] === "string",
             ),
           ),
-          trashed: Array.isArray(trashed)
-            ? trashed.filter((id): id is string => typeof id === "string")
-            : [],
         };
       }
     } catch {
