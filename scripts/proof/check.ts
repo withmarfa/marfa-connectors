@@ -1,13 +1,13 @@
-let signalled = false;
+let signaled = false;
 
 /** Marks the proof as told to stop, so what that interrupts is not reported. */
 export function interrupt(): void {
-  signalled = true;
+  signaled = true;
 }
 
 /** Read through a call, since a signal can arrive while a statement waits. */
 export function interrupted(): boolean {
-  return signalled;
+  return signaled;
 }
 
 /** A statement that did not hold, already reported as it failed. */
