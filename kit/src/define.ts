@@ -8,6 +8,9 @@ import type { components } from "@withmarfa/client";
  */
 export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 
+/** A row as the server answers it. */
+export type Item = components["schemas"]["Item"];
+
 /**
  * How the kit treats an environment variable a connector names: `secret`
  * and `required` fail the start when absent, and a secret's value is
@@ -30,6 +33,12 @@ export interface Entry {
   /** A property that is absent or `null` is cleared from the row. */
   properties: Readonly<Record<string, unknown>>;
   occurred_at?: string | undefined;
+  /**
+   * When the vendor last changed the entry. Read where a row in Marfa has
+   * changed since the connector's own write: the later of the two changes
+   * wins, and a vendor that names no time loses.
+   */
+  changed_at?: string | undefined;
 }
 
 export interface State {
@@ -57,8 +66,40 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly log: Log;
   /** Writes what differs from the connector's own rows, and nothing else. */
   readonly upsert: (entries: readonly Entry[]) => Promise<void>;
-  /** Archives the named rows that are active. A trashed row is left alone. */
-  readonly archive: (sourceIds: readonly string[]) => Promise<void>;
+  /**
+   * Archives the named rows that are active: by link value where the
+   * connector declares a link, by source id where it does not. A trashed
+   * row is left alone.
+   */
+  readonly archive: (keys: readonly string[]) => Promise<void>;
+}
+
+/**
+ * What happened to a row in Marfa since the connector last looked, as the
+ * log names it: a transition to archived or trashed, a restore, a purge,
+ * or a create or an update of its properties.
+ */
+export type ChangeKind =
+  "created" | "updated" | "restored" | "archived" | "trashed" | "purged";
+
+export interface Change {
+  readonly kind: ChangeKind;
+  /** The row as the log last showed it. */
+  readonly item: Item;
+}
+
+export interface WatchContext<E extends EnvDeclaration> {
+  readonly env: EnvValues<E>;
+  readonly signal: AbortSignal;
+  readonly state: State;
+  readonly log: Log;
+  /**
+   * Writes the vendor's own id for the row onto its link field, at the
+   * version the change showed, retrying once if the row moved since. A
+   * value another row of the type already carries is refused, and the
+   * refusal names both rows.
+   */
+  readonly setLink: (item: Item, value: string) => Promise<void>;
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
@@ -68,6 +109,14 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   /** Named on every create and on every read of the connector's own rows. */
   readonly source: string;
   readonly type: TypeDefinition;
+  /**
+   * The field on the type that holds the vendor's own id for a row. With a
+   * link, every row of the type is the connector's to read and write,
+   * whoever created it: an entry finds its row by this field first and by
+   * its natural key under the connector's source second, and a row that
+   * carries no value is one the vendor has not been told about.
+   */
+  readonly link?: string;
   readonly env?: E;
   /**
    * Refuses, by throwing, an environment the connector can tell on sight it
@@ -76,6 +125,14 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    */
   readonly checkEnv?: (env: EnvValues<E>) => void | Promise<void>;
   run(context: RunContext<E>): Promise<void>;
+  /**
+   * Carries a change made in Marfa to the vendor. Called once per row that
+   * changed since the last run, in the order the log records, after `run`
+   * has written what the vendor had. Resolving means the change landed or
+   * was consciously abandoned with a condition; throwing fails the run and
+   * holds the cursor, so the change is offered again next run.
+   */
+  onChange?(change: Change, context: WatchContext<E>): Promise<void>;
 }
 
 export function defineConnector<

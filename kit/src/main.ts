@@ -217,6 +217,7 @@ export async function start<E extends EnvDeclaration>(
     logger,
     clock,
     signal: stop.signal,
+    quietMs: runtime.quietMs,
   };
   let code = 0;
   try {

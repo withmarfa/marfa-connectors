@@ -11,6 +11,7 @@ describe("the type check", () => {
       title: { type: "string", required: true },
       note: { type: "string" },
       link: { type: "url" },
+      vendor_id: { type: "string" },
     },
   };
 

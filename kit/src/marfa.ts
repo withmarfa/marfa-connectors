@@ -4,10 +4,11 @@ import {
   type MarfaClient,
   type operations,
 } from "@withmarfa/client";
-import type { TypeDefinition } from "./define.js";
+import type { Item, TypeDefinition } from "./define.js";
 
-export type Item = components["schemas"]["Item"];
+export type { Item };
 export type BulkResult = components["schemas"]["BulkResultEntry"];
+export type Version = components["schemas"]["Version"];
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
@@ -101,17 +102,17 @@ export class Marfa {
   }
 
   /**
-   * Every row under the source whose type is this one or inherits from it,
-   * in every state.
+   * Every row whose type is this one or inherits from it, in every state:
+   * under one source, or under every source when none is named.
    */
-  async ownRows(type: string, source: string): Promise<Item[]> {
+  async ownRows(type: string, source?: string): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
       const { data, error, response } = await this.client.GET("/items", {
         params: {
           query: {
             type,
-            source,
+            ...(source !== undefined && { source }),
             state: "any",
             limit: 200,
             ...(cursor !== undefined && { cursor }),
@@ -124,6 +125,67 @@ export class Marfa {
     // A page asked for without `include` carries bare items.
     for await (const row of walk) rows.push("item" in row ? row.item : row);
     return rows;
+  }
+
+  /** One row as it now stands, or `undefined` once it is purged. */
+  async item(id: string): Promise<Item | undefined> {
+    const { data, error, response } = await this.client.GET("/items/{id}", {
+      params: { path: { id } },
+    });
+    if (response.status === 404) return undefined;
+    if (data === undefined) throw refusal(response, error);
+    return data.item;
+  }
+
+  /** The row's snapshots, oldest first: what it held before each update. */
+  async versions(id: string): Promise<Version[]> {
+    const { data, error, response } = await this.client.GET(
+      "/items/{id}/versions",
+      { params: { path: { id } } },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data.data;
+  }
+
+  /**
+   * Lays properties over a row's at the version it was read at, leaving the
+   * rest as they are: what the link is written with, since the row is the
+   * vendor's to fill and the link is one field of it.
+   */
+  async merge(
+    id: string,
+    version: number,
+    properties: Record<string, unknown>,
+  ): Promise<Item> {
+    const { data, error, response } = await this.client.PATCH("/items/{id}", {
+      params: { path: { id } },
+      body: { version, properties },
+    });
+    if (data === undefined) throw refusal(response, error);
+    return data.item;
+  }
+
+  /**
+   * The log from a cursor, as frames: the first names the head, and the
+   * rest are every retained event after the cursor, then whatever is
+   * written while the stream is open. Narrowed to the type and its
+   * subtree, without edges, and ended by the signal.
+   */
+  async events(
+    type: string,
+    cursor: string | undefined,
+    signal: AbortSignal,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const { data, error, response } = await this.client.GET("/events", {
+      params: {
+        query: { type, edges: "none" },
+        ...(cursor !== undefined && { header: { "Last-Event-ID": cursor } }),
+      },
+      parseAs: "stream",
+      signal,
+    });
+    if (data === undefined || data === null) throw refusal(response, error);
+    return data;
   }
 
   /**
