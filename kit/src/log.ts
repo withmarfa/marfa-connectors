@@ -1,6 +1,18 @@
 import { shortestSecret } from "./environment.js";
 import type { Clock } from "./runtime.js";
 
+/** Hex escapes in lower case, as some encoders write them. */
+function lowered(text: string): string {
+  return text.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
+}
+
+/** A secret as it is written, and as a URL or a form may carry it. */
+function spelledAs(secret: string): string[] {
+  const encoded = encodeURIComponent(secret);
+  const form = new URLSearchParams({ s: secret }).toString().slice(2);
+  return [secret, encoded, lowered(encoded), form, lowered(form)];
+}
+
 export class Logger {
   private readonly secrets: string[];
 
@@ -10,9 +22,8 @@ export class Logger {
     secrets: readonly string[] = [],
   ) {
     // One variable may hold several secrets, as a list of private feed
-    // addresses does, and each can appear without the others. Each also as
-    // it appears inside a URL, and longest first, so a secret that contains
-    // another is replaced whole.
+    // addresses does, and each can appear without the others. Longest first,
+    // so a secret that contains another is replaced whole.
     const spellings = secrets
       .flatMap((secret) => [
         secret,
@@ -20,7 +31,7 @@ export class Logger {
           .split(/[\s,]+/)
           .filter((part) => part.length >= shortestSecret),
       ])
-      .flatMap((secret) => [secret, encodeURIComponent(secret)]);
+      .flatMap(spelledAs);
     this.secrets = [...new Set(spellings)].sort((a, b) => b.length - a.length);
   }
 

@@ -212,12 +212,19 @@ interface Base {
   fromAddress: boolean;
 }
 
-/** A reference that keeps its base's path: not absolute, and not from the root. */
-function pathRelative(reference: string): boolean {
-  if (reference.startsWith("/")) return false;
+/**
+ * Whether a reference takes something of its base's path or query: it
+ * resolves one way against the base and another against the base's origin
+ * alone. Asked of the resolver, since a spelling such as `https:item` is
+ * absolute on its own and relative against a base of the same scheme.
+ */
+function keepsPath(reference: string, base: string): boolean {
+  const origin = new URL(base);
+  origin.pathname = "/";
+  origin.search = "";
+  origin.hash = "";
   try {
-    new URL(reference);
-    return false;
+    return new URL(reference, base).href !== new URL(reference, origin).href;
   } catch {
     return true;
   }
@@ -234,7 +241,7 @@ function baseOf(parent: Base, declared: string | undefined): Base {
   try {
     return {
       href: new URL(base, parent.href).href,
-      fromAddress: parent.fromAddress && pathRelative(base),
+      fromAddress: parent.fromAddress && keepsPath(base, parent.href),
     };
   } catch {
     return parent;
@@ -250,7 +257,7 @@ function baseOf(parent: Base, declared: string | undefined): Base {
 function linkOf(value: string | undefined, base: Base): string | undefined {
   const reference = value?.trim();
   if (reference === undefined || reference === "") return undefined;
-  if (base.fromAddress && pathRelative(reference)) return undefined;
+  if (base.fromAddress && keepsPath(reference, base.href)) return undefined;
   try {
     const url = new URL(reference, base.href);
     if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;

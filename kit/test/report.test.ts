@@ -189,12 +189,52 @@ describe("secrets", () => {
     expect(error).not.toContain(encodeURIComponent(token));
   });
 
+  it("never reach the state file through a condition's key", async () => {
+    const held = vendor([one]);
+    held.conditions = [[`expiring:${secretToken}`, "the token expires soon"]];
+    await harness.once(held);
+    expect(harness.lastRun().summary).toContain("the token expires soon");
+    await harness.once(held);
+    expect(harness.lastRun().summary).not.toContain("the token expires soon");
+    const stored = JSON.stringify(await harness.stateFile());
+    expect(stored).toContain("expiring:[redacted]");
+    expect(stored).not.toContain(secretToken);
+  });
+
+  it("are replaced whole where one secret holds another", async () => {
+    const token = `${harness.server.key}-and-more`;
+    const leaky = vendor([one]);
+    leaky.logs = [`using ${token} now`];
+    await harness.once(leaky, { TEST_TOKEN: token });
+    const said = harness.lines.join("\n");
+    expect(said).toContain("using [redacted] now");
+    expect(said).not.toContain("-and-more");
+  });
+
+  it("never reach a line in the other spellings a URL or a form carries", async () => {
+    const token = "tok/with+marks=v (1)";
+    const lower = encodeURIComponent(token).replace(/%[0-9A-F]{2}/g, (escape) =>
+      escape.toLowerCase(),
+    );
+    const form = new URLSearchParams({ t: token }).toString().slice(2);
+    expect(form).not.toBe(encodeURIComponent(token));
+    const leaky = vendor([one]);
+    leaky.logs = [`GET /?a=${lower}`, `POST t=${form}`];
+    await harness.once(leaky, { TEST_TOKEN: token });
+    const said = harness.lines.join("\n");
+    expect(said).toContain("GET /?a=[redacted]");
+    expect(said).toContain("POST t=[redacted]");
+    expect(said).not.toContain(lower);
+    expect(said).not.toContain(form);
+  });
+
   it("are each redacted where a secret holds a list and one of its parts appears alone", async () => {
     const list =
       "https://feeds.example.com/private/first-token/a.xml https://feeds.example.com/private/second-token/b.xml";
     const leaky = vendor([one]);
     leaky.logs = [
       "fetching https://feeds.example.com/private/second-token/b.xml",
+      `encoded ${encodeURIComponent("https://feeds.example.com/private/second-token/b.xml")}`,
     ];
     leaky.fail = new Error(
       `https://feeds.example.com/private/first-token/a.xml answered 500`,
@@ -206,7 +246,20 @@ describe("secrets", () => {
       expect(text).not.toContain("second-token");
     }
     expect(harness.lines.join("\n")).toContain("fetching [redacted]");
+    expect(harness.lines.join("\n")).toContain("encoded [redacted]");
     expect(reported).toContain("[redacted] answered 500");
+  });
+
+  it("are each redacted where a list is set apart by commas, down to eight characters", async () => {
+    const leaky = vendor([one]);
+    leaky.logs = ["first second-part-value", "code 12345678 used"];
+    await harness.once(leaky, {
+      TEST_TOKEN: "first-part-value,second-part-value, 12345678",
+    });
+    const said = harness.lines.join("\n");
+    expect(said).toContain("first [redacted]");
+    expect(said).not.toContain("second-part-value");
+    expect(said).toContain("code [redacted] used");
   });
 
   it("never reach the state file, nor a URL that carries one encoded", async () => {

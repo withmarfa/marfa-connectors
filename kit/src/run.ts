@@ -128,10 +128,16 @@ export async function runOnce<E extends EnvDeclaration>(
       "the state is held, so the next run reads the vendor again: a write did not land",
     );
   }
-  // Kept redacted, since the state file is written to disk as it stands.
-  for (const [key, message] of raised) {
-    raised.set(key, cap(logger.redact(message), conditionCap));
-  }
+  // Kept redacted, key and message, since the state file is written to disk
+  // as it stands.
+  const redacted = new Map(
+    [...raised].map(([key, message]) => [
+      logger.redact(key),
+      cap(logger.redact(message), conditionCap),
+    ]),
+  );
+  raised.clear();
+  for (const [key, message] of redacted) raised.set(key, message);
   const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
   for (const [, message] of fresh) logger.warn(message);
 
