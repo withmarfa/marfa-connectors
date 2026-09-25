@@ -16,7 +16,6 @@ export interface KeyFlags {
   label: string;
   source: string;
   typePermission: string;
-  registersType: boolean;
 }
 
 export function keyBody(flags: KeyFlags) {
@@ -24,9 +23,7 @@ export function keyBody(flags: KeyFlags) {
     label: flags.label,
     source: flags.source,
     type_permissions: { [flags.typePermission]: "write" as const },
-    ...(flags.registersType && {
-      metadata_permissions: { types: "write" as const },
-    }),
+    metadata_permissions: { types: "write" as const },
     default_tier: "feed" as const,
   };
 }
@@ -87,7 +84,7 @@ export type Minted = Awaited<ReturnType<typeof mint>>;
 /**
  * The connector's key, minted as the README's command mints it, and held to
  * what that command asks for: its source, write on its type and nothing
- * else, types write only when it registers its type, and the feed tier.
+ * else, types write to register its type, and the feed tier.
  */
 export async function mintAsReadmeSays(
   marfa: MarfaClient,
@@ -105,13 +102,13 @@ export async function mintAsReadmeSays(
         key.source !== flags.source ||
         key.default_tier !== "feed" ||
         types !== JSON.stringify({ [flags.typePermission]: "write" }) ||
-        metadata !== (flags.registersType ? "write" : undefined)
+        metadata !== "write"
       ) {
         throw new Error(
           `source ${key.source}, type_permissions ${types}, types ${String(metadata)}, default tier ${key.default_tier}`,
         );
       }
-      return `source ${key.source}, type_permissions ${types}, metadata types ${metadata ?? "none"}, default tier ${key.default_tier}`;
+      return `source ${key.source}, type_permissions ${types}, metadata types ${metadata}, default tier ${key.default_tier}`;
     },
   );
   if (minted === undefined) throw new Error("the key check answered nothing");

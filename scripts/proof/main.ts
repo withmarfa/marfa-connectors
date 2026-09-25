@@ -1,11 +1,24 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
-import { check, Failed, interrupt, interrupted } from "./check.js";
+import {
+  check,
+  Failed,
+  interrupt,
+  interrupted,
+  statementsHeld,
+} from "./check.js";
 import { witnessTypeAnswers } from "./connector.js";
 import { proveRss } from "./rss.js";
 import { proveTodoist } from "./todoist.js";
 import { ProofServer, type Booted } from "./server.js";
+
+/**
+ * Every statement the proof makes: three here, nine in `rss.ts` and ten in
+ * `todoist.ts`. A statement dropped or skipped leaves the proof short, and a
+ * short proof fails.
+ */
+const statements = 22;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -70,6 +83,12 @@ try {
 
   await proveRss(marfa, booted.url);
   await proveTodoist(marfa, booted.url);
+  if (statementsHeld() !== statements) {
+    throw new Error(
+      `${String(statementsHeld())} statements held, where the proof makes ${String(statements)}`,
+    );
+  }
+  console.log(`ok   all ${String(statements)} statements held`);
 } catch (error) {
   // A statement that failed has said so; anything else has not.
   if (!(error instanceof Failed) && !interrupted()) {
