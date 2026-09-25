@@ -12,9 +12,10 @@ const run = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
 
 /**
- * A repository laid out as this one is, holding nothing but the kit and a
- * copy of the template at `connectors/copied/`, as its README says to make
- * one. The copy is built on its own, against the kit's built declarations.
+ * A repository laid out as this one is, holding only the base config, the
+ * kit and the installed packages, linked in, and a copy of the template at
+ * `connectors/copied/`, as its README says to make one. The copy is built
+ * on its own, against the kit's built declarations.
  */
 async function copiedConnector(place: string): Promise<string> {
   await copyFile(

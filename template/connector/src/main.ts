@@ -47,7 +47,9 @@ const connector = defineConnector({
     // never share a row.
     const key = (item: VendorItem): string => `${account}:${item.id}`;
 
-    const untitled = items.filter((item) => item.title === undefined);
+    const untitled = items.filter(
+      (item) => item.deleted !== true && item.title === undefined,
+    );
     if (untitled.length > 0) {
       log.condition(
         "untitled",

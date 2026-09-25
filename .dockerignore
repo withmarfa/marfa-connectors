@@ -7,3 +7,6 @@ _trash
 _archive
 .env
 .env.*
+_tmp
+_local
+_ignore

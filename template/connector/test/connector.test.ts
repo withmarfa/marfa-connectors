@@ -106,19 +106,15 @@ describe("the template, run as a process", () => {
     );
   });
 
-  it("archives an item the vendor deleted", async () => {
+  it("archives an item the vendor deleted, which needs no title to be", async () => {
     items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
     expect((await once()).code).toBe(0);
-    items = [
-      {
-        id: "1",
-        title: "One",
-        created: "2026-09-01T10:00:00.000Z",
-        deleted: true,
-      },
-    ];
+    items = [{ id: "1", created: "2026-09-01T10:00:00.000Z", deleted: true }];
     expect((await once()).code).toBe(0);
     expect(marfa.row("acct:1").state).toBe("archived");
+    expect(marfa.runs.at(-1)?.summary).toBe(
+      "created 0, updated 0, archived 1, unchanged 0, skipped 0",
+    );
   });
 
   it("fails the run when the vendor refuses the token, and never prints it", async () => {
