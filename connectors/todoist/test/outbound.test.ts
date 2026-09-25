@@ -44,6 +44,14 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Whatever the case sent, every command carried a uuid laid out as one,
+  // and no two different commands shared it.
+  const sent = todoist.commands();
+  for (const command of sent) expect(command.uuid).toMatch(uuidShape);
+  const byUuid = new Map(sent.map((c) => [c.uuid, JSON.stringify(c)]));
+  for (const command of sent) {
+    expect(byUuid.get(command.uuid)).toBe(JSON.stringify(command));
+  }
   await marfa.stop();
   await todoist.close();
   await rm(stateDir, { recursive: true, force: true });
