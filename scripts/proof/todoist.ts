@@ -6,6 +6,8 @@ import {
   ConnectorUnderProof,
   derivedFrom,
   fieldsOf,
+  registeredAsKindOf,
+  typeHeld,
   item,
   lastRun,
   mintAsReadmeSays,
@@ -22,10 +24,16 @@ interface Task {
   content: string;
   description: string;
   project_id: string;
+  section_id: string | null;
+  parent_id: string | null;
+  labels: string[];
   priority: number;
   due: Record<string, unknown> | null;
+  child_order: number;
   checked: boolean;
+  completed_at: string | null;
   is_deleted: boolean;
+  note_count: number;
   added_at: string;
 }
 
@@ -37,16 +45,25 @@ function task(id: string, overrides: Partial<Task> = {}): Task {
     content: `Task ${id}`,
     description: "",
     project_id: "inbox",
+    section_id: null,
+    parent_id: null,
+    labels: [],
     priority: 1,
     due: null,
+    child_order: 1,
     checked: false,
+    completed_at: null,
     is_deleted: false,
+    note_count: 0,
     added_at: "2026-09-20T09:00:00.000000Z",
     ...overrides,
   };
 }
 
-/** A person's core.task from a Todoist row: the fields it inherits, as they stand. */
+/**
+ * A person's core.task from a Todoist row. The row is a kind of core task
+ * and carries the core's values already, so promoting maps nothing.
+ */
 async function asTask(
   marfa: MarfaClient,
   row: Item,
@@ -59,7 +76,6 @@ async function asTask(
   );
 }
 
-/** A stub of Todoist's Sync API answering whatever delta the proof sets next. */
 async function stubTodoist(): Promise<{
   url: string;
   next: (items: Task[]) => void;
@@ -137,48 +153,80 @@ export async function proveTodoist(
       content: "Buy milk",
       priority: 4,
       due: { date: "2026-09-30", is_recurring: false },
+      section_id: "s1",
+      labels: ["Food", "Errands"],
+      child_order: 2,
+      note_count: 3,
     });
     const b = task("b", {
       content: "Write the note",
       description: "With the details",
+      parent_id: "a",
     });
     const c = task("c", { content: "Call back" });
-    todoist.next([a, b, c]);
+    const d = task("d", {
+      content: "Post the letter",
+      checked: true,
+      completed_at: "2026-09-21T10:00:00.000000Z",
+    });
+    const e = task("e", { content: "Book the room" });
+    const all = [a, b, c, d, e];
+    todoist.next(all);
     await check(
       "todoist: a first run registers todoist.task as a kind of core.task and writes the account's tasks at the feed tier",
       async () => {
+        const wasHeld = await typeHeld(marfa, "todoist.task");
         await runOnce();
-        const taskType = await fieldsOf(marfa, "todoist.task");
-        const core = await fieldsOf(marfa, "core.task");
         const written = await rows();
         const tiers = [...new Set([...written.values()].map((r) => r.tier))];
-        if (written.size !== 3 || tiers.join() !== "feed") {
+        if (written.size !== all.length || tiers.join() !== "feed") {
           throw new Error(
             `${String(written.size)} rows at ${tiers.join(", ")}`,
           );
         }
-        if (
-          taskType.parent !== "core.task" ||
-          taskType.compatible_with !== undefined
-        ) {
-          throw new Error(
-            `parent ${String(taskType.parent)}, compatible_with ${JSON.stringify(taskType.compatible_with)}`,
-          );
-        }
-        const own = taskType.fields
-          .filter((field) => !core.fields.includes(field))
-          .sort();
-        const unknown = [...written.values()]
-          .flatMap((r) => Object.keys(r.properties))
-          .filter((field) => !taskType.fields.includes(field));
+        const { own, inherited } = await registeredAsKindOf(
+          marfa,
+          "todoist.task",
+          "core.task",
+          wasHeld,
+          written.values(),
+        );
         const expected =
           "child_order,comment_count,labels,parent_id,project_id,section_id";
-        if (own.join() !== expected || unknown.length > 0) {
-          throw new Error(
-            `own fields ${own.join(", ")}; written outside the type: ${unknown.join(", ")}`,
-          );
+        if (own.join() !== expected) {
+          throw new Error(`own fields ${own.join(", ")}`);
         }
-        return `todoist.task has parent core.task, inherits its ${String(core.fields.length)} fields and adds ${own.join(", ")}; ${String(written.size)} rows, tier feed, source ids ${[...written.keys()].join(", ")}, every property a field of the type`;
+        const first = written.get(`${account}:a`)?.properties ?? {};
+        const done = written.get(`${account}:d`)?.properties ?? {};
+        const sub = written.get(`${account}:b`)?.properties ?? {};
+        const landed = {
+          priority: first["priority"],
+          due_at: first["due_at"],
+          precision: first["precision"],
+          section_id: first["section_id"],
+          labels: first["labels"],
+          child_order: first["child_order"],
+          comment_count: first["comment_count"],
+          parent_id: sub["parent_id"],
+          status: done["status"],
+          completed_at: done["completed_at"],
+        };
+        const wanted = {
+          priority: "urgent",
+          due_at: "2026-09-29T23:00:00.000Z",
+          precision: "day",
+          section_id: "s1",
+          labels: ["Food", "Errands"],
+          child_order: 2,
+          comment_count: 3,
+          parent_id: "a",
+          status: "completed",
+          completed_at: "2026-09-21T10:00:00.000Z",
+        };
+        if (JSON.stringify(landed) !== JSON.stringify(wanted)) {
+          throw new Error(`the server holds ${JSON.stringify(landed)}`);
+        }
+        return `todoist.task, absent before the run, registered with parent core.task, all ${String(inherited)} of its fields and ${own.join(", ")} beside them; ${String(written.size)} rows, tier feed, every property a field of the type; on the server ${JSON.stringify(landed)}`;
       },
     );
 
@@ -202,11 +250,14 @@ export async function proveTodoist(
       "todoist: a second run, handed the same tasks, moves no version",
       async () => {
         const before = await rows();
-        todoist.next([a, b, c]);
+        todoist.next(all);
         await runOnce();
         const changed = moved(before, await rows());
         const { summary } = await lastRun(marfa, key.id);
-        if (changed.length > 0 || !summary?.includes("unchanged 3")) {
+        if (
+          changed.length > 0 ||
+          !summary?.includes(`unchanged ${String(all.length)}`)
+        ) {
           throw new Error(
             `moved ${changed.join(", ") || "nothing"}; reported ${String(summary)}`,
           );
@@ -239,6 +290,28 @@ export async function proveTodoist(
         throw new Error("the description is still there");
       return `description present at version ${String(before.version)}, absent at version ${String(after.version)}`;
     });
+
+    await check(
+      "todoist: a task deleted upstream is archived, and nothing else moves",
+      async () => {
+        const before = await rows();
+        todoist.next([{ ...e, is_deleted: true }]);
+        await runOnce();
+        const after = await rows();
+        const changed = moved(before, after);
+        const archived = after.get(`${account}:e`);
+        if (
+          archived?.state !== "archived" ||
+          changed.length !== 1 ||
+          !changed[0]?.startsWith(`${account}:e `)
+        ) {
+          throw new Error(
+            `e is ${String(archived?.state)}; moved ${changed.join(", ") || "nothing"}`,
+          );
+        }
+        return `e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
+      },
+    );
 
     await check(
       "todoist: a trashed row is left alone, where an active one changing with it moves",

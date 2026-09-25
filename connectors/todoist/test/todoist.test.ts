@@ -37,6 +37,22 @@ const served = {
   display_hints: { title_field: "title", body_field: "description" },
 };
 
+/** Due dates as Todoist sends them, with the fields the connector does not read. */
+const wholeDaySent = {
+  date: "2026-09-30",
+  is_recurring: false,
+  string: "Sep 30",
+  lang: "en",
+  timezone: null,
+};
+const fixedSent = {
+  date: "2026-12-06T13:00:00.000000Z",
+  is_recurring: true,
+  string: "every day at 2pm",
+  lang: "en",
+  timezone: "Europe/Madrid",
+};
+
 function task(id: string, overrides: Partial<TodoistItem> = {}): TodoistItem {
   return {
     id,
@@ -147,14 +163,9 @@ describe("the mapping", () => {
         description: "Organic",
         labels: ["Food"],
         priority: 4,
-        due: {
-          date: "2026-09-30",
-          is_recurring: false,
-          string: "Sep 30",
-          lang: "en",
-          timezone: null,
-        },
+        due: wholeDaySent,
         section_id: "s1",
+        parent_id: "p0",
         note_count: 2,
         checked: true,
         completed_at: "2026-09-02T08:30:00.000000Z",
@@ -173,7 +184,7 @@ describe("the mapping", () => {
         url: "https://app.todoist.com/app/task/6X7r",
         project_id: "p1",
         section_id: "s1",
-        parent_id: undefined,
+        parent_id: "p0",
         labels: ["Food"],
         child_order: 1,
         comment_count: 2,
@@ -201,12 +212,10 @@ describe("the mapping", () => {
       due_at: "2026-12-06T17:00:00.000Z",
       precision: "time",
     });
-    expect(
-      dueOf(
-        { date: "2026-12-06T13:00:00.000000Z", timezone: "Europe/Madrid" },
-        zone,
-      ),
-    ).toEqual({ due_at: "2026-12-06T13:00:00.000Z", precision: "time" });
+    expect(dueOf(fixedSent, zone)).toEqual({
+      due_at: "2026-12-06T13:00:00.000Z",
+      precision: "time",
+    });
     // Either side of the clocks going forward in New York, 8 March 2026.
     expect(dueOf({ date: "2026-03-08T01:30:00" }, zone)?.due_at).toBe(
       "2026-03-08T06:30:00.000Z",
@@ -216,6 +225,83 @@ describe("the mapping", () => {
     );
     expect(dueOf({ date: "next week" }, zone)).toBeUndefined();
     expect(dueOf(null, zone)).toBeUndefined();
+  });
+
+  it("moves a time the clocks skipped later, and takes a time shown twice at its first showing, on either side of UTC", () => {
+    const at = (date: string, zone: string): string | undefined =>
+      dueOf({ date }, zone)?.due_at;
+    // Skipped: New York, London, Sydney.
+    expect(at("2026-03-08T02:30:00", "America/New_York")).toBe(
+      "2026-03-08T07:30:00.000Z",
+    );
+    expect(at("2026-03-29T01:30:00", "Europe/London")).toBe(
+      "2026-03-29T01:30:00.000Z",
+    );
+    expect(at("2026-10-04T02:30:00", "Australia/Sydney")).toBe(
+      "2026-10-03T16:30:00.000Z",
+    );
+    // Shown twice: the earlier instant, in daylight time.
+    expect(at("2026-11-01T01:30:00", "America/New_York")).toBe(
+      "2026-11-01T05:30:00.000Z",
+    );
+    expect(at("2026-10-25T01:30:00", "Europe/London")).toBe(
+      "2026-10-25T00:30:00.000Z",
+    );
+    expect(at("2026-04-05T02:30:00", "Australia/Sydney")).toBe(
+      "2026-04-04T15:30:00.000Z",
+    );
+  });
+
+  it("keeps a whole day on its date where its midnight is skipped", () => {
+    const local = (iso: string | undefined, zone: string): string =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: zone }).format(
+        new Date(iso ?? Number.NaN),
+      );
+    for (const [date, zone] of [
+      ["2026-03-08", "America/Havana"],
+      ["2026-09-06", "America/Santiago"],
+      ["2026-03-29", "Atlantic/Azores"],
+    ] as const) {
+      const due = dueOf({ date }, zone);
+      expect(due?.precision).toBe("day");
+      expect(local(due?.due_at, zone)).toBe(date);
+    }
+  });
+
+  it("reads no due date from a date the calendar does not have", () => {
+    expect(dueOf({ date: "2026-02-28" }, "UTC")?.due_at).toBe(
+      "2026-02-28T00:00:00.000Z",
+    );
+    expect(dueOf({ date: "2026-02-30" }, "UTC")).toBeUndefined();
+    expect(dueOf({ date: "2026-13-45T25:61:61" }, "UTC")).toBeUndefined();
+  });
+
+  it("writes a completion only for a completed task", () => {
+    const completedAt = "2026-09-02T08:30:00.000000Z";
+    const done = entryOf(
+      "1",
+      "UTC",
+      task("a", { checked: true, completed_at: completedAt }),
+    ).properties;
+    const open = entryOf(
+      "1",
+      "UTC",
+      task("a", { checked: false, completed_at: completedAt }),
+    ).properties;
+    expect([done["status"], done["completed_at"]]).toEqual([
+      "completed",
+      "2026-09-02T08:30:00.000Z",
+    ]);
+    expect([open["status"], open["completed_at"]]).toEqual([
+      "pending",
+      undefined,
+    ]);
+  });
+
+  it("encodes a task's id in its link", () => {
+    expect(entryOf("1", "UTC", task("a/b c")).properties["url"]).toBe(
+      "https://app.todoist.com/app/task/a%2Fb%20c",
+    );
   });
 
   it("reads the account's timezone only where the platform knows it", () => {
@@ -262,6 +348,7 @@ describe("the mapping", () => {
 
   it("refuses an account it could not key a task by", () => {
     expect(accountOf({ id: "2671355" })).toBe("2671355");
+    expect(accountOf({ id: " 2671355 " })).toBe("2671355");
     // The v1 API's ids are strings; a number is an older API's answer.
     for (const user of [
       undefined,
@@ -347,7 +434,7 @@ describe("the connector, run as a process", () => {
   it("clears a due date Todoist removed", async () => {
     answer = () => ({
       sync_token: "t1",
-      items: [task("a", { due: { date: "2026-09-30", is_recurring: false } })],
+      items: [task("a", { due: wholeDaySent })],
       user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     expect((await once()).code).toBe(0);
@@ -435,6 +522,83 @@ describe("the connector, run as a process", () => {
     // empty stream's.
     expect(output).toContain("refused the token");
     expect(output).not.toContain("a-wrong-token-value");
+  });
+
+  it("fails the run on a 403 as on a 401", async () => {
+    answer = () => 403;
+    expect((await once()).code).toBe(1);
+    expect(marfa.runs.at(-1)?.error).toContain("refused the token: 403");
+  });
+
+  it("reads every due date anew when the account's timezone moves", async () => {
+    const floating = task("a", { due: { date: "2026-10-01T09:00:00" } });
+    let zone = "Europe/London";
+    answer = (syncToken) =>
+      syncToken === "*"
+        ? {
+            sync_token: "t-full",
+            items: [floating, task("b")],
+            user: { id: "2671355", tz_info: { timezone: zone } },
+          }
+        : {
+            sync_token: "t-delta",
+            items: [task("b", { content: "Task b, renamed" })],
+            user: { id: "2671355", tz_info: { timezone: zone } },
+          };
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T08:00:00.000Z",
+    );
+    // The same zone again: a delta, and nothing more.
+    expect((await once()).code).toBe(0);
+    zone = "America/New_York";
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full",
+      "t-delta",
+      "*",
+    ]);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T13:00:00.000Z",
+    );
+    expect(await state()).toMatchObject({ timezone: "America/New_York" });
+  });
+
+  it("reads due dates anew once a timezone is named, having read them in UTC", async () => {
+    const floating = task("a", { due: { date: "2026-10-01T09:00:00" } });
+    let named: { timezone?: string } = {};
+    answer = (syncToken) => ({
+      sync_token: syncToken === "*" ? "t-full" : "t-delta",
+      items: syncToken === "*" ? [floating] : [],
+      user: { id: "2671355", tz_info: named },
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T09:00:00.000Z",
+    );
+    named = { timezone: "Europe/London" };
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full",
+      "*",
+    ]);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-10-01T08:00:00.000Z",
+    );
+  });
+
+  it("names a timezone the platform does not know, rather than saying none was named", async () => {
+    answer = () => ({
+      sync_token: "t1",
+      items: [task("a")],
+      user: { id: "2671355", tz_info: { timezone: "Mars/Olympus" } },
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "named the timezone Mars/Olympus for the account, which this platform does not know",
+    );
   });
 
   it("registers its type on an instance that has none", async () => {

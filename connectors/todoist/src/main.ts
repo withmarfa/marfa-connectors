@@ -7,6 +7,7 @@ import {
   accountOf,
   entryOf,
   firstSync,
+  namedZoneOf,
   sourceId,
   sync,
   timezoneOf,
@@ -25,13 +26,19 @@ const connector = defineConnector({
     TODOIST_API_URL: "optional",
   },
   async run({ env, signal, state, log, upsert, archive }) {
+    const base = env.TODOIST_API_URL ?? "https://api.todoist.com";
     const held = state.get("sync_token");
-    const answer = await sync(
-      env.TODOIST_API_URL ?? "https://api.todoist.com",
-      env.TODOIST_API_TOKEN,
-      typeof held === "string" ? held : firstSync,
-      signal,
-    );
+    const heldToken = typeof held === "string" ? held : firstSync;
+    let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
+    const knownZone = state.get("timezone");
+    const kept = typeof knownZone === "string" ? knownZone : undefined;
+    // A timezone that moved, or first became known, reads every floating
+    // and whole-day due date anew, and a delta carries only the tasks that
+    // changed; so the run asks for them all.
+    const newZone = timezoneOf(answer.user);
+    if (heldToken !== firstSync && newZone !== undefined && newZone !== kept) {
+      answer = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
+    }
     const known = state.get("account");
     const account =
       accountOf(answer.user) ?? (typeof known === "string" ? known : undefined);
@@ -40,14 +47,14 @@ const connector = defineConnector({
         "Todoist named no account for the token, so no task can be keyed to one",
       );
     }
-    const knownZone = state.get("timezone");
-    const named =
-      timezoneOf(answer.user) ??
-      (typeof knownZone === "string" ? knownZone : undefined);
+    const named = timezoneOf(answer.user) ?? kept;
     if (named === undefined) {
+      const unknown = namedZoneOf(answer.user);
       log.condition(
         "timezone",
-        "Todoist named no timezone for the account, so its due dates are read in UTC",
+        unknown === undefined
+          ? "Todoist named no timezone for the account, so its due dates are read in UTC"
+          : `Todoist named the timezone ${unknown} for the account, which this platform does not know, so its due dates are read in UTC`,
       );
     }
     const timeZone = named ?? "UTC";

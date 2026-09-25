@@ -1,6 +1,10 @@
 import type { Entry } from "@withmarfa/connector";
 
-/** A task as the Sync API answers it, in the fields this connector reads. */
+/**
+ * A task as the Sync API answers it. The API sends every item whole, a
+ * delta included, so a field an item leaves out is one the task does not
+ * have, and is cleared.
+ */
 export interface TodoistItem {
   id: string;
   content: string;
@@ -10,13 +14,7 @@ export interface TodoistItem {
   parent_id?: string | null;
   labels?: string[];
   priority?: number;
-  due?: {
-    date?: string;
-    timezone?: string | null;
-    string?: string;
-    is_recurring?: boolean;
-    lang?: string;
-  } | null;
+  due?: { date?: string } | null;
   child_order?: number;
   checked?: boolean;
   completed_at?: string | null;
@@ -71,10 +69,16 @@ export function accountOf(user: SyncAnswer["user"]): string | undefined {
   return account === "" || account.includes(":") ? undefined : account;
 }
 
+/** The timezone the Sync API's `user` names, known to this platform or not. */
+export function namedZoneOf(user: SyncAnswer["user"]): string | undefined {
+  const zone = user?.tz_info?.timezone;
+  return typeof zone === "string" ? zone : undefined;
+}
+
 /** The account's IANA timezone, from the Sync API's `user`, if it names one this platform knows. */
 export function timezoneOf(user: SyncAnswer["user"]): string | undefined {
-  const zone = user?.tz_info?.timezone;
-  if (typeof zone !== "string" || zone === "") return undefined;
+  const zone = namedZoneOf(user);
+  if (zone === undefined) return undefined;
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: zone });
     return zone;
@@ -108,7 +112,15 @@ type Wall = [
   second: number,
 ];
 
-/** The UTC instant a wall-clock time in a zone names. */
+const dayMs = 86_400_000;
+
+/**
+ * The UTC instant a wall-clock time in a zone names, by the rule Temporal
+ * calls "compatible": a time the clocks skipped moves later by the length
+ * of the skip, and a time they showed twice is its first showing. So a
+ * whole day whose midnight is skipped begins at its first real instant,
+ * still on that day.
+ */
 function inZone(
   [year, month, day, hour, minute, second]: Wall,
   timeZone: string,
@@ -140,10 +152,15 @@ function inZone(
       ) - at
     );
   };
-  // Twice, since the offset at the first guess can sit across a
-  // daylight-saving change from the offset at the answer.
-  const guess = wall - offset(wall);
-  return new Date(wall - offset(guess));
+  // The offsets either side of the wall time; a change of offset inside
+  // the day is a daylight-saving change or a zone moving its clocks.
+  const before = offset(wall - dayMs);
+  const after = offset(wall + dayMs);
+  const shown = [before, after]
+    .map((candidate) => wall - candidate)
+    .filter((at) => at + offset(at) === wall)
+    .sort((a, b) => a - b);
+  return new Date(shown[0] ?? wall - before);
 }
 
 /**
@@ -151,7 +168,8 @@ function inZone(
  * writes three kinds: a whole day (`2026-09-30`), a floating time in the
  * account's timezone (`2026-09-30T12:00:00`), and a fixed time in UTC,
  * ending in `Z`. The core task has no whole-day form, so a whole day is the
- * instant it begins in the account's timezone, at `day` precision.
+ * instant it begins in the account's timezone, at `day` precision. A date
+ * the calendar does not have, such as 30 February, is no due date.
  */
 export function dueOf(
   due: TodoistItem["due"],
@@ -171,23 +189,31 @@ export function dueOf(
     );
   if (match === null) return undefined;
   const [, year, month, day, hour, minute, second] = match;
-  const at = inZone(
-    [
-      Number(year),
-      Number(month),
-      Number(day),
-      Number(hour ?? 0),
-      Number(minute ?? 0),
-      Number(second ?? 0),
-    ],
-    timeZone,
-  );
-  return Number.isNaN(at.getTime())
-    ? undefined
-    : {
-        due_at: at.toISOString(),
-        precision: hour === undefined ? "day" : "time",
-      };
+  const wall: Wall = [
+    Number(year),
+    Number(month),
+    Number(day),
+    Number(hour ?? 0),
+    Number(minute ?? 0),
+    Number(second ?? 0),
+  ];
+  const [y, mo, d, h, mi, s] = wall;
+  const read = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  // Date.UTC rolls an impossible date over into the next month.
+  if (
+    read.getUTCFullYear() !== y ||
+    read.getUTCMonth() !== mo - 1 ||
+    read.getUTCDate() !== d ||
+    read.getUTCHours() !== h ||
+    read.getUTCMinutes() !== mi ||
+    read.getUTCSeconds() !== s
+  ) {
+    return undefined;
+  }
+  return {
+    due_at: inZone(wall, timeZone).toISOString(),
+    precision: hour === undefined ? "day" : "time",
+  };
 }
 
 function instantOf(value: string | null | undefined): string | undefined {
