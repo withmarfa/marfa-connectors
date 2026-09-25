@@ -11,7 +11,7 @@ import type {
 import type { Environment } from "./environment.js";
 import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
-import { Rows, type Counts } from "./rows.js";
+import { Rows, Stopped, type Counts } from "./rows.js";
 import type { Clock } from "./runtime.js";
 import type { StateFile } from "./state.js";
 import { Memory, Watch, type WatchRead } from "./watch.js";
@@ -179,9 +179,28 @@ export async function runOnce<E extends EnvDeclaration>(
     await connector.run(context);
     if (pending !== undefined && connector.onChange !== undefined) {
       for (const change of pending.values()) {
-        if (setup.signal.aborted) break;
+        // A stop here fails the run, as one inside a write does: the
+        // cursor then holds, and the changes not yet carried are offered
+        // again.
+        if (setup.signal.aborted) throw new Stopped();
         await connector.onChange(change, watchContext);
         pushed += 1;
+        // The vendor now has the row as this change showed it, so the two
+        // sides agree at this version and state; a purged row has none.
+        // A write the push made itself, the link, is a later agreement
+        // and stands.
+        const record = memory.written[change.item.id];
+        if (change.kind === "purged") memory.forget(change.item.id);
+        else if (
+          record === undefined ||
+          record.version <= change.item.version
+        ) {
+          memory.remember(
+            change.item.id,
+            change.item.version,
+            change.item.state,
+          );
+        }
       }
     }
   } catch (error) {
@@ -255,18 +274,19 @@ export async function runOnce<E extends EnvDeclaration>(
     await setup.stateFile.save({
       state: landed ? draft : stored.state,
       conditions,
+      // The cursor moves only when every write and push landed. The memory
+      // records what did land, whatever else happened, so a held run does
+      // not carry its own writes back next run as somebody else's.
       watch: !twoWay
         ? stored.watch
-        : landed
-          ? {
-              ...(read?.cursor !== undefined
-                ? { cursor: read.cursor }
-                : stored.watch.cursor !== undefined && {
-                    cursor: stored.watch.cursor,
-                  }),
-              written: memory.written,
-            }
-          : stored.watch,
+        : {
+            ...(landed && read?.cursor !== undefined
+              ? { cursor: read.cursor }
+              : stored.watch.cursor !== undefined && {
+                  cursor: stored.watch.cursor,
+                }),
+            written: memory.written,
+          },
     });
   } catch (error) {
     logger.warn(`the state file could not be written: ${describe(error)}`);

@@ -68,7 +68,13 @@ interface Refusal {
   message: string;
 }
 
+/**
+ * What a version held, written when a write leaves the version, at that
+ * write's moment; a transition writes one of its own version too, without
+ * moving it, as the real server does.
+ */
 interface Snapshot {
+  version: number;
   properties: Record<string, unknown>;
   occurred_at: string;
   created_at: string;
@@ -120,7 +126,7 @@ export class ScriptedServer {
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
-  private readonly snapshots = new Map<string, Map<number, Snapshot>>();
+  private readonly snapshots = new Map<string, Snapshot[]>();
   private readonly http = createServer((req, res) => {
     void this.answer(req, res);
   });
@@ -190,8 +196,7 @@ export class ScriptedServer {
     occurredAt?: string,
   ): void {
     const row = this.row(sourceId);
-    if (occurredAt !== undefined) row.occurred_at = occurredAt;
-    this.write(row, properties);
+    this.write(row, properties, occurredAt);
   }
 
   /** A person edits a row, by its id, laying properties over its own. */
@@ -204,6 +209,7 @@ export class ScriptedServer {
   /** A person moves a row to a state, as the transition door does. */
   transition(id: string, state: Row["state"]): Row {
     const row = this.byId(id);
+    this.snapshot(row);
     row.state = state;
     row.updated_at = this.now();
     this.announce("item.state_changed", row);
@@ -213,6 +219,7 @@ export class ScriptedServer {
   /** A person puts a row in the bin. */
   trash(id: string): Row {
     const row = this.byId(id);
+    this.snapshot(row);
     row.state = "trashed";
     row.updated_at = this.now();
     this.announce("item.deleted", row);
@@ -222,6 +229,7 @@ export class ScriptedServer {
   /** A person brings a row back from the bin. */
   restore(id: string): Row {
     const row = this.byId(id);
+    this.snapshot(row);
     row.state = "active";
     row.updated_at = this.now();
     this.announce("item.restored", row);
@@ -279,19 +287,35 @@ export class ScriptedServer {
     return new Date(this.clock).toISOString();
   }
 
+  /** Moves the server's clock on, so a later write is later by that much. */
+  advance(ms: number): void {
+    this.clock += ms;
+  }
+
   private announce(event: string, row: Row): void {
     this.log.push({ id: this.log.length + 1, event, item: { ...row } });
   }
 
-  private write(row: Row, properties: Record<string, unknown>): void {
+  /** A snapshot of the row as it stands, at this moment. */
+  private snapshot(row: Row): void {
+    this.snapshots.get(row.id)?.push({
+      version: row.version,
+      properties: row.properties,
+      occurred_at: row.occurred_at,
+      created_at: this.now(),
+    });
+  }
+
+  private write(
+    row: Row,
+    properties: Record<string, unknown>,
+    occurredAt?: string,
+  ): void {
+    this.snapshot(row);
     row.properties = properties;
+    if (occurredAt !== undefined) row.occurred_at = occurredAt;
     row.version += 1;
     row.updated_at = this.now();
-    this.snapshots.get(row.id)?.set(row.version, {
-      properties,
-      occurred_at: row.occurred_at,
-      created_at: row.updated_at,
-    });
     this.announce("item.updated", row);
   }
 
@@ -318,12 +342,7 @@ export class ScriptedServer {
       created_at: at,
       updated_at: at,
     };
-    this.snapshots.set(
-      row.id,
-      new Map([
-        [1, { properties, occurred_at: row.occurred_at, created_at: at }],
-      ]),
-    );
+    this.snapshots.set(row.id, []);
     return row;
   }
 
@@ -487,7 +506,8 @@ export class ScriptedServer {
     if (parts[0] === "items" && id !== undefined) {
       const row = this.rows.find((candidate) => candidate.id === id);
       if (method === "GET" && parts.length === 2) {
-        if (row === undefined) {
+        // A trashed row is read back by no door but its restore.
+        if (row === undefined || row.state === "trashed") {
           refuse(404, "item_not_found");
           return;
         }
@@ -504,16 +524,13 @@ export class ScriptedServer {
         }
         // The snapshots of what each update left behind: every version but
         // the current one.
-        const data = [...(this.snapshots.get(id) ?? [])]
-          .filter(([version]) => version < row.version)
-          .sort(([a], [b]) => a - b)
-          .map(([version, snapshot]) => ({
-            id: `${id}-${String(version)}`,
-            item_id: id,
-            version,
-            properties: snapshot.properties,
-            created_at: snapshot.created_at,
-          }));
+        const data = (this.snapshots.get(id) ?? []).map((snapshot, at) => ({
+          id: `${id}-${String(at)}`,
+          item_id: id,
+          version: snapshot.version,
+          properties: snapshot.properties,
+          created_at: snapshot.created_at,
+        }));
         send(200, { data, next_cursor: null });
         return;
       }
@@ -628,11 +645,16 @@ export class ScriptedServer {
     res.write(": connected\n\n");
     const cursor = lastEventId === undefined ? undefined : Number(lastEventId);
     if (cursor !== undefined && this.tooOld) {
-      frame("catchup_too_old", {
-        type: "catchup_too_old",
-        min_retained_id: String(this.head + 1),
-        requested: String(cursor),
-      });
+      // Carries the oldest retained id as its own, as the real frame does.
+      frame(
+        "catchup_too_old",
+        {
+          type: "catchup_too_old",
+          min_retained_id: String(this.head + 1),
+          requested: String(cursor),
+        },
+        this.head + 1,
+      );
       res.end();
       return;
     }
@@ -642,6 +664,7 @@ export class ScriptedServer {
     });
     const type = query.get("type");
     let sent = 0;
+    let lastSent: number | undefined;
     for (const event of this.log) {
       if (cursor === undefined || event.id <= cursor) continue;
       if (!this.ofType(event.item, type)) continue;
@@ -650,7 +673,7 @@ export class ScriptedServer {
         frame("stream_incomplete", {
           type: "stream_incomplete",
           reason: "replay_failed",
-          cursor: String(event.id - 1),
+          cursor: lastSent === undefined ? null : String(lastSent),
         });
         res.end();
         return;
@@ -661,6 +684,7 @@ export class ScriptedServer {
         event.id,
       );
       sent += 1;
+      lastSent = event.id;
     }
   }
 
@@ -748,8 +772,12 @@ export class ScriptedServer {
     refuse: Refuse,
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
-    if (row === undefined || row.state === "trashed") {
+    if (row === undefined) {
       refuse(404, "item_not_found");
+      return;
+    }
+    if (row.state === "trashed") {
+      refuse(400, "invalid_transition");
       return;
     }
     const version = input["version"];
@@ -760,7 +788,9 @@ export class ScriptedServer {
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
     const occurredAt = input["occurred_at"];
     if (version !== row.version) {
-      const ancestor = this.snapshots.get(row.id)?.get(version);
+      const ancestor = this.snapshots
+        .get(row.id)
+        ?.find((snapshot) => snapshot.version === version);
       if (ancestor === undefined) {
         refuse(409, "ancestor_unavailable");
         return;
@@ -802,15 +832,14 @@ export class ScriptedServer {
         if (Object.hasOwn(properties, key)) merged[key] = properties[key];
         else Reflect.deleteProperty(merged, key);
       }
-      if (movesTime) row.occurred_at = occurredAt;
-      this.write(row, merged);
+      this.write(row, merged, movesTime ? occurredAt : undefined);
     } else {
-      if (typeof occurredAt === "string") row.occurred_at = occurredAt;
       this.write(
         row,
         input["properties_mode"] === "replace"
           ? properties
           : { ...row.properties, ...properties },
+        typeof occurredAt === "string" ? occurredAt : undefined,
       );
     }
     send(200, {

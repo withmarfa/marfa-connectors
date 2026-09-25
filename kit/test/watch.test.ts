@@ -85,6 +85,9 @@ describe("the cursor", () => {
     harness.server.edit(first.id, { title: "One, by a person" });
     harness.server.edit(second.id, { title: "Two, by a person" });
 
+    // The vendor sends nothing while the pushes are tried, so what the
+    // runs do is the log's alone.
+    held.entries = [];
     held.pushFail = { id: second.id, error: new Error("the vendor is down") };
     expect(await quietRun(held)).toBe(1);
     expect(harness.lastRun().outcome).toBe("failed");
@@ -95,12 +98,10 @@ describe("the cursor", () => {
     ]);
     expect((await watchState()).cursor).toBe(before);
 
-    // Offered again, both of them, and the cursor moves once both land.
+    // The one that did not land is offered again; the one that did is
+    // remembered as carried, and the cursor moves once every push lands.
     expect(await quietRun(held)).toBe(0);
-    expect(held.changes.map((change) => change.item.id)).toEqual([
-      first.id,
-      second.id,
-    ]);
+    expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
     expect((await watchState()).cursor).toBe(String(harness.server.head));
   });
 });
@@ -509,5 +510,307 @@ describe("a row changed between the read and the write", () => {
     ).toEqual(["One, by a person, since the read"]);
     expect(harness.lastRun().summary).toMatch(/conflicts 1/);
     expect(harness.lastRun().summary).not.toContain("held");
+  });
+});
+
+describe("what the memory holds", () => {
+  it("carries a person's restore back after the trash it carried, and an archive undone", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
+
+    // The restore moves no version, so it stands at the version the trash
+    // was carried back at.
+    harness.server.restore(row.id);
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+
+    harness.server.transition(row.id, "archived");
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["archived"]);
+    harness.server.transition(row.id, "active");
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+  });
+
+  it("keeps the record of a write that landed when another held the run", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    // One write lands, one is refused: the state is held.
+    harness.server.refuseNext(
+      `PATCH /items/${harness.server.row("a:2").id}`,
+      400,
+      "invalid_properties",
+    );
+    held.entries = [
+      { ...one, properties: { ...one.properties, title: "One, changed" } },
+      { ...two, properties: { ...two.properties, title: "Two, changed" } },
+    ];
+    await quietRun(held);
+    expect(harness.lastRun().summary).toContain("held");
+
+    // The write that landed is the connector's own, and is not carried
+    // back on the run after.
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes).toHaveLength(0);
+    expect(harness.lastRun().summary).toMatch(/own 1/);
+  });
+
+  it("carries a person's change back where the read was cut short before showing it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+
+    // The log's only frame is withheld, so the read shows nothing; the
+    // row's version is past the connector's last write all the same.
+    harness.server.withholdHead = true;
+    harness.requestTimeoutMs = 200;
+    harness.quietMs = 60_000;
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+      },
+    ];
+    await quietRun(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person",
+    );
+    expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
+      [["updated", row.id]],
+    );
+    expect(harness.lastRun().summary).toMatch(/conflicts 1/);
+  });
+
+  it("decides a row by the times after a lost state, where the log shows the connector's own create as anybody's", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const written = harness.server.row("a:1").updated_at;
+    await rm(join(harness.stateDir, "test.json"));
+    // The replay from the start of the log shows the connector's own create
+    // with no memory to know it by, so the row reads as changed in Marfa
+    // and the later change wins: the vendor's, here, being after the
+    // create. A vendor naming no time loses that one round.
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, changed at the vendor" },
+        changed_at: new Date(Date.parse(written) + 60_000).toISOString(),
+      },
+    ];
+    await quietRun(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, changed at the vendor",
+    );
+    expect(held.changes).toHaveLength(0);
+    expect(harness.lastRun().summary).toMatch(/conflicts 1/);
+  });
+
+  it("drops a person's earlier change when the connector's own later write superseded it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    const edited = harness.server.edit(row.id, { title: "One, by a person" });
+    const later = new Date(
+      Date.parse(edited.updated_at) + 60_000,
+    ).toISOString();
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: later,
+      },
+    ];
+    await quietRun(held);
+    expect(held.changes).toHaveLength(0);
+
+    // The next read shows the person's edit and the connector's write over
+    // it; the write is the row's latest frame, and it is the connector's.
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes).toHaveLength(0);
+    expect(harness.lastRun().summary).toMatch(/own 1/);
+  });
+});
+
+describe("a row purged or transitioned in Marfa", () => {
+  it("is not created again while the vendor still has it; the purge is carried back", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    harness.server.purgeById(row.id);
+
+    await quietRun(held);
+    expect(harness.server.rows).toHaveLength(0);
+    expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
+    expect(harness.lastRun().summary).toMatch(/created 0, .*skipped 1/);
+  });
+
+  it("takes the vendor's properties and still carries the transition back", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.transition(row.id, "archived");
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+      },
+    ];
+    await quietRun(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    expect(harness.server.row("a:1").state).toBe("archived");
+    expect(held.changes.map((change) => change.kind)).toEqual(["archived"]);
+    expect(harness.lastRun().summary).toMatch(/conflicts 0/);
+  });
+
+  it("is created to the vendor when a person made it and edited it before the run", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    harness.server.edit(theirs.id, { title: "Theirs, edited" });
+    await quietRun(held);
+    expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
+      [["created", theirs.id]],
+    );
+  });
+
+  it("is the connector's own after it archived the row", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    held.archived = ["v1"];
+    held.entries = [];
+    await quietRun(held);
+    expect(harness.lastRun().summary).toMatch(/archived 1/);
+    await quietRun(held);
+    expect(held.changes).toHaveLength(0);
+    expect(harness.lastRun().summary).toMatch(/own 1/);
+  });
+});
+
+describe("a stop during the pushes", () => {
+  it("fails the run and holds the cursor, so the rest are offered again", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const first = harness.server.row("a:1");
+    const second = harness.server.row("a:2");
+    harness.server.edit(first.id, { title: "One, edited" });
+    harness.server.edit(second.id, { title: "Two, edited" });
+    const before = (await watchState()).cursor;
+
+    held.entries = [];
+    held.changes.length = 0;
+    held.vendorIdFor = (change) => {
+      if (change.item.id === first.id) harness.stop();
+      return undefined;
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
+    expect((await watchState()).cursor).toBe(before);
+  });
+});
+
+describe("a resync", () => {
+  it("reads the head before the rows, so a change landing between the two is not lost", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+
+    harness.server.tooOld = true;
+    harness.server.afterList = () => {
+      harness.server.edit(row.id, { title: "One, edited during the resync" });
+      harness.server.afterList = undefined;
+    };
+    held.entries = [];
+    await quietRun(held);
+    harness.server.tooOld = false;
+    // The edit's event sits past the cursor the resync committed.
+    await quietRun(held);
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["One, edited during the resync"]);
+  });
+});
+
+describe("the snapshot a merge is judged by", () => {
+  it("is the one that left the version, after a transition wrote one of its own", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    // A transition writes a snapshot of the version without moving it,
+    // before the person's edit writes the one that leaves it.
+    harness.server.transition(row.id, "archived");
+    harness.server.transition(row.id, "active");
+    await quietRun(held);
+    const vendorChange = new Date(
+      Date.parse(harness.server.row("a:1").updated_at) + 60_000,
+    ).toISOString();
+    harness.server.afterList = () => {
+      // An hour on, so the edit is later than the vendor's change while
+      // the transitions' snapshots are earlier than it.
+      harness.server.advance(3_600_000);
+      harness.server.edit(row.id, { note: "by a person, since the read" });
+      harness.server.afterList = undefined;
+    };
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: vendorChange,
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    // The person's edit came after the vendor's change: the row is put back
+    // and carried back; a snapshot taken at the transition's earlier moment
+    // would have let the vendor win.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      note: "by a person, since the read",
+      vendor_id: "v1",
+    });
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+  });
+});
+
+describe("a tie between the two sides", () => {
+  it("goes to the change made in Marfa", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    const edited = harness.server.edit(row.id, { title: "One, by a person" });
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: edited.updated_at,
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
   });
 });

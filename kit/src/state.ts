@@ -64,7 +64,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the rows the server already holds, trashed ones included. For a connector
  * that carries changes back, losing it also costs one replay of the log:
  * every row is offered to the vendor once more, the ones it already knows
- * as updates, which a vendor that compares first takes as nothing new.
+ * as updates, which a vendor that compares first takes as nothing new; and
+ * the connector's own writes in that replay read as anybody's, so a row
+ * the vendor has since changed is decided by the times, and a vendor that
+ * names none loses that one round.
  */
 export class StateFile {
   private readonly path: string;

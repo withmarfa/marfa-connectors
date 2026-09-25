@@ -19,10 +19,11 @@ export interface WatchRead {
 }
 
 /**
- * The connector's own writes, by row: the version and state each left. An
- * event that shows a row at exactly that version and state is the
- * connector's own and is not carried back to the vendor. A record is let
- * go once the log shows the row past it, or gone.
+ * Where the two sides last agreed, by row: the version and state the
+ * connector's own write left, or that a change carried back to the vendor
+ * showed. An event that shows a row at exactly that version and state is
+ * nothing new to the vendor and is not carried back. A record is let go
+ * once the log shows the row past it, or moved to another state, or gone.
  */
 export class Memory {
   constructor(readonly written: Record<string, Written>) {}
@@ -31,15 +32,24 @@ export class Memory {
     this.written[id] = { version, state };
   }
 
+  forget(id: string): void {
+    Reflect.deleteProperty(this.written, id);
+  }
+
   /** Whether the event is the connector's own, forgetting what is past. */
   own(kind: ChangeKind, item: Item): boolean {
     const record = this.written[item.id];
     if (record === undefined) return false;
-    if (kind === "purged" || item.version > record.version) {
-      Reflect.deleteProperty(this.written, item.id);
-      return false;
+    if (item.version === record.version && item.state === record.state) {
+      return true;
     }
-    return item.version === record.version && item.state === record.state;
+    // Past the record, by a version moved or, at the same version, a state
+    // somebody else moved it to: a transition moves no version, so a
+    // person's restore after a trash the connector carried back would
+    // otherwise read as the connector's own for as long as the record
+    // stood.
+    Reflect.deleteProperty(this.written, item.id);
+    return false;
   }
 }
 
@@ -152,15 +162,9 @@ export class Watch {
             own += 1;
             latest.delete(item.id);
           } else {
-            // The latest frame for the row, in the log's order of it. A
-            // create of a row the vendor already knows, as a replay from
-            // the start of the log shows the connector's own creates once
-            // its memory of them is lost, is an update to the vendor.
+            // The latest frame for the row, in the log's order of it.
             latest.delete(item.id);
-            latest.set(item.id, {
-              kind: kind === "created" && this.linked(item) ? "updated" : kind,
-              item,
-            });
+            latest.set(item.id, { kind: this.kindFor(kind, item), item });
           }
         }
         if (
@@ -181,10 +185,13 @@ export class Watch {
     }
 
     if (resync) {
+      // The head first, then the rows: a change landing between the two is
+      // then past the cursor rather than behind it.
+      const cursor = await this.head();
       return {
         changes: await this.everyRow(),
         own,
-        cursor: await this.head(),
+        cursor,
         resync: true,
         incomplete,
       };
@@ -279,14 +286,25 @@ export class Watch {
     return rows
       .filter((row) => row.type === this.type)
       .map((item) => ({
-        kind:
-          item.state === "trashed"
-            ? "trashed"
-            : this.linked(item)
-              ? "updated"
-              : "created",
+        kind: this.kindFor(
+          item.state === "trashed" ? "trashed" : "updated",
+          item,
+        ),
         item,
       }));
+  }
+
+  /**
+   * The kind a change is handed as. A create and an update are told apart
+   * by the link, not by the event: a row the vendor has not been told
+   * about is a create to it however it came to change, and a row it knows
+   * is an update however the log shows it, as a replay from the start of
+   * the log shows the connector's own creates once its memory of them is
+   * lost. A transition and a purge keep their kind.
+   */
+  private kindFor(kind: ChangeKind, item: Item): ChangeKind {
+    if (kind !== "created" && kind !== "updated") return kind;
+    return this.linked(item) ? "updated" : "created";
   }
 
   private linked(item: Item): boolean {

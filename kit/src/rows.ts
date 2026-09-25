@@ -9,7 +9,7 @@ export interface Counts {
   archived: number;
   unchanged: number;
   skipped: number;
-  /** Rows changed on both sides since the connector's last write, decided by the later change. */
+  /** Rows changed on both sides since the two last agreed, decided by the later change. */
   conflicts: number;
 }
 
@@ -30,7 +30,6 @@ interface Row {
   state: string;
   version: number;
   occurred_at: string | undefined;
-  updated_at: string;
   /** The natural key, under the connector's own source only. */
   source_id: string | undefined;
   /** The row as the server answered it; absent for one created this run. */
@@ -98,13 +97,12 @@ function rowOf(item: Item, ownSource: string): Row {
     state: item.state,
     version: item.version,
     occurred_at: item.occurred_at,
-    updated_at: item.updated_at,
     source_id: item.source === ownSource ? item.source_id : undefined,
     item,
   };
 }
 
-/** Which of two changes came later; a side that names no time loses. */
+/** Which of two changes came later; a side that names no time loses, and a tie is not later. */
 function laterThan(
   candidate: string | undefined,
   other: string | undefined,
@@ -116,11 +114,19 @@ function laterThan(
   return !Number.isNaN(a) && (Number.isNaN(b) || a > b);
 }
 
-/** How the rows are found and written back: one-way as today, or two-way. */
+/** A transition, which touches no property and is carried back beside any write. */
+function transition(change: Change): boolean {
+  return change.kind === "archived" || change.kind === "restored";
+}
+
+/** How the rows are found and written back: with nothing carried back, or two-way. */
 export interface RowsOptions {
-  /** The field holding the vendor's id, where the connector declares one. */
+  /** The property holding the vendor's id, where the connector declares one. */
   link: string | undefined;
-  /** The connector's own writes, recorded so their events are not carried back. */
+  /**
+   * The versions at which the two sides last agreed, by row: the
+   * connector's own writes and the changes it carried back.
+   */
   memory: Memory;
   /**
    * Changes read from the log this run, by row id, still to be carried to
@@ -152,11 +158,13 @@ export class Rows {
   };
   /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
-  private rows: Promise<Map<string, Row>> | undefined;
+  private loaded: Promise<void> | undefined;
   /** By link value, where the connector declares a link. */
   private readonly byLink = new Map<string, Row>();
   /** By natural key, under the connector's own source. */
   private readonly byKey = new Map<string, Row>();
+  /** Rows counted as a conflict this run, so one is counted once. */
+  private readonly conflicted = new Set<string>();
 
   constructor(
     private readonly marfa: Marfa,
@@ -171,18 +179,22 @@ export class Rows {
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
     const creates: NewRow[] = [];
-    const creating = new Map<string, Entry>();
     for (const entry of latest.values()) {
       const properties = cleaned(entry.properties);
       const occurredAt = instant(entry.occurred_at);
       const row = this.find(entry);
       if (row === undefined) {
+        if (this.purged(entry)) {
+          // A person emptied the bin of the row: the purge wins, and is
+          // carried back rather than undone by a create.
+          this.counts.skipped += 1;
+          continue;
+        }
         creates.push({
           source_id: entry.source_id,
           properties,
           ...(occurredAt !== undefined && { occurred_at: occurredAt }),
         });
-        creating.set(entry.source_id, entry);
         continue;
       }
       if (row.state === "trashed") {
@@ -225,47 +237,77 @@ export class Rows {
         this.absorb(error, entry.source_id, refusedUpdate);
       }
     }
-    for (const page of paged(creates)) await this.createPage(page, creating);
+    for (const page of paged(creates)) await this.createPage(page);
   }
 
   /** The row an entry names: by its link value, then by its natural key. */
   private find(entry: Entry): Row | undefined {
-    const link = this.options.link;
-    if (link !== undefined) {
-      const value = entry.properties[link];
-      if (typeof value === "string" && value !== "") {
-        const linked = this.byLink.get(value);
-        if (linked !== undefined) return linked;
-      }
+    const value = this.linkOf(entry.properties);
+    if (value !== undefined) {
+      const linked = this.byLink.get(value);
+      if (linked !== undefined) return linked;
     }
     return this.byKey.get(entry.source_id);
   }
 
+  /** Whether a purge of the entry's row is waiting to be carried back. */
+  private purged(entry: Entry): boolean {
+    const pending = this.options.pending;
+    if (pending === undefined) return false;
+    const value = this.linkOf(entry.properties);
+    for (const change of pending.values()) {
+      if (change.kind !== "purged") continue;
+      const { item } = change;
+      if (value !== undefined && this.linkOf(item.properties) === value) {
+        return true;
+      }
+      if (item.source === this.source && item.source_id === entry.source_id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private linkOf(
+    properties: Readonly<Record<string, unknown>>,
+  ): string | undefined {
+    const link = this.options.link;
+    if (link === undefined) return undefined;
+    const value = properties[link];
+    return typeof value === "string" && value !== "" ? value : undefined;
+  }
+
   /**
-   * A row that changed in Marfa since the connector's last write is written
-   * only where the vendor's change is the later one; then the change in
-   * Marfa is not carried back. Otherwise the vendor's is not written, and
-   * the change in Marfa is carried back instead. A trash in Marfa is met
-   * before this, as any trashed row is.
+   * Whether the vendor's entry is written over a row that changed in Marfa
+   * since the two sides last agreed. The memory holds that version, from
+   * the connector's own writes and the changes it carried back; a row past
+   * it has been changed by somebody else since, whether or not the log
+   * read showed it, since a read cut short cannot hide a moved version. A
+   * row the memory knows nothing of takes the vendor's word. A transition
+   * touches no property: the write proceeds and the transition is still
+   * carried back. Otherwise the later change wins; the loser is a
+   * condition, and where the vendor loses its entry is not written and the
+   * row's state is carried back. A trash in Marfa is met before this, as
+   * any trashed row is.
    */
   private vendorWins(row: Row, entry: Entry): boolean {
     const pending = this.options.pending;
     if (pending === undefined) return true;
     let change = pending.get(row.id);
     if (change === undefined) {
-      // Changed in Marfa whether or not the log read showed it: the memory
-      // records the version each of the connector's writes left, so a row
-      // past that, or one the connector never wrote, has been changed by
-      // somebody else since, and a read of the log cut short cannot hide
-      // it.
       const record = this.options.memory.written[row.id];
-      if (record?.version === row.version || row.item === undefined) {
+      if (
+        record === undefined ||
+        (record.version === row.version && record.state === row.state) ||
+        row.item === undefined
+      ) {
         return true;
       }
       change = { kind: "updated", item: row.item };
       pending.set(row.id, change);
     }
-    this.counts.conflicts += 1;
+    if (transition(change)) return true;
+    this.conflict(row.id);
     if (laterThan(entry.changed_at, change.item.updated_at)) {
       pending.delete(row.id);
       this.options.conflict(
@@ -279,6 +321,12 @@ export class Rows {
       `the change made in Marfa to ${row.id} is the later one, so the vendor's is not written and the row's state is carried back`,
     );
     return false;
+  }
+
+  private conflict(id: string): void {
+    if (this.conflicted.has(id)) return;
+    this.conflicted.add(id);
+    this.counts.conflicts += 1;
   }
 
   /**
@@ -304,22 +352,23 @@ export class Rows {
       return;
     }
     const current = await this.marfa.item(row.id);
-    if (current === undefined || current.state === "trashed") {
+    if (current === undefined) {
       this.counts.skipped += 1;
       this.held += 1;
       return;
     }
-    this.counts.conflicts += 1;
+    this.conflict(row.id);
     // When the person's change was made. A refused write left the row as
     // the person wrote it. A merged one moved it a step past that, writing
     // the snapshot of the person's state at its own moment; the person's
-    // moment is the one that wrote the snapshot before that.
+    // moment is the one that wrote the snapshot before that. A transition
+    // writes a snapshot of its version too, without moving it, so the
+    // latest of a version's snapshots is the one that left it.
     const theirs =
       merged === undefined
         ? current.updated_at
-        : (await this.marfa.versions(row.id)).find(
-            (version) => version.version === merged.version - 2,
-          )?.created_at;
+        : latestSnapshot(await this.marfa.versions(row.id), merged.version - 2)
+            ?.created_at;
     if (laterThan(entry.changed_at, theirs)) {
       this.options.conflict(
         row.id,
@@ -347,9 +396,10 @@ export class Rows {
     let standing = current;
     if (merged !== undefined) {
       // Put back whole from the snapshot the merge was applied over, so
-      // nothing stays merged field by field.
-      const before = (await this.marfa.versions(row.id)).find(
-        (version) => version.version === merged.version - 1,
+      // nothing stays merged property by property.
+      const before = latestSnapshot(
+        await this.marfa.versions(row.id),
+        merged.version - 1,
       );
       if (before !== undefined) {
         try {
@@ -369,10 +419,7 @@ export class Rows {
     pending.set(standing.id, { kind: "updated", item: standing });
   }
 
-  private async createPage(
-    page: NewRow[],
-    creating: Map<string, Entry>,
-  ): Promise<void> {
+  private async createPage(page: NewRow[]): Promise<void> {
     this.checkStopped();
     let results;
     try {
@@ -391,8 +438,8 @@ export class Rows {
         return;
       }
       const half = Math.ceil(page.length / 2);
-      await this.createPage(page.slice(0, half), creating);
-      await this.createPage(page.slice(half), creating);
+      await this.createPage(page.slice(0, half));
+      await this.createPage(page.slice(half));
       return;
     }
     for (const result of results) {
@@ -434,14 +481,14 @@ export class Rows {
   }
 
   /**
-   * Writes the vendor's id onto a row's link field at the version the
+   * Writes the vendor's id onto a row's link property at the version the
    * change showed, once more at the current version if the row moved
    * since. A value another row carries is refused, naming both.
    */
   async setLink(item: Item, value: string): Promise<void> {
     const link = this.options.link;
     if (link === undefined) {
-      throw new Error("the connector declares no link field to write");
+      throw new Error("the connector declares no link property to write");
     }
     await this.load();
     const holder = this.byLink.get(value);
@@ -470,41 +517,34 @@ export class Rows {
   }
 
   /** Read once, however many calls ask for it at once. */
-  private load(): Promise<Map<string, Row>> {
-    this.rows ??= this.read();
-    return this.rows;
+  private load(): Promise<void> {
+    this.loaded ??= this.read();
+    return this.loaded;
   }
 
-  private async read(): Promise<Map<string, Row>> {
+  private async read(): Promise<void> {
     const link = this.options.link;
     const items = await this.marfa.ownRows(
       this.type,
       link === undefined ? this.source : undefined,
     );
-    const rows = new Map<string, Row>();
     for (const item of items) {
       // The type filter also answers types that inherit from this one,
       // whose rows are not this connector's to write.
       if (item.type !== this.type) continue;
-      const row = rowOf(item, this.source);
-      rows.set(row.id, row);
-      this.index(row);
+      this.index(rowOf(item, this.source));
     }
-    return rows;
   }
 
   private index(row: Row): void {
     if (row.source_id !== undefined) this.byKey.set(row.source_id, row);
-    const link = this.options.link;
-    if (link === undefined) return;
-    const value = row.properties[link];
-    if (typeof value === "string" && value !== "") this.byLink.set(value, row);
+    const value = this.linkOf(row.properties);
+    if (value !== undefined) this.byLink.set(value, row);
   }
 
   /** A write of the connector's own, as the rows and the memory now hold it. */
   private remember(item: Item): void {
-    const row = rowOf(item, this.source);
-    this.index(row);
+    this.index(rowOf(item, this.source));
     this.options.memory.remember(item.id, item.version, item.state);
   }
 
@@ -516,9 +556,8 @@ export class Rows {
         state: "active",
         version: 1,
         occurred_at: created.occurred_at,
-        updated_at: "",
-        item: undefined,
         source_id: created.source_id,
+        item: undefined,
       });
       this.options.memory.remember(result.id, 1, "active");
       this.counts.created += 1;
@@ -533,9 +572,8 @@ export class Rows {
           state: "trashed",
           version: 0,
           occurred_at: created.occurred_at,
-          updated_at: "",
-          item: undefined,
           source_id: created.source_id,
+          item: undefined,
         });
       }
       this.counts.skipped += 1;
@@ -576,4 +614,24 @@ export class Rows {
   private checkStopped(): void {
     if (this.signal.aborted) throw new Stopped();
   }
+}
+
+/** The snapshot that left a version, the latest of any it has. */
+function latestSnapshot(
+  versions: readonly {
+    version: number;
+    properties: Record<string, unknown>;
+    created_at: string;
+  }[],
+  version: number,
+): { properties: Record<string, unknown>; created_at: string } | undefined {
+  let found:
+    { properties: Record<string, unknown>; created_at: string } | undefined;
+  for (const candidate of versions) {
+    if (candidate.version !== version) continue;
+    if (found === undefined || candidate.created_at > found.created_at) {
+      found = candidate;
+    }
+  }
+  return found;
 }

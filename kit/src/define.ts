@@ -94,7 +94,7 @@ export interface WatchContext<E extends EnvDeclaration> {
   readonly state: State;
   readonly log: Log;
   /**
-   * Writes the vendor's own id for the row onto its link field, at the
+   * Writes the vendor's own id for the row onto its link property, at the
    * version the change showed, retrying once if the row moved since. A
    * value another row of the type already carries is refused, and the
    * refusal names both rows.
@@ -110,7 +110,7 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly source: string;
   readonly type: TypeDefinition;
   /**
-   * The field on the type that holds the vendor's own id for a row. With a
+   * The property on the type that holds the vendor's own id for a row. With a
    * link, every row of the type is the connector's to read and write,
    * whoever created it: an entry finds its row by this field first and by
    * its natural key under the connector's source second, and a row that
