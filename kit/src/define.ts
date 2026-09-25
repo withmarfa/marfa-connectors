@@ -56,9 +56,9 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly state: State;
   readonly log: Log;
   /** Writes what differs from the connector's own rows, and nothing else. */
-  upsert(entries: readonly Entry[]): Promise<void>;
+  readonly upsert: (entries: readonly Entry[]) => Promise<void>;
   /** Archives the named rows that are active. A trashed row is left alone. */
-  archive(sourceIds: readonly string[]): Promise<void>;
+  readonly archive: (sourceIds: readonly string[]) => Promise<void>;
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {

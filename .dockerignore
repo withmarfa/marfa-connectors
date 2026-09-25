@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+vendor/marfa
+.git
+.claude
+_trash
+_archive
+.env
+.env.*
+_tmp
+_local
+_ignore

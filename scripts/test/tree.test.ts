@@ -149,6 +149,29 @@ describe("the tree", () => {
     ).toEqual([]);
   });
 
+  it("builds every package, a new connector included", () => {
+    const unbuilt = (packages: string[], tsconfig: string): string[] => {
+      const references = (
+        JSON.parse(tsconfig) as { references: { path: string }[] }
+      ).references.map((reference) => reference.path);
+      return packages.filter((dir) => !references.includes(dir));
+    };
+    expect(
+      unbuilt(
+        ["kit", "connectors/new"],
+        JSON.stringify({ references: [{ path: "kit" }] }),
+      ),
+    ).toEqual(["connectors/new"]);
+    const packages = tree()
+      .map((file) => file.path)
+      .filter((path) => /^.+\/package\.json$/.test(path))
+      .map((path) => path.slice(0, -"/package.json".length));
+    expect(packages).toContain("template/connector");
+    expect(
+      unbuilt(packages, readFileSync(resolve(root, "tsconfig.json"), "utf8")),
+    ).toEqual([]);
+  });
+
   it("runs every workflow job on the self-hosted pool", () => {
     expect(
       offPool(

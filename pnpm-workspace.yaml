@@ -1,5 +1,6 @@
 packages:
   - "kit"
+  - "template/connector"
   - "scripts"
 
 # Every package names the client as `*` and this line says where it comes
