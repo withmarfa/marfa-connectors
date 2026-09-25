@@ -8,9 +8,9 @@ import {
   ConnectorUnderProof,
   derivedFrom,
   item,
-  mint,
+  mintAsReadmeSays,
   moved,
-  promote,
+  promoteAndFind,
   registration,
   rowsOf,
   trash,
@@ -105,19 +105,11 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
   const served = await serveFeeds();
   let connector: ConnectorUnderProof | undefined;
   try {
-    const key = await mint(marfa, {
+    const key = await mintAsReadmeSays(marfa, {
       label: "rss",
       source: "rss",
       typePermission: "rss.entry",
       registersType: true,
-    });
-    await check("rss: its key is minted as the template's README says", () => {
-      if (key.source !== "rss" || key.default_tier !== "feed") {
-        throw new Error(
-          `source ${key.source}, default tier ${key.default_tier}`,
-        );
-      }
-      return `source ${key.source}, type_permissions ${JSON.stringify(key.type_permissions)}, metadata_permissions ${JSON.stringify(key.metadata_permissions)}, default tier ${key.default_tier}`;
     });
     const runner = new ConnectorUnderProof("rss", url, key.key, {
       RSS_FEEDS: `${served.url}/atom.xml\n${served.url}/rss.xml`,
@@ -185,7 +177,11 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
         await runOnce();
         const changed = moved(before, await rows());
         const answers = served.answers.slice(asked);
-        if (changed.length > 0 || answers.some((status) => status !== 304)) {
+        if (
+          changed.length > 0 ||
+          answers.length !== 2 ||
+          answers.some((status) => status !== 304)
+        ) {
           throw new Error(
             `answers ${answers.join(", ")}, moved ${changed.join(", ")}`,
           );
@@ -246,18 +242,22 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
               .replace("<title>Beta</title>", "<title>Beta, changed</title>"),
           '"rss-2"',
         );
+        const beta = await entry("https://example.org/beta");
         await runOnce();
         const after = await rows();
         const trashed = after.get(target.source_id ?? "");
+        const changed = moved(before, after);
         if (
           trashed?.state !== "trashed" ||
-          trashed.version !== target.version
+          trashed.version !== target.version ||
+          changed.length !== 1 ||
+          !changed[0]?.startsWith(`${beta.source_id ?? ""} `)
         ) {
           throw new Error(
-            `the trashed row is ${String(trashed?.state)} at version ${String(trashed?.version)}`,
+            `the trashed row is ${String(trashed?.state)} at version ${String(trashed?.version)}; moved ${changed.join(", ") || "nothing"}`,
           );
         }
-        return `guid 1 stays trashed at version ${String(target.version)}; moved ${moved(before, after).join(", ")}`;
+        return `guid 1 stays trashed at version ${String(target.version)}; moved ${changed.join(", ")}`;
       },
     );
 
@@ -270,18 +270,23 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
             .filter((field) => field in source.properties)
             .map((field) => [field, source.properties[field]]),
         );
-        const copy = await promote(marfa, "core.bookmark", properties, source);
+        const { copy } = await promoteAndFind(
+          marfa,
+          "core.bookmark",
+          properties,
+          source,
+          await entry("tag:example.com,2026:entry:1"),
+        );
         const read = await item(marfa, copy.id);
-        const found = await derivedFrom(marfa, "core.bookmark", source);
         if (
           read.tier !== "library" ||
-          !found.some((candidate) => candidate.id === copy.id)
+          read.properties["url"] !== source.properties["url"]
         ) {
           throw new Error(
-            `tier ${String(read.tier)}, found by the edge filter: ${String(found.length)}`,
+            `tier ${String(read.tier)}, url ${String(read.properties["url"])}`,
           );
         }
-        return `core.bookmark at tier ${read.tier} with ${Object.keys(read.properties).join(", ")}, found by edge[derived-from]`;
+        return `core.bookmark at tier ${read.tier} with ${Object.keys(read.properties).join(", ")}; the edge filter finds it alone, beside an item with no edge and one derived from another row`;
       },
     );
 

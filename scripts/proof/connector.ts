@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { components, MarfaClient } from "@withmarfa/client";
+import { check } from "./check.js";
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, "../../..");
@@ -74,11 +75,54 @@ export class ConnectorUnderProof {
   }
 }
 
-export async function mint(marfa: MarfaClient, flags: KeyFlags) {
+async function mint(marfa: MarfaClient, flags: KeyFlags) {
   const { data, error } = await marfa.POST("/keys", { body: keyBody(flags) });
   if (data === undefined)
     throw new Error(`the key was refused: ${JSON.stringify(error)}`);
   return data;
+}
+
+export type Minted = Awaited<ReturnType<typeof mint>>;
+
+/**
+ * The connector's key, minted as the README's command mints it, and held to
+ * what that command asks for: its source, write on its type and nothing
+ * else, types write only when it registers its type, and the feed tier.
+ */
+export async function mintAsReadmeSays(
+  marfa: MarfaClient,
+  flags: KeyFlags,
+): Promise<Minted> {
+  let minted: Minted | undefined;
+  await check(
+    `${flags.label}: its key is minted as the template's README says`,
+    async () => {
+      const key = await mint(marfa, flags);
+      minted = key;
+      const types = JSON.stringify(key.type_permissions);
+      const metadata = key.metadata_permissions?.["types"];
+      if (
+        key.source !== flags.source ||
+        key.default_tier !== "feed" ||
+        types !== JSON.stringify({ [flags.typePermission]: "write" }) ||
+        metadata !== (flags.registersType ? "write" : undefined)
+      ) {
+        throw new Error(
+          `source ${key.source}, type_permissions ${types}, types ${String(metadata)}, default tier ${key.default_tier}`,
+        );
+      }
+      return `source ${key.source}, type_permissions ${types}, metadata types ${metadata ?? "none"}, default tier ${key.default_tier}`;
+    },
+  );
+  if (minted === undefined) throw new Error("the key check answered nothing");
+  return minted;
+}
+
+/** The last run the connector reported, as its registration shows it. */
+export async function lastRun(marfa: MarfaClient, keyId: string) {
+  const found = await registration(marfa, keyId);
+  if (found.last_run === null) throw new Error("no run is reported");
+  return found.last_run;
 }
 
 /** Every row under the type and source, in every state, by `source_id`. */
@@ -145,25 +189,58 @@ export async function trash(marfa: MarfaClient, id: string): Promise<void> {
 
 /**
  * A person's promotion: a core-typed copy in the library, pointing back at
- * the feed row with a `derived-from` edge.
+ * the feed row with a `derived-from` edge. Without a row to point at, an
+ * item of the same type and tier holding no edge.
  */
 export async function promote(
   marfa: MarfaClient,
   type: string,
   properties: Record<string, unknown>,
-  from: Item,
+  from: Item | undefined,
 ): Promise<Item> {
   const { data, error } = await marfa.POST("/items", {
     body: {
       type,
       properties,
       tier: "library",
-      edges: { "derived-from": [from.id] },
+      ...(from !== undefined && { edges: { "derived-from": [from.id] } }),
     },
   });
   if (data === undefined)
     throw new Error(`the promotion was refused: ${JSON.stringify(error)}`);
   return data.item;
+}
+
+/**
+ * A promoted copy, as the edge filter finds it: the one item of its type
+ * holding a `derived-from` edge to the feed row, with two decoys beside it
+ * that the filter must leave out, one holding no edge and one pointing at
+ * another row.
+ */
+export async function promoteAndFind(
+  marfa: MarfaClient,
+  type: string,
+  properties: Record<string, unknown>,
+  from: Item,
+  other: Item,
+): Promise<{ copy: Item; found: Item[] }> {
+  await promote(marfa, type, properties, undefined);
+  await promote(marfa, type, properties, other);
+  const copy = await promote(marfa, type, properties, from);
+  const found = await derivedFrom(marfa, type, from);
+  const everyOne = await marfa.GET("/items", { params: { query: { type } } });
+  const count = everyOne.data?.data.length ?? 0;
+  if (count < 3) {
+    throw new Error(
+      `the type holds ${String(count)} items, not the three made`,
+    );
+  }
+  if (found.map((candidate) => candidate.id).join() !== copy.id) {
+    throw new Error(
+      `the edge filter found ${String(found.length)} of the type's ${String(count)} items`,
+    );
+  }
+  return { copy, found };
 }
 
 /** The items of a type holding a `derived-from` edge to the feed row. */

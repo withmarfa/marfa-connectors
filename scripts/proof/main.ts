@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
-import { check, interrupt } from "./check.js";
+import { check, Failed, interrupt, interrupted } from "./check.js";
 import { proveRss } from "./rss.js";
 import { ProofServer, type Booted } from "./server.js";
 import { proveTodoist } from "./todoist.js";
@@ -64,7 +64,13 @@ try {
 
   await proveTodoist(marfa, booted.url);
   await proveRss(marfa, booted.url);
-} catch {
+} catch (error) {
+  // A statement that failed has said so; anything else has not.
+  if (!(error instanceof Failed) && !interrupted()) {
+    console.log(
+      `FAIL the proof: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   process.exitCode = 1;
 } finally {
   await server.stop();

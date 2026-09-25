@@ -6,9 +6,10 @@ import {
   ConnectorUnderProof,
   derivedFrom,
   item,
-  mint,
+  lastRun,
+  mintAsReadmeSays,
   moved,
-  promote,
+  promoteAndFind,
   registration,
   rowsOf,
   trash,
@@ -44,9 +45,11 @@ function task(id: string, overrides: Partial<Task> = {}): Task {
   };
 }
 
-/** Todoist's priority is an integer, the core type's an enum. */
+/**
+ * Todoist's priority is an integer from 1, no priority, to 4, urgent; the
+ * core type's is an enum with no value for none, so 1 maps to no priority.
+ */
 const priorities: Record<number, string> = {
-  1: "low",
   2: "medium",
   3: "high",
   4: "urgent",
@@ -56,12 +59,13 @@ const priorities: Record<number, string> = {
 function asTask(row: Item): Record<string, unknown> {
   const properties = row.properties;
   const due = properties["due"] as { date?: string } | undefined;
+  const priority = priorities[properties["priority"] as number];
   return {
     title: properties["title"],
     ...(typeof properties["description"] === "string" && {
       description: properties["description"],
     }),
-    priority: priorities[properties["priority"] as number],
+    ...(priority !== undefined && { priority }),
     ...(due?.date !== undefined && {
       due_at: `${due.date}T00:00:00.000Z`,
       precision: "day",
@@ -90,7 +94,6 @@ async function stubTodoist(): Promise<{
       res.end(
         JSON.stringify({
           sync_token: `token-${String(answered)}`,
-          full_sync: full,
           items: delta,
           ...(full && { user: { id: account } }),
         }),
@@ -120,24 +123,12 @@ export async function proveTodoist(
   const todoist = await stubTodoist();
   let connector: ConnectorUnderProof | undefined;
   try {
-    const flags = {
+    const key = await mintAsReadmeSays(marfa, {
       label: "todoist",
       source: "todoist",
       typePermission: "todoist.task",
       registersType: false,
-    };
-    const key = await mint(marfa, flags);
-    await check(
-      "todoist: its key is minted as the template's README says",
-      () => {
-        if (key.source !== "todoist" || key.default_tier !== "feed") {
-          throw new Error(
-            `source ${key.source}, default tier ${key.default_tier}`,
-          );
-        }
-        return `source ${key.source}, type_permissions ${JSON.stringify(key.type_permissions)}, default tier ${key.default_tier}`;
-      },
-    );
+    });
     const runner = new ConnectorUnderProof("todoist", url, key.key, {
       TODOIST_API_TOKEN: "todoist-proof-token",
       TODOIST_API_URL: todoist.url,
@@ -198,14 +189,22 @@ export async function proveTodoist(
       },
     );
 
-    await check("todoist: a second run moves no version", async () => {
-      const before = await rows();
-      todoist.next([]);
-      await runOnce();
-      const changed = moved(before, await rows());
-      if (changed.length > 0) throw new Error(`moved ${changed.join(", ")}`);
-      return `${String(before.size)} rows, none moved`;
-    });
+    await check(
+      "todoist: a second run, handed the same tasks, moves no version",
+      async () => {
+        const before = await rows();
+        todoist.next([a, b, c]);
+        await runOnce();
+        const changed = moved(before, await rows());
+        const { summary } = await lastRun(marfa, key.id);
+        if (changed.length > 0 || !summary?.includes("unchanged 3")) {
+          throw new Error(
+            `moved ${changed.join(", ") || "nothing"}; reported ${String(summary)}`,
+          );
+        }
+        return `${String(before.size)} rows, none moved; reported ${summary}`;
+      },
+    );
 
     await check(
       "todoist: a change upstream moves exactly that row, by one version",
@@ -245,15 +244,18 @@ export async function proveTodoist(
         await runOnce();
         const after = await rows();
         const trashed = after.get(`${account}:c`);
+        const changed = moved(before, after);
         if (
           trashed?.state !== "trashed" ||
-          trashed.version !== target.version
+          trashed.version !== target.version ||
+          changed.length !== 1 ||
+          !changed[0]?.startsWith(`${account}:a `)
         ) {
           throw new Error(
-            `the trashed row is ${String(trashed?.state)} at version ${String(trashed?.version)}`,
+            `the trashed row is ${String(trashed?.state)} at version ${String(trashed?.version)}; moved ${changed.join(", ") || "nothing"}`,
           );
         }
-        return `c stays trashed at version ${String(target.version)}; moved ${moved(before, after).join(", ")}`;
+        return `c stays trashed at version ${String(target.version)}; moved ${changed.join(", ")}`;
       },
     );
 
@@ -261,18 +263,24 @@ export async function proveTodoist(
       "todoist: a promoted core.task sits in the library with a derived-from edge",
       async () => {
         const source = await row("a");
-        const copy = await promote(marfa, "core.task", asTask(source), source);
+        const { copy } = await promoteAndFind(
+          marfa,
+          "core.task",
+          asTask(source),
+          source,
+          await row("b"),
+        );
         const read = await item(marfa, copy.id);
-        const found = await derivedFrom(marfa, "core.task", source);
         if (
           read.tier !== "library" ||
-          !found.some((candidate) => candidate.id === copy.id)
+          source.properties["priority"] !== 4 ||
+          read.properties["priority"] !== "urgent"
         ) {
           throw new Error(
-            `tier ${String(read.tier)}, found by the edge filter: ${String(found.length)}`,
+            `tier ${String(read.tier)}, priority ${String(read.properties["priority"])} from Todoist's ${String(source.properties["priority"])}`,
           );
         }
-        return `core.task at tier ${read.tier}, priority ${String(read.properties["priority"])} from Todoist's ${String(source.properties["priority"])}, found by edge[derived-from]`;
+        return `core.task at tier ${read.tier}, priority ${read.properties["priority"]} from Todoist's ${String(source.properties["priority"])}; the edge filter finds it alone, beside an item with no edge and one derived from another row`;
       },
     );
 

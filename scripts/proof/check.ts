@@ -5,6 +5,14 @@ export function interrupt(): void {
   signalled = true;
 }
 
+/** Read through a call, since a signal can arrive while a statement waits. */
+export function interrupted(): boolean {
+  return signalled;
+}
+
+/** A statement that did not hold, already reported as it failed. */
+export class Failed extends Error {}
+
 /**
  * One statement of the proof: printed with what it observed when it holds,
  * and thrown when it does not, because every later statement stands on the
@@ -20,17 +28,11 @@ export async function check(
   try {
     observed = await observe();
   } catch (error) {
-    if (!interrupted()) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.log(`FAIL ${statement}: ${reason}`);
-    }
-    throw error;
+    if (interrupted()) throw error;
+    const reason = error instanceof Error ? error.message : String(error);
+    console.log(`FAIL ${statement}: ${reason}`);
+    throw new Failed(statement, { cause: error });
   }
   if (interrupted()) throw new Error("stopped during this statement");
   console.log(`ok   ${statement}: ${observed}`);
-}
-
-/** Read through a call, since a signal can arrive while a statement waits. */
-function interrupted(): boolean {
-  return signalled;
 }
