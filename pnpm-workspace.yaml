@@ -11,7 +11,9 @@ packages:
 overrides:
   "@withmarfa/client": "file:vendor/withmarfa-client.tar"
 
-# An install that trusts node_modules because the lockfile looks unchanged
-# keeps a client installed from other bytes, after a pin moves back or a
-# branch changes it.
+# The lockfile holds the tar's integrity, so each pin has its own lockfile
+# and a checkout of another pin's branch installs from other bytes; an
+# install that trusted node_modules because a lockfile looked unchanged
+# would keep the client it had. A repacked tar under an unchanged lockfile
+# is still kept, which is why moving the pin updates the lockfile.
 optimisticRepeatInstall: false

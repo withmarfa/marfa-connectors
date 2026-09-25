@@ -1,0 +1,38 @@
+{
+  "id": "todoist.task",
+  "label": "Todoist Task",
+  "description": "A task from a Todoist account, as the Todoist connector reads it through the Sync API: a task whose priority, due date and completion are the core task's, with Todoist's own placing of it beside them.",
+  "version": 1,
+  "parent": "core.task",
+  "fields": {
+    "project_id": {
+      "type": "string",
+      "description": "The Todoist project the task sits in."
+    },
+    "section_id": {
+      "type": "string",
+      "description": "The section of that project, where it has one."
+    },
+    "parent_id": {
+      "type": "string",
+      "description": "The Todoist task this one is a subtask of."
+    },
+    "labels": {
+      "type": "array",
+      "items_type": "string",
+      "description": "The task's Todoist labels, by name."
+    },
+    "child_order": {
+      "type": "integer",
+      "description": "Where the task sits among its siblings in Todoist."
+    },
+    "comment_count": {
+      "type": "integer",
+      "description": "How many comments the task has in Todoist."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "description"
+  }
+}

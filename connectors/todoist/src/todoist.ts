@@ -1,0 +1,279 @@
+import type { Entry } from "@withmarfa/connector";
+
+/**
+ * A task as the Sync API answers it. The API sends every item whole, a
+ * delta included, so a field an item leaves out is one the task does not
+ * have, and is cleared.
+ */
+export interface TodoistItem {
+  id: string;
+  content: string;
+  description?: string;
+  project_id?: string | null;
+  section_id?: string | null;
+  parent_id?: string | null;
+  labels?: string[] | null;
+  priority?: number;
+  due?: { date?: string | null } | null;
+  child_order?: number;
+  checked?: boolean;
+  completed_at?: string | null;
+  is_deleted?: boolean;
+  note_count?: number;
+  added_at?: string;
+}
+
+export interface SyncAnswer {
+  sync_token: string;
+  items: TodoistItem[];
+  user?: { id?: unknown; tz_info?: { timezone?: unknown } };
+}
+
+export const firstSync = "*";
+const syncTimeoutMs = 60_000;
+
+export async function sync(
+  base: string,
+  token: string,
+  syncToken: string,
+  signal: AbortSignal,
+): Promise<SyncAnswer> {
+  const response = await fetch(new URL("/api/v1/sync", base), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: new URLSearchParams({
+      sync_token: syncToken,
+      resource_types: JSON.stringify(["items", "user"]),
+    }),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(syncTimeoutMs)]),
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(`Todoist refused the token: ${String(response.status)}`);
+  }
+  if (!response.ok) {
+    throw new Error(`Todoist's Sync API answered ${String(response.status)}`);
+  }
+  return (await response.json()) as SyncAnswer;
+}
+
+/**
+ * The account a token belongs to, from the Sync API's own `user`. Not an
+ * item's `user_id`, which names the task's owner, who in a shared project
+ * need not be this account.
+ */
+export function accountOf(user: SyncAnswer["user"]): string | undefined {
+  const id = user?.id;
+  if (typeof id !== "string") return undefined;
+  const account = id.trim();
+  // A colon would make `<account>:<task>` read two ways.
+  return account === "" || account.includes(":") ? undefined : account;
+}
+
+/** The timezone the Sync API's `user` names, known to this platform or not. */
+export function namedZoneOf(user: SyncAnswer["user"]): string | undefined {
+  const zone = user?.tz_info?.timezone;
+  return typeof zone === "string" && zone !== "" ? zone : undefined;
+}
+
+/** The account's IANA timezone, from the Sync API's `user`, if it names one this platform knows. */
+export function timezoneOf(user: SyncAnswer["user"]): string | undefined {
+  const zone = namedZoneOf(user);
+  if (zone === undefined) return undefined;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    return undefined;
+  }
+}
+
+export function sourceId(account: string, taskId: string): string {
+  return `${account}:${taskId}`;
+}
+
+function present<T>(value: T | null | undefined): T | undefined {
+  return value ?? undefined;
+}
+
+/** Todoist's priority, 1 to 4, as the core task's, as ruled. */
+const priorities: Readonly<Record<number, string>> = {
+  1: "low",
+  2: "medium",
+  3: "high",
+  4: "urgent",
+};
+
+type Wall = [
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+];
+
+const dayMs = 86_400_000;
+
+/**
+ * The UTC instant a wall-clock time in a zone names, by the rule Temporal
+ * calls "compatible": a time the clocks skipped moves later by the length
+ * of the skip, and a time they showed twice is its first showing. So a
+ * whole day whose midnight is skipped begins at its first real instant,
+ * still on that day.
+ */
+function inZone(
+  [year, month, day, hour, minute, second]: Wall,
+  timeZone: string,
+): Date {
+  const wall = utcOf([year, month, day, hour, minute, second]);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+  });
+  const offset = (at: number): number => {
+    const read: Record<string, number> = {};
+    for (const part of parts.formatToParts(at)) {
+      read[part.type] = Number(part.value);
+    }
+    return (
+      utcOf([
+        read["year"] ?? 0,
+        read["month"] ?? 1,
+        read["day"] ?? 1,
+        read["hour"] ?? 0,
+        read["minute"] ?? 0,
+        read["second"] ?? 0,
+      ]) - at
+    );
+  };
+  // The offsets either side of the wall time; a change of offset inside
+  // the day is a daylight-saving change or a zone moving its clocks.
+  const before = offset(wall - dayMs);
+  const after = offset(wall + dayMs);
+  const shown = [before, after]
+    .map((candidate) => wall - candidate)
+    .filter((at) => at + offset(at) === wall)
+    .sort((a, b) => a - b);
+  return new Date(shown[0] ?? wall - before);
+}
+
+/**
+ * A Todoist due date as the core task's `due_at` and `precision`. Todoist
+ * writes three kinds: a whole day (`2026-09-30`), a floating time in the
+ * account's timezone (`2026-09-30T12:00:00`), and a fixed time in UTC,
+ * ending in `Z`. The core task has no whole-day form, so a whole day is the
+ * instant it begins in the account's timezone, at `day` precision. A date
+ * or time the calendar does not have, such as 30 February or 24:00, is no
+ * due date, in any of the three kinds.
+ */
+export function dueOf(
+  due: TodoistItem["due"],
+  timeZone: string,
+): { due_at: string; precision: "day" | "time" } | undefined {
+  const read = timeOf(due?.date);
+  if (read === undefined) return undefined;
+  const at =
+    (read.utc ? utcOf(read.wall) : inZone(read.wall, timeZone).getTime()) +
+    read.millis;
+  return {
+    due_at: new Date(at).toISOString(),
+    precision: read.timed ? "time" : "day",
+  };
+}
+
+function utcOf([year, month, day, hour, minute, second]: Wall): number {
+  const at = new Date(Date.UTC(2000, month - 1, day, hour, minute, second));
+  // Date.UTC reads a year below 100 as 19xx; the year is set apart.
+  at.setUTCFullYear(year, month - 1, day);
+  return at.getTime();
+}
+
+/**
+ * A Todoist date or time, read strictly: `YYYY-MM-DD`, optionally with
+ * `THH:MM:SS`, a fraction and a `Z`. `Date.parse` would roll 30 February
+ * into March and read far looser text, so it is not used.
+ */
+function timeOf(
+  text: unknown,
+): { wall: Wall; millis: number; timed: boolean; utc: boolean } | undefined {
+  if (typeof text !== "string") return undefined;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z)?)?$/.exec(
+      text,
+    );
+  if (match === null) return undefined;
+  const [, year, month, day, hour, minute, second, fraction, zulu] = match;
+  const wall: Wall = [
+    Number(year),
+    Number(month),
+    Number(day),
+    Number(hour ?? 0),
+    Number(minute ?? 0),
+    Number(second ?? 0),
+  ];
+  const [y, mo, d, h, mi, s] = wall;
+  const read = new Date(utcOf(wall));
+  if (
+    read.getUTCFullYear() !== y ||
+    read.getUTCMonth() !== mo - 1 ||
+    read.getUTCDate() !== d ||
+    read.getUTCHours() !== h ||
+    read.getUTCMinutes() !== mi ||
+    read.getUTCSeconds() !== s
+  ) {
+    return undefined;
+  }
+  return {
+    wall,
+    millis: Number(`${fraction ?? ""}000`.slice(0, 3)),
+    timed: hour !== undefined,
+    utc: zulu !== undefined,
+  };
+}
+
+/** A completion time, which Todoist writes in UTC. */
+function instantOf(value: string | null | undefined): string | undefined {
+  const read = timeOf(value);
+  return read?.utc === true
+    ? new Date(utcOf(read.wall) + read.millis).toISOString()
+    : undefined;
+}
+
+export function entryOf(
+  account: string,
+  timeZone: string,
+  item: TodoistItem,
+): Entry {
+  const due = dueOf(item.due, timeZone);
+  const completed = item.checked === true;
+  return {
+    source_id: sourceId(account, item.id),
+    properties: {
+      title: item.content,
+      description: item.description === "" ? undefined : item.description,
+      priority:
+        item.priority === undefined ? undefined : priorities[item.priority],
+      due_at: due?.due_at,
+      precision: due?.precision,
+      status: completed ? "completed" : "pending",
+      completed_at: completed ? instantOf(item.completed_at) : undefined,
+      url: `https://app.todoist.com/app/task/${encodeURIComponent(item.id)}`,
+      project_id: present(item.project_id),
+      section_id: present(item.section_id),
+      parent_id: present(item.parent_id),
+      labels:
+        Array.isArray(item.labels) && item.labels.length > 0
+          ? item.labels
+          : undefined,
+      child_order: item.child_order,
+      comment_count: item.note_count,
+    },
+    occurred_at: item.added_at,
+  };
+}

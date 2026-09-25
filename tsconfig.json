@@ -4,6 +4,7 @@
     { "path": "kit" },
     { "path": "template/connector" },
     { "path": "connectors/rss" },
+    { "path": "connectors/todoist" },
     { "path": "scripts" }
   ]
 }

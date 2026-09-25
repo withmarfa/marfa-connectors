@@ -13,6 +13,8 @@ The connectors for Marfa: a small kit that makes a connector a page of code, a t
 
 `scripts/monorepo.sh` fetches the monorepo at the commit `scripts/monorepo.commit` pins into `vendor/marfa` and installs it. `scripts/vendor-client.sh` packs `@withmarfa/client` from that checkout into `vendor/withmarfa-client.tar`, which the override in `pnpm-workspace.yaml` names. Both run before `pnpm install`. Then `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm test`. After a build, `pnpm proof` boots the pinned server and proves against it.
 
+Moving the pin: write the commit into `scripts/monorepo.commit`, run both scripts, then `pnpm install --no-frozen-lockfile`, since the lockfile holds the packed client's integrity, and commit the lockfile with the pin.
+
 ## Secrets
 
 A connector reads its secrets from the environment, and nothing here holds a value. `.infisical.json` maps this repository to its Infisical project, environment and path, so a run by hand that needs a secret takes it from there with a command such as `infisical run -- <command>`, which puts the values into the command's environment without printing them.
