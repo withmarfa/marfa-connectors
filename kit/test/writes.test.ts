@@ -328,9 +328,11 @@ describe("the state", () => {
     expect(
       harness.server.rows.filter((row) => row.source_id === "a:3"),
     ).toHaveLength(1);
-    // The server merged the two writes, which the replace did not survive.
+    // The vendor's replace left the note out, which is a clear, and the
+    // other writer changed the note since: the two collide, the server
+    // refuses the write, and the row stands as the other writer left it.
     expect(harness.server.row("a:1").properties).toEqual({
-      title: "One, changed",
+      title: "One",
       note: "by another writer",
     });
 
@@ -359,6 +361,193 @@ describe("the state", () => {
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, by another writer",
     );
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("is held when a stale replace clears a field nobody touched since, and the field is cleared", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    // The witness: the field is there to be cleared.
+    expect(harness.server.row("a:1").properties["note"]).toBe("first");
+
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { title: "One, by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, properties: { title: "One" } }];
+    expect(await harness.once(held)).toBe(0);
+
+    // The vendor's clear lands over the other writer's title, which this
+    // run echoed at the value it read; the row holds both writers' changes,
+    // so the state waits for a run that reads it as it now is.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by another writer",
+    });
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(harness.lastRun().summary).toContain("held");
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("is held when a stale replace clears a field the other writer changed since", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties["note"]).toBe("first");
+
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { note: "by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, properties: { title: "One" } }];
+    expect(await harness.once(held)).toBe(0);
+
+    // A clear and a change to the same field collide: the server refuses
+    // the write, the other writer's value stands, and the state is held.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      note: "by another writer",
+    });
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("clears a property named like a member every object has, by what the row holds", async () => {
+    const entry = {
+      source_id: "a:1",
+      properties: { title: "One", toString: "x" },
+    };
+    const held = vendor([entry]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      toString: "x",
+    });
+
+    harness.server.afterList = () => {
+      harness.server.touch("a:1", { title: "One, by another writer" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...entry, properties: { title: "One" } }];
+    expect(await harness.once(held)).toBe(0);
+    // Cleared as any other property is, and never taken from what every
+    // object answers for the name.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by another writer",
+    });
+  });
+
+  it("takes a clear of such a property both writers made as an echo", async () => {
+    const entry = {
+      source_id: "a:1",
+      properties: { title: "One", toString: "x" },
+    };
+    const held = vendor([entry]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      toString: "x",
+    });
+
+    harness.server.afterList = () => {
+      harness.server.rewrite("a:1", { title: "One" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...entry, properties: { title: "One, by the vendor" } }];
+    expect(await harness.once(held)).toBe(0);
+    // Judged by what the row holds: the other writer already cleared it,
+    // so the vendor's clear is nothing new and its title lands.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by the vendor",
+    });
+    expect(harness.server.row("a:1").version).toBe(3);
+  });
+
+  it("takes a clear both writers made as an echo, and lands the rest", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").properties["note"]).toBe("first");
+
+    harness.server.afterList = () => {
+      harness.server.rewrite("a:1", { title: "One" });
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, properties: { title: "One, by the vendor" } }];
+    expect(await harness.once(held)).toBe(0);
+
+    // Both writers cleared the note, so the vendor's clear is nothing new
+    // and its title lands over the row; a merged write still holds the
+    // state.
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One, by the vendor",
+    });
+    expect(harness.server.row("a:1").version).toBe(3);
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("does not move a row's own time back to the value it read when another writer moved it since", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
+
+    harness.server.afterList = () => {
+      harness.server.rewrite(
+        "a:1",
+        harness.server.row("a:1").properties,
+        "2026-09-02T10:00:00.000Z",
+      );
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [
+      { ...one, properties: { title: "One, changed", note: "first" } },
+    ];
+    expect(await harness.once(held)).toBe(0);
+
+    // The run echoed the own time it read, which is not a change, so the
+    // other writer's stands beside the vendor's title.
+    expect(harness.server.row("a:1").occurred_at).toBe(
+      "2026-09-02T10:00:00.000Z",
+    );
+    expect(harness.server.row("a:1").properties["title"]).toBe("One, changed");
+    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+  });
+
+  it("is held when a stale write moves a row's own time that another writer moved since", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
+    expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
+
+    harness.server.afterList = () => {
+      harness.server.rewrite(
+        "a:1",
+        harness.server.row("a:1").properties,
+        "2026-09-02T10:00:00.000Z",
+      );
+      harness.server.afterList = undefined;
+    };
+    held.token = "t2";
+    held.entries = [{ ...one, occurred_at: "2026-09-03T10:00:00.000Z" }];
+    expect(await harness.once(held)).toBe(0);
+
+    // Two changes to the own time collide as two changes to a field do:
+    // refused, so the row's version stands where the other writer left it.
+    expect(harness.server.row("a:1").occurred_at).toBe(
+      "2026-09-02T10:00:00.000Z",
+    );
+    expect(harness.server.row("a:1").version).toBe(2);
+    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
     expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
   });
 

@@ -12,9 +12,11 @@ import { CONTRACT_VERSION } from "@withmarfa/client";
  * - a create at version 0 over an existing row answers `ancestor_unavailable`;
  * - a bulk upsert over a trashed row skips it;
  * - an update on the current version replaces or merges as asked;
- * - an update on a stale version merges with what landed since, ignoring
- *   `properties_mode`, unless a field it changes also changed there, when
- *   it answers `version_conflict`.
+ * - an update on a stale version merges its changes with what landed since,
+ *   and under `replace` a field the ancestor had and the body leaves out is
+ *   one of them, cleared, unless the row no longer holds it; a field or the
+ *   own time it changes that also changed there answers `version_conflict`,
+ *   and a value echoed from the version named is not a change.
  * It lets a test script what the real server cannot be asked for: another
  * writer between a read and a write, a refusal, a delay.
  */
@@ -54,6 +56,11 @@ interface Refusal {
   message: string;
 }
 
+interface Snapshot {
+  properties: Record<string, unknown>;
+  occurred_at: string;
+}
+
 type Send = (status: number, payload: unknown) => void;
 type Refuse = (status: number, code: string, message?: string) => void;
 
@@ -91,11 +98,8 @@ export class ScriptedServer {
   bodyCap: number | undefined;
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
-  /** Each row's properties at every version it has had. */
-  private readonly snapshots = new Map<
-    string,
-    Map<number, Record<string, unknown>>
-  >();
+  /** Each row's properties and own time at every version it has had. */
+  private readonly snapshots = new Map<string, Map<number, Snapshot>>();
   private readonly http = createServer((req, res) => {
     void this.answer(req, res);
   });
@@ -149,6 +153,20 @@ export class ScriptedServer {
     this.write(row, { ...row.properties, ...properties });
   }
 
+  /**
+   * Another writer replaces a row's properties whole, or moves its own
+   * time, moving its version: what a person's edit or a folder's write does.
+   */
+  rewrite(
+    sourceId: string,
+    properties: Record<string, unknown>,
+    occurredAt?: string,
+  ): void {
+    const row = this.row(sourceId);
+    if (occurredAt !== undefined) row.occurred_at = occurredAt;
+    this.write(row, properties);
+  }
+
   /** A person empties the bin of this row. */
   purge(sourceId: string): void {
     this.rows = this.rows.filter((row) => row.source_id !== sourceId);
@@ -187,7 +205,9 @@ export class ScriptedServer {
     row.properties = properties;
     row.version += 1;
     row.updated_at = this.now();
-    this.snapshots.get(row.id)?.set(row.version, properties);
+    this.snapshots
+      .get(row.id)
+      ?.set(row.version, { properties, occurred_at: row.occurred_at });
   }
 
   private newRow(
@@ -213,7 +233,10 @@ export class ScriptedServer {
       created_at: at,
       updated_at: at,
     };
-    this.snapshots.set(row.id, new Map([[1, properties]]));
+    this.snapshots.set(
+      row.id,
+      new Map([[1, { properties, occurred_at: row.occurred_at }]]),
+    );
     return row;
   }
 
@@ -482,25 +505,54 @@ export class ScriptedServer {
       return;
     }
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
+    const occurredAt = input["occurred_at"];
     if (version !== row.version) {
       const ancestor = this.snapshots.get(row.id)?.get(version);
       if (ancestor === undefined) {
         refuse(409, "ancestor_unavailable");
         return;
       }
-      const mine = changedKeys(ancestor, properties, Object.keys(properties));
-      const theirs = changedKeys(ancestor, row.properties, [
-        ...Object.keys(ancestor),
+      // Under `replace` the body is the whole of the caller's properties, so
+      // a key the ancestor had and the body lacks is a change: a clear. One
+      // the row no longer holds is a clear both writers made, an echo.
+      const cleared =
+        input["properties_mode"] === "replace"
+          ? Object.keys(ancestor.properties).filter(
+              (key) =>
+                !Object.hasOwn(properties, key) &&
+                Object.hasOwn(row.properties, key),
+            )
+          : [];
+      const mine = changedKeys(ancestor.properties, properties, [
+        ...Object.keys(properties),
+        ...cleared,
+      ]);
+      const theirs = changedKeys(ancestor.properties, row.properties, [
+        ...Object.keys(ancestor.properties),
         ...Object.keys(row.properties),
       ]);
-      if ([...mine].some((key) => theirs.has(key))) {
+      // The row's own time is compared against the version named as a
+      // property is: an echo of the ancestor's value is not a change, and a
+      // change collides with one made since.
+      const movesTime =
+        typeof occurredAt === "string" && occurredAt !== ancestor.occurred_at;
+      const timeMovedSince = row.occurred_at !== ancestor.occurred_at;
+      if (
+        [...mine].some((key) => theirs.has(key)) ||
+        (movesTime && timeMovedSince)
+      ) {
         refuse(409, "version_conflict");
         return;
       }
       const merged = { ...row.properties };
-      for (const key of mine) merged[key] = properties[key];
+      for (const key of mine) {
+        if (Object.hasOwn(properties, key)) merged[key] = properties[key];
+        else Reflect.deleteProperty(merged, key);
+      }
+      if (movesTime) row.occurred_at = occurredAt;
       this.write(row, merged);
     } else {
+      if (typeof occurredAt === "string") row.occurred_at = occurredAt;
       this.write(
         row,
         input["properties_mode"] === "replace"
@@ -508,8 +560,6 @@ export class ScriptedServer {
           : { ...row.properties, ...properties },
       );
     }
-    if (typeof input["occurred_at"] === "string")
-      row.occurred_at = input["occurred_at"];
     send(200, {
       item: { ...row },
       metadata: { item_id: row.id, tags: [], extensions: {} },

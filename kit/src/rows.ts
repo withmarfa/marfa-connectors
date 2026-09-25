@@ -144,7 +144,8 @@ export class Rows {
           occurred_at: item.occurred_at,
         });
         // More than one step means another write landed between the read
-        // and this one, and the server merged the two rather than replacing.
+        // and this one, and the row holds that writer's changes beside this
+        // run's; the state waits for a run that reads it as it now is.
         if (item.version === row.version + 1) {
           this.counts.updated += 1;
         } else {
