@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Harness, secretToken, vendor } from "./harness.js";
 
 let harness: Harness;
@@ -24,6 +24,23 @@ describe("a run's report", () => {
     expect(Date.parse(run.finished_at)).toBeGreaterThanOrEqual(
       Date.parse(run.started_at),
     );
+  });
+
+  it("is stamped finished when the run finishes, not when it starts", async () => {
+    const held = vendor([one]);
+    let release = (): void => undefined;
+    held.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const running = harness.once(held);
+    await vi.waitFor(() => {
+      expect(held.runs).toBe(1);
+    });
+    harness.clock.advance(5000);
+    release();
+    expect(await running).toBe(0);
+    const run = harness.lastRun();
+    expect(Date.parse(run.finished_at) - Date.parse(run.started_at)).toBe(5000);
   });
 
   it("carries a failure's text, capped to what the server takes", async () => {
@@ -135,6 +152,61 @@ describe("secrets", () => {
     expect(harness.lastRun().error).toContain(
       "401 for Bearer [redacted] and key [redacted]",
     );
+  });
+
+  it("never reach a warning, which is redacted like every other line", async () => {
+    const leaky = vendor([one]);
+    leaky.warnings = [`retrying the vendor with ${secretToken}`];
+    await harness.once(leaky);
+    const warned = harness.lines.filter((line) => line.includes(" warn "));
+    expect(warned.join("\n")).toContain("retrying the vendor with [redacted]");
+    for (const line of harness.lines) expect(line).not.toContain(secretToken);
+  });
+
+  it("never reach a run's reported error, spelled as a URL carries it", async () => {
+    const token = "tok/with+marks=value";
+    const failing = vendor([one]);
+    failing.fail = new Error(
+      `GET https://vendor.example.com/?token=${encodeURIComponent(token)} answered 401`,
+    );
+    expect(await harness.once(failing, { TEST_TOKEN: token })).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain("?token=[redacted] answered 401");
+    expect(error).not.toContain(encodeURIComponent(token));
+  });
+
+  it("never reach a start's reported problem, spelled as a URL carries it", async () => {
+    const token = "tok/with+marks=value";
+    harness.server.refuseNext(
+      "POST /types",
+      403,
+      "forbidden",
+      `no metadata.types:write for ?token=${encodeURIComponent(token)}`,
+    );
+    expect(await harness.once(vendor([one]), { TEST_TOKEN: token })).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain("?token=[redacted]");
+    expect(error).not.toContain(encodeURIComponent(token));
+  });
+
+  it("are each redacted where a secret holds a list and one of its parts appears alone", async () => {
+    const list =
+      "https://feeds.example.com/private/first-token/a.xml https://feeds.example.com/private/second-token/b.xml";
+    const leaky = vendor([one]);
+    leaky.logs = [
+      "fetching https://feeds.example.com/private/second-token/b.xml",
+    ];
+    leaky.fail = new Error(
+      `https://feeds.example.com/private/first-token/a.xml answered 500`,
+    );
+    await harness.once(leaky, { TEST_TOKEN: list });
+    const reported = harness.lastRun().error ?? "";
+    for (const text of [...harness.lines, reported]) {
+      expect(text).not.toContain("first-token");
+      expect(text).not.toContain("second-token");
+    }
+    expect(harness.lines.join("\n")).toContain("fetching [redacted]");
+    expect(reported).toContain("[redacted] answered 500");
   });
 
   it("never reach the state file, nor a URL that carries one encoded", async () => {

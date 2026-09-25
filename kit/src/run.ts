@@ -85,7 +85,6 @@ export async function runOnce<E extends EnvDeclaration>(
     connector.type.id,
     connector.source,
     setup.signal,
-    new Set(stored.trashed),
     (sourceId, reason) =>
       raised.set(
         `refused:${sourceId}`,
@@ -180,7 +179,6 @@ export async function runOnce<E extends EnvDeclaration>(
     await setup.stateFile.save({
       state: landed ? draft : stored.state,
       conditions,
-      trashed: rows.trashed(),
     });
   } catch (error) {
     logger.warn(`the state file could not be written: ${describe(error)}`);

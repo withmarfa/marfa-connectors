@@ -96,8 +96,16 @@ describe("MARFA_URL", () => {
         ),
       ).toBe(2);
     }
-    expect(harness.lines.join("\n")).not.toContain("hunter2-pass");
+    const said = harness.lines.join("\n");
+    expect(said).toContain(
+      "MARFA_URL is not an http or https address without credentials",
+    );
+    expect(said).not.toContain("hunter2-pass");
     expect(harness.server.requests).toEqual([]);
+    expect(
+      await start(testConnector(vendor()), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(harness.server.requests.length).toBeGreaterThan(0);
   });
 });
 

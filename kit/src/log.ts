@@ -1,3 +1,4 @@
+import { shortestSecret } from "./environment.js";
 import type { Clock } from "./runtime.js";
 
 export class Logger {
@@ -8,12 +9,18 @@ export class Logger {
     private readonly clock: Clock,
     secrets: readonly string[] = [],
   ) {
-    // Each also as it appears inside a URL, and longest first, so a secret
-    // that contains another is replaced whole.
-    const spellings = secrets.flatMap((secret) => [
-      secret,
-      encodeURIComponent(secret),
-    ]);
+    // One variable may hold several secrets, as a list of private feed
+    // addresses does, and each can appear without the others. Each also as
+    // it appears inside a URL, and longest first, so a secret that contains
+    // another is replaced whole.
+    const spellings = secrets
+      .flatMap((secret) => [
+        secret,
+        ...secret
+          .split(/[\s,]+/)
+          .filter((part) => part.length >= shortestSecret),
+      ])
+      .flatMap((secret) => [secret, encodeURIComponent(secret)]);
     this.secrets = [...new Set(spellings)].sort((a, b) => b.length - a.length);
   }
 

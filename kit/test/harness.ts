@@ -62,6 +62,11 @@ export class ManualClock implements Clock {
     return this.pending.length;
   }
 
+  /** Moves the time on without ending any sleep, as a slow run does. */
+  advance(ms: number): void {
+    this.time += ms;
+  }
+
   async wake(ms: number): Promise<void> {
     await this.sleeping(ms);
     const sleep = this.pending.find((candidate) => candidate.ms === ms);
@@ -91,6 +96,7 @@ export interface Vendor {
   fail?: Error | undefined;
   conditions?: [string, string][];
   logs?: string[];
+  warnings?: string[];
   runs: number;
 }
 
@@ -109,6 +115,7 @@ export function testConnector(held: Vendor) {
       held.runs += 1;
       if (held.gate !== undefined) await held.gate;
       for (const line of held.logs ?? []) context.log.info(line);
+      for (const line of held.warnings ?? []) context.log.warn(line);
       for (const [key, message] of held.conditions ?? []) {
         context.log.condition(key, message);
       }

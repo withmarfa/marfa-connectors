@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
-import { Harness, testConnector, testType, vendor } from "./harness.js";
+import {
+  Harness,
+  secretToken,
+  testConnector,
+  testType,
+  vendor,
+} from "./harness.js";
 
 let harness: Harness;
 beforeEach(async () => {
@@ -18,14 +24,30 @@ describe("configuration", () => {
     const reached = harness.server.requests.length;
     expect(reached).toBeGreaterThan(0);
 
-    const code = await harness.once(vendor([entry]), {
-      MARFA_KEY: undefined,
-      TEST_TOKEN: "",
-    });
+    const required = [
+      "MARFA_URL",
+      "MARFA_KEY",
+      "MARFA_STATE_DIR",
+      "TEST_TOKEN",
+    ];
+    for (const name of required) {
+      harness.lines.length = 0;
+      expect(await harness.once(vendor([entry]), { [name]: undefined })).toBe(
+        2,
+      );
+      expect(harness.lines.join("\n")).toContain(
+        `cannot start without ${name} in the environment`,
+      );
+    }
+    harness.lines.length = 0;
+    const code = await harness.once(
+      vendor([entry]),
+      Object.fromEntries(required.map((name) => [name, " "])),
+    );
     expect(code).toBe(2);
-    const said = harness.lines.join("\n");
-    expect(said).toContain("MARFA_KEY");
-    expect(said).toContain("TEST_TOKEN");
+    expect(harness.lines.join("\n")).toContain(
+      `cannot start without ${required.join(", ")} in the environment`,
+    );
     expect(harness.server.requests.length).toBe(reached);
   });
 
@@ -90,9 +112,39 @@ describe("configuration", () => {
   });
 
   it("refuses a secret too short to keep out of the logs", async () => {
-    expect(await harness.once(vendor(), { TEST_TOKEN: "abc" })).toBe(2);
+    expect(await harness.once(vendor(), { TEST_TOKEN: "abcdefg" })).toBe(2);
     expect(harness.lines.join("\n")).toContain("TEST_TOKEN");
     expect(harness.server.requests).toEqual([]);
+    expect(await harness.once(vendor(), { TEST_TOKEN: "abcdefgh" })).toBe(0);
+    expect(harness.server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("refuses an environment the connector's own check refuses, under either schedule", async () => {
+    const connector = {
+      ...testConnector(vendor([entry])),
+      checkEnv: (env: {
+        TEST_REGION: string | undefined;
+        TEST_TOKEN: string;
+      }) => {
+        if (env.TEST_REGION === "nowhere") {
+          throw new Error(`no region nowhere for ${env.TEST_TOKEN}`);
+        }
+      },
+    };
+    for (const argv of [["--once"], ["--every", "1m"]]) {
+      expect(
+        await start(
+          connector,
+          harness.runtime(argv, { TEST_REGION: "nowhere" }),
+        ),
+      ).toBe(2);
+    }
+    const said = harness.lines.join("\n");
+    expect(said).toContain("no region nowhere for [redacted]");
+    expect(said).not.toContain(secretToken);
+    expect(harness.server.requests).toEqual([]);
+    expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
   });
 
   it("starts no run once told to stop while registering", async () => {

@@ -92,31 +92,14 @@ export class Rows {
   /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
   private rows: Promise<Map<string, Row>> | undefined;
-  private seen: Map<string, Row> | undefined;
 
   constructor(
     private readonly marfa: Marfa,
     private readonly type: string,
     private readonly source: string,
     private readonly signal: AbortSignal,
-    /** Rows a person had in the bin when a run last saw them. */
-    private readonly remembered: ReadonlySet<string>,
     private readonly refused: (sourceId: string, reason: string) => void,
   ) {}
-
-  /**
-   * The bin as this run leaves it remembered: every row seen trashed, and
-   * every remembered one the server no longer holds, which a person purged.
-   */
-  trashed(): string[] {
-    if (this.seen === undefined) return [...this.remembered];
-    const seen = this.seen;
-    const kept = [...this.remembered].filter((id) => !seen.has(id));
-    const now = [...seen]
-      .filter(([, row]) => row.state === "trashed")
-      .map(([id]) => id);
-    return [...new Set([...kept, ...now])];
-  }
 
   async upsert(entries: readonly Entry[]): Promise<void> {
     const rows = await this.load();
@@ -127,10 +110,6 @@ export class Rows {
       const properties = cleaned(entry.properties);
       const occurredAt = instant(entry.occurred_at);
       const row = rows.get(entry.source_id);
-      if (row === undefined && this.remembered.has(entry.source_id)) {
-        this.counts.skipped += 1;
-        continue;
-      }
       if (row === undefined) {
         creates.push({
           source_id: entry.source_id,
@@ -256,7 +235,6 @@ export class Rows {
         occurred_at: item.occurred_at,
       });
     }
-    this.seen = rows;
     return rows;
   }
 

@@ -69,27 +69,32 @@ describe("rows too big for one request", () => {
 });
 
 describe("a row a person purged", () => {
-  it("is not written again, having been seen in the bin", async () => {
+  it("is written again while the vendor still has it, since nothing remembers it", async () => {
     await harness.once(vendor([one, two]));
     harness.server.row("a:1").state = "trashed";
     await harness.once(vendor([one, two]));
-    harness.server.purge("a:1");
-    expect(await harness.once(vendor([one, two]))).toBe(0);
-    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
     expect(harness.lastRun().summary).toBe(
       "created 0, updated 0, archived 0, unchanged 1, skipped 1",
     );
+    harness.server.purge("a:1");
+    expect(await harness.once(vendor([one, two]))).toBe(0);
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual([
+      "a:2",
+      "a:1",
+    ]);
+    expect(harness.lastRun().summary).toBe(
+      "created 1, updated 0, archived 0, unchanged 1, skipped 0",
+    );
   });
 
-  it("is written again once a person takes it out of the bin and the kit sees it", async () => {
-    await harness.once(vendor([one]));
+  it("leaves nothing of the bin in the state file", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.once(held);
     harness.server.row("a:1").state = "trashed";
-    await harness.once(vendor([one]));
-    harness.server.row("a:1").state = "active";
-    await harness.once(vendor([one]));
-    harness.server.purge("a:1");
-    await harness.once(vendor([one]));
-    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
+    await harness.once(held);
+    const stored = await harness.stateFile();
+    expect(stored).toEqual({ state: { token: "t1" }, conditions: {} });
   });
 });
 
