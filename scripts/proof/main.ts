@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
 import { check, Failed, interrupt, interrupted } from "./check.js";
+import { witnessTypeAnswers } from "./connector.js";
 import { proveRss } from "./rss.js";
 import { ProofServer, type Booted } from "./server.js";
 
@@ -60,6 +61,11 @@ try {
     }
     return `contract ${String(data.contract)}, features include connectors`;
   });
+
+  await check(
+    "the server answers a type's parent, its fields and its compatible_with",
+    () => witnessTypeAnswers(marfa),
+  );
 
   await proveRss(marfa, booted.url);
 } catch (error) {

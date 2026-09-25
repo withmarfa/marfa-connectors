@@ -251,10 +251,10 @@ function textOf(value: string | undefined): string | undefined {
   return text === undefined || text === "" ? undefined : text;
 }
 
-/** Elements that break a line, whose tags read as a space. */
 /** A tag's inside: up to the `>` that is not within a quoted attribute value. */
 const tagBody = String.raw`(?:[^>"']|"[^"]*"|'[^']*')*>`;
 
+/** Elements that break a line, whose tags read as a space. */
 const blockTags = new RegExp(
   String.raw`<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b` +
     tagBody,

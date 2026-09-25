@@ -132,6 +132,88 @@ export async function fieldsOf(marfa: MarfaClient, id: string) {
   };
 }
 
+/**
+ * The witness for what a connector's type is held to: a type registered
+ * with a parent and a `compatible_with` is answered with both, its parent's
+ * fields merged in, so their absence on a connector's type is the type's.
+ */
+export async function witnessTypeAnswers(marfa: MarfaClient): Promise<string> {
+  const id = "proof.witness";
+  const { error, response } = await marfa.POST("/types", {
+    body: {
+      id,
+      label: "Proof Witness",
+      parent: "core.bookmark",
+      compatible_with: ["core.bookmark"],
+      fields: { witness: { type: "string" } },
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`the witness type was refused: ${JSON.stringify(error)}`);
+  }
+  const served = await fieldsOf(marfa, id);
+  const bookmark = await fieldsOf(marfa, "core.bookmark");
+  if (
+    served.parent !== "core.bookmark" ||
+    JSON.stringify(served.compatible_with) !== '["core.bookmark"]' ||
+    !served.fields.includes("witness") ||
+    !bookmark.fields.every((field) => served.fields.includes(field))
+  ) {
+    throw new Error(
+      `parent ${String(served.parent)}, compatible_with ${JSON.stringify(served.compatible_with)}, fields ${served.fields.join(", ")}`,
+    );
+  }
+  return `${id} answers parent ${served.parent}, compatible_with ${JSON.stringify(served.compatible_with)}, and its own witness field beside its parent's ${String(bookmark.fields.length)}`;
+}
+
+/** Whether the server holds a type, telling its absence from a refusal. */
+export async function typeHeld(marfa: MarfaClient, id: string) {
+  const { data, error, response } = await marfa.GET("/types/{id}", {
+    params: { path: { id } },
+  });
+  if (data !== undefined) return true;
+  if (response.status === 404) return false;
+  throw new Error(`the type ${id} was refused: ${JSON.stringify(error)}`);
+}
+
+/**
+ * A connector's type as the first run registered it: absent before, then
+ * held with its parent, every field its parent has, and its own beside
+ * them, no `compatible_with`, and every property the rows carry one of its
+ * fields. Answers its own fields, sorted, and its parent's field count.
+ */
+export async function registeredAsKindOf(
+  marfa: MarfaClient,
+  type: string,
+  parent: string,
+  wasHeld: boolean,
+  rows: Iterable<Item>,
+): Promise<{ own: string[]; inherited: number }> {
+  if (wasHeld) {
+    throw new Error(`${type} was on the server before the connector ran`);
+  }
+  const served = await fieldsOf(marfa, type);
+  const core = await fieldsOf(marfa, parent);
+  if (served.parent !== parent || served.compatible_with !== undefined) {
+    throw new Error(
+      `parent ${String(served.parent)}, compatible_with ${JSON.stringify(served.compatible_with)}`,
+    );
+  }
+  const missing = core.fields.filter((field) => !served.fields.includes(field));
+  const unknown = [...rows]
+    .flatMap((row) => Object.keys(row.properties))
+    .filter((field) => !served.fields.includes(field));
+  if (missing.length > 0 || unknown.length > 0) {
+    throw new Error(
+      `${type} lacks ${parent}'s ${missing.join(", ") || "nothing"}; written outside the type: ${unknown.join(", ") || "nothing"}`,
+    );
+  }
+  return {
+    own: served.fields.filter((field) => !core.fields.includes(field)).sort(),
+    inherited: core.fields.length,
+  };
+}
+
 /** The last run the connector reported, as its registration shows it. */
 export async function lastRun(marfa: MarfaClient, keyId: string) {
   const found = await registration(marfa, keyId);
@@ -170,17 +252,23 @@ export async function rowsOf(
   return rows;
 }
 
-/** The rows whose version is not what it was. */
+/**
+ * The rows whose version or state is not what it was. A state is changed
+ * by a transition, which moves no version.
+ */
 export function moved(
   before: Map<string, Item>,
   after: Map<string, Item>,
 ): string[] {
-  return [...after.values()]
-    .filter((row) => before.get(row.source_id ?? "")?.version !== row.version)
-    .map(
-      (row) =>
-        `${row.source_id ?? row.id} ${String(before.get(row.source_id ?? "")?.version)}→${String(row.version)}`,
-    );
+  return [...after.values()].flatMap((row) => {
+    const was = before.get(row.source_id ?? "");
+    if (was?.version === row.version && was.state === row.state) return [];
+    const state =
+      was?.state === row.state ? "" : ` ${String(was?.state)}→${row.state}`;
+    return [
+      `${row.source_id ?? row.id} ${String(was?.version)}→${String(row.version)}${state}`,
+    ];
+  });
 }
 
 export async function registration(marfa: MarfaClient, keyId: string) {
