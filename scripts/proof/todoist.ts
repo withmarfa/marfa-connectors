@@ -84,11 +84,9 @@ export async function proveTodoist(
       parent_id: "a",
     });
     const c = todoist.task("c", { content: "Call back" });
-    const d = todoist.task("d", {
-      content: "Post the letter",
-      checked: true,
-      completed_at: "2026-09-21T10:00:00.000000Z",
-    });
+    // Open, since a full sync lists active tasks only; completed later,
+    // through a delta.
+    const d = todoist.task("d", { content: "Post the letter" });
     const e = todoist.task("e", { content: "Book the room" });
     const all = [a, b, c, d, e];
     todoist.put(...all);
@@ -146,8 +144,8 @@ export async function proveTodoist(
           child_order: 2,
           comment_count: 3,
           parent_id: "a",
-          status: "completed",
-          completed_at: "2026-09-21T10:00:00.000Z",
+          status: "pending",
+          completed_at: undefined,
         };
         if (JSON.stringify(landed) !== JSON.stringify(wanted)) {
           throw new Error(`the server holds ${JSON.stringify(landed)}`);
@@ -224,24 +222,30 @@ export async function proveTodoist(
     });
 
     await check(
-      "todoist: a task deleted upstream is archived, and nothing else moves",
+      "todoist: a task completed upstream is completed and one deleted is archived, and nothing else moves",
       async () => {
         const before = await rows();
+        todoist.complete("d");
         todoist.delete("e");
         await runOnce();
         const after = await rows();
-        const changed = moved(before, after);
+        const changed = moved(before, after).sort();
+        const done = after.get(`${account}:d`);
         const archived = after.get(`${account}:e`);
         if (
+          done?.properties["status"] !== "completed" ||
+          done.properties["completed_at"] !== "2026-09-24T12:00:00.000Z" ||
+          done.state !== "active" ||
           archived?.state !== "archived" ||
-          changed.length !== 1 ||
-          !changed[0]?.startsWith(`${account}:e `)
+          changed.length !== 2 ||
+          !changed[0]?.startsWith(`${account}:d `) ||
+          !changed[1]?.startsWith(`${account}:e `)
         ) {
           throw new Error(
-            `e is ${String(archived?.state)}; moved ${changed.join(", ") || "nothing"}`,
+            `d is ${String(done?.properties["status"])} at ${String(done?.properties["completed_at"])}, ${String(done?.state)}; e is ${String(archived?.state)}; moved ${changed.join(", ") || "nothing"}`,
           );
         }
-        return `e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
+        return `d completed at ${String(done.properties["completed_at"])}, still active; e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
       },
     );
 
