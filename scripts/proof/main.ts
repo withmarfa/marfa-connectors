@@ -4,7 +4,6 @@ import { CONTRACT_VERSION, createClient } from "@withmarfa/client";
 import { check, Failed, interrupt, interrupted } from "./check.js";
 import { proveRss } from "./rss.js";
 import { ProofServer, type Booted } from "./server.js";
-import { proveTodoist } from "./todoist.js";
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -62,7 +61,6 @@ try {
     return `contract ${String(data.contract)}, features include connectors`;
   });
 
-  await proveTodoist(marfa, booted.url);
   await proveRss(marfa, booted.url);
 } catch (error) {
   // A statement that failed has said so; anything else has not.

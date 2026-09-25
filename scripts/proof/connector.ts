@@ -118,6 +118,20 @@ export async function mintAsReadmeSays(
   return minted;
 }
 
+/** A type as the server answers it: its fields, its parent's merged in. */
+export async function fieldsOf(marfa: MarfaClient, id: string) {
+  const { data, error } = await marfa.GET("/types/{id}", {
+    params: { path: { id } },
+  });
+  if (data === undefined)
+    throw new Error(`the type ${id} was refused: ${JSON.stringify(error)}`);
+  return {
+    fields: Object.keys(data.fields),
+    parent: data.parent,
+    compatible_with: data.compatible_with,
+  };
+}
+
 /** The last run the connector reported, as its registration shows it. */
 export async function lastRun(marfa: MarfaClient, keyId: string) {
   const found = await registration(marfa, keyId);

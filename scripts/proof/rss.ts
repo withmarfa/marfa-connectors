@@ -7,7 +7,9 @@ import { check } from "./check.js";
 import {
   ConnectorUnderProof,
   derivedFrom,
+  fieldsOf,
   item,
+  lastRun,
   mintAsReadmeSays,
   moved,
   promoteAndFind,
@@ -21,20 +23,6 @@ const fixtures = resolve(
   import.meta.dirname,
   "../../../connectors/rss/test/fixtures",
 );
-
-/** The fields a bookmark has, which an entry carries under the same names. */
-const bookmarkFields = [
-  "url",
-  "title",
-  "description",
-  "body",
-  "author",
-  "published_at",
-  "image_url",
-  "language",
-  "source_url",
-  "source_title",
-];
 
 interface Feed {
   body: string;
@@ -131,12 +119,11 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
     };
 
     await check(
-      "rss: a first run registers rss.entry and writes both feeds' entries at the feed tier",
+      "rss: a first run registers rss.entry as a kind of core.bookmark and writes both feeds' entries at the feed tier",
       async () => {
         await runOnce();
-        const { data: type } = await marfa.GET("/types/{id}", {
-          params: { path: { id: "rss.entry" } },
-        });
+        const entryType = await fieldsOf(marfa, "rss.entry");
+        const bookmark = await fieldsOf(marfa, "core.bookmark");
         const written = await rows();
         const tiers = [...new Set([...written.values()].map((r) => r.tier))];
         if (written.size !== 4 || tiers.join() !== "feed") {
@@ -144,12 +131,26 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
             `${String(written.size)} rows at ${tiers.join(", ")}`,
           );
         }
-        if (JSON.stringify(type?.compatible_with) !== '["core.bookmark"]') {
+        if (
+          entryType.parent !== "core.bookmark" ||
+          entryType.compatible_with !== undefined
+        ) {
           throw new Error(
-            `rss.entry is compatible with ${JSON.stringify(type?.compatible_with)}`,
+            `parent ${String(entryType.parent)}, compatible_with ${JSON.stringify(entryType.compatible_with)}`,
           );
         }
-        return `rss.entry compatible_with ${JSON.stringify(type?.compatible_with)}; ${String(written.size)} rows, tier feed`;
+        const own = entryType.fields.filter(
+          (field) => !bookmark.fields.includes(field),
+        );
+        const unknown = [...written.values()]
+          .flatMap((row) => Object.keys(row.properties))
+          .filter((field) => !entryType.fields.includes(field));
+        if (own.join() !== "entry_id,feed_url" || unknown.length > 0) {
+          throw new Error(
+            `own fields ${own.join(", ")}; written outside the type: ${unknown.join(", ")}`,
+          );
+        }
+        return `rss.entry has parent core.bookmark, inherits its ${String(bookmark.fields.length)} fields and adds ${own.join(", ")}; ${String(written.size)} rows, tier feed, every property a field of the type`;
       },
     );
 
@@ -247,17 +248,19 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
         const after = await rows();
         const trashed = after.get(target.source_id ?? "");
         const changed = moved(before, after);
+        const { summary } = await lastRun(marfa, key.id);
         if (
           trashed?.state !== "trashed" ||
           trashed.version !== target.version ||
           changed.length !== 1 ||
-          !changed[0]?.startsWith(`${beta.source_id ?? ""} `)
+          !changed[0]?.startsWith(`${beta.source_id ?? ""} `) ||
+          !summary?.includes("skipped 1")
         ) {
           throw new Error(
-            `the trashed row is ${String(trashed?.state)} at version ${String(trashed?.version)}; moved ${changed.join(", ") || "nothing"}`,
+            `the trashed row is ${String(trashed?.state)} at version ${String(trashed?.version)}; moved ${changed.join(", ") || "nothing"}; reported ${String(summary)}`,
           );
         }
-        return `guid 1 stays trashed at version ${String(target.version)}; moved ${changed.join(", ")}`;
+        return `guid 1 stays trashed at version ${String(target.version)}; moved ${changed.join(", ")}; reported ${summary}`;
       },
     );
 
@@ -265,8 +268,10 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
       "rss: a promoted core.bookmark sits in the library with a derived-from edge",
       async () => {
         const source = await entry("https://example.org/beta");
+        // The copy takes the fields the entry inherits, as they stand.
+        const { fields } = await fieldsOf(marfa, "core.bookmark");
         const properties = Object.fromEntries(
-          bookmarkFields
+          fields
             .filter((field) => field in source.properties)
             .map((field) => [field, source.properties[field]]),
         );
