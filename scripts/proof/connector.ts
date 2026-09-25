@@ -156,13 +156,14 @@ export async function witnessTypeAnswers(marfa: MarfaClient): Promise<string> {
   if (
     served.parent !== "core.bookmark" ||
     JSON.stringify(served.compatible_with) !== '["core.bookmark"]' ||
+    !served.fields.includes("witness") ||
     !bookmark.fields.every((field) => served.fields.includes(field))
   ) {
     throw new Error(
       `parent ${String(served.parent)}, compatible_with ${JSON.stringify(served.compatible_with)}, fields ${served.fields.join(", ")}`,
     );
   }
-  return `${id} answers parent ${served.parent}, compatible_with ${JSON.stringify(served.compatible_with)}, and its parent's ${String(bookmark.fields.length)} fields beside its own`;
+  return `${id} answers parent ${served.parent}, compatible_with ${JSON.stringify(served.compatible_with)}, and its own witness field beside its parent's ${String(bookmark.fields.length)}`;
 }
 
 /** Whether the server holds a type, telling its absence from a refusal. */
@@ -251,17 +252,23 @@ export async function rowsOf(
   return rows;
 }
 
-/** The rows whose version is not what it was. */
+/**
+ * The rows whose version or state is not what it was. A state is changed
+ * by a transition, which moves no version.
+ */
 export function moved(
   before: Map<string, Item>,
   after: Map<string, Item>,
 ): string[] {
-  return [...after.values()]
-    .filter((row) => before.get(row.source_id ?? "")?.version !== row.version)
-    .map(
-      (row) =>
-        `${row.source_id ?? row.id} ${String(before.get(row.source_id ?? "")?.version)}→${String(row.version)}`,
-    );
+  return [...after.values()].flatMap((row) => {
+    const was = before.get(row.source_id ?? "");
+    if (was?.version === row.version && was.state === row.state) return [];
+    const state =
+      was?.state === row.state ? "" : ` ${String(was?.state)}→${row.state}`;
+    return [
+      `${row.source_id ?? row.id} ${String(was?.version)}→${String(row.version)}${state}`,
+    ];
+  });
 }
 
 export async function registration(marfa: MarfaClient, keyId: string) {
