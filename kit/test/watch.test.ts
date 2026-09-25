@@ -262,6 +262,13 @@ describe("a read that ends early", () => {
     await quietRun(held);
     expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
     expect((await watchState()).cursor).toBe(String(harness.server.head - 1));
+    // Said in the log, with the server's reason, so a stream that keeps
+    // ending short is visible.
+    expect(harness.lines).toContainEqual(
+      expect.stringContaining(
+        "the server ended the stream: replay_failed; the rest of the log is read next run",
+      ),
+    );
 
     harness.server.incompleteAfter = undefined;
     await quietRun(held);
