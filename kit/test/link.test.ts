@@ -259,3 +259,124 @@ describe("a row the vendor has not been told about", () => {
     );
   });
 });
+
+describe("a vendor that lists every entry", () => {
+  it("makes no conflict of a change in Marfa where its entry has not changed since the two sides agreed", async () => {
+    // Stamped long before the connector's own write.
+    const listed = { ...one, changed_at: "2026-09-01T00:00:00.000Z" };
+    const held = vendor([listed]);
+    expect(await harness.twoWay(held)).toBe(0);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+    // The same entry again, as a vendor that lists everything sends it.
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 1, conflicts 0$/,
+    );
+
+    // The vendor's copy of the carried change comes back under a new
+    // time; a second edit made since is carried too, and no conflict.
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by a person" },
+        changed_at: "2026-09-25T00:00:30.000Z",
+      },
+    ];
+    harness.server.edit(row.id, { title: "One, by a person, twice" });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person, twice",
+    );
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["One, by a person, twice"]);
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 0, conflicts 0$/);
+
+    // The witness: an entry stamped after the agreement is a conflict.
+    harness.server.edit(row.id, { title: "One, by a person again" });
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+        changed_at: new Date(
+          Date.parse(harness.server.row("a:1").updated_at) + 60_000,
+        ).toISOString(),
+      },
+    ];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    expect(harness.lastRun().summary).toMatch(/conflicts 1/);
+  });
+});
+
+describe("a row the connector wrote before its link existed", () => {
+  it("is not carried to the vendor, and is linked by the vendor's entry as it comes", async () => {
+    // Written by the one-way connector, so it carries no link value.
+    expect(
+      await harness.once(
+        vendor([{ source_id: "a:1", properties: { title: "One" } }]),
+      ),
+    ).toBe(0);
+    const row = harness.server.row("a:1");
+    expect(row.properties["vendor_id"]).toBeUndefined();
+
+    // The two-way connector's first run replays the create; the vendor's
+    // entry carries the link and finds the row by its natural key.
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1");
+    expect(harness.lastRun().summary).toContain(
+      "1 row the connector wrote before its link existed is not carried to the vendor",
+    );
+
+    // Linked, its next change is carried like any other.
+    harness.server.edit(row.id, { title: "One, by a person" });
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    expect(harness.lastRun().summary).not.toContain("before its link existed");
+  });
+});
+
+describe("a row restored after its trash was carried back", () => {
+  it("is not archived on the vendor's deletion, and the restore is carried", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
+
+    // The vendor lists the entry as deleted, which is what the carried
+    // trash asked of it; the person has restored the row since.
+    harness.server.restore(row.id);
+    held.archived = ["v1"];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+    expect(harness.lastRun().summary).toMatch(/archived 0, .*skipped 1/);
+
+    // The witness: with no restore pending, the vendor's deletion archives.
+    held.archived = ["v1"];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").state).toBe("archived");
+    expect(harness.lastRun().summary).toMatch(/archived 1/);
+  });
+});

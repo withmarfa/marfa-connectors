@@ -68,7 +68,7 @@ it("builds and runs once copied to a connector's place", async () => {
     });
     expect(marfa.types.has("example.item")).toBe(true);
     expect(marfa.rows.map((row) => [row.source_id, row.properties])).toEqual([
-      ["acct:1", { title: "One" }],
+      ["acct:1", { example_id: "1", title: "One" }],
     ]);
   } finally {
     vendor.closeAllConnections();

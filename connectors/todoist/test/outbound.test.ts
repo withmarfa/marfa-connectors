@@ -531,7 +531,7 @@ describe("the state file", () => {
     const first = await stored();
     expect(first.state["timezone"]).toBe("Europe/London");
     expect(first.watch.cursor).toBe("0");
-    expect(first.watch.written[row.id]).toEqual({
+    expect(first.watch.written[row.id]).toMatchObject({
       version: 1,
       state: "active",
     });

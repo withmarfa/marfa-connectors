@@ -1,5 +1,6 @@
 import {
   defineConnector,
+  LinkTaken,
   main,
   type Entry,
   type TypeDefinition,
@@ -12,33 +13,73 @@ interface VendorItem {
   url?: string;
   note?: string;
   created: string;
+  updated?: string;
   deleted?: boolean;
 }
 
+/** What the example vendor answered a write with, when it did not do it. */
+class Refused extends Error {
+  constructor(readonly status: number) {
+    super(`the example vendor answered ${String(status)}`);
+  }
+}
+
 /**
- * A connector reading a vendor's JSON list of items. Replace the type file, the
- * environment and the body of `run` with your vendor's; the kit does the
- * rest.
+ * One call to the example vendor, with the token and the stop signal. A
+ * refused token fails the run by throwing; any other refusal is thrown
+ * as `Refused`, for the caller to take as it sees fit.
+ */
+async function call(
+  env: { EXAMPLE_URL: string; EXAMPLE_TOKEN: string },
+  signal: AbortSignal,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const response = await fetch(new URL(path, env.EXAMPLE_URL), {
+    method,
+    headers: {
+      Authorization: `Bearer ${env.EXAMPLE_TOKEN}`,
+      ...(body !== undefined && { "Content-Type": "application/json" }),
+      ...headers,
+    },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+    signal,
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(
+      `the example vendor refused the token: ${String(response.status)}`,
+    );
+  }
+  if (!response.ok) throw new Refused(response.status);
+  return response;
+}
+
+/**
+ * A connector reading a vendor's JSON list of items and carrying changes
+ * made in Marfa back to it. Replace the type file, the environment, the
+ * body of `run` and, for a connector that writes back, `onChange` with
+ * your vendor's; the kit does the rest. Leave `link` and `onChange` out
+ * for a connector that only reads.
  */
 const connector = defineConnector({
   name: "example",
-  description: "Items from the example vendor's list.",
+  description:
+    "Items from the example vendor's list, and changes to them carried back.",
   source: "example",
   // Imported JSON widens every string, so its field types read as `string`
   // here; the check on start holds the file to the server's type.
   type: exampleItem as TypeDefinition,
+  // The property holding the vendor's own id. With it, every row of the
+  // type is the connector's, whoever created it.
+  link: "example_id",
   env: {
     EXAMPLE_URL: "required",
     EXAMPLE_TOKEN: "secret",
   },
   async run({ env, signal, log, upsert, archive }) {
-    const response = await fetch(new URL("items", env.EXAMPLE_URL), {
-      headers: { Authorization: `Bearer ${env.EXAMPLE_TOKEN}` },
-      signal,
-    });
-    if (!response.ok) {
-      throw new Error(`the example vendor answered ${String(response.status)}`);
-    }
+    const response = await call(env, signal, "GET", "items");
     const { account, items } = (await response.json()) as {
       account: string;
       items: VendorItem[];
@@ -58,15 +99,77 @@ const connector = defineConnector({
           : `${String(untitled.length)} items have no title and are left out`,
       );
     }
+    // Every entry carries the link: without it a row read from the vendor
+    // would be handed back as a create once the state is lost.
     const entries: Entry[] = items
       .filter((item) => item.deleted !== true && item.title !== undefined)
       .map((item) => ({
         source_id: key(item),
-        properties: { title: item.title, url: item.url, note: item.note },
+        properties: {
+          example_id: item.id,
+          title: item.title,
+          url: item.url,
+          note: item.note,
+        },
         occurred_at: item.created,
+        // When the vendor last changed it, for the conflict rule.
+        changed_at: item.updated,
       }));
     await upsert(entries);
-    await archive(items.filter((item) => item.deleted === true).map(key));
+    // By the link: a row is archived by the vendor's id it carries.
+    await archive(
+      items.filter((item) => item.deleted === true).map((item) => item.id),
+    );
+  },
+  async onChange({ kind, item }, { env, signal, log, setLink }) {
+    // The vendor has no state for a row set aside.
+    if (kind === "archived") return;
+    const id = item.properties["example_id"];
+    const linked = typeof id === "string" && id !== "" ? id : undefined;
+    // Null for a property the row does not have, so a value cleared in
+    // Marfa is cleared at the vendor rather than left as it was.
+    const body = {
+      title: item.properties["title"] ?? null,
+      url: item.properties["url"] ?? null,
+      note: item.properties["note"] ?? null,
+    };
+    try {
+      if (linked === undefined) {
+        // A row the vendor has not been told about: made there and linked,
+        // unless it is already gone. The row's id as the idempotency key,
+        // so a run that fails between the vendor's answer and the link
+        // makes one item when the create is sent again.
+        if (kind === "trashed" || kind === "purged") return;
+        const made = (await (
+          await call(env, signal, "POST", "items", body, {
+            "Idempotency-Key": item.id,
+          })
+        ).json()) as { id: string };
+        await setLink(item, made.id);
+        return;
+      }
+      const path = `items/${encodeURIComponent(linked)}`;
+      if (kind === "trashed" || kind === "purged") {
+        // An item already gone is what the trash asked for.
+        await call(env, signal, "DELETE", path).catch((error: unknown) => {
+          if (!(error instanceof Refused) || error.status !== 404) throw error;
+        });
+        return;
+      }
+      // An update, or a restore, which brings a deleted item back.
+      await call(env, signal, "PUT", path, {
+        ...body,
+        ...(kind === "restored" && { deleted: false }),
+      });
+    } catch (error) {
+      // One row the vendor refuses is a condition, and the run goes on;
+      // a refused token was thrown past this, and fails the run.
+      if (error instanceof LinkTaken || error instanceof Refused) {
+        log.condition(`refused:${item.id}`, `${item.id}: ${error.message}`);
+        return;
+      }
+      throw error;
+    }
   },
 });
 

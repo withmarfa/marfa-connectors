@@ -14,6 +14,7 @@ import type { Marfa } from "./marfa.js";
 import { Rows, Stopped, type Counts } from "./rows.js";
 import type { Clock } from "./runtime.js";
 import type { StateFile } from "./state.js";
+import { cleaned, fingerprint } from "./values.js";
 import { Memory, Watch, type WatchRead } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
@@ -159,9 +160,16 @@ export async function runOnce<E extends EnvDeclaration>(
         memory,
         setup.signal,
         connector.link,
+        connector.source,
       );
       read = await watch.read();
       for (const change of read.changes) pending.set(change.item.id, change);
+      if (read.unlinked > 0) {
+        raised.set(
+          "unlinked",
+          `${String(read.unlinked)} ${read.unlinked === 1 ? "row" : "rows"} the connector wrote before its link existed ${read.unlinked === 1 ? "is" : "are"} not carried to the vendor; the vendor's entries link them as they come`,
+        );
+      }
       if (read.resync) {
         raised.set(
           "resync",
@@ -188,6 +196,14 @@ export async function runOnce<E extends EnvDeclaration>(
       if (change.kind === "purged") memory.forget(change.item.id);
       else if (record === undefined || record.version <= change.item.version) {
         memory.remember(change.item.id, change.item.version, change.item.state);
+      }
+      // What was carried, so the vendor's copy of it, when it comes back
+      // under the vendor's own time, is the agreement and not a change.
+      if (change.kind !== "purged") {
+        memory.carry(
+          change.item.id,
+          fingerprint(cleaned(change.item.properties)),
+        );
       }
     };
     if (pending !== undefined && connector.onChange !== undefined) {

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** The properties a write sends: a key that is absent or `null` is cleared. */
 export function cleaned(
   properties: Readonly<Record<string, unknown>>,
@@ -7,6 +9,26 @@ export function cleaned(
       ([, value]) => value !== undefined && value !== null,
     ),
   );
+}
+
+/**
+ * A short name for a value's content, the same for two values `same`
+ * would take as equal: keys in one order, nulls and absent keys alike.
+ */
+export function fingerprint(value: unknown): string {
+  return createHash("sha1").update(canonical(value)).digest("hex");
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value)
+      .filter(([, held]) => held !== undefined && held !== null)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, held]) => `${JSON.stringify(key)}:${canonical(held)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return value === undefined || value === null ? "null" : JSON.stringify(value);
 }
 
 /**
