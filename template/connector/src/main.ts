@@ -121,7 +121,7 @@ const connector = defineConnector({
       items.filter((item) => item.deleted === true).map((item) => item.id),
     );
   },
-  async onChange({ kind, item }, { env, signal, log, setLink }) {
+  async onChange({ kind, item, restored }, { env, signal, log, setLink }) {
     // The vendor has no state for a row set aside.
     if (kind === "archived") return;
     const id = item.properties["example_id"];
@@ -162,7 +162,7 @@ const connector = defineConnector({
       // An update, or a restore, which brings a deleted item back.
       await call(env, signal, "PUT", path, {
         ...body,
-        ...(kind === "restored" && { deleted: false }),
+        ...((kind === "restored" || restored === true) && { deleted: false }),
       });
     } catch (error) {
       // One row the vendor refuses is a condition, and the run goes on;

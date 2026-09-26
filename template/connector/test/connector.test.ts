@@ -322,6 +322,24 @@ describe("the template, run as a process", () => {
     expect(marfa.rows).toHaveLength(0);
   });
 
+  it("brings the vendor's item back when the row is restored and edited before the next run", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.trash(mine.id);
+    expect((await once()).code).toBe(0);
+    marfa.restore(mine.id);
+    marfa.edit(mine.id, { title: "One, back" });
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(
+      writes.map((write) => [write.method, write.body?.["deleted"]]),
+    ).toEqual([["PUT", false]]);
+    expect(items[0]?.deleted).toBe(false);
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("acct:1").state).toBe("active");
+  });
+
   it("makes the item again when the row is restored and the vendor no longer has it", async () => {
     items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
     expect((await once()).code).toBe(0);

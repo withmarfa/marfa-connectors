@@ -346,9 +346,13 @@ export class Rows {
       // echo of what the trash did there. An entry from before the restore
       // is left unwritten and nothing is lost: carrying the restore moves
       // the vendor's copy, and a change of the vendor's own comes again
-      // with it. A later entry is a change of its own and is written. The
-      // restore is carried back either way, since it touches no property.
-      return laterThan(entry.changed_at, change.item.updated_at);
+      // with it. A later entry is a change of its own and is written, and
+      // the restore, which touches no property, has nothing left to carry:
+      // the vendor has the row, and carrying the row as the restore showed
+      // it would put back what the vendor changed since.
+      if (!laterThan(entry.changed_at, change.item.updated_at)) return false;
+      pending.delete(row.id);
+      return true;
     }
     this.conflict(row.id);
     if (laterThan(entry.changed_at, change.item.updated_at)) {
