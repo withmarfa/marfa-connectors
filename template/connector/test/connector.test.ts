@@ -27,6 +27,7 @@ interface VendorWrite {
   method: string;
   path: string;
   body: Record<string, unknown> | undefined;
+  idempotencyKey: string | undefined;
 }
 
 let marfa: ScriptedServer;
@@ -34,13 +35,17 @@ let vendor: Server;
 let vendorUrl: string;
 let items: VendorItem[];
 let writes: VendorWrite[];
+/** The next write is answered with this status in place of the door. */
+let refuseNextWrite: number | undefined;
 let stateDir: string;
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("example").start();
   items = [];
   writes = [];
+  refuseNextWrite = undefined;
   let made = 0;
+  const madeByKey = new Map<string, string>();
   vendor = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -54,14 +59,36 @@ beforeEach(async () => {
         text === "" ? undefined : (JSON.parse(text) as Record<string, unknown>);
       const path = req.url ?? "/";
       const method = req.method ?? "GET";
-      res.writeHead(200, { "Content-Type": "application/json" });
       if (method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ account: "acct", items }));
         return;
       }
-      writes.push({ method, path, body });
+      const idempotencyKey = req.headers["idempotency-key"];
+      writes.push({
+        method,
+        path,
+        body,
+        idempotencyKey:
+          typeof idempotencyKey === "string" ? idempotencyKey : undefined,
+      });
+      if (refuseNextWrite !== undefined) {
+        res.writeHead(refuseNextWrite).end();
+        refuseNextWrite = undefined;
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
       const id = decodeURIComponent(path.replace(/^\/items\/?/, ""));
       if (method === "POST") {
+        // A create sent again under its key answers the item it made.
+        const known =
+          idempotencyKey === undefined
+            ? undefined
+            : madeByKey.get(String(idempotencyKey));
+        if (known !== undefined) {
+          res.end(JSON.stringify({ id: known }));
+          return;
+        }
         made += 1;
         const item: VendorItem = {
           id: `made-${String(made)}`,
@@ -69,12 +96,15 @@ beforeEach(async () => {
           created: "2026-09-25T09:00:00.000Z",
         };
         items.push(item);
+        if (idempotencyKey !== undefined) {
+          madeByKey.set(String(idempotencyKey), item.id);
+        }
         res.end(JSON.stringify({ id: item.id }));
         return;
       }
       const found = items.find((item) => item.id === id);
       if (found === undefined) {
-        res.end(JSON.stringify({ error: "no such item" }));
+        res.writeHead(404).end();
         return;
       }
       if (method === "DELETE") found.deleted = true;
@@ -168,7 +198,7 @@ describe("the template, run as a process", () => {
     );
   });
 
-  it("carries a row a person made to the vendor and links it, and a change to a row back", async () => {
+  it("carries a row a person made to the vendor and links it, and a change and a trash back", async () => {
     items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
     const theirs = marfa.insert(
       undefined,
@@ -182,9 +212,12 @@ describe("the template, run as a process", () => {
         method: "POST",
         path: "/items",
         body: { title: "Theirs", note: "made in Marfa" },
+        idempotencyKey: theirs.id,
       },
     ]);
     expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
+    // The vendor's list now carries the item too, and it is the same row.
+    expect(marfa.rows).toHaveLength(2);
 
     const mine = marfa.row("acct:1");
     marfa.edit(mine.id, { title: "One, edited in Marfa" });
@@ -196,14 +229,69 @@ describe("the template, run as a process", () => {
         method: "PUT",
         path: "/items/1",
         body: { title: "One, edited in Marfa" },
+        idempotencyKey: undefined,
       },
-      { method: "DELETE", path: "/items/made-1", body: undefined },
+      {
+        method: "DELETE",
+        path: "/items/made-1",
+        body: undefined,
+        idempotencyKey: undefined,
+      },
     ]);
     expect(items.find((item) => item.id === "1")?.title).toBe(
       "One, edited in Marfa",
     );
     expect(items.find((item) => item.id === "made-1")?.deleted).toBe(true);
     expect(marfa.runs.at(-1)?.summary).toMatch(/pushed 2, /);
+    expect(marfa.rows).toHaveLength(2);
+  });
+
+  it("brings the vendor's item back when the row is restored, and deletes it again on a purge", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.trash(mine.id);
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.deleted).toBe(true);
+
+    // The vendor lists the item deleted, as the trash asked; the row is
+    // restored and stays active, and the item comes back.
+    marfa.restore(mine.id);
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(writes.map((write) => [write.method, write.path])).toEqual([
+      ["PUT", "/items/1"],
+    ]);
+    expect(writes[0]?.body).toEqual({ title: "One", deleted: false });
+    expect(items[0]?.deleted).toBe(false);
+    expect(marfa.row("acct:1").state).toBe("active");
+    expect(marfa.runs.at(-1)?.summary).toMatch(/archived 0, .*pushed 1/);
+
+    marfa.trash(mine.id);
+    marfa.purge("acct:1");
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(writes.map((write) => [write.method, write.path])).toEqual([
+      ["DELETE", "/items/1"],
+    ]);
+    expect(marfa.rows).toHaveLength(0);
+  });
+
+  it("records a row the vendor refuses as a condition, and the run lands", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.edit(mine.id, { title: "One, refused" });
+    refuseNextWrite = 422;
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `${mine.id}: the example vendor answered 422`,
+    );
+    // The witness: the same change lands when the vendor takes it.
+    marfa.edit(mine.id, { title: "One, taken" });
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.title).toBe("One, taken");
   });
 
   it("fails the run when the vendor refuses the token, and never prints it", async () => {
@@ -213,7 +301,7 @@ describe("the template, run as a process", () => {
     expect(marfa.runs.at(-1)?.error).toContain("401");
     // The output carries the failure, so the token's absence is not an
     // empty stream's.
-    expect(output).toContain("answered 401");
+    expect(output).toContain("refused the token: 401");
     expect(output).not.toContain("wrong-token-value");
   });
 

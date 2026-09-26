@@ -1,5 +1,6 @@
 import {
   defineConnector,
+  LinkTaken,
   main,
   type Entry,
   type TypeDefinition,
@@ -16,26 +17,42 @@ interface VendorItem {
   deleted?: boolean;
 }
 
-/** One call to the example vendor, with the token and the stop signal. */
+/** What the example vendor answered a write with, when it did not do it. */
+class Refused extends Error {
+  constructor(readonly status: number) {
+    super(`the example vendor answered ${String(status)}`);
+  }
+}
+
+/**
+ * One call to the example vendor, with the token and the stop signal. A
+ * refused token fails the run by throwing; any other refusal is thrown
+ * as `Refused`, for the caller to take as it sees fit.
+ */
 async function call(
   env: { EXAMPLE_URL: string; EXAMPLE_TOKEN: string },
   signal: AbortSignal,
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: Record<string, unknown>,
+  headers: Record<string, string> = {},
 ): Promise<Response> {
   const response = await fetch(new URL(path, env.EXAMPLE_URL), {
     method,
     headers: {
       Authorization: `Bearer ${env.EXAMPLE_TOKEN}`,
       ...(body !== undefined && { "Content-Type": "application/json" }),
+      ...headers,
     },
     ...(body !== undefined && { body: JSON.stringify(body) }),
     signal,
   });
-  if (!response.ok) {
-    throw new Error(`the example vendor answered ${String(response.status)}`);
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(
+      `the example vendor refused the token: ${String(response.status)}`,
+    );
   }
+  if (!response.ok) throw new Refused(response.status);
   return response;
 }
 
@@ -82,6 +99,8 @@ const connector = defineConnector({
           : `${String(untitled.length)} items have no title and are left out`,
       );
     }
+    // Every entry carries the link: without it a row read from the vendor
+    // would be handed back as a create once the state is lost.
     const entries: Entry[] = items
       .filter((item) => item.deleted !== true && item.title !== undefined)
       .map((item) => ({
@@ -102,31 +121,53 @@ const connector = defineConnector({
       items.filter((item) => item.deleted === true).map((item) => item.id),
     );
   },
-  async onChange({ kind, item }, { env, signal, setLink }) {
-    // The vendor has no state for a row set aside; a trash and a purge
-    // delete its item.
+  async onChange({ kind, item }, { env, signal, log, setLink }) {
+    // The vendor has no state for a row set aside.
     if (kind === "archived") return;
     const id = item.properties["example_id"];
+    const linked = typeof id === "string" && id !== "" ? id : undefined;
     const body = {
       title: item.properties["title"],
       url: item.properties["url"],
       note: item.properties["note"],
     };
-    if (typeof id !== "string") {
-      // A row the vendor has not been told about: made there and linked,
-      // unless it is already gone.
-      if (kind === "trashed" || kind === "purged") return;
-      const made = (await (
-        await call(env, signal, "POST", "items", body)
-      ).json()) as { id: string };
-      await setLink(item, made.id);
-      return;
+    try {
+      if (linked === undefined) {
+        // A row the vendor has not been told about: made there and linked,
+        // unless it is already gone. The row's id as the idempotency key,
+        // so a run that fails between the vendor's answer and the link
+        // makes one item when the create is sent again.
+        if (kind === "trashed" || kind === "purged") return;
+        const made = (await (
+          await call(env, signal, "POST", "items", body, {
+            "Idempotency-Key": item.id,
+          })
+        ).json()) as { id: string };
+        await setLink(item, made.id);
+        return;
+      }
+      const path = `items/${encodeURIComponent(linked)}`;
+      if (kind === "trashed" || kind === "purged") {
+        // An item already gone is what the trash asked for.
+        await call(env, signal, "DELETE", path).catch((error: unknown) => {
+          if (!(error instanceof Refused) || error.status !== 404) throw error;
+        });
+        return;
+      }
+      // An update, or a restore, which brings a deleted item back.
+      await call(env, signal, "PUT", path, {
+        ...body,
+        ...(kind === "restored" && { deleted: false }),
+      });
+    } catch (error) {
+      // One row the vendor refuses is a condition, and the run goes on;
+      // a refused token was thrown past this, and fails the run.
+      if (error instanceof LinkTaken || error instanceof Refused) {
+        log.condition(`refused:${item.id}`, `${item.id}: ${error.message}`);
+        return;
+      }
+      throw error;
     }
-    if (kind === "trashed" || kind === "purged") {
-      await call(env, signal, "DELETE", `items/${encodeURIComponent(id)}`);
-      return;
-    }
-    await call(env, signal, "PUT", `items/${encodeURIComponent(id)}`, body);
   },
 });
 

@@ -127,8 +127,9 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   run(context: RunContext<E>): Promise<void>;
   /**
    * Carries a change made in Marfa to the vendor. Called once per row that
-   * changed since the last run, in the order the log records, after `run`
-   * has written what the vendor had. Resolving means the change landed or
+   * changed since the last run, in the order the log records: a `created`
+   * change before `run` reads the vendor, the rest after `run` has written
+   * what the vendor had. Resolving means the change landed or
    * was consciously abandoned with a condition; throwing fails the run and
    * holds the cursor, so the change is offered again next run.
    */

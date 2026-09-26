@@ -259,3 +259,33 @@ describe("a row the vendor has not been told about", () => {
     );
   });
 });
+
+describe("a row restored after its trash was carried back", () => {
+  it("is not archived on the vendor's deletion, and the restore is carried", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
+
+    // The vendor lists the entry as deleted, which is what the carried
+    // trash asked of it; the person has restored the row since.
+    harness.server.restore(row.id);
+    held.archived = ["v1"];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+    expect(harness.lastRun().summary).toMatch(/archived 0, .*skipped 1/);
+
+    // The witness: with no restore pending, the vendor's deletion archives.
+    held.archived = ["v1"];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").state).toBe("archived");
+    expect(harness.lastRun().summary).toMatch(/archived 1/);
+  });
+});

@@ -486,6 +486,14 @@ export class Rows {
         this.counts.skipped += 1;
         continue;
       }
+      // A row a person restored since the two sides last agreed is not
+      // put away again on the vendor's word: what the vendor deleted can
+      // be the echo of the trash that was carried back, and the restore,
+      // still pending, is carried and reinstates the vendor's copy.
+      if (this.options.pending?.get(row.id)?.kind === "restored") {
+        this.counts.skipped += 1;
+        continue;
+      }
       if (row.state === "archived") {
         this.counts.unchanged += 1;
         continue;
