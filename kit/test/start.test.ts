@@ -190,6 +190,60 @@ describe("registration", () => {
   });
 });
 
+describe("the key check on start", () => {
+  it("starts on a key holding read and write on its own type and the registration of it", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      metadata_permissions: { types: "write" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.server.requestsTo("GET", "/keys/current")).toHaveLength(1);
+    expect(harness.server.rows).toHaveLength(1);
+  });
+
+  it("refuses a key wider than its type, naming what is too wide, before it writes anything", async () => {
+    harness.server.grants = {
+      permissions: ["keys.mint", "items.purge"],
+      type_permissions: { "test.entry": "write", "core.note": "read" },
+      metadata_permissions: { types: "write", tags: "write" },
+      edge_permissions: { "*": "write" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(harness.lastRun().outcome).toBe("failed");
+    for (const named of [
+      "keys.mint",
+      "items.purge",
+      "type core.note=read",
+      "metadata tags=write",
+      "edge *=write",
+    ]) {
+      expect(error).toContain(named);
+    }
+    expect(error).not.toContain("type test.entry");
+    expect(harness.server.rows).toEqual([]);
+    expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
+  });
+
+  it("refuses a key reaching every type by a pattern, and the operator key", async () => {
+    for (const grants of [
+      { type_permissions: { "*": "write" } },
+      { is_operator: true },
+    ]) {
+      harness.server.grants = grants;
+      expect(await harness.once(vendor([entry]))).toBe(1);
+      expect(harness.server.rows).toEqual([]);
+    }
+  });
+
+  it("reads a level of none as holding nothing", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write", "core.note": "none" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(0);
+  });
+});
+
 describe("the type check on start", () => {
   it("registers the type when the server has none", async () => {
     expect(await harness.once(vendor([entry]))).toBe(0);

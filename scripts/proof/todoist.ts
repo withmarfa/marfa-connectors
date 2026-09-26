@@ -629,6 +629,48 @@ export async function proveTodoist(
         return `item_delete sent for r; the task is deleted and its due date still ${task.due["date"]}`;
       },
     );
+
+    await check(
+      "todoist: a key wider than its type is refused at start, before it writes anything",
+      async () => {
+        // A mint naming no map takes the minter's whole set, which is the
+        // key the README's command made before it said otherwise.
+        const { data: wide, error } = await marfa.POST("/keys", {
+          body: { label: "todoist-wide", source: "todoist-wide" },
+        });
+        if (wide === undefined)
+          throw new Error(`the wide key was refused: ${JSON.stringify(error)}`);
+        const before = await rows();
+        const sent = todoist.commands().length;
+        const refused = new ConnectorUnderProof("todoist", url, wide.key, {
+          TODOIST_API_TOKEN: "todoist-proof-token",
+          TODOIST_API_URL: todoist.url,
+        });
+        try {
+          const { code, output } = await refused.once();
+          const changed = moved(before, await rows());
+          if (
+            code !== 1 ||
+            !output.includes(
+              "holds more than read and write on todoist.task",
+            ) ||
+            !output.includes("keys.mint") ||
+            changed.length > 0 ||
+            todoist.commands().length !== sent
+          ) {
+            throw new Error(
+              `exit ${String(code)}; moved ${changed.join(", ") || "nothing"}; ${String(todoist.commands().length - sent)} commands; ${output.slice(-400)}`,
+            );
+          }
+          const line = output
+            .split("\n")
+            .find((l) => l.includes("holds more than"));
+          return `exit 1, nothing written or sent: ${String(line).slice(0, 300)}`;
+        } finally {
+          await refused.dispose();
+        }
+      },
+    );
   } finally {
     await connector?.dispose();
     await todoist.close();

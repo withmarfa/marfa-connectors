@@ -58,6 +58,8 @@ marfa keys create --label <name> --source <name> --type-permission <type>=write 
 - `--metadata-permission types=write`: lets it register its type on its first start.
 - `--default-tier feed`: puts what it writes in the feed.
 
+Naming a map, the key holds no permission: it cannot mint keys, purge, or change the instance, and it reaches no other type. The kit reads the key back on every start (`GET /keys/current`) and refuses to run on one that holds anything more than read and write on its own type and `types` to register it, naming what is too wide, so a key minted naming nothing, which takes the minter's whole set, is refused before it writes anything.
+
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among live keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 
 ```bash

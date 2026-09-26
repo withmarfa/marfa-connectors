@@ -8,6 +8,7 @@ import type { Item, TypeDefinition } from "./define.js";
 
 export type BulkResult = components["schemas"]["BulkResultEntry"];
 type Version = components["schemas"]["Version"];
+export type Key = components["schemas"]["ApiKey"];
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
@@ -84,6 +85,13 @@ export class Marfa {
   }
 
   /** The type as the server answers it, or `undefined` when it has none. */
+  /** The key this client bears, as the server holds it. */
+  async currentKey(): Promise<Key> {
+    const { data, error, response } = await this.client.GET("/keys/current");
+    if (data === undefined) throw refusal(response, error);
+    return data;
+  }
+
   async type(id: string): Promise<Record<string, unknown> | undefined> {
     const { data, error, response } = await this.client.GET("/types/{id}", {
       params: { path: { id } },
