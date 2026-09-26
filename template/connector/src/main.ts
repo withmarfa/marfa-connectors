@@ -150,16 +150,35 @@ const connector = defineConnector({
       }
       const path = `items/${encodeURIComponent(linked)}`;
       if (kind === "trashed" || kind === "purged") {
-        // An item already gone is what the trash asked for.
+        // A trash deletes the item. A purge sends the same delete, which
+        // changes nothing at a vendor that already took it, and deletes
+        // the item where a trash and a purge reach the connector together,
+        // as the purge alone. An item already gone is what either asked for.
         await call(env, signal, "DELETE", path).catch((error: unknown) => {
           if (!(error instanceof Refused) || error.status !== 404) throw error;
         });
         return;
       }
       // An update, or a restore, which brings a deleted item back.
-      await call(env, signal, "PUT", path, {
+      const put = call(env, signal, "PUT", path, {
         ...body,
         ...(kind === "restored" && { deleted: false }),
+      });
+      if (kind !== "restored") {
+        await put;
+        return;
+      }
+      await put.catch(async (error: unknown) => {
+        if (!(error instanceof Refused) || error.status !== 404) throw error;
+        // A vendor that no longer has the item: it is made again and the
+        // row linked to it, under a key of its own so the vendor does not
+        // answer the first create again.
+        const made = (await (
+          await call(env, signal, "POST", "items", body, {
+            "Idempotency-Key": `${item.id}:${linked}`,
+          })
+        ).json()) as { id: string };
+        await setLink(item, made.id);
       });
     } catch (error) {
       // One row the vendor refuses is a condition, and the run goes on;

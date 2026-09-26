@@ -172,23 +172,30 @@ export async function carry(
   }
 
   if (kind === "trashed" || kind === "purged") {
+    // A trash deletes the task: closing a recurring one would move it to
+    // its next occurrence and leave it live. The command is named by the
+    // row and the task, since a task is deleted once: a purge sends the
+    // trash's delete again under the same id, which Todoist answers
+    // without acting twice, and a trash and a purge that reach the watch
+    // together, as the purge alone, still delete it. A task made again
+    // after a restore has an id of its own, and so does its delete.
     const answer = await todoist.one(
-      "item_close",
-      commandId(item, "item_close"),
+      "item_delete",
+      uuidFor(item.id, taskId, "item_delete"),
       { id: taskId },
     );
     if (answer !== "ok") {
-      // A task already completed or deleted in Todoist is what the row's
-      // trash asked for; the refusal is recorded and the change is done.
+      // A task already deleted in Todoist is what the row's trash asked
+      // for; the refusal is recorded and the change is done.
       context.log.condition(
         `todoist-refused:${item.id}`,
-        `Todoist refused closing task ${taskId} for row ${item.id}: ${describeError(answer)}`,
+        `Todoist refused deleting task ${taskId} for row ${item.id}: ${describeError(answer)}`,
       );
     }
     return;
   }
 
-  await sync(item, taskId, timeZone, todoist, context);
+  await sync(item, taskId, timeZone, todoist, context, kind === "restored");
 }
 
 /**
@@ -202,6 +209,7 @@ async function sync(
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
+  restored = false,
 ): Promise<void> {
   const { log } = context;
   const task = await todoist.task(taskId);
@@ -210,6 +218,15 @@ async function sync(
       `todoist-refused:${item.id}`,
       `Todoist refuses access to task ${taskId} for row ${item.id}, so its changes are not carried`,
     );
+    return;
+  }
+  if (task === "missing" && restored) {
+    // A row brought back from the trash whose trash deleted its task:
+    // the task is made again and the row linked to it, then held to the
+    // row like any other, so a completed row's task is closed.
+    const made = await add(item, timeZone, todoist, context, taskId);
+    if (made === undefined) return;
+    await sync(item, made, timeZone, todoist, context);
     return;
   }
   if (task === "missing") {
@@ -253,19 +270,23 @@ async function sync(
 
 /**
  * A row Todoist has not been told about becomes a task, and the task's id
- * is written back onto the row. The command's ids come from the row alone,
- * so a run replayed after a failure sends Todoist the same create. Answers
- * the task's id, or nothing where the row was abandoned with a condition.
+ * is written back onto the row. The command's ids come from the row and
+ * the task it replaces, if any, so a run replayed after a failure sends
+ * Todoist the same create, and a task made again after a restore is a
+ * create of its own rather than the first one answered again. Answers the
+ * task's id, or nothing where the row was abandoned with a condition.
  */
 async function add(
   item: Item,
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
+  replacing?: string,
 ): Promise<string | undefined> {
   const { log } = context;
-  const uuid = uuidFor(item.id, "item_add");
-  const tempId = uuidFor(item.id, "temp_id");
+  const again = replacing === undefined ? [] : [replacing];
+  const uuid = uuidFor(item.id, "item_add", ...again);
+  const tempId = uuidFor(item.id, "temp_id", ...again);
   const answer = await todoist.send([
     {
       type: "item_add",

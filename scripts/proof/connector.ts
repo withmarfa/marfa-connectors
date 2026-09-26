@@ -315,6 +315,22 @@ export async function trash(marfa: MarfaClient, id: string): Promise<void> {
     throw new Error(`the trash was refused: ${JSON.stringify(error)}`);
 }
 
+export async function restore(marfa: MarfaClient, id: string): Promise<void> {
+  const { error, response } = await marfa.POST("/items/{id}/restore", {
+    params: { path: { id } },
+  });
+  if (!response.ok)
+    throw new Error(`the restore was refused: ${JSON.stringify(error)}`);
+}
+
+export async function purge(marfa: MarfaClient, id: string): Promise<void> {
+  const { error, response } = await marfa.DELETE("/items/{id}/purge", {
+    params: { path: { id } },
+  });
+  if (!response.ok)
+    throw new Error(`the purge was refused: ${JSON.stringify(error)}`);
+}
+
 /**
  * A person's promotion: a core-typed copy in the library, pointing back at
  * the feed row with a `derived-from` edge. Without a row to point at, an

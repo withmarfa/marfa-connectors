@@ -399,6 +399,12 @@ export class TodoistStub {
       case "item_close": {
         const task = id === undefined ? undefined : this.tasks.get(id);
         if (task === undefined || task.is_deleted) return { status: notFound };
+        // Todoist closes a recurring task by moving it to its next
+        // occurrence, open, rather than completing it.
+        if (task.due?.["is_recurring"] === true) {
+          this.edit(task.id, { due: nextOccurrence(task.due) });
+          return { status: "ok" };
+        }
         if (!task.checked) this.complete(task.id);
         return { status: "ok" };
       }
@@ -447,4 +453,12 @@ export class TodoistStub {
     }
     return out;
   }
+}
+
+/** A daily recurring due date, a day on. */
+function nextOccurrence(due: Record<string, unknown>): Record<string, unknown> {
+  const date = typeof due["date"] === "string" ? due["date"] : "";
+  const next = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return { ...due, date: next.toISOString().slice(0, 10) };
 }

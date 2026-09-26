@@ -94,8 +94,8 @@ beforeEach(async () => {
         refuseNextWrite = undefined;
         return;
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
       const id = decodeURIComponent(path.replace(/^\/items\/?/, ""));
+      const ok = { "Content-Type": "application/json" };
       if (method === "POST") {
         // A create sent again under its key answers the item it made.
         const known =
@@ -103,7 +103,7 @@ beforeEach(async () => {
             ? undefined
             : madeByKey.get(String(idempotencyKey));
         if (known !== undefined) {
-          res.end(JSON.stringify({ id: known }));
+          res.writeHead(200, ok).end(JSON.stringify({ id: known }));
           return;
         }
         made += 1;
@@ -118,7 +118,7 @@ beforeEach(async () => {
         if (idempotencyKey !== undefined) {
           madeByKey.set(String(idempotencyKey), item.id);
         }
-        res.end(JSON.stringify({ id: item.id }));
+        res.writeHead(200, ok).end(JSON.stringify({ id: item.id }));
         return;
       }
       const found = items.find((item) => item.id === id);
@@ -136,7 +136,7 @@ beforeEach(async () => {
         }
       }
       found.updated = stamp();
-      res.end(JSON.stringify({ id }));
+      res.writeHead(200, ok).end(JSON.stringify({ id }));
     });
   });
   await new Promise<void>((done) => vendor.listen(0, "127.0.0.1", done));
@@ -307,6 +307,30 @@ describe("the template, run as a process", () => {
       ["DELETE", "/items/1"],
     ]);
     expect(marfa.rows).toHaveLength(0);
+  });
+
+  it("makes the item again when the row is restored and the vendor no longer has it", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.trash(mine.id);
+    expect((await once()).code).toBe(0);
+    // Gone from the vendor for good, as a vendor that deletes outright
+    // leaves it.
+    items = items.filter((item) => item.id !== "1");
+
+    marfa.restore(mine.id);
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(writes.map((write) => [write.method, write.path])).toEqual([
+      ["PUT", "/items/1"],
+      ["POST", "/items"],
+    ]);
+    expect(writes[1]?.idempotencyKey).toBe(`${mine.id}:1`);
+    const made = items.find((item) => item.id.startsWith("made-"));
+    expect(made?.title).toBe("One");
+    expect(marfa.row("acct:1").properties["example_id"]).toBe(made?.id);
+    expect(marfa.row("acct:1").state).toBe("active");
   });
 
   it("records a row the vendor refuses as a condition, and the run lands", async () => {

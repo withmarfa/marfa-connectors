@@ -359,16 +359,34 @@ describe("a row Todoist knows", () => {
     expect(todoist.commands("item_update")).toEqual([]);
   });
 
-  it("closes the task when the row is trashed, and carries nothing when it is archived", async () => {
+  it("deletes the task when the row is trashed, and carries nothing when it is archived", async () => {
     const a = await synced("a");
     const b = await synced("b");
     marfa.trash(a.id);
     marfa.transition(b.id, "archived");
     await landed();
     expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
-      ["item_close", "a"],
+      ["item_delete", "a"],
     ]);
-    expect(todoist.tasks.get("b")?.checked).toBe(false);
+    expect(todoist.tasks.get("a")?.is_deleted).toBe(true);
+    expect(todoist.tasks.get("b")?.is_deleted).toBe(false);
+  });
+
+  it("deletes a recurring task when the row is trashed, where closing it would move it to its next occurrence", async () => {
+    todoist.put(
+      todoist.task("r", {
+        due: { date: "2026-09-27", is_recurring: true, string: "every day" },
+      }),
+    );
+    await landed();
+    const row = marfa.row(`${todoist.account}:r`);
+    marfa.trash(row.id);
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
+      ["item_delete", "r"],
+    ]);
+    expect(todoist.tasks.get("r")?.is_deleted).toBe(true);
+    expect(marfa.byId(row.id).state).toBe("trashed");
   });
 
   it("sends nothing when the task already matches the row", async () => {
@@ -543,39 +561,119 @@ describe("the state file", () => {
 });
 
 describe("transitions over runs", () => {
-  it("closes the task when the row is purged", async () => {
+  it("changes nothing more in Todoist when a trashed row is purged", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    marfa.purgeById(row.id);
+    await landed();
+    // The purge repeats the trash's delete under the trash's own command
+    // id, which Todoist answers without acting again.
+    const deletes = todoist.commands("item_delete");
+    expect(deletes.map((c) => c.args["id"])).toEqual(["a", "a"]);
+    expect(deletes[0]?.uuid).toBe(deletes[1]?.uuid);
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_delete",
+      "item_delete",
+    ]);
+    expect(todoist.tasks.get("a")?.is_deleted).toBe(true);
+  });
+
+  it("deletes the task when a trash and a purge reach the connector together", async () => {
     const row = await synced("a");
     marfa.trash(row.id);
     marfa.purgeById(row.id);
     await landed();
     expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
-      ["item_close", "a"],
+      ["item_delete", "a"],
     ]);
-    expect(todoist.tasks.get("a")?.checked).toBe(true);
+    expect(todoist.tasks.get("a")?.is_deleted).toBe(true);
   });
 
-  it("reopens the task when the row is restored, and the row stays open", async () => {
-    const row = await synced("a");
+  it("recreates the task when the row is restored after its trash deleted it, and links the row to it", async () => {
+    const row = await synced("a", "Task a to come back");
     marfa.trash(row.id);
     await landed();
-    expect(todoist.tasks.get("a")?.checked).toBe(true);
-    // The next sync carries the task closed by the trash, stamped before
-    // the restore: the echo is not written over the restored row.
+    expect(todoist.tasks.get("a")?.is_deleted).toBe(true);
+    // The next sync carries the deletion, stamped before the restore: the
+    // echo is not written over the restored row.
     marfa.restore(row.id);
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
+      ["item_delete", "a"],
+      ["item_add", undefined],
+    ]);
+    expect(todoist.commands("item_add")[0]?.args["content"]).toBe(
+      "Task a to come back",
+    );
+    const madeId = [...todoist.tasks.keys()].find((id) =>
+      id.startsWith("made-"),
+    );
+    expect(madeId).toBeDefined();
+    expect(todoist.tasks.get(madeId ?? "")?.is_deleted).toBe(false);
+    expect(marfa.byId(row.id).properties["todoist_id"]).toBe(madeId);
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(summary()).toMatch(/conflicts 0/);
+
+    // The task made comes back as the row's own, and nothing moves.
+    await landed();
+    expect(todoist.commands()).toHaveLength(2);
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(marfa.byId(row.id).properties["todoist_id"]).toBe(madeId);
+  });
+
+  it("recreates a completed row's task closed", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, {
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    await landed();
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_close",
+      "item_delete",
+      "item_add",
+      "item_close",
+    ]);
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(madeId)?.checked).toBe(true);
+  });
+
+  it("recreates a task again after a second trash and restore, as a create of its own", async () => {
+    const row = await synced("a");
+    for (let round = 0; round < 2; round += 1) {
+      marfa.trash(row.id);
+      await landed();
+      marfa.restore(row.id);
+      await landed();
+    }
+    const adds = todoist.commands("item_add");
+    expect(adds).toHaveLength(2);
+    expect(adds[0]?.uuid).not.toBe(adds[1]?.uuid);
+    const live = [...todoist.tasks.values()].filter((t) => !t.is_deleted);
+    expect(live.map((t) => t.id)).toEqual([
+      String(marfa.byId(row.id).properties["todoist_id"]),
+    ]);
+  });
+
+  it("reopens the task when the row is restored after a completion, not a trash", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, {
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    await landed();
+    marfa.edit(row.id, { status: "pending", completed_at: null });
     await landed();
     expect(todoist.commands().map((c) => c.type)).toEqual([
       "item_close",
       "item_uncomplete",
     ]);
     expect(todoist.tasks.get("a")?.checked).toBe(false);
-    expect(marfa.byId(row.id).properties["status"]).toBe("pending");
-    expect(marfa.byId(row.id).state).toBe("active");
-    expect(summary()).toMatch(/conflicts 0/);
-
-    // And the run after moves nothing either way.
-    await landed();
-    expect(todoist.commands()).toHaveLength(2);
-    expect(marfa.byId(row.id).properties["status"]).toBe("pending");
   });
 
   it("sends a second trash as a command of its own, since a transition moves no version", async () => {
@@ -586,10 +684,9 @@ describe("transitions over runs", () => {
     await landed();
     marfa.trash(row.id);
     await landed();
-    const closes = todoist.commands("item_close");
-    expect(closes).toHaveLength(2);
-    expect(closes[0]?.uuid).not.toBe(closes[1]?.uuid);
-    expect(todoist.tasks.get("a")?.checked).toBe(true);
+    const deletes = todoist.commands("item_delete");
+    expect(deletes).toHaveLength(2);
+    expect(deletes[0]?.uuid).not.toBe(deletes[1]?.uuid);
     expect(marfa.byId(row.id).state).toBe("trashed");
   });
 
@@ -807,10 +904,16 @@ describe("one change, two commands", () => {
 
   it("sends a reopen and the edit made with it", async () => {
     const row = await synced("a");
-    marfa.trash(row.id);
+    marfa.edit(row.id, {
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
     await landed();
-    marfa.restore(row.id);
-    marfa.edit(row.id, { title: "Task a, back and renamed" });
+    marfa.edit(row.id, {
+      title: "Task a, back and renamed",
+      status: "pending",
+      completed_at: null,
+    });
     await landed();
     // The closed task is read, checked: what differs travels first, then
     // the reopen.
