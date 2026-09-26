@@ -9,6 +9,7 @@ import {
   registeredAsKindOf,
   typeHeld,
   item,
+  keyBody,
   lastRun,
   mintAsReadmeSays,
   moved,
@@ -631,12 +632,28 @@ export async function proveTodoist(
     );
 
     await check(
-      "todoist: a key wider than its type is refused at start, before it writes anything",
+      "todoist: a key holding permissions beside its type is refused at start, before it registers the type or writes a row",
       async () => {
-        // A mint naming no map takes the minter's whole set, which is the
-        // key the README's command made before it said otherwise.
+        // The README's maps with every permission beside them: the key an
+        // instance gave the README's command before a key named with maps
+        // held no permission it did not name.
         const { data: wide, error } = await marfa.POST("/keys", {
-          body: { label: "todoist-wide", source: "todoist-wide" },
+          body: {
+            ...keyBody({
+              label: "todoist-wide",
+              source: "todoist-wide",
+              typePermission: "todoist.task",
+            }),
+            permissions: [
+              "schema.write",
+              "keys.mint",
+              "items.purge",
+              "webhooks.manage",
+              "config.manage",
+              "audit.read",
+              "grants.manage",
+            ],
+          },
         });
         if (wide === undefined)
           throw new Error(`the wide key was refused: ${JSON.stringify(error)}`);
@@ -655,6 +672,8 @@ export async function proveTodoist(
               "holds more than read and write on todoist.task",
             ) ||
             !output.includes("keys.mint") ||
+            !output.includes("items.purge") ||
+            output.includes("type todoist.task") ||
             changed.length > 0 ||
             todoist.commands().length !== sent
           ) {

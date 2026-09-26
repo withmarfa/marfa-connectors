@@ -80,7 +80,7 @@ async function checkType<E extends EnvDeclaration>(
  * the template's README says. A key that could mint, purge or reach
  * another type is refused before the connector does anything with it.
  */
-export function keyWiderThanType(key: Key, type: string): string[] {
+function keyWiderThanType(key: Key, type: string): string[] {
   const wider: string[] = [];
   if (key.is_operator) wider.push("it is the operator key");
   for (const permission of key.permissions ?? []) wider.push(permission);
@@ -110,12 +110,21 @@ async function registerAndCheck<E extends EnvDeclaration>(
     connector.name,
     connector.description,
   );
-  const wider = keyWiderThanType(await marfa.currentKey(), connector.type.id);
+  const key = await marfa.currentKey();
+  if (key === undefined) {
+    return {
+      id,
+      source,
+      problem:
+        "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
+    };
+  }
+  const wider = keyWiderThanType(key, connector.type.id);
   if (wider.length > 0) {
     return {
       id,
       source,
-      problem: `the key holds more than read and write on ${connector.type.id}, and is refused: ${wider.join(", ")}. Mint it as the template's README says.`,
+      problem: `the key ${key.id} holds more than read and write on ${connector.type.id}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
     };
   }
   const served = await marfa.type(connector.type.id);

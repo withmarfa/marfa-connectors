@@ -107,6 +107,7 @@ export class ScriptedServer {
    * the kit's check on start.
    */
   grants: {
+    sources?: string[];
     permissions?: string[];
     is_operator?: boolean;
     type_permissions?: Record<string, string>;

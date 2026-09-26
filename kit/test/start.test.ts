@@ -201,7 +201,7 @@ describe("the key check on start", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
-  it("refuses a key wider than its type, naming what is too wide, before it writes anything", async () => {
+  it("refuses a key wider than its type, naming the key and what is too wide, before it registers the type or writes a row", async () => {
     harness.server.grants = {
       permissions: ["keys.mint", "items.purge"],
       type_permissions: { "test.entry": "write", "core.note": "read" },
@@ -225,15 +225,40 @@ describe("the key check on start", () => {
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
   });
 
-  it("refuses a key reaching every type by a pattern, and the operator key", async () => {
-    for (const grants of [
-      { type_permissions: { "*": "write" } },
-      { is_operator: true },
-    ]) {
+  it("refuses a pattern over every type, the operator key, and any extension or profile reach, naming each", async () => {
+    for (const [grants, named] of [
+      [{ type_permissions: { "*": "write" } }, "type *=write"],
+      [{ is_operator: true }, "it is the operator key"],
+      [{ extension_permissions: { "app.x": "read" } }, "extension app.x=read"],
+      [{ profile_permissions: { email: "read" } }, "profile email=read"],
+    ] as const) {
       harness.server.grants = grants;
       expect(await harness.once(vendor([entry]))).toBe(1);
+      expect(harness.lastRun().error).toContain(named);
+      expect(harness.lastRun().error).toContain("key-1");
       expect(harness.server.rows).toEqual([]);
     }
+  });
+
+  it("starts on a key that claims sources besides its own, as a second account's does", async () => {
+    harness.server.grants = {
+      sources: ["test"],
+      type_permissions: { "test.entry": "write" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(0);
+  });
+
+  it("stops on a server with no door for a key to read itself, saying so", async () => {
+    harness.server.refuseNext(
+      "GET /keys/current",
+      404,
+      "not_found",
+      "Not found",
+    );
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lastRun().error).toContain("GET /keys/current");
+    expect(harness.server.rows).toEqual([]);
   });
 
   it("reads a level of none as holding nothing", async () => {
