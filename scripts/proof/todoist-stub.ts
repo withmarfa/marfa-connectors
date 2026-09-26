@@ -280,10 +280,11 @@ export class TodoistStub {
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
-      // A completed task is answered, checked, as the real door answers
-      // it; only a deleted one is not found.
+      // A completed task is answered, checked, and a deleted one,
+      // `is_deleted`, as the real door answers them; only one never made
+      // is not found.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
-      if (found === undefined || found.is_deleted) {
+      if (found === undefined) {
         reply(404, { error: "Task not found" });
         return;
       }
@@ -432,7 +433,9 @@ export class TodoistStub {
       }
       case "item_delete": {
         const task = id === undefined ? undefined : this.tasks.get(id);
-        if (task === undefined || task.is_deleted) return { status: notFound };
+        if (task === undefined) return { status: notFound };
+        // Todoist answers the delete of a task already deleted as done.
+        if (task.is_deleted) return { status: "ok" };
         // Todoist deletes a task with every task beneath it.
         const doomed = [task.id];
         // An array's iterator reaches what is pushed while it runs, so

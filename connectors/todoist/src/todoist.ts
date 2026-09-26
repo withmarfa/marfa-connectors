@@ -262,9 +262,10 @@ export async function send(
 /**
  * What the task door answers: the task, open or completed (the door
  * answers a completed one too, `checked`, whatever the documentation's
- * "active task" suggests), `missing` for one deleted, or `forbidden` for
- * one the token cannot reach, such as another person's in a shared
- * project.
+ * "active task" suggests), `missing` for one deleted or never there, or
+ * `forbidden` for one the token cannot reach, such as another person's in
+ * a shared project. The door answers a deleted task too, `is_deleted`, as
+ * a real account showed.
  */
 export type TaskAnswer = TodoistItem | "missing" | "forbidden";
 
@@ -288,7 +289,8 @@ export async function getTask(
       `Todoist answered ${String(response.status)} for task ${id}`,
     );
   }
-  return (await response.json()) as TodoistItem;
+  const found = (await response.json()) as TodoistItem;
+  return found.is_deleted === true ? "missing" : found;
 }
 
 /**
