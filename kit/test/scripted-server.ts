@@ -630,8 +630,9 @@ export class ScriptedServer {
   /**
    * The stream: a comment, the head, then every event after the cursor of
    * the type asked for, each frame carrying the row as it then was, then
-   * the marker naming where the stream has reached; and then it stays
-   * open, as the real one does, until the reader closes it.
+   * the marker naming where the stream has reached (which on the real
+   * server follows anything written during the replay too); and then it
+   * stays open, as the real one does, until the reader closes it.
    */
   private stream(
     query: URLSearchParams,

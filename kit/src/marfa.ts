@@ -166,10 +166,10 @@ export class Marfa {
 
   /**
    * The log from a cursor, as frames: the first names the head, then
-   * every retained event after the cursor, then the marker naming where
-   * the stream has reached, then whatever is written while the stream is
-   * open. Narrowed to the type and its subtree, without edges, and ended
-   * by the signal.
+   * every retained event after the cursor and whatever was written while
+   * they were replayed, then the marker naming where the stream has
+   * reached, then whatever is written after. Narrowed to the type and its
+   * subtree, without edges, and ended by the signal.
    */
   async events(
     type: string,

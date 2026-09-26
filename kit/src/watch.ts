@@ -33,36 +33,19 @@ export interface WatchRead {
 export class Memory {
   constructor(readonly written: Record<string, Written>) {}
 
-  remember(
-    id: string,
-    version: number,
-    state: string,
-    vendorAt?: string,
-  ): void {
+  remember(id: string, version: number, state: string, agreed?: string): void {
     this.written[id] = {
       version,
       state,
-      ...(vendorAt !== undefined && { vendorAt }),
+      ...(agreed !== undefined && { agreed }),
     };
   }
 
-  /**
-   * The vendor's time on the entry the record's row was last agreed with.
-   * An agreement closes what was carried: the vendor's copy has come back.
-   */
-  agreeVendor(id: string, vendorAt: string | undefined): void {
+  /** The properties the record's row was last agreed on, by fingerprint. */
+  agree(id: string, fingerprint: string): void {
     const record = this.written[id];
     if (record === undefined) return;
-    if (vendorAt === undefined) Reflect.deleteProperty(record, "vendorAt");
-    else record.vendorAt = vendorAt;
-    Reflect.deleteProperty(record, "carried");
-  }
-
-  /** What the row's properties were when a change to it was carried to the vendor. */
-  carry(id: string, fingerprint: string): void {
-    const record = this.written[id];
-    if (record === undefined) return;
-    record.carried = fingerprint;
+    record.agreed = fingerprint;
   }
 
   forget(id: string): void {

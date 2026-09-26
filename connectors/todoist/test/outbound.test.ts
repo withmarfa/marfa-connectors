@@ -178,7 +178,7 @@ describe("the mapping back", () => {
 });
 
 describe("a row Todoist has not been told about", () => {
-  it("is created there with every travelling field, linked to the task it made, and closed if completed", async () => {
+  it("is created there with every traveling field, linked to the task it made, and closed if completed", async () => {
     // The rows are carried before the first sync, so the zone a whole-day
     // date is written in is asked of Todoist, once for both.
     todoist.put(todoist.task("seed"));

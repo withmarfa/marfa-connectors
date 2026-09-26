@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleaned, same } from "../src/values.js";
+import { cleaned, fingerprint, same } from "../src/values.js";
 
 describe("same", () => {
   it("takes a key holding null as a key the object does not have", () => {
@@ -26,6 +26,17 @@ describe("same", () => {
       false,
     );
     expect(same([1, 2], [2, 1])).toBe(false);
+  });
+});
+
+describe("fingerprint", () => {
+  it("names a value's content, keys in any order and a null as an absent key", () => {
+    expect(fingerprint({ a: 1, b: { c: [1, 2] } })).toBe(
+      fingerprint({ b: { c: [1, 2] }, a: 1 }),
+    );
+    expect(fingerprint({ a: 1, b: null })).toBe(fingerprint({ a: 1 }));
+    expect(fingerprint({ a: 1 })).not.toBe(fingerprint({ a: 2 }));
+    expect(fingerprint([1, 2])).not.toBe(fingerprint([2, 1]));
   });
 });
 

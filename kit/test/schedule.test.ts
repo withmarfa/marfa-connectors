@@ -246,7 +246,9 @@ describe("--once", () => {
     await until(() => held.runs === 1 && harness.server.heartbeats === 1);
     await harness.clock.wake(minute);
     await until(() => harness.server.heartbeats === 2);
-    expect(harness.clock.waiting).toBe(1);
+    // The next sleep is registered a tick after the beat lands, so it is
+    // waited for rather than asserted at once.
+    await until(() => harness.clock.waiting === 1);
     release();
     expect(await exit).toBe(0);
     expect(harness.clock.waiting).toBe(0);

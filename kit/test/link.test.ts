@@ -92,7 +92,7 @@ describe("the connector's own row", () => {
 });
 
 describe("setLink", () => {
-  it("writes the vendor's id onto a row's link field, and the write is the connector's own", async () => {
+  it("writes the vendor's id onto a row's link property, and the write is the connector's own", async () => {
     const theirs = harness.server.insert(
       undefined,
       { title: "Theirs" },
@@ -347,7 +347,13 @@ describe("a row the connector wrote before its link existed", () => {
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    // The condition is not raised again, and the run says it cleared.
     expect(harness.lastRun().summary).not.toContain("before its link existed");
+    expect(harness.lines).toContainEqual(
+      expect.stringContaining(
+        "cleared: 1 row the connector wrote before its link existed",
+      ),
+    );
   });
 });
 
@@ -378,5 +384,26 @@ describe("a row restored after its trash was carried back", () => {
     await harness.twoWay(held);
     expect(harness.server.row("a:1").state).toBe("archived");
     expect(harness.lastRun().summary).toMatch(/archived 1/);
+  });
+});
+
+describe("a row relinked by the vendor's entry", () => {
+  it("is not found under its old value in the same run", async () => {
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    // The vendor now lists the entry under a new id, and deletes the old
+    // one: the row moves to the new id, and the deletion finds nothing.
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, vendor_id: "v1-new" },
+        changed_at: "2026-09-27T00:00:00.000Z",
+      },
+    ];
+    held.archived = ["v1"];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1-new");
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(harness.lastRun().summary).toMatch(/updated 1, archived 0/);
   });
 });

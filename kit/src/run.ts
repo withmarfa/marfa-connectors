@@ -194,18 +194,18 @@ export async function runOnce<E extends EnvDeclaration>(
       // A write the push made itself, the link, is a later agreement
       // and stands.
       const record = memory.written[change.item.id];
-      if (change.kind === "purged") memory.forget(change.item.id);
-      else if (record === undefined || record.version <= change.item.version) {
+      // A purged row's record went with the purge's frame.
+      if (change.kind === "purged") return;
+      if (record === undefined || record.version <= change.item.version) {
         memory.remember(change.item.id, change.item.version, change.item.state);
       }
-      // What was carried, so the vendor's copy of it, when it comes back
-      // under the vendor's own time, is the agreement and not a change.
-      if (change.kind !== "purged") {
-        memory.carry(
-          change.item.id,
-          fingerprint(cleaned(change.item.properties)),
-        );
-      }
+      // What was carried is what the two sides now agree on, so the
+      // vendor's copy of it, when it comes back under a new time, is the
+      // agreement and not a change.
+      memory.agree(
+        change.item.id,
+        fingerprint(cleaned(change.item.properties)),
+      );
     };
     if (pending !== undefined && connector.onChange !== undefined) {
       // A row the vendor has not been told about is carried before the
