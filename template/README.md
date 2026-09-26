@@ -3,6 +3,7 @@
 A connector is a small folder: `src/main.ts`, what the connector is and what one run reads from its vendor, beside the type it writes and any helpers its vendor needs. The kit, `@withmarfa/connector`, does the rest:
 
 - registers the connector on every start;
+- refuses a key that holds more than its type needs;
 - checks its type against the instance's;
 - compares what the run found with the rows already written, and writes only what changed;
 - heartbeats, keeps the connector's state, and reports each run.
@@ -57,6 +58,8 @@ marfa keys create --label <name> --source <name> --type-permission <type>=write 
 - `--type-permission <type>=write`: reach on the connector's own type and on nothing else.
 - `--metadata-permission types=write`: lets it register its type on its first start.
 - `--default-tier feed`: puts what it writes in the feed.
+
+Naming a map, the key holds no permission: it cannot mint keys, purge, or change the instance, and it reads and writes no other type's rows. `types=write` still lets it register a type under any id, which is why it matters only on the first start. The kit reads the key back on every start (`GET /keys/current`) and refuses to run on one that holds anything more than read and write on its own type and `types` to register it, naming the key and what is too wide, before it registers its type or writes a row; the refusal is the registration's failed run. A key minted naming nothing, which takes the minter's whole set, is refused, and so is one minted before an instance gave a key named with maps no permission beside them. Revoke such a key with `marfa keys revoke <id>` and mint another as above; its source is free again once it is revoked. The revoked key's registration stays, with its failed run, until `marfa connectors delete <id>` removes it.
 
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among live keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 

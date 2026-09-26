@@ -84,7 +84,7 @@ export type Minted = Awaited<ReturnType<typeof mint>>;
 /**
  * The connector's key, minted as the README's command mints it, and held to
  * what that command asks for: its source, write on its type and nothing
- * else, types write to register its type, and the feed tier.
+ * else, types write to register its type, no permission, and the feed tier.
  */
 export async function mintAsReadmeSays(
   marfa: MarfaClient,
@@ -97,18 +97,26 @@ export async function mintAsReadmeSays(
       const key = await mint(marfa, flags);
       minted = key;
       const types = JSON.stringify(key.type_permissions);
-      const metadata = key.metadata_permissions?.["types"];
+      const metadata = JSON.stringify(key.metadata_permissions ?? {});
+      const permissions = JSON.stringify(key.permissions ?? []);
+      const rest = JSON.stringify([
+        key.edge_permissions ?? {},
+        key.extension_permissions ?? {},
+        key.profile_permissions ?? {},
+      ]);
       if (
         key.source !== flags.source ||
         key.default_tier !== "feed" ||
         types !== JSON.stringify({ [flags.typePermission]: "write" }) ||
-        metadata !== "write"
+        metadata !== JSON.stringify({ types: "write" }) ||
+        permissions !== "[]" ||
+        rest !== "[{},{},{}]"
       ) {
         throw new Error(
-          `source ${key.source}, type_permissions ${types}, types ${String(metadata)}, default tier ${key.default_tier}`,
+          `source ${key.source}, type_permissions ${types}, metadata ${metadata}, permissions ${permissions}, edge, extension and profile ${rest}, default tier ${key.default_tier}`,
         );
       }
-      return `source ${key.source}, type_permissions ${types}, metadata types ${metadata}, default tier ${key.default_tier}`;
+      return `source ${key.source}, type_permissions ${types}, metadata ${metadata}, permissions ${permissions}, no other map, default tier ${key.default_tier}`;
     },
   );
   if (minted === undefined) throw new Error("the key check answered nothing");

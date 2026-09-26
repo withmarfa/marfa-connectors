@@ -6,7 +6,7 @@ import {
   readEnvironment,
 } from "./environment.js";
 import { cap, Logger } from "./log.js";
-import { Marfa, Refusal } from "./marfa.js";
+import { Marfa, Refusal, type Key } from "./marfa.js";
 import { describe, runOnce, type RunSetup } from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
 import {
@@ -74,6 +74,34 @@ async function checkType<E extends EnvDeclaration>(
   return `the type ${connector.type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
 }
 
+/**
+ * What the key holds beyond read and write on the connector's own type and
+ * the registration of that type, each named: nothing, for a key minted as
+ * the template's README says. A key that could mint, purge or reach
+ * another type is refused before the connector does anything with it.
+ */
+function keyWiderThanType(key: Key, type: string): string[] {
+  const wider: string[] = [];
+  if (key.is_operator) wider.push("it is the operator key");
+  for (const permission of key.permissions ?? []) wider.push(permission);
+  const held = (
+    family: string,
+    map: Record<string, string> | undefined,
+    allowed: (name: string) => boolean,
+  ): void => {
+    for (const [name, level] of Object.entries(map ?? {})) {
+      if (level === "none" || allowed(name)) continue;
+      wider.push(`${family} ${name}=${level}`);
+    }
+  };
+  held("type", key.type_permissions, (name) => name === type);
+  held("metadata", key.metadata_permissions, (name) => name === "types");
+  held("edge", key.edge_permissions, () => false);
+  held("extension", key.extension_permissions, () => false);
+  held("profile", key.profile_permissions, () => false);
+  return wider;
+}
+
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
@@ -82,6 +110,23 @@ async function registerAndCheck<E extends EnvDeclaration>(
     connector.name,
     connector.description,
   );
+  const key = await marfa.currentKey();
+  if (key === undefined) {
+    return {
+      id,
+      source,
+      problem:
+        "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
+    };
+  }
+  const wider = keyWiderThanType(key, connector.type.id);
+  if (wider.length > 0) {
+    return {
+      id,
+      source,
+      problem: `the key ${key.id} holds more than read and write on ${connector.type.id}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+    };
+  }
   const served = await marfa.type(connector.type.id);
   if (served !== undefined) {
     return { id, source, problem: await checkType(connector, marfa, served) };

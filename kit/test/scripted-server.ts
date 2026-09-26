@@ -101,6 +101,21 @@ export class ScriptedServer {
   readonly source: string;
   /** The calling key's own source, the connector's unless a test says not. */
   keySource: string;
+  /**
+   * What the calling key holds beside its source: nothing unless a test
+   * says so, which is narrower than any connector's type and so passes
+   * the kit's check on start.
+   */
+  grants: {
+    sources?: string[];
+    permissions?: string[];
+    is_operator?: boolean;
+    type_permissions?: Record<string, string>;
+    metadata_permissions?: Record<string, string>;
+    edge_permissions?: Record<string, string>;
+    extension_permissions?: Record<string, string>;
+    profile_permissions?: Record<string, string>;
+  } = {};
   url = "";
   rows: Row[] = [];
   types = new Map<string, Record<string, unknown>>();
@@ -416,6 +431,26 @@ export class ScriptedServer {
     const parts = url.pathname.split("/").filter((part) => part !== "");
     const input = (body ?? {}) as Record<string, unknown>;
 
+    if (method === "GET" && url.pathname === "/keys/current") {
+      send(200, {
+        id: "key-1",
+        label: "scripted",
+        source: this.keySource,
+        sources: [],
+        permissions: [],
+        default_tier: "feed",
+        is_operator: false,
+        type_permissions: {},
+        extension_permissions: {},
+        edge_permissions: {},
+        metadata_permissions: {},
+        profile_permissions: {},
+        created_at: this.now(),
+        last_used_at: null,
+        ...this.grants,
+      });
+      return;
+    }
     if (method === "POST" && url.pathname === "/connectors") {
       this.registrations += 1;
       const at = this.now();

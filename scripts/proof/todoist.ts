@@ -9,6 +9,7 @@ import {
   registeredAsKindOf,
   typeHeld,
   item,
+  keyBody,
   lastRun,
   mintAsReadmeSays,
   moved,
@@ -627,6 +628,66 @@ export async function proveTodoist(
           throw new Error(`task r ${JSON.stringify(task)}`);
         }
         return `item_delete sent for r; the task is deleted and its due date still ${task.due["date"]}`;
+      },
+    );
+
+    await check(
+      "todoist: a key holding permissions beside its type is refused at start, before it registers the type or writes a row",
+      async () => {
+        // The README's maps with every permission beside them: the key an
+        // instance gave the README's command before a key named with maps
+        // held no permission it did not name.
+        const { data: wide, error } = await marfa.POST("/keys", {
+          body: {
+            ...keyBody({
+              label: "todoist-wide",
+              source: "todoist-wide",
+              typePermission: "todoist.task",
+            }),
+            permissions: [
+              "schema.write",
+              "keys.mint",
+              "items.purge",
+              "webhooks.manage",
+              "config.manage",
+              "audit.read",
+              "grants.manage",
+            ],
+          },
+        });
+        if (wide === undefined)
+          throw new Error(`the wide key was refused: ${JSON.stringify(error)}`);
+        const before = await rows();
+        const sent = todoist.commands().length;
+        const refused = new ConnectorUnderProof("todoist", url, wide.key, {
+          TODOIST_API_TOKEN: "todoist-proof-token",
+          TODOIST_API_URL: todoist.url,
+        });
+        try {
+          const { code, output } = await refused.once();
+          const changed = moved(before, await rows());
+          if (
+            code !== 1 ||
+            !output.includes(
+              "holds more than read and write on todoist.task",
+            ) ||
+            !output.includes("keys.mint") ||
+            !output.includes("items.purge") ||
+            output.includes("type todoist.task") ||
+            changed.length > 0 ||
+            todoist.commands().length !== sent
+          ) {
+            throw new Error(
+              `exit ${String(code)}; moved ${changed.join(", ") || "nothing"}; ${String(todoist.commands().length - sent)} commands; ${output.slice(-400)}`,
+            );
+          }
+          const line = output
+            .split("\n")
+            .find((l) => l.includes("holds more than"));
+          return `exit 1, nothing written or sent: ${String(line).slice(0, 300)}`;
+        } finally {
+          await refused.dispose();
+        }
       },
     );
   } finally {
