@@ -207,21 +207,29 @@ export async function runOnce<E extends EnvDeclaration>(
         fingerprint(cleaned(change.item.properties)),
       );
     };
+    const carried = new Set<string>();
     if (pending !== undefined && connector.onChange !== undefined) {
-      // A row the vendor has not been told about is carried before the
-      // vendor is read. Nothing the vendor sends can concern it, and a
-      // run that failed between the vendor's answer and the link would
-      // otherwise read the vendor's copy first and create the row's twin,
-      // leaving the link nowhere to go.
+      // A row the vendor has not been told about, and a restore, which
+      // may have to make the row again at a vendor that no longer has it,
+      // are carried before the vendor is read. A run that failed between
+      // the vendor's answer and the link would otherwise read the vendor's
+      // copy first and create the row's twin, leaving the link nowhere to
+      // go. A restore stays pending through the read, so what the vendor
+      // still sends of the trash is not written over the restored row.
       for (const change of pending.values()) {
-        if (change.kind !== "created") continue;
+        if (change.kind !== "created" && change.kind !== "restored") continue;
         await carry(change);
-        pending.delete(change.item.id);
+        if (change.kind === "created") pending.delete(change.item.id);
+        else carried.add(change.item.id);
       }
     }
     await connector.run(context);
     if (pending !== undefined && connector.onChange !== undefined) {
-      for (const change of pending.values()) await carry(change);
+      for (const change of pending.values()) {
+        if (!carried.has(change.item.id) || change.kind !== "restored") {
+          await carry(change);
+        }
+      }
     }
   } catch (error) {
     failure = error;

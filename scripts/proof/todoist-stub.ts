@@ -66,6 +66,8 @@ type CommandStatus = "ok" | Record<string, unknown>;
  * to it on the next sync, as Todoist's does.
  */
 export class TodoistStub {
+  /** The account's projects, where a test names them; any project otherwise. */
+  projects: Set<string> | undefined;
   readonly tasks = new Map<string, StubTask>();
   readonly received: ReceivedRequest[] = [];
   account = "1001";
@@ -376,6 +378,20 @@ export class TodoistStub {
     };
     switch (command.type) {
       case "item_add": {
+        const project = args["project_id"];
+        if (
+          typeof project === "string" &&
+          this.projects !== undefined &&
+          !this.projects.has(project)
+        ) {
+          return {
+            status: {
+              error_code: 21,
+              error: "Project not found",
+              http_code: 404,
+            },
+          };
+        }
         this.made += 1;
         const made = `made-${String(this.made)}`;
         this.tasks.set(
@@ -416,8 +432,19 @@ export class TodoistStub {
       }
       case "item_delete": {
         const task = id === undefined ? undefined : this.tasks.get(id);
-        if (task === undefined) return { status: notFound };
-        this.delete(task.id);
+        if (task === undefined || task.is_deleted) return { status: notFound };
+        // Todoist deletes a task with every task beneath it.
+        const doomed = [task.id];
+        // An array's iterator reaches what is pushed while it runs, so
+        // this walks every generation.
+        for (const parent of doomed) {
+          for (const child of this.tasks.values()) {
+            if (child.parent_id === parent && !child.is_deleted) {
+              doomed.push(child.id);
+            }
+          }
+        }
+        for (const gone of doomed) this.delete(gone);
         return { status: "ok" };
       }
       default:

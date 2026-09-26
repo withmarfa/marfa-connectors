@@ -622,6 +622,79 @@ describe("transitions over runs", () => {
     expect(marfa.byId(row.id).properties["todoist_id"]).toBe(madeId);
   });
 
+  it("makes one task and keeps one row when a run fails between making the task again and linking it", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    marfa.refuseNext(`PATCH /items/${row.id}`, 503, "unavailable");
+    expect((await once()).code).not.toBe(0);
+    await landed();
+    const rows = marfa.rows.filter((r) => r.type === "todoist.task");
+    expect(rows.map((r) => r.id)).toEqual([row.id]);
+    const live = [...todoist.tasks.values()].filter((t) => !t.is_deleted);
+    expect(live).toHaveLength(1);
+    expect(marfa.byId(row.id).properties["todoist_id"]).toBe(live[0]?.id);
+    expect(marfa.byId(row.id).state).toBe("active");
+  });
+
+  it("deletes a parent's subtasks with it, as Todoist does, and their rows are archived", async () => {
+    todoist.put(todoist.task("p", { content: "Parent" }));
+    todoist.put(todoist.task("c", { content: "Child", parent_id: "p" }));
+    await landed();
+    const parent = marfa.row(`${todoist.account}:p`);
+    marfa.trash(parent.id);
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
+      ["item_delete", "p"],
+    ]);
+    expect(todoist.tasks.get("c")?.is_deleted).toBe(true);
+    await landed();
+    expect(marfa.row(`${todoist.account}:c`).state).toBe("archived");
+    expect(marfa.byId(parent.id).state).toBe("trashed");
+  });
+
+  it("takes a task Todoist no longer has as deleted, with no condition", async () => {
+    const row = await synced("a");
+    // Deleted in Todoist with no delta saying so yet.
+    todoist.delete("a");
+    marfa.trash(row.id);
+    await landed();
+    expect(todoist.commands("item_delete").map((c) => c.args["id"])).toEqual([
+      "a",
+    ]);
+    expect(summary()).not.toContain("refused");
+  });
+
+  it("makes the task again when an archived row is brought back after Todoist deleted it", async () => {
+    const row = await synced("a");
+    todoist.delete("a");
+    await landed();
+    expect(marfa.byId(row.id).state).toBe("archived");
+    marfa.transition(row.id, "active");
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual(["item_add"]);
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(madeId).not.toBe("a");
+    expect(todoist.tasks.get(madeId)?.is_deleted).toBe(false);
+  });
+
+  it("makes the task again in the Inbox when its project is gone", async () => {
+    todoist.projects = new Set(["inbox"]);
+    todoist.put(todoist.task("a", { content: "Orphaned", project_id: "gone" }));
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    await landed();
+    const adds = todoist.commands("item_add");
+    expect(adds.map((c) => c.args["project_id"])).toEqual(["gone", undefined]);
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(madeId)?.project_id).toBe("inbox");
+    expect(summary()).not.toContain("refused");
+  });
+
   it("recreates the task in its project and section, with its labels", async () => {
     todoist.put(
       todoist.task("a", {
@@ -706,7 +779,7 @@ describe("transitions over runs", () => {
     expect(todoist.tasks.get("a")?.checked).toBe(false);
   });
 
-  it("sends a second trash as a command of its own, since a transition moves no version", async () => {
+  it("sends a second trash as a command of its own, since it deletes the task the restore made", async () => {
     const row = await synced("a");
     marfa.trash(row.id);
     await landed();
@@ -717,6 +790,10 @@ describe("transitions over runs", () => {
     const deletes = todoist.commands("item_delete");
     expect(deletes).toHaveLength(2);
     expect(deletes[0]?.uuid).not.toBe(deletes[1]?.uuid);
+    expect(deletes.map((c) => c.args["id"])).toEqual([
+      "a",
+      marfa.byId(row.id).properties["todoist_id"],
+    ]);
     expect(marfa.byId(row.id).state).toBe("trashed");
   });
 
