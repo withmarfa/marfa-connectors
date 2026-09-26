@@ -167,6 +167,10 @@ export class Rows {
   private readonly byLink = new Map<string, Row>();
   /** By natural key, under the connector's own source. */
   private readonly byKey = new Map<string, Row>();
+  /** The link value each row was last indexed under, by row id. */
+  private readonly linkByRow = new Map<string, string>();
+  /** The vendor's time on each entry created this run, by natural key, for the memory. */
+  private readonly vendorAtByKey = new Map<string, string>();
   /** Rows counted as a conflict this run, so one is counted once. */
   private readonly conflicted = new Set<string>();
 
@@ -194,6 +198,9 @@ export class Rows {
           this.counts.skipped += 1;
           continue;
         }
+        if (entry.changed_at !== undefined) {
+          this.vendorAtByKey.set(entry.source_id, entry.changed_at);
+        }
         creates.push({
           source_id: entry.source_id,
           properties,
@@ -208,6 +215,9 @@ export class Rows {
       const timeUnchanged =
         occurredAt === undefined || sameInstant(row.occurred_at, occurredAt);
       if (same(row.properties, properties) && timeUnchanged) {
+        // The two sides agree, and the vendor's time on the entry says so
+        // until the vendor moves it.
+        this.options.memory.agreeVendor(row.id, entry.changed_at);
         this.counts.unchanged += 1;
         continue;
       }
@@ -221,6 +231,7 @@ export class Rows {
           occurredAt,
         );
         this.remember(item);
+        this.options.memory.agreeVendor(item.id, entry.changed_at);
         // More than one step means another write landed between the read
         // and this one, and the row holds that writer's changes beside this
         // run's.
@@ -320,6 +331,12 @@ export class Rows {
       pending.set(row.id, change);
     }
     if (transition(change)) return true;
+    // A vendor that lists every entry sends this one whether or not it
+    // changed. One carrying the time it carried when the two sides last
+    // agreed is unchanged there: the change in Marfa stands, is carried,
+    // and is no conflict.
+    const agreedAt = this.options.memory.written[row.id]?.vendorAt;
+    if (agreedAt !== undefined && entry.changed_at === agreedAt) return false;
     if (change.kind === "restored") {
       // What the vendor sends after a trash was carried back can be the
       // echo of what the trash did there. An entry from before the restore
@@ -569,7 +586,16 @@ export class Rows {
   private index(row: Row): void {
     if (row.source_id !== undefined) this.byKey.set(row.source_id, row);
     const value = this.linkOf(row.properties);
-    if (value !== undefined) this.byLink.set(value, row);
+    // A row relinked gives up the value it carried, or an entry under the
+    // old value would still find it.
+    const before = this.linkByRow.get(row.id);
+    if (before !== undefined && before !== value) this.byLink.delete(before);
+    if (value !== undefined) {
+      this.byLink.set(value, row);
+      this.linkByRow.set(row.id, value);
+    } else {
+      this.linkByRow.delete(row.id);
+    }
   }
 
   /** A write of the connector's own, as the rows and the memory now hold it. */
@@ -589,7 +615,12 @@ export class Rows {
         source_id: created.source_id,
         item: undefined,
       });
-      this.options.memory.remember(result.id, 1, "active");
+      this.options.memory.remember(
+        result.id,
+        1,
+        "active",
+        this.vendorAtByKey.get(created.source_id),
+      );
       this.counts.created += 1;
       return;
     }

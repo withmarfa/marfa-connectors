@@ -126,10 +126,12 @@ const connector = defineConnector({
     if (kind === "archived") return;
     const id = item.properties["example_id"];
     const linked = typeof id === "string" && id !== "" ? id : undefined;
+    // Null for a property the row does not have, so a value cleared in
+    // Marfa is cleared at the vendor rather than left as it was.
     const body = {
-      title: item.properties["title"],
-      url: item.properties["url"],
-      note: item.properties["note"],
+      title: item.properties["title"] ?? null,
+      url: item.properties["url"] ?? null,
+      note: item.properties["note"] ?? null,
     };
     try {
       if (linked === undefined) {

@@ -30,6 +30,15 @@ interface VendorWrite {
   idempotencyKey: string | undefined;
 }
 
+/** A body as the vendor stores it: a null is a key it does not keep. */
+function withoutNulls(
+  body: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(body ?? {}).filter(([, value]) => value !== null),
+  );
+}
+
 let marfa: ScriptedServer;
 let vendor: Server;
 let vendorUrl: string;
@@ -92,8 +101,9 @@ beforeEach(async () => {
         made += 1;
         const item: VendorItem = {
           id: `made-${String(made)}`,
-          ...(body as Partial<VendorItem>),
+          ...(withoutNulls(body) as Partial<VendorItem>),
           created: "2026-09-25T09:00:00.000Z",
+          updated: "2026-09-25T09:00:00.000Z",
         };
         items.push(item);
         if (idempotencyKey !== undefined) {
@@ -107,8 +117,16 @@ beforeEach(async () => {
         res.writeHead(404).end();
         return;
       }
-      if (method === "DELETE") found.deleted = true;
-      else Object.assign(found, body);
+      if (method === "DELETE") {
+        found.deleted = true;
+      } else {
+        // A null clears the key, as the example vendor's door does.
+        for (const [key, value] of Object.entries(body ?? {})) {
+          if (value === null) Reflect.deleteProperty(found, key);
+          else Reflect.set(found, key, value);
+        }
+      }
+      found.updated = "2026-09-25T10:00:00.000Z";
       res.end(JSON.stringify({ id }));
     });
   });
@@ -211,7 +229,7 @@ describe("the template, run as a process", () => {
       {
         method: "POST",
         path: "/items",
-        body: { title: "Theirs", note: "made in Marfa" },
+        body: { title: "Theirs", url: null, note: "made in Marfa" },
         idempotencyKey: theirs.id,
       },
     ]);
@@ -228,7 +246,7 @@ describe("the template, run as a process", () => {
       {
         method: "PUT",
         path: "/items/1",
-        body: { title: "One, edited in Marfa" },
+        body: { title: "One, edited in Marfa", url: null, note: null },
         idempotencyKey: undefined,
       },
       {
@@ -262,7 +280,12 @@ describe("the template, run as a process", () => {
     expect(writes.map((write) => [write.method, write.path])).toEqual([
       ["PUT", "/items/1"],
     ]);
-    expect(writes[0]?.body).toEqual({ title: "One", deleted: false });
+    expect(writes[0]?.body).toEqual({
+      title: "One",
+      url: null,
+      note: null,
+      deleted: false,
+    });
     expect(items[0]?.deleted).toBe(false);
     expect(marfa.row("acct:1").state).toBe("active");
     expect(marfa.runs.at(-1)?.summary).toMatch(/archived 0, .*pushed 1/);
@@ -317,6 +340,116 @@ describe("the template, run as a process", () => {
     expect(marfa.runs).toHaveLength(2);
     expect(marfa.runs.at(-1)?.summary).toContain("unchanged 1");
     expect(marfa.runs.at(-1)?.summary).not.toContain("no title");
+  });
+
+  it("clears at the vendor what was cleared in Marfa, and keeps it cleared", async () => {
+    items = [
+      {
+        id: "1",
+        title: "One",
+        note: "a note",
+        created: "2026-09-01T10:00:00.000Z",
+        updated: "2026-09-01T10:00:00.000Z",
+      },
+    ];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.rewrite("acct:1", { example_id: "1", title: "One" });
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(writes[0]?.body).toEqual({ title: "One", url: null, note: null });
+    expect(items[0]).not.toHaveProperty("note");
+    // The run after reads the vendor's copy without the note and writes
+    // nothing back.
+    expect((await once()).code).toBe(0);
+    expect(marfa.byId(mine.id).properties).toEqual({
+      example_id: "1",
+      title: "One",
+    });
+    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 0, updated 0, /);
+  });
+
+  it("counts a plain edit as no conflict when the vendor lists the item unchanged", async () => {
+    items = [
+      {
+        id: "1",
+        title: "One",
+        created: "2026-09-01T10:00:00.000Z",
+        updated: "2026-09-01T10:00:00.000Z",
+      },
+    ];
+    expect((await once()).code).toBe(0);
+    marfa.edit(marfa.row("acct:1").id, { title: "One, edited in Marfa" });
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 1, conflicts 0",
+    );
+    expect(items[0]?.title).toBe("One, edited in Marfa");
+  });
+
+  it("takes an item already gone as deleted, sends one create under a repeated key, and names a link another row carries", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    marfa.trash(marfa.row("acct:1").id);
+    refuseNextWrite = 404;
+    expect((await once()).code).toBe(0);
+    // The 404 counted as landed: no condition rides the summary.
+    expect(marfa.runs.at(-1)?.summary).toMatch(/pushed 1, own 1, conflicts 0$/);
+
+    // The create's answer landed but the link's write was refused, so the
+    // create is sent again under the same key and the vendor makes one.
+    const theirs = marfa.insert(
+      undefined,
+      { title: "Theirs" },
+      "example.item",
+      "person",
+    );
+    marfa.refuseNext(`PATCH /items/${theirs.id}`, 503, "unavailable");
+    expect((await once()).code).not.toBe(0);
+    expect((await once()).code).toBe(0);
+    expect(writes.filter((write) => write.method === "POST")).toHaveLength(2);
+    expect(items.filter((item) => item.title === "Theirs")).toHaveLength(1);
+    expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
+
+    // A create the vendor answers with an id another row carries.
+    const holder = marfa.insert(
+      undefined,
+      { title: "Holder", example_id: "made-2" },
+      "example.item",
+      "person",
+    );
+    const taken = marfa.insert(
+      undefined,
+      { title: "Taken" },
+      "example.item",
+      "person",
+    );
+    expect((await once()).code).toBe(0);
+    expect(marfa.byId(taken.id).properties["example_id"]).toBeUndefined();
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `the link made-2 is already carried by ${holder.id}`,
+    );
+  });
+
+  it("fails the run on a refused token during a push, and offers the change again", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    marfa.edit(marfa.row("acct:1").id, { title: "One, edited" });
+    refuseNextWrite = 403;
+    expect((await once()).code).toBe(1);
+    expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+    expect(items[0]?.title).toBe("One");
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.title).toBe("One, edited");
+  });
+
+  it("carries nothing for a row a person archived", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    marfa.transition(marfa.row("acct:1").id, "archived");
+    expect((await once()).code).toBe(0);
+    expect(writes).toEqual([]);
+    expect(marfa.runs.at(-1)?.summary).toMatch(/pushed 1, /);
   });
 
   it("fails visibly at start without its vendor's address", async () => {

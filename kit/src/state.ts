@@ -7,6 +7,13 @@ import type { Logger } from "./log.js";
 export interface Written {
   version: number;
   state: string;
+  /**
+   * The vendor's own time on the entry the two sides last agreed on, so
+   * an entry carrying it again is one the vendor has not changed since.
+   * Absent where the vendor named no time, or the connector's last word
+   * on the row was a change it carried there.
+   */
+  vendorAt?: string;
 }
 
 /**

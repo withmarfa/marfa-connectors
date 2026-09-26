@@ -159,9 +159,16 @@ export async function runOnce<E extends EnvDeclaration>(
         memory,
         setup.signal,
         connector.link,
+        connector.source,
       );
       read = await watch.read();
       for (const change of read.changes) pending.set(change.item.id, change);
+      if (read.unlinked > 0) {
+        raised.set(
+          "unlinked",
+          `${String(read.unlinked)} ${read.unlinked === 1 ? "row" : "rows"} the connector wrote before its link existed ${read.unlinked === 1 ? "is" : "are"} not carried to the vendor; the vendor's entries link them as they come`,
+        );
+      }
       if (read.resync) {
         raised.set(
           "resync",
