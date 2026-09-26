@@ -387,6 +387,70 @@ describe("a row restored after its trash was carried back", () => {
   });
 });
 
+describe("what the two sides agree on, after each kind of agreement", () => {
+  it("is the vendor's entry as written, so listing it again after an edit in Marfa is no conflict", async () => {
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    // The vendor changes the entry, and the change is written.
+    const changed = {
+      ...one,
+      properties: { ...one.properties, title: "One, by the vendor" },
+      changed_at: "2026-09-27T00:00:00.000Z",
+    };
+    held.entries = [changed];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    // A person edits the row; the vendor lists the same entry again.
+    harness.server.edit(harness.server.row("a:1").id, {
+      title: "One, by a person",
+    });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    // The write of the vendor's change is read back as the connector's own.
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 1, conflicts 0$/);
+  });
+
+  it("is the vendor's entry as found unchanged, which a row made in Marfa gains once the vendor lists it", async () => {
+    // Made in Marfa and carried: what was agreed on is the row without
+    // its link, until the vendor's listing of it, link and all, is found
+    // unchanged and becomes the agreement.
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    const held = vendor([]);
+    held.vendorIdFor = (change) =>
+      change.item.id === theirs.id ? "v-theirs" : undefined;
+    expect(await harness.twoWay(held)).toBe(0);
+    held.entries = [
+      {
+        source_id: "v-theirs",
+        properties: { title: "Theirs", vendor_id: "v-theirs" },
+        changed_at: "2026-09-01T00:00:00.000Z",
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toMatch(/unchanged 1/);
+    // A person edits the row; the vendor lists the same entry again.
+    harness.server.edit(theirs.id, { title: "Theirs, by a person" });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.byId(theirs.id).properties["title"]).toBe(
+      "Theirs, by a person",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 0, conflicts 0$/);
+  });
+});
+
 describe("a row relinked by the vendor's entry", () => {
   it("is not found under its old value in the same run", async () => {
     const held = vendor([one]);

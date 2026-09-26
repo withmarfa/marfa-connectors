@@ -48,10 +48,6 @@ export class Memory {
     record.agreed = fingerprint;
   }
 
-  forget(id: string): void {
-    Reflect.deleteProperty(this.written, id);
-  }
-
   /**
    * Whether the event is nothing new to the vendor: the connector's own
    * write, or a frame from before the two sides last agreed. A purge
