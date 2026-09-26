@@ -387,6 +387,71 @@ describe("a row restored after its trash was carried back", () => {
   });
 });
 
+describe("a restored row the vendor may no longer have", () => {
+  it("is offered to remake before the vendor is read, and carried after the read where the vendor still has it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.transition(row.id, "archived");
+    await harness.twoWay(held);
+    harness.server.transition(row.id, "active");
+    held.changes.length = 0;
+    const runs = held.runs;
+    await harness.twoWay(held);
+    expect(held.remakes?.map((r) => [r.change.kind, r.runsBefore])).toEqual([
+      ["restored", runs],
+    ]);
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+  });
+
+  it("is made again before the read where the vendor no longer has it, and not carried again after", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    held.gone = new Map([[row.id, "v1-again"]]);
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.byId(row.id).properties["vendor_id"]).toBe(
+      "v1-again",
+    );
+    expect(harness.server.byId(row.id).state).toBe("active");
+    expect(harness.lastRun().summary).toMatch(/pushed 1/);
+  });
+
+  it("is offered to remake when edited after the restore, as an update that says so", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    harness.server.edit(row.id, { title: "One, back and edited" });
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    const offered = held.remakes?.at(-1)?.change;
+    expect([offered?.kind, offered?.restored]).toEqual(["updated", true]);
+    expect(
+      held.changes.map((change) => [change.kind, change.restored]),
+    ).toEqual([["updated", true]]);
+
+    // A trash after the edit is a trash, with nothing to make again.
+    harness.server.restore(row.id);
+    harness.server.edit(row.id, { title: "One, again" });
+    harness.server.trash(row.id);
+    held.changes.length = 0;
+    const offers = held.remakes?.length ?? 0;
+    await harness.twoWay(held);
+    expect(held.remakes?.length ?? 0).toBe(offers);
+    expect(
+      held.changes.map((change) => [change.kind, change.restored]),
+    ).toEqual([["trashed", undefined]]);
+  });
+});
+
 describe("what the two sides agree on, after each kind of agreement", () => {
   it("is the vendor's entry as written, so listing it again after an edit in Marfa is no conflict", async () => {
     const held = vendor([one]);

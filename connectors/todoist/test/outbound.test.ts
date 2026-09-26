@@ -481,6 +481,27 @@ describe("a conflict", () => {
   });
 });
 
+describe("a restore of a row whose task Todoist still has", () => {
+  it("is decided by the conflict rule with an edit made with it, so a later change in Todoist wins", async () => {
+    const row = await synced("a");
+    marfa.transition(row.id, "archived");
+    await landed();
+    marfa.transition(row.id, "active");
+    marfa.edit(row.id, { title: "Task a, back from Marfa" });
+    todoist.now = "2026-09-26T12:00:00.000000Z";
+    todoist.edit("a", { content: "Task a, later in Todoist" });
+    await landed();
+    expect(todoist.commands("item_add")).toEqual([]);
+    expect(todoist.commands("item_update")).toEqual([]);
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, later in Todoist");
+    expect(marfa.byId(row.id).properties["title"]).toBe(
+      "Task a, later in Todoist",
+    );
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(summary()).toMatch(/conflicts 1/);
+  });
+});
+
 describe("Todoist's answers", () => {
   it("waits as a 429 asks and sends the command again", async () => {
     todoist.put(todoist.task("seed"));

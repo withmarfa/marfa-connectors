@@ -3,7 +3,7 @@ import {
   main,
   type TypeDefinition,
 } from "@withmarfa/connector";
-import { carry, linkField, outboundEnv } from "./outbound.js";
+import { carry, remake, linkField, outboundEnv } from "./outbound.js";
 import {
   accountOf,
   defaultBase,
@@ -94,6 +94,9 @@ const connector = defineConnector({
   },
   onChange(change, context) {
     return carry(change, context, context.env.TODOIST_API_URL ?? defaultBase);
+  },
+  remake(change, context) {
+    return remake(change, context, context.env.TODOIST_API_URL ?? defaultBase);
   },
 });
 

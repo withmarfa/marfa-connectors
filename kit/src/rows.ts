@@ -511,7 +511,8 @@ export class Rows {
       // put away again on the vendor's word: what the vendor deleted can
       // be the echo of the trash that was carried back, and the restore,
       // still pending, is carried and reinstates the vendor's copy.
-      if (this.options.pending?.get(row.id)?.kind === "restored") {
+      const change = this.options.pending?.get(row.id);
+      if (change?.kind === "restored" || change?.restored === true) {
         this.counts.skipped += 1;
         continue;
       }

@@ -86,6 +86,11 @@ export interface Change {
   readonly kind: ChangeKind;
   /** The row as the log last showed it. */
   readonly item: Item;
+  /**
+   * A restore came before this update in the same read of the log, so the
+   * vendor may no longer have the row, as `restored` says of a restore.
+   */
+  readonly restored?: boolean;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {
@@ -134,6 +139,16 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * holds the cursor, so the change is offered again next run.
    */
   onChange?(change: Change, context: WatchContext<E>): Promise<void>;
+  /**
+   * Makes a restored row again at a vendor that no longer has it, and
+   * links the row to what it made. Called before `run` reads the vendor for
+   * a `restored` change, or an update that `restored` marks, so a run that
+   * fails between the vendor's answer and the link cannot read the
+   * vendor's copy first and create the row's twin. Answers whether it made
+   * the row; one the vendor still has is left to `onChange` after the
+   * read, where the conflict rule decides it.
+   */
+  remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
 }
 
 export function defineConnector<

@@ -200,7 +200,32 @@ export async function carry(
     return;
   }
 
-  await sync(item, taskId, timeZone, todoist, context, kind === "restored");
+  await sync(item, taskId, timeZone, todoist, context);
+}
+
+/**
+ * Makes a restored row's task again where Todoist no longer has it: the
+ * trash that deleted it was carried, or a person deleted it there and the
+ * row, archived for it, was brought back. Answers whether it made one; a
+ * task Todoist still has is carried after the read like any change.
+ */
+export async function remake(
+  change: Change,
+  context: WatchContext<OutboundEnv>,
+  base: string,
+): Promise<boolean> {
+  const { item } = change;
+  const taskId = linkOf(item);
+  if (taskId === undefined) return false;
+  const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
+  if ((await todoist.task(taskId)) !== "missing") return false;
+  const timeZone = await timeZoneFor(context, todoist);
+  const made = await add(item, timeZone, todoist, context, taskId);
+  // Abandoned with a condition: the change is done all the same.
+  if (made === undefined) return true;
+  // Held to the row like any other, so a completed row's task is closed.
+  await sync(item, made, timeZone, todoist, context);
+  return true;
 }
 
 /**
@@ -214,7 +239,6 @@ async function sync(
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
-  restored = false,
 ): Promise<void> {
   const { log } = context;
   const task = await todoist.task(taskId);
@@ -223,15 +247,6 @@ async function sync(
       `todoist-refused:${item.id}`,
       `Todoist refuses access to task ${taskId} for row ${item.id}, so its changes are not carried`,
     );
-    return;
-  }
-  if (task === "missing" && restored) {
-    // A row brought back from the trash whose trash deleted its task:
-    // the task is made again and the row linked to it, then held to the
-    // row like any other, so a completed row's task is closed.
-    const made = await add(item, timeZone, todoist, context, taskId);
-    if (made === undefined) return;
-    await sync(item, made, timeZone, todoist, context);
     return;
   }
   if (task === "missing") {

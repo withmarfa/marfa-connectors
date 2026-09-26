@@ -160,25 +160,9 @@ const connector = defineConnector({
         return;
       }
       // An update, or a restore, which brings a deleted item back.
-      const put = call(env, signal, "PUT", path, {
+      await call(env, signal, "PUT", path, {
         ...body,
         ...(kind === "restored" && { deleted: false }),
-      });
-      if (kind !== "restored") {
-        await put;
-        return;
-      }
-      await put.catch(async (error: unknown) => {
-        if (!(error instanceof Refused) || error.status !== 404) throw error;
-        // A vendor that no longer has the item: it is made again and the
-        // row linked to it, under a key of its own so the vendor does not
-        // answer the first create again.
-        const made = (await (
-          await call(env, signal, "POST", "items", body, {
-            "Idempotency-Key": `${item.id}:${linked}`,
-          })
-        ).json()) as { id: string };
-        await setLink(item, made.id);
       });
     } catch (error) {
       // One row the vendor refuses is a condition, and the run goes on;
@@ -189,6 +173,43 @@ const connector = defineConnector({
       }
       throw error;
     }
+  },
+  async remake({ item }, { env, signal, log, setLink }) {
+    const id = item.properties["example_id"];
+    if (typeof id !== "string" || id === "") return false;
+    try {
+      await call(env, signal, "GET", `items/${encodeURIComponent(id)}`);
+      // The vendor still has it: the restore is carried after the read.
+      return false;
+    } catch (error) {
+      if (!(error instanceof Refused) || error.status !== 404) throw error;
+    }
+    // Made again and linked, under a key of its own so the vendor does
+    // not answer the first create again.
+    try {
+      const made = (await (
+        await call(
+          env,
+          signal,
+          "POST",
+          "items",
+          {
+            title: item.properties["title"] ?? null,
+            url: item.properties["url"] ?? null,
+            note: item.properties["note"] ?? null,
+          },
+          { "Idempotency-Key": `${item.id}:${id}` },
+        )
+      ).json()) as { id: string };
+      await setLink(item, made.id);
+    } catch (error) {
+      if (error instanceof LinkTaken || error instanceof Refused) {
+        log.condition(`refused:${item.id}`, `${item.id}: ${error.message}`);
+        return true;
+      }
+      throw error;
+    }
+    return true;
   },
 });
 

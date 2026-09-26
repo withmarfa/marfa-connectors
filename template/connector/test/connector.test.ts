@@ -76,6 +76,19 @@ beforeEach(async () => {
         text === "" ? undefined : (JSON.parse(text) as Record<string, unknown>);
       const path = req.url ?? "/";
       const method = req.method ?? "GET";
+      const one = /^\/items\/(.+)$/.exec(path);
+      if (method === "GET" && one !== null) {
+        const found = items.find(
+          (item) => item.id === decodeURIComponent(one[1] ?? ""),
+        );
+        if (found === undefined) {
+          res.writeHead(404).end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(found));
+        return;
+      }
       if (method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ account: "acct", items }));
@@ -322,11 +335,12 @@ describe("the template, run as a process", () => {
     marfa.restore(mine.id);
     writes.length = 0;
     expect((await once()).code).toBe(0);
+    // Asked for first, answered 404, and made again before the vendor is
+    // read.
     expect(writes.map((write) => [write.method, write.path])).toEqual([
-      ["PUT", "/items/1"],
       ["POST", "/items"],
     ]);
-    expect(writes[1]?.idempotencyKey).toBe(`${mine.id}:1`);
+    expect(writes[0]?.idempotencyKey).toBe(`${mine.id}:1`);
     const made = items.find((item) => item.id.startsWith("made-"));
     expect(made?.title).toBe("One");
     expect(marfa.row("acct:1").properties["example_id"]).toBe(made?.id);
