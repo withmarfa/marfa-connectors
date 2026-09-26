@@ -654,10 +654,11 @@ describe("transitions over runs", () => {
     expect(marfa.byId(parent.id).state).toBe("trashed");
   });
 
-  it("takes a task Todoist no longer has as deleted, with no condition", async () => {
+  it("takes a task Todoist does not have as deleted, with no condition", async () => {
     const row = await synced("a");
-    // Deleted in Todoist with no delta saying so yet.
-    todoist.delete("a");
+    // Gone from the account without a trace, which Todoist answers
+    // ITEM_NOT_FOUND.
+    todoist.tasks.delete("a");
     marfa.trash(row.id);
     await landed();
     expect(todoist.commands("item_delete").map((c) => c.args["id"])).toEqual([
@@ -693,6 +694,43 @@ describe("transitions over runs", () => {
     const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
     expect(todoist.tasks.get(madeId)?.project_id).toBe("inbox");
     expect(summary()).not.toContain("refused");
+  });
+
+  it("makes the task again when the row is restored and then edited before the next run", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    marfa.edit(row.id, { title: "Task a, back and edited" });
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_delete",
+      "item_add",
+    ]);
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(madeId)?.content).toBe("Task a, back and edited");
+    expect(marfa.byId(row.id).state).toBe("active");
+    await landed();
+    expect(marfa.byId(row.id).state).toBe("active");
+  });
+
+  it("makes the task again, closed, when the row is restored and then completed before the next run", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    marfa.edit(row.id, {
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual([
+      "item_delete",
+      "item_add",
+      "item_close",
+    ]);
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(madeId)?.checked).toBe(true);
   });
 
   it("recreates the task in its project and section, with its labels", async () => {

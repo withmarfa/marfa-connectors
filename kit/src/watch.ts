@@ -197,9 +197,16 @@ export class Watch {
             unlinked += 1;
             latest.delete(item.id);
           } else {
-            // The latest frame for the row, in the log's order of it.
+            // The latest frame for the row, in the log's order of it. A
+            // restore followed only by edits stays a restore, carrying the
+            // row as it now is: the vendor may have to make it again.
+            const before = latest.get(item.id)?.kind;
+            const next = this.kindFor(kind, item);
             latest.delete(item.id);
-            latest.set(item.id, { kind: this.kindFor(kind, item), item });
+            latest.set(item.id, {
+              kind: before === "restored" && next === "updated" ? before : next,
+              item,
+            });
           }
         }
       }
