@@ -197,9 +197,20 @@ export class Watch {
             unlinked += 1;
             latest.delete(item.id);
           } else {
-            // The latest frame for the row, in the log's order of it.
+            // The latest frame for the row, in the log's order of it. An
+            // update after a restore says so: the vendor may have to make
+            // the row again.
+            const before = latest.get(item.id);
+            const next = this.kindFor(kind, item);
+            const restored =
+              next === "updated" &&
+              (before?.kind === "restored" || before?.restored === true);
             latest.delete(item.id);
-            latest.set(item.id, { kind: this.kindFor(kind, item), item });
+            latest.set(item.id, {
+              kind: next,
+              item,
+              ...(restored && { restored }),
+            });
           }
         }
       }

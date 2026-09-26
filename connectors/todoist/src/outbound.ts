@@ -126,6 +126,11 @@ function linkOf(item: Item): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/** Todoist's refusal of a command naming a task it does not have. */
+function isNotFound(answer: CommandError): boolean {
+  return answer.error_code === 22 || answer.error_tag === "ITEM_NOT_FOUND";
+}
+
 function isCompleted(item: Item): boolean {
   return item.properties["status"] === "completed";
 }
@@ -133,9 +138,9 @@ function isCompleted(item: Item): boolean {
 /**
  * A command's id from the row as the change showed it and what the
  * command does. The row's moment is in it because a transition moves no
- * version: a trash, a restore and a trash again are three commands, not
- * one sent three times. A run replayed after a failure shows the same
- * row, so it sends the same command.
+ * version: a restore carried as an edit is a command of its own, not the
+ * edit before it sent again. A run replayed after a failure shows the
+ * same row, so it sends the same command.
  */
 function commandId(item: Item, type: string): string {
   return uuidFor(item.id, String(item.version), item.updated_at, type);
@@ -162,7 +167,7 @@ export async function carry(
 
   if (taskId === undefined) {
     // A row Todoist was never told about and that is gone has nothing to
-    // carry: adding a task only to close it would leave one nobody made.
+    // carry: adding a task only to delete it would be work for nothing.
     if (kind === "trashed" || kind === "purged") return;
     taskId = await add(item, timeZone, todoist, context);
     if (taskId === undefined) return;
@@ -172,23 +177,55 @@ export async function carry(
   }
 
   if (kind === "trashed" || kind === "purged") {
+    // A trash deletes the task: closing a recurring one would move it to
+    // its next occurrence and leave it live. The command is named by the
+    // row and the task, since a task is deleted once: a purge sends the
+    // trash's delete again under the same id, which Todoist answers
+    // without acting twice, and a trash and a purge that reach the watch
+    // together, as the purge alone, still delete it. A task made again
+    // after a restore has an id of its own, and so does its delete.
     const answer = await todoist.one(
-      "item_close",
-      commandId(item, "item_close"),
+      "item_delete",
+      uuidFor(item.id, taskId, "item_delete"),
       { id: taskId },
     );
-    if (answer !== "ok") {
-      // A task already completed or deleted in Todoist is what the row's
-      // trash asked for; the refusal is recorded and the change is done.
+    // A task Todoist no longer has, whether the trash's delete landed
+    // before or a person deleted it there, is what the delete asked for.
+    if (answer !== "ok" && !isNotFound(answer)) {
       context.log.condition(
         `todoist-refused:${item.id}`,
-        `Todoist refused closing task ${taskId} for row ${item.id}: ${describeError(answer)}`,
+        `Todoist refused deleting task ${taskId} for row ${item.id}: ${describeError(answer)}`,
       );
     }
     return;
   }
 
   await sync(item, taskId, timeZone, todoist, context);
+}
+
+/**
+ * Makes a restored row's task again where Todoist no longer has it: the
+ * trash that deleted it was carried, or a person deleted it there and the
+ * row, archived for it, was brought back. Answers whether it made one; a
+ * task Todoist still has is carried after the read like any change.
+ */
+export async function remake(
+  change: Change,
+  context: WatchContext<OutboundEnv>,
+  base: string,
+): Promise<boolean> {
+  const { item } = change;
+  const taskId = linkOf(item);
+  if (taskId === undefined) return false;
+  const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
+  if ((await todoist.task(taskId)) !== "missing") return false;
+  const timeZone = await timeZoneFor(context, todoist);
+  const made = await add(item, timeZone, todoist, context, taskId);
+  // Abandoned with a condition: the change is done all the same.
+  if (made === undefined) return true;
+  // Held to the row like any other, so a completed row's task is closed.
+  await sync(item, made, timeZone, todoist, context);
+  return true;
 }
 
 /**
@@ -253,28 +290,64 @@ async function sync(
 
 /**
  * A row Todoist has not been told about becomes a task, and the task's id
- * is written back onto the row. The command's ids come from the row alone,
- * so a run replayed after a failure sends Todoist the same create. Answers
- * the task's id, or nothing where the row was abandoned with a condition.
+ * is written back onto the row. The command's ids come from the row and
+ * the task it replaces, if any, so a run replayed after a failure sends
+ * Todoist the same create, and a task made again after a restore is a
+ * create of its own rather than the first one answered again. Answers the
+ * task's id, or nothing where the row was abandoned with a condition.
  */
 async function add(
   item: Item,
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
+  replacing?: string,
 ): Promise<string | undefined> {
   const { log } = context;
-  const uuid = uuidFor(item.id, "item_add");
-  const tempId = uuidFor(item.id, "temp_id");
-  const answer = await todoist.send([
+  const again = replacing === undefined ? [] : [replacing];
+  const uuid = uuidFor(item.id, "item_add", ...again);
+  let tempId = uuidFor(item.id, "temp_id", ...again);
+  // A task made again goes back where it was: its project, section and
+  // labels, which an edit does not carry, are the row's from Todoist.
+  const p = item.properties;
+  const where =
+    replacing === undefined
+      ? {}
+      : {
+          ...(typeof p["project_id"] === "string" && {
+            project_id: p["project_id"],
+          }),
+          ...(typeof p["section_id"] === "string" && {
+            section_id: p["section_id"],
+          }),
+          ...(Array.isArray(p["labels"]) && { labels: p["labels"] }),
+        };
+  let answer = await todoist.send([
     {
       type: "item_add",
       uuid,
       temp_id: tempId,
-      args: { ...argsOf(item, timeZone) },
+      args: { ...argsOf(item, timeZone), ...where },
     },
   ]);
-  const status = answer.sync_status[uuid];
+  let status = answer.sync_status[uuid];
+  if (status !== "ok" && Object.keys(where).length > 0) {
+    // Where the task was is gone, a project or a section deleted since:
+    // it is made in the Inbox rather than not at all, under ids of its
+    // own, since Todoist remembers the refused command.
+    const inboxUuid = uuidFor(item.id, "item_add", ...again, "inbox");
+    const inboxTemp = uuidFor(item.id, "temp_id", ...again, "inbox");
+    answer = await todoist.send([
+      {
+        type: "item_add",
+        uuid: inboxUuid,
+        temp_id: inboxTemp,
+        args: { ...argsOf(item, timeZone) },
+      },
+    ]);
+    status = answer.sync_status[inboxUuid];
+    tempId = inboxTemp;
+  }
   if (status !== "ok") {
     log.condition(
       `todoist-refused:${item.id}`,

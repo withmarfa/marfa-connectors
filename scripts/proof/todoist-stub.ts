@@ -66,6 +66,8 @@ type CommandStatus = "ok" | Record<string, unknown>;
  * to it on the next sync, as Todoist's does.
  */
 export class TodoistStub {
+  /** The account's projects, where a test names them; any project otherwise. */
+  projects: Set<string> | undefined;
   readonly tasks = new Map<string, StubTask>();
   readonly received: ReceivedRequest[] = [];
   account = "1001";
@@ -278,10 +280,11 @@ export class TodoistStub {
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
-      // A completed task is answered, checked, as the real door answers
-      // it; only a deleted one is not found.
+      // A completed task is answered, checked, and a deleted one,
+      // `is_deleted`, as the real door answers them; only one never made
+      // is not found.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
-      if (found === undefined || found.is_deleted) {
+      if (found === undefined) {
         reply(404, { error: "Task not found" });
         return;
       }
@@ -376,6 +379,20 @@ export class TodoistStub {
     };
     switch (command.type) {
       case "item_add": {
+        const project = args["project_id"];
+        if (
+          typeof project === "string" &&
+          this.projects !== undefined &&
+          !this.projects.has(project)
+        ) {
+          return {
+            status: {
+              error_code: 21,
+              error: "Project not found",
+              http_code: 404,
+            },
+          };
+        }
         this.made += 1;
         const made = `made-${String(this.made)}`;
         this.tasks.set(
@@ -399,6 +416,12 @@ export class TodoistStub {
       case "item_close": {
         const task = id === undefined ? undefined : this.tasks.get(id);
         if (task === undefined || task.is_deleted) return { status: notFound };
+        // Todoist closes a recurring task by moving it to its next
+        // occurrence, open, rather than completing it.
+        if (task.due?.["is_recurring"] === true) {
+          this.edit(task.id, { due: nextOccurrence(task.due) });
+          return { status: "ok" };
+        }
         if (!task.checked) this.complete(task.id);
         return { status: "ok" };
       }
@@ -411,7 +434,20 @@ export class TodoistStub {
       case "item_delete": {
         const task = id === undefined ? undefined : this.tasks.get(id);
         if (task === undefined) return { status: notFound };
-        this.delete(task.id);
+        // Todoist answers the delete of a task already deleted as done.
+        if (task.is_deleted) return { status: "ok" };
+        // Todoist deletes a task with every task beneath it.
+        const doomed = [task.id];
+        // An array's iterator reaches what is pushed while it runs, so
+        // this walks every generation.
+        for (const parent of doomed) {
+          for (const child of this.tasks.values()) {
+            if (child.parent_id === parent && !child.is_deleted) {
+              doomed.push(child.id);
+            }
+          }
+        }
+        for (const gone of doomed) this.delete(gone);
         return { status: "ok" };
       }
       default:
@@ -433,6 +469,13 @@ export class TodoistStub {
       out.description = args["description"];
     }
     if (typeof args["priority"] === "number") out.priority = args["priority"];
+    if (typeof args["project_id"] === "string") {
+      out.project_id = args["project_id"];
+    }
+    if (typeof args["section_id"] === "string") {
+      out.section_id = args["section_id"];
+    }
+    if (Array.isArray(args["labels"])) out.labels = args["labels"] as string[];
     if ("due" in args) {
       const due = args["due"];
       out.due =
@@ -447,4 +490,12 @@ export class TodoistStub {
     }
     return out;
   }
+}
+
+/** A daily recurring due date, a day on. */
+function nextOccurrence(due: Record<string, unknown>): Record<string, unknown> {
+  const date = typeof due["date"] === "string" ? due["date"] : "";
+  const next = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return { ...due, date: next.toISOString().slice(0, 10) };
 }

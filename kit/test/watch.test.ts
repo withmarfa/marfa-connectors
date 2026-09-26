@@ -1118,7 +1118,8 @@ describe("a purge and a transition met by the memory", () => {
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, edited at the vendor",
     );
-    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+    // The vendor has the row, so the restore has nothing left to carry.
+    expect(held.changes).toEqual([]);
     expect(harness.lastRun().summary).toMatch(/conflicts 0/);
   });
 

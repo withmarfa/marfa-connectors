@@ -182,12 +182,17 @@ export async function runOnce<E extends EnvDeclaration>(
         logger.warn(`${read.incomplete}; the rest of the log is read next run`);
       }
     }
-    const carry = async (change: Change): Promise<void> => {
+    const carry = async (
+      change: Change,
+      options: { made?: boolean } = {},
+    ): Promise<void> => {
       // A stop here fails the run, as one inside a write does: the
       // cursor then holds, and the changes not yet carried are offered
       // again.
       if (setup.signal.aborted) throw new Stopped();
-      await connector.onChange?.(change, watchContext);
+      if (options.made !== true) {
+        await connector.onChange?.(change, watchContext);
+      }
       pushed += 1;
       // The vendor now has the row as this change showed it, so the two
       // sides agree at this version and state; a purged row has none.
@@ -207,21 +212,39 @@ export async function runOnce<E extends EnvDeclaration>(
         fingerprint(cleaned(change.item.properties)),
       );
     };
+    const remade = new Set<string>();
     if (pending !== undefined && connector.onChange !== undefined) {
-      // A row the vendor has not been told about is carried before the
-      // vendor is read. Nothing the vendor sends can concern it, and a
+      // A row the vendor has not been told about, and a restored row the
+      // vendor no longer has, are made there before the vendor is read. A
       // run that failed between the vendor's answer and the link would
       // otherwise read the vendor's copy first and create the row's twin,
-      // leaving the link nowhere to go.
+      // leaving the link nowhere to go. A remade row stays pending through
+      // the read, so what the vendor still sends of the trash is not
+      // written over it; a restored row the vendor still has waits for the
+      // read, where the conflict rule decides it.
       for (const change of pending.values()) {
-        if (change.kind !== "created") continue;
-        await carry(change);
-        pending.delete(change.item.id);
+        if (change.kind === "created") {
+          await carry(change);
+          pending.delete(change.item.id);
+          continue;
+        }
+        if (
+          connector.remake !== undefined &&
+          (change.kind === "restored" || change.restored === true)
+        ) {
+          if (setup.signal.aborted) throw new Stopped();
+          if (await connector.remake(change, watchContext)) {
+            await carry(change, { made: true });
+            remade.add(change.item.id);
+          }
+        }
       }
     }
     await connector.run(context);
     if (pending !== undefined && connector.onChange !== undefined) {
-      for (const change of pending.values()) await carry(change);
+      for (const change of pending.values()) {
+        if (!remade.has(change.item.id)) await carry(change);
+      }
     }
   } catch (error) {
     failure = error;

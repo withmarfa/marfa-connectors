@@ -221,13 +221,18 @@ export class ScriptedServer {
     return row;
   }
 
-  /** A person puts a row in the bin. */
+  /**
+   * A person puts a row in the bin. The server writes no version for it,
+   * and announces the row as it was before the trash with only its state
+   * changed, where the row it holds after carries the trash's time: so a
+   * trash's frame and the purge's after it differ in `updated_at`.
+   */
   trash(id: string): Row {
     const row = this.byId(id);
-    this.snapshot(row);
+    const before = { ...row, state: "trashed" as const };
     row.state = "trashed";
     row.updated_at = this.now();
-    this.announce("item.deleted", row);
+    this.announce("item.deleted", before);
     return row;
   }
 

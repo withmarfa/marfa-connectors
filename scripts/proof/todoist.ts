@@ -13,7 +13,9 @@ import {
   mintAsReadmeSays,
   moved,
   promoteAndFind,
+  purge,
   registration,
+  restore,
   rowsOf,
   trash,
   type Item,
@@ -276,22 +278,26 @@ export async function proveTodoist(
     );
 
     await check(
-      "todoist: the trash was carried back, closing the task",
+      "todoist: the trash was carried back, deleting the task",
       async () => {
         const task = todoist.tasks.get("c");
-        const closes = todoist
-          .commands("item_close")
+        const deletes = todoist
+          .commands("item_delete")
           .map((command) => command.args["id"]);
-        if (task?.checked !== true || closes.join() !== "c") {
+        if (
+          task?.is_deleted !== true ||
+          deletes.join() !== "c" ||
+          todoist.commands("item_close").length !== 0
+        ) {
           throw new Error(
-            `task c checked ${String(task?.checked)}; item_close sent for ${closes.join(", ") || "nothing"}`,
+            `task c deleted ${String(task?.is_deleted)}; item_delete sent for ${deletes.join(", ") || "nothing"}; ${String(todoist.commands("item_close").length)} closes`,
           );
         }
         const reported = await summary();
         if (!reported.includes("pushed 1, ")) {
           throw new Error(`the summary reads ${reported}`);
         }
-        return `item_close sent for c, uuid ${String(todoist.commands("item_close")[0]?.uuid)}; task c completed; reported ${reported}`;
+        return `item_delete sent for c, uuid ${String(todoist.commands("item_delete")[0]?.uuid)}; task c deleted; reported ${reported}`;
       },
     );
 
@@ -516,6 +522,111 @@ export async function proveTodoist(
           );
         }
         return `${String(before.size + 1)} rows, none moved, nothing sent; reported ${reported}`;
+      },
+    );
+
+    await check(
+      "todoist: a restore in Marfa makes the deleted task again, and the row is linked to it",
+      async () => {
+        const target = await row("c");
+        await restore(marfa, target.id);
+        await runOnce();
+        const back = await item(marfa, target.id);
+        const adds = todoist.commands("item_add");
+        const add = adds.at(-1);
+        const madeId = String(back.properties["todoist_id"]);
+        const task = todoist.tasks.get(madeId);
+        const reported = await summary();
+        if (
+          back.state !== "active" ||
+          madeId === "c" ||
+          task === undefined ||
+          task.is_deleted ||
+          task.content !== "Call back" ||
+          add?.args["content"] !== "Call back" ||
+          !reported.includes("conflicts 0")
+        ) {
+          throw new Error(
+            `row c ${back.state}, linked to ${madeId}; task ${JSON.stringify(task)}; last add ${JSON.stringify(add?.args)}; reported ${reported}`,
+          );
+        }
+        // Todoist's copy of the task made comes back once, with what only
+        // Todoist gives it, such as its url; then nothing moves.
+        await runOnce();
+        const synced = await item(marfa, target.id);
+        await runOnce();
+        const settled = await item(marfa, target.id);
+        if (
+          !String(synced.properties["url"]).includes(madeId) ||
+          settled.version !== synced.version ||
+          settled.state !== "active" ||
+          settled.properties["todoist_id"] !== madeId
+        ) {
+          throw new Error(
+            `row c at url ${String(synced.properties["url"])}, then version ${String(synced.version)}→${String(settled.version)}, ${settled.state}, linked to ${String(settled.properties["todoist_id"])}`,
+          );
+        }
+        return `item_add sent, task ${madeId} made with "Call back"; row c active and linked to it; the next run brought its url ${String(synced.properties["url"])}, and the one after moved nothing; reported ${reported}`;
+      },
+    );
+
+    await check(
+      "todoist: a purge in Marfa after a trash changes nothing more in Todoist",
+      async () => {
+        const target = await row("c");
+        const madeId = String(target.properties["todoist_id"]);
+        await trash(marfa, target.id);
+        await runOnce();
+        const afterTrash = todoist.commands().length;
+        await purge(marfa, target.id);
+        await runOnce();
+        const deletes = todoist
+          .commands("item_delete")
+          .filter((command) => command.args["id"] === madeId);
+        const sentAfter = todoist.commands().slice(afterTrash);
+        const live = [...todoist.tasks.values()].filter((t) => !t.is_deleted);
+        const gone = (await rows()).get(`${account}:c`);
+        if (
+          todoist.tasks.get(madeId)?.is_deleted !== true ||
+          deletes.length !== 2 ||
+          deletes[0]?.uuid !== deletes[1]?.uuid ||
+          sentAfter.some((command) => command.type !== "item_delete") ||
+          gone !== undefined
+        ) {
+          throw new Error(
+            `task ${madeId} deleted ${String(todoist.tasks.get(madeId)?.is_deleted)}; ${String(deletes.length)} deletes; after the trash sent ${sentAfter.map((c) => c.type).join(", ") || "nothing"}; row c ${gone === undefined ? "gone" : "still there"}`,
+          );
+        }
+        return `the trash deleted ${madeId}; the purge sent the same item_delete, uuid ${String(deletes[0]?.uuid)}, which Todoist takes once; row c gone, ${String(live.length)} tasks live`;
+      },
+    );
+
+    await check(
+      "todoist: a trashed recurring task is deleted, not moved on to its next occurrence",
+      async () => {
+        todoist.put(
+          todoist.task("r", {
+            content: "Water the plants",
+            due: {
+              date: "2026-09-27",
+              is_recurring: true,
+              string: "every day",
+            },
+          }),
+        );
+        await runOnce();
+        const target = await row("r");
+        await trash(marfa, target.id);
+        await runOnce();
+        const task = todoist.tasks.get("r");
+        if (
+          task?.is_deleted !== true ||
+          task.due?.["date"] !== "2026-09-27" ||
+          todoist.commands("item_close").some((c) => c.args["id"] === "r")
+        ) {
+          throw new Error(`task r ${JSON.stringify(task)}`);
+        }
+        return `item_delete sent for r; the task is deleted and its due date still ${task.due["date"]}`;
       },
     );
   } finally {

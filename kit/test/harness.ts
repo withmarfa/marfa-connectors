@@ -114,6 +114,10 @@ export interface Vendor {
   pushFail?: { id: string; error: Error } | undefined;
   /** The vendor's id for a row the vendor has not been told about. */
   vendorIdFor?: ((change: Change) => string | undefined) | undefined;
+  /** Rows the vendor no longer has, by id, and the id it makes each under. */
+  gone?: Map<string, string>;
+  /** What `remake` was asked, and how many runs had read the vendor then. */
+  remakes?: { change: Change; runsBefore: number }[];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -177,6 +181,14 @@ function twoWayConnector(held: Vendor) {
       }
       const id = held.vendorIdFor?.(change);
       if (id !== undefined) await context.setLink(change.item, id);
+    },
+    async remake(change, context) {
+      (held.remakes ??= []).push({ change, runsBefore: held.runs });
+      const id = held.gone?.get(change.item.id);
+      if (id === undefined) return false;
+      held.gone?.delete(change.item.id);
+      await context.setLink(change.item, id);
+      return true;
     },
   });
 }
