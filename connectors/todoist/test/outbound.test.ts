@@ -622,6 +622,36 @@ describe("transitions over runs", () => {
     expect(marfa.byId(row.id).properties["todoist_id"]).toBe(madeId);
   });
 
+  it("recreates the task in its project and section, with its labels", async () => {
+    todoist.put(
+      todoist.task("a", {
+        content: "Filed away",
+        project_id: "p-work",
+        section_id: "s-later",
+        labels: ["Home"],
+      }),
+    );
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    await landed();
+    const add = todoist.commands("item_add")[0];
+    expect(add?.args).toMatchObject({
+      content: "Filed away",
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+    });
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(madeId)).toMatchObject({
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+    });
+  });
+
   it("recreates a completed row's task closed", async () => {
     const row = await synced("a");
     marfa.edit(row.id, {

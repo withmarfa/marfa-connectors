@@ -439,6 +439,13 @@ export class TodoistStub {
       out.description = args["description"];
     }
     if (typeof args["priority"] === "number") out.priority = args["priority"];
+    if (typeof args["project_id"] === "string") {
+      out.project_id = args["project_id"];
+    }
+    if (typeof args["section_id"] === "string") {
+      out.section_id = args["section_id"];
+    }
+    if (Array.isArray(args["labels"])) out.labels = args["labels"] as string[];
     if ("due" in args) {
       const due = args["due"];
       out.due =

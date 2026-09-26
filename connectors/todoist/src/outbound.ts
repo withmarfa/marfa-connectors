@@ -287,12 +287,27 @@ async function add(
   const again = replacing === undefined ? [] : [replacing];
   const uuid = uuidFor(item.id, "item_add", ...again);
   const tempId = uuidFor(item.id, "temp_id", ...again);
+  // A task made again goes back where it was: its project, section and
+  // labels, which an edit does not carry, are the row's from Todoist.
+  const p = item.properties;
+  const where =
+    replacing === undefined
+      ? {}
+      : {
+          ...(typeof p["project_id"] === "string" && {
+            project_id: p["project_id"],
+          }),
+          ...(typeof p["section_id"] === "string" && {
+            section_id: p["section_id"],
+          }),
+          ...(Array.isArray(p["labels"]) && { labels: p["labels"] }),
+        };
   const answer = await todoist.send([
     {
       type: "item_add",
       uuid,
       temp_id: tempId,
-      args: { ...argsOf(item, timeZone) },
+      args: { ...argsOf(item, timeZone), ...where },
     },
   ]);
   const status = answer.sync_status[uuid];
