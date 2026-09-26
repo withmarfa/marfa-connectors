@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
 
 /**
@@ -21,6 +22,7 @@ export interface TodoistItem {
   is_deleted?: boolean;
   note_count?: number;
   added_at?: string;
+  updated_at?: string;
 }
 
 export interface SyncAnswer {
@@ -30,7 +32,101 @@ export interface SyncAnswer {
 }
 
 export const firstSync = "*";
-const syncTimeoutMs = 60_000;
+export const defaultBase = "https://api.todoist.com";
+const requestTimeoutMs = 60_000;
+/** The longest wait a `Retry-After` is honored for; a longer one fails the run instead. */
+const longestWaitMs = 60_000;
+const serverErrorRetries = 3;
+/** How many times a batch is sent again on a command's own rate limit. */
+const commandResends = 5;
+
+/** Resolves after `ms`, or rejects the moment the signal aborts. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason as Error);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason as Error);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** The wait a 429 or a command's `retry_after` names, in milliseconds. */
+function waitOf(value: string | number | null | undefined): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const seconds = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
+}
+
+/**
+ * One request to Todoist, with what every door shares: the token, the
+ * timeout, a wait on a 429 as told, three more tries on a server error,
+ * and a refused token failing the run by name so a token that cannot
+ * write is a failed run rather than a quiet one. A 403 is the token
+ * refused on the sync door; on a task's door it is that one task closed
+ * to the token, which a caller says it will take as an answer.
+ */
+async function request(
+  base: string,
+  token: string,
+  path: string,
+  init: {
+    method: "GET" | "POST";
+    body?: URLSearchParams;
+    forbiddenIsAnswer?: boolean;
+  },
+  signal: AbortSignal,
+): Promise<Response> {
+  let serverErrors = 0;
+  for (;;) {
+    const response = await fetch(new URL(path, base), {
+      method: init.method,
+      ...(init.body !== undefined && { body: init.body }),
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]),
+    });
+    if (
+      response.status === 401 ||
+      (response.status === 403 && init.forbiddenIsAnswer !== true)
+    ) {
+      throw new Error(`Todoist refused the token: ${String(response.status)}`);
+    }
+    if (response.status === 429) {
+      // Named in the header, or in the body as a command's refusal names
+      // it; one that names neither is not waited for blind.
+      let wait = waitOf(response.headers.get("Retry-After"));
+      if (wait === undefined) {
+        try {
+          const body = (await response.json()) as CommandError;
+          wait = waitOf(body.error_extra?.retry_after);
+        } catch {
+          wait = undefined;
+        }
+      }
+      if (wait === undefined || wait > longestWaitMs) {
+        throw new Error(
+          `Todoist asked for a wait of ${wait === undefined ? "unknown length" : `${String(wait / 1000)}s`}, longer than a run holds`,
+        );
+      }
+      await pause(wait, signal);
+      continue;
+    }
+    if (response.status >= 500 && serverErrors < serverErrorRetries) {
+      serverErrors += 1;
+      await pause(1000 * 2 ** (serverErrors - 1), signal);
+      continue;
+    }
+    return response;
+  }
+}
 
 export async function sync(
   base: string,
@@ -38,22 +134,213 @@ export async function sync(
   syncToken: string,
   signal: AbortSignal,
 ): Promise<SyncAnswer> {
-  const response = await fetch(new URL("/api/v1/sync", base), {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: new URLSearchParams({
-      sync_token: syncToken,
-      resource_types: JSON.stringify(["items", "user"]),
-    }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(syncTimeoutMs)]),
-  });
-  if (response.status === 401 || response.status === 403) {
-    throw new Error(`Todoist refused the token: ${String(response.status)}`);
-  }
+  const response = await request(
+    base,
+    token,
+    "/api/v1/sync",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        sync_token: syncToken,
+        resource_types: JSON.stringify(["items", "user"]),
+      }),
+    },
+    signal,
+  );
   if (!response.ok) {
     throw new Error(`Todoist's Sync API answered ${String(response.status)}`);
   }
   return (await response.json()) as SyncAnswer;
+}
+
+/** The account's `user` alone, for a run that needs its timezone before it has synced. */
+export async function user(
+  base: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<SyncAnswer["user"]> {
+  const response = await request(
+    base,
+    token,
+    "/api/v1/sync",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        sync_token: firstSync,
+        resource_types: JSON.stringify(["user"]),
+      }),
+    },
+    signal,
+  );
+  if (!response.ok) {
+    throw new Error(`Todoist's Sync API answered ${String(response.status)}`);
+  }
+  return ((await response.json()) as SyncAnswer).user;
+}
+
+/** A command as the Sync API takes it. */
+export interface Command {
+  type: string;
+  uuid: string;
+  temp_id?: string;
+  args: Record<string, unknown>;
+}
+
+/** How the Sync API refuses one command; `error_extra` may name a wait. */
+export interface CommandError {
+  error_code?: number;
+  error?: string;
+  error_tag?: string;
+  http_code?: number;
+  error_extra?: { retry_after?: number } & Record<string, unknown>;
+}
+
+export interface CommandAnswer {
+  sync_status: Record<string, "ok" | CommandError>;
+  temp_id_mapping?: Record<string, string>;
+}
+
+/** A refusal's text, for a condition to carry. */
+export function describeError(error: CommandError): string {
+  const code =
+    error.error_code === undefined ? "" : ` (${String(error.error_code)})`;
+  return `${error.error ?? "an error without a message"}${code}`;
+}
+
+/**
+ * Sends commands, waiting as a command's own `retry_after` asks and
+ * sending the batch again; every command carries a `uuid`, so a resend
+ * is the same command to Todoist.
+ */
+export async function send(
+  base: string,
+  token: string,
+  commands: readonly Command[],
+  signal: AbortSignal,
+): Promise<CommandAnswer> {
+  let resends = 0;
+  for (;;) {
+    const response = await request(
+      base,
+      token,
+      "/api/v1/sync",
+      {
+        method: "POST",
+        body: new URLSearchParams({ commands: JSON.stringify(commands) }),
+      },
+      signal,
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Todoist's Sync API answered ${String(response.status)} to a command`,
+      );
+    }
+    const answer = (await response.json()) as CommandAnswer;
+    // Only a refusal that is itself a rate limit is waited out and sent
+    // again: a wait named on any other refusal rides a terminal answer,
+    // which Todoist says not to send again. A limit that holds through
+    // every resend is handed back as the refusal it is.
+    const waits = Object.values(answer.sync_status)
+      .map((status) =>
+        status === "ok" || status.http_code !== 429
+          ? undefined
+          : waitOf(status.error_extra?.retry_after),
+      )
+      .filter((wait): wait is number => wait !== undefined);
+    if (waits.length === 0 || resends === commandResends) return answer;
+    const wait = Math.max(...waits);
+    if (wait > longestWaitMs) {
+      throw new Error(
+        `Todoist asked for a wait of ${String(wait / 1000)}s on a command, longer than a run holds`,
+      );
+    }
+    resends += 1;
+    await pause(wait, signal);
+  }
+}
+
+/**
+ * What the task door answers: the task, open or completed (the door
+ * answers a completed one too, `checked`, whatever the documentation's
+ * "active task" suggests), `missing` for one deleted, or `forbidden` for
+ * one the token cannot reach, such as another person's in a shared
+ * project.
+ */
+export type TaskAnswer = TodoistItem | "missing" | "forbidden";
+
+export async function getTask(
+  base: string,
+  token: string,
+  id: string,
+  signal: AbortSignal,
+): Promise<TaskAnswer> {
+  const response = await request(
+    base,
+    token,
+    `/api/v1/tasks/${encodeURIComponent(id)}`,
+    { method: "GET", forbiddenIsAnswer: true },
+    signal,
+  );
+  if (response.status === 404) return "missing";
+  if (response.status === 403) return "forbidden";
+  if (!response.ok) {
+    throw new Error(
+      `Todoist answered ${String(response.status)} for task ${id}`,
+    );
+  }
+  return (await response.json()) as TodoistItem;
+}
+
+/**
+ * A command's id from what it does, so a replayed run sends Todoist the
+ * same command rather than a second one. Laid out as a UUID, the form the
+ * documentation's examples use, though any unique string is taken.
+ */
+export function uuidFor(...parts: readonly string[]): string {
+  const digest = createHash("sha1").update(parts.join("\u0000")).digest("hex");
+  const variant = ((parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  const hex = `${digest.slice(0, 12)}5${digest.slice(13, 16)}${variant}${digest.slice(17, 32)}`;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** The core's priority as Todoist's 1 to 4; a row naming none is Todoist's 1. */
+export function priorityFor(priority: unknown): number {
+  const found = Object.entries(priorities).find(
+    ([, name]) => name === priority,
+  );
+  return found === undefined ? 1 : Number(found[0]);
+}
+
+/**
+ * A row's due date as Todoist takes it: a whole day as the date it is in
+ * the account's timezone, a timed one fixed in UTC, and none as null so a
+ * due date the row lost is cleared. A floating time Todoist held becomes
+ * fixed once the row is written back, which is the one shape the core
+ * task can name.
+ */
+export function dueFor(
+  dueAt: unknown,
+  precision: unknown,
+  timeZone: string,
+): { date: string } | null {
+  if (typeof dueAt !== "string") return null;
+  const at = new Date(dueAt);
+  if (Number.isNaN(at.getTime())) return null;
+  if (precision === "time") {
+    return { date: at.toISOString().replace(/\.\d{3}Z$/, "Z") };
+  }
+  const read: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(at)) {
+    read[part.type] = part.value;
+  }
+  return {
+    date: `${read["year"] ?? ""}-${read["month"] ?? ""}-${read["day"] ?? ""}`,
+  };
 }
 
 /**
@@ -255,6 +542,7 @@ export function entryOf(
   return {
     source_id: sourceId(account, item.id),
     properties: {
+      todoist_id: item.id,
       title: item.content,
       description: item.description === "" ? undefined : item.description,
       priority:
@@ -275,5 +563,6 @@ export function entryOf(
       comment_count: item.note_count,
     },
     occurred_at: item.added_at,
+    changed_at: instantOf(item.updated_at),
   };
 }

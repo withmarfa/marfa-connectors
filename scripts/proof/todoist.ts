@@ -1,10 +1,10 @@
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import type { MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
+  create,
   derivedFrom,
+  edit,
   fieldsOf,
   registeredAsKindOf,
   typeHeld,
@@ -18,47 +18,7 @@ import {
   trash,
   type Item,
 } from "./connector.js";
-
-interface Task {
-  id: string;
-  content: string;
-  description: string;
-  project_id: string;
-  section_id: string | null;
-  parent_id: string | null;
-  labels: string[];
-  priority: number;
-  due: Record<string, unknown> | null;
-  child_order: number;
-  checked: boolean;
-  completed_at: string | null;
-  is_deleted: boolean;
-  note_count: number;
-  added_at: string;
-}
-
-const account = "1001";
-
-function task(id: string, overrides: Partial<Task> = {}): Task {
-  return {
-    id,
-    content: `Task ${id}`,
-    description: "",
-    project_id: "inbox",
-    section_id: null,
-    parent_id: null,
-    labels: [],
-    priority: 1,
-    due: null,
-    child_order: 1,
-    checked: false,
-    completed_at: null,
-    is_deleted: false,
-    note_count: 0,
-    added_at: "2026-09-20T09:00:00.000000Z",
-    ...overrides,
-  };
-}
+import { TodoistStub } from "./todoist-stub.js";
 
 /**
  * A person's core.task from a Todoist row. The row is a kind of core task
@@ -76,53 +36,12 @@ async function asTask(
   );
 }
 
-async function stubTodoist(): Promise<{
-  url: string;
-  next: (items: Task[]) => void;
-  close: () => Promise<void>;
-}> {
-  let delta: Task[] = [];
-  let answered = 0;
-  const server = createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
-      const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-      const full = form.get("sync_token") === "*";
-      answered += 1;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          sync_token: `token-${String(answered)}`,
-          items: delta,
-          ...(full && {
-            user: { id: account, tz_info: { timezone: "Europe/London" } },
-          }),
-        }),
-      );
-    });
-  });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  return {
-    url: `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`,
-    next: (items) => {
-      delta = items;
-    },
-    close: () =>
-      new Promise((done) => {
-        server.closeAllConnections();
-        server.close(() => {
-          done();
-        });
-      }),
-  };
-}
-
 export async function proveTodoist(
   marfa: MarfaClient,
   url: string,
 ): Promise<void> {
-  const todoist = await stubTodoist();
+  const todoist = await new TodoistStub("todoist-proof-token").start();
+  const account = todoist.account;
   let connector: ConnectorUnderProof | undefined;
   try {
     const key = await mintAsReadmeSays(marfa, {
@@ -147,8 +66,10 @@ export async function proveTodoist(
       if (found === undefined) throw new Error(`no row for task ${id}`);
       return found;
     };
+    const summary = async (): Promise<string> =>
+      String((await lastRun(marfa, key.id)).summary);
 
-    const a = task("a", {
+    const a = todoist.task("a", {
       content: "Buy milk",
       priority: 4,
       due: { date: "2026-09-30", is_recurring: false },
@@ -157,22 +78,20 @@ export async function proveTodoist(
       child_order: 2,
       note_count: 3,
     });
-    const b = task("b", {
+    const b = todoist.task("b", {
       content: "Write the note",
       description: "With the details",
       parent_id: "a",
     });
-    const c = task("c", { content: "Call back" });
-    const d = task("d", {
-      content: "Post the letter",
-      checked: true,
-      completed_at: "2026-09-21T10:00:00.000000Z",
-    });
-    const e = task("e", { content: "Book the room" });
+    const c = todoist.task("c", { content: "Call back" });
+    // Open, since a full sync lists active tasks only; completed later,
+    // through a delta.
+    const d = todoist.task("d", { content: "Post the letter" });
+    const e = todoist.task("e", { content: "Book the room" });
     const all = [a, b, c, d, e];
-    todoist.next(all);
+    todoist.put(...all);
     await check(
-      "todoist: a first run registers todoist.task as a kind of core.task and writes the account's tasks at the feed tier",
+      "todoist: a first run registers todoist.task as a kind of core.task and writes the account's tasks at the feed tier, each linked to its task",
       async () => {
         const wasHeld = await typeHeld(marfa, "todoist.task");
         await runOnce();
@@ -191,9 +110,15 @@ export async function proveTodoist(
           written.values(),
         );
         const expected =
-          "child_order,comment_count,labels,parent_id,project_id,section_id";
+          "child_order,comment_count,labels,parent_id,project_id,section_id,todoist_id";
         if (own.join() !== expected) {
           throw new Error(`own fields ${own.join(", ")}`);
+        }
+        const links = [...written.values()]
+          .map((r) => r.properties["todoist_id"])
+          .sort();
+        if (links.join() !== "a,b,c,d,e") {
+          throw new Error(`the rows carry todoist_id ${links.join(", ")}`);
         }
         const first = written.get(`${account}:a`)?.properties ?? {};
         const done = written.get(`${account}:d`)?.properties ?? {};
@@ -219,18 +144,18 @@ export async function proveTodoist(
           child_order: 2,
           comment_count: 3,
           parent_id: "a",
-          status: "completed",
-          completed_at: "2026-09-21T10:00:00.000Z",
+          status: "pending",
+          completed_at: undefined,
         };
         if (JSON.stringify(landed) !== JSON.stringify(wanted)) {
           throw new Error(`the server holds ${JSON.stringify(landed)}`);
         }
-        return `todoist.task, absent before the run, registered with parent core.task, all ${String(inherited)} of its fields and ${own.join(", ")} beside them; ${String(written.size)} rows, tier feed, every property a field of the type; on the server ${JSON.stringify(landed)}`;
+        return `todoist.task, absent before the run, registered with parent core.task, all ${String(inherited)} of its fields and ${own.join(", ")} beside them; ${String(written.size)} rows, tier feed, every property a field of the type, todoist_id ${links.join(", ")}; on the server ${JSON.stringify(landed)}`;
       },
     );
 
     await check(
-      "todoist: the registration shows its heartbeat and its last run",
+      "todoist: the registration shows its heartbeat and its last run, with the counts of what was carried back",
       async () => {
         const found = await registration(marfa, key.id);
         if (
@@ -241,27 +166,33 @@ export async function proveTodoist(
             `heartbeat ${String(found.last_heartbeat_at)}, last run ${String(found.last_run?.outcome)}`,
           );
         }
-        return `"${found.name}", source ${found.source}, heartbeat ${found.last_heartbeat_at}, last run ${found.last_run.outcome}: ${String(found.last_run.summary)}`;
+        const reported = String(found.last_run.summary);
+        if (!reported.includes("pushed 0, own 0, conflicts 0")) {
+          throw new Error(`the summary reads ${reported}`);
+        }
+        return `"${found.name}", source ${found.source}, heartbeat ${found.last_heartbeat_at}, last run ${found.last_run.outcome}: ${reported}`;
       },
     );
 
     await check(
-      "todoist: a second run, handed the same tasks, moves no version",
+      "todoist: a second run, with nothing changed on either side, moves no version and carries nothing back",
       async () => {
         const before = await rows();
-        todoist.next(all);
+        const sent = todoist.commands().length;
         await runOnce();
         const changed = moved(before, await rows());
-        const { summary } = await lastRun(marfa, key.id);
+        const reported = await summary();
         if (
           changed.length > 0 ||
-          !summary?.includes(`unchanged ${String(all.length)}`)
+          !reported.startsWith("created 0, updated 0, archived 0") ||
+          !reported.includes("pushed 0, own 5, conflicts 0") ||
+          todoist.commands().length !== sent
         ) {
           throw new Error(
-            `moved ${changed.join(", ") || "nothing"}; reported ${String(summary)}`,
+            `moved ${changed.join(", ") || "nothing"}; reported ${reported}; ${String(todoist.commands().length - sent)} commands sent`,
           );
         }
-        return `${String(before.size)} rows, none moved; reported ${summary}`;
+        return `${String(before.size)} rows, none moved; the five creates read back as the connector's own; reported ${reported}`;
       },
     );
 
@@ -269,7 +200,7 @@ export async function proveTodoist(
       "todoist: a change upstream moves exactly that row, by one version",
       async () => {
         const before = await rows();
-        todoist.next([{ ...a, content: "Buy oat milk" }]);
+        todoist.edit("a", { content: "Buy oat milk" });
         await runOnce();
         const changed = moved(before, await rows());
         if (changed.join() !== `${account}:a 1→2`)
@@ -282,7 +213,7 @@ export async function proveTodoist(
       const before = await row("b");
       if (before.properties["description"] !== "With the details")
         throw new Error("the description never landed");
-      todoist.next([{ ...b, description: "" }]);
+      todoist.edit("b", { description: "" });
       await runOnce();
       const after = await row("b");
       if ("description" in after.properties)
@@ -291,24 +222,30 @@ export async function proveTodoist(
     });
 
     await check(
-      "todoist: a task deleted upstream is archived, and nothing else moves",
+      "todoist: a task completed upstream is completed and one deleted is archived, and nothing else moves",
       async () => {
         const before = await rows();
-        todoist.next([{ ...e, is_deleted: true }]);
+        todoist.complete("d");
+        todoist.delete("e");
         await runOnce();
         const after = await rows();
-        const changed = moved(before, after);
+        const changed = moved(before, after).sort();
+        const done = after.get(`${account}:d`);
         const archived = after.get(`${account}:e`);
         if (
+          done?.properties["status"] !== "completed" ||
+          done.properties["completed_at"] !== "2026-09-24T12:00:00.000Z" ||
+          done.state !== "active" ||
           archived?.state !== "archived" ||
-          changed.length !== 1 ||
-          !changed[0]?.startsWith(`${account}:e `)
+          changed.length !== 2 ||
+          !changed[0]?.startsWith(`${account}:d `) ||
+          !changed[1]?.startsWith(`${account}:e `)
         ) {
           throw new Error(
-            `e is ${String(archived?.state)}; moved ${changed.join(", ") || "nothing"}`,
+            `d is ${String(done?.properties["status"])} at ${String(done?.properties["completed_at"])}, ${String(done?.state)}; e is ${String(archived?.state)}; moved ${changed.join(", ") || "nothing"}`,
           );
         }
-        return `e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
+        return `d completed at ${done.properties["completed_at"]}, still active; e ${String(before.get(`${account}:e`)?.state)} → ${archived.state}; moved ${changed.join(", ")}`;
       },
     );
 
@@ -318,10 +255,8 @@ export async function proveTodoist(
         const target = await row("c");
         await trash(marfa, target.id);
         const before = await rows();
-        todoist.next([
-          { ...c, content: "Call back, changed" },
-          { ...a, content: "Buy oat milk and bread" },
-        ]);
+        todoist.edit("c", { content: "Call back, changed" });
+        todoist.edit("a", { content: "Buy oat milk and bread" });
         await runOnce();
         const after = await rows();
         const trashed = after.get(`${account}:c`);
@@ -337,6 +272,26 @@ export async function proveTodoist(
           );
         }
         return `c stays trashed at version ${String(target.version)}; moved ${changed.join(", ")}`;
+      },
+    );
+
+    await check(
+      "todoist: the trash was carried back, closing the task",
+      async () => {
+        const task = todoist.tasks.get("c");
+        const closes = todoist
+          .commands("item_close")
+          .map((command) => command.args["id"]);
+        if (task?.checked !== true || closes.join() !== "c") {
+          throw new Error(
+            `task c checked ${String(task?.checked)}; item_close sent for ${closes.join(", ") || "nothing"}`,
+          );
+        }
+        const reported = await summary();
+        if (!reported.includes("pushed 1, ")) {
+          throw new Error(`the summary reads ${reported}`);
+        }
+        return `item_close sent for c, uuid ${String(todoist.commands("item_close")[0]?.uuid)}; task c completed; reported ${reported}`;
       },
     );
 
@@ -372,7 +327,7 @@ export async function proveTodoist(
         const source = await row("a");
         const [copy] = await derivedFrom(marfa, "core.task", source);
         if (copy === undefined) throw new Error("no promoted copy");
-        todoist.next([{ ...a, content: "Buy oat milk, bread and eggs" }]);
+        todoist.edit("a", { content: "Buy oat milk, bread and eggs" });
         await runOnce();
         const again = await item(marfa, copy.id);
         const moving = await row("a");
@@ -385,6 +340,179 @@ export async function proveTodoist(
           );
         }
         return `the feed row moved ${String(source.version)}→${String(moving.version)}; the copy stays at version ${String(copy.version)}`;
+      },
+    );
+
+    await check(
+      "todoist: a row edited in Marfa through the working key arrives in Todoist, as only what changed",
+      async () => {
+        const before = await row("b");
+        await edit(marfa, before, { title: "Write the note, from Marfa" });
+        await runOnce();
+        const task = todoist.tasks.get("b");
+        const updates = todoist
+          .commands("item_update")
+          .map((command) => command.args);
+        const reported = await summary();
+        if (
+          task?.content !== "Write the note, from Marfa" ||
+          updates.length !== 1 ||
+          JSON.stringify(updates[0]) !==
+            JSON.stringify({
+              id: "b",
+              content: "Write the note, from Marfa",
+            }) ||
+          !reported.includes("pushed 1, ")
+        ) {
+          throw new Error(
+            `task b reads "${String(task?.content)}"; item_update sent ${JSON.stringify(updates)}; reported ${reported}`,
+          );
+        }
+        return `item_update ${JSON.stringify(updates[0])}; task b reads "${task.content}"; reported ${reported}`;
+      },
+    );
+
+    await check(
+      "todoist: the run after carries nothing back and moves nothing: Todoist's copy of the edit is what the row already holds",
+      async () => {
+        const before = await rows();
+        const sent = todoist.commands().length;
+        await runOnce();
+        const changed = moved(before, await rows());
+        const reported = await summary();
+        if (
+          changed.length > 0 ||
+          todoist.commands().length !== sent ||
+          !/unchanged 1, .*pushed 0, own 0, conflicts 0/.test(reported)
+        ) {
+          throw new Error(
+            `moved ${changed.join(", ") || "nothing"}; ${String(todoist.commands().length - sent)} commands sent; reported ${reported}`,
+          );
+        }
+        return `none moved, nothing sent; reported ${reported}`;
+      },
+    );
+
+    let made: Item | undefined;
+    await check(
+      "todoist: a todoist.task created in Marfa through the working key, under its own source, becomes a task in Todoist and gains its todoist_id",
+      async () => {
+        const created = await create(marfa, "todoist.task", {
+          title: "Made in Marfa",
+          description: "Carried out",
+          priority: "high",
+          due_at: "2026-10-02T09:00:00.000Z",
+          precision: "time",
+          status: "pending",
+        });
+        made = created;
+        if (created.source === "todoist") {
+          throw new Error(
+            "the working key writes under the connector's source",
+          );
+        }
+        await runOnce();
+        const adds = todoist.commands("item_add");
+        const linked = await item(marfa, created.id);
+        const taskId = linked.properties["todoist_id"];
+        const task =
+          typeof taskId === "string" ? todoist.tasks.get(taskId) : undefined;
+        if (
+          adds.length !== 1 ||
+          typeof taskId !== "string" ||
+          task?.content !== "Made in Marfa" ||
+          task.description !== "Carried out" ||
+          task.priority !== 3 ||
+          task.due?.["date"] !== "2026-10-02T09:00:00Z" ||
+          linked.properties["url"] !==
+            `https://app.todoist.com/app/task/${taskId}`
+        ) {
+          throw new Error(
+            `item_add sent ${String(adds.length)} times; the row carries todoist_id ${String(taskId)}; the task is ${JSON.stringify(task)}; the row holds ${JSON.stringify(linked.properties)}`,
+          );
+        }
+        return `item_add with uuid ${String(adds[0]?.uuid)} and temp_id ${String(adds[0]?.temp_id)}; Todoist made ${taskId} with content, description, priority 3 and a fixed due date; the row, source ${created.source}, carries todoist_id ${taskId} and the url the sync gave it, at version ${String(linked.version)}`;
+      },
+    );
+
+    await check(
+      "todoist: a conflict is won by the later change, and the loser is named in the run: Marfa's edit over an earlier one in Todoist",
+      async () => {
+        const before = await row("a");
+        await edit(marfa, before, { title: "Buy everything, from Marfa" });
+        // Stamped the day before the server's clock.
+        todoist.now = "2026-09-24T12:00:00.000000Z";
+        todoist.edit("a", { content: "Buy everything, from Todoist" });
+        await runOnce();
+        const after = await row("a");
+        const task = todoist.tasks.get("a");
+        const reported = await summary();
+        if (
+          after.properties["title"] !== "Buy everything, from Marfa" ||
+          task?.content !== "Buy everything, from Marfa" ||
+          !reported.includes("conflicts 1") ||
+          !reported.includes(before.id)
+        ) {
+          throw new Error(
+            `the row reads "${String(after.properties["title"])}", the task "${String(task?.content)}"; reported ${reported}`,
+          );
+        }
+        return `the row and the task both read "Buy everything, from Marfa"; reported ${reported}`;
+      },
+    );
+
+    await check(
+      "todoist: a conflict is won by the later change, and the loser is named in the run: Todoist's edit over an earlier one in Marfa",
+      async () => {
+        const before = await row("b");
+        await edit(marfa, before, {
+          title: "Write the note, again from Marfa",
+        });
+        todoist.now = "2030-01-01T00:00:00.000000Z";
+        todoist.edit("b", { content: "Write the note, from Todoist" });
+        const sent = todoist.commands().length;
+        await runOnce();
+        const after = await row("b");
+        const task = todoist.tasks.get("b");
+        const reported = await summary();
+        if (
+          after.properties["title"] !== "Write the note, from Todoist" ||
+          task?.content !== "Write the note, from Todoist" ||
+          todoist.commands().length !== sent ||
+          !reported.includes("conflicts 1") ||
+          !reported.includes(before.id)
+        ) {
+          throw new Error(
+            `the row reads "${String(after.properties["title"])}", the task "${String(task?.content)}"; ${String(todoist.commands().length - sent)} commands sent; reported ${reported}`,
+          );
+        }
+        return `the row and the task both read "Write the note, from Todoist", nothing sent; reported ${reported}`;
+      },
+    );
+
+    await check(
+      "todoist: a run with nothing changed on either side, after all of that, moves no version and sends nothing",
+      async () => {
+        if (made === undefined) throw new Error("no row was made in Marfa");
+        const before = await rows();
+        const person = await item(marfa, made.id);
+        const sent = todoist.commands().length;
+        await runOnce();
+        const changed = moved(before, await rows());
+        const again = await item(marfa, made.id);
+        const reported = await summary();
+        if (
+          changed.length > 0 ||
+          again.version !== person.version ||
+          todoist.commands().length !== sent ||
+          !reported.includes("pushed 0, ") ||
+          !reported.includes("conflicts 0")
+        ) {
+          throw new Error(
+            `moved ${changed.join(", ") || "nothing"}; the made row ${String(person.version)}→${String(again.version)}; ${String(todoist.commands().length - sent)} commands sent; reported ${reported}`,
+          );
+        }
+        return `${String(before.size + 1)} rows, none moved, nothing sent; reported ${reported}`;
       },
     );
   } finally {

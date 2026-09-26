@@ -1070,6 +1070,58 @@ describe("a purge and a transition met by the memory", () => {
     expect(harness.lastRun().summary).toMatch(/created 0, .*skipped 1/);
   });
 
+  it("decides a restore by the times, so the vendor's echo of a carried trash does not land on the restored row", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
+    // The vendor answered the trash with a change of its own, stamped
+    // before the person's restore: what it sends now is the echo of what
+    // the trash did there, and the restore is the later change.
+    const echoedAt = harness.server.row("a:1").updated_at;
+    const restored = harness.server.restore(row.id);
+    expect(Date.parse(restored.updated_at) > Date.parse(echoedAt)).toBe(true);
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, closed at the vendor" },
+        changed_at: echoedAt,
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    // Left unwritten and not a conflict: the restore, carried, moves the
+    // vendor's copy, and a change of the vendor's own comes again with it.
+    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+    expect(harness.lastRun().summary).toMatch(/conflicts 0/);
+
+    // The witness: a vendor change later than the restore lands, and the
+    // restore is carried beside it.
+    harness.server.trash(row.id);
+    await quietRun(held);
+    const again = harness.server.restore(row.id);
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, edited at the vendor" },
+        changed_at: new Date(
+          Date.parse(again.updated_at) + 60_000,
+        ).toISOString(),
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, edited at the vendor",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
+    expect(harness.lastRun().summary).toMatch(/conflicts 0/);
+  });
+
   it("carries a person's archive made between the read and the pull as the transition it is", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);

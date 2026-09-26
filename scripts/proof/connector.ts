@@ -278,6 +278,35 @@ export async function registration(marfa: MarfaClient, keyId: string) {
   return found;
 }
 
+/** A person's edit of a row: the properties laid over its own, at the version they saw. */
+export async function edit(
+  marfa: MarfaClient,
+  row: Item,
+  properties: Record<string, unknown>,
+): Promise<Item> {
+  const { data, error } = await marfa.PATCH("/items/{id}", {
+    params: { path: { id: row.id } },
+    body: { version: row.version, properties, properties_mode: "merge" },
+  });
+  if (data === undefined)
+    throw new Error(`the edit was refused: ${JSON.stringify(error)}`);
+  return data.item;
+}
+
+/** A person's row of a type, under the working key's own source. */
+export async function create(
+  marfa: MarfaClient,
+  type: string,
+  properties: Record<string, unknown>,
+): Promise<Item> {
+  const { data, error } = await marfa.POST("/items", {
+    body: { type, properties },
+  });
+  if (data === undefined)
+    throw new Error(`the create was refused: ${JSON.stringify(error)}`);
+  return data.item;
+}
+
 export async function trash(marfa: MarfaClient, id: string): Promise<void> {
   const { error, response } = await marfa.DELETE("/items/{id}", {
     params: { path: { id } },

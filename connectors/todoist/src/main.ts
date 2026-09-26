@@ -3,12 +3,13 @@ import {
   main,
   type TypeDefinition,
 } from "@withmarfa/connector";
+import { carry, linkField, outboundEnv } from "./outbound.js";
 import {
   accountOf,
+  defaultBase,
   entryOf,
   firstSync,
   namedZoneOf,
-  sourceId,
   sync,
   timezoneOf,
 } from "./todoist.js";
@@ -16,17 +17,16 @@ import todoistTask from "./todoist.task.json" with { type: "json" };
 
 const connector = defineConnector({
   name: "todoist",
-  description: "Tasks from a Todoist account, read through the Sync API.",
+  description:
+    "Tasks from a Todoist account, read through the Sync API, and every todoist.task in Marfa carried back to it.",
   source: "todoist",
   // Imported JSON widens every string, so its field types read as `string`
   // here; the check on start holds the file to the server's type.
   type: todoistTask as TypeDefinition,
-  env: {
-    TODOIST_API_TOKEN: "secret",
-    TODOIST_API_URL: "optional",
-  },
+  link: linkField,
+  env: outboundEnv,
   async run({ env, signal, state, log, upsert, archive }) {
-    const base = env.TODOIST_API_URL ?? "https://api.todoist.com";
+    const base = env.TODOIST_API_URL ?? defaultBase;
     const held = state.get("sync_token");
     const heldToken = typeof held === "string" ? held : firstSync;
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
@@ -82,14 +82,18 @@ const connector = defineConnector({
         .filter((item) => item.is_deleted !== true)
         .map((item) => entryOf(account, timeZone, item)),
     );
+    // By the link: a row is archived by the task it is, whoever created it.
     await archive(
       answer.items
         .filter((item) => item.is_deleted === true)
-        .map((item) => sourceId(account, item.id)),
+        .map((item) => item.id),
     );
     state.set("account", account);
     if (named !== undefined) state.set("timezone", named);
     state.set("sync_token", answer.sync_token);
+  },
+  onChange(change, context) {
+    return carry(change, context, context.env.TODOIST_API_URL ?? defaultBase);
   },
 });
 

@@ -27,6 +27,31 @@ function bulks() {
   return harness.server.requestsTo("POST", "/items/bulk");
 }
 
+describe("a row holding null", () => {
+  it("is unchanged by an entry that leaves the key out, and changed by one that fills it", async () => {
+    // A person's client can write null onto a row; to the vendor the key
+    // is one the row does not have.
+    harness.server.insert("a:1", { title: "One", note: null }, "test.entry");
+    expect(
+      await harness.once(
+        vendor([{ source_id: "a:1", properties: { title: "One" } }]),
+      ),
+    ).toBe(0);
+    expect(patches()).toHaveLength(0);
+    expect(harness.server.row("a:1").version).toBe(1);
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 0, .*unchanged 1/,
+    );
+
+    expect(await harness.once(vendor([one]))).toBe(0);
+    expect(patches()).toHaveLength(1);
+    expect(harness.server.row("a:1").properties).toEqual({
+      title: "One",
+      note: "first",
+    });
+  });
+});
+
 describe("new rows", () => {
   it("go through the bulk door at version 0, not atomic, at the feed tier, under the source", async () => {
     expect(await harness.once(vendor([one, two]))).toBe(0);
