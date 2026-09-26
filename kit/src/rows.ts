@@ -124,7 +124,7 @@ function transition(change: Change): boolean {
 }
 
 /** How the rows are found and written back: with nothing carried back, or two-way. */
-export interface RowsOptions {
+interface RowsOptions {
   /** The property holding the vendor's id, where the connector declares one. */
   link: string | undefined;
   /**

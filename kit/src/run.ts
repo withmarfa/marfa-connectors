@@ -82,11 +82,13 @@ function summarize(
 
 /**
  * One run, start to report: the log read for what changed in Marfa, the
- * connector's own pull from its vendor written in, the changes carried
- * back, the run reported. The run's state, the read's cursor and the
- * memory of the connector's own writes are kept only when every write and
- * every push landed; its conditions are kept either way, so a condition is
- * reported on the run it first appears and not on the ones after.
+ * creates among those carried to the vendor, the connector's own pull
+ * from its vendor written in, the rest of the changes carried back, the
+ * run reported. The run's state and the read's cursor are kept only when
+ * every write and every push landed; the memory of where the two sides
+ * agreed keeps what did land either way, and the conditions are kept
+ * either way, so a condition is reported on the run it first appears and
+ * not on the ones after.
  */
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
@@ -185,8 +187,7 @@ export async function runOnce<E extends EnvDeclaration>(
       // cursor then holds, and the changes not yet carried are offered
       // again.
       if (setup.signal.aborted) throw new Stopped();
-      if (connector.onChange === undefined) return;
-      await connector.onChange(change, watchContext);
+      await connector.onChange?.(change, watchContext);
       pushed += 1;
       // The vendor now has the row as this change showed it, so the two
       // sides agree at this version and state; a purged row has none.

@@ -19,10 +19,11 @@ import { CONTRACT_VERSION } from "@withmarfa/client";
  *   and a value echoed from the version named is not a change;
  * - every write reaches a log the stream replays from a cursor, ids in the
  *   order the writes were made, each frame carrying the row as it then was,
- *   narrowed to a type and its subtree, the first frame naming the head.
+ *   narrowed to a type and its subtree, the first frame naming the head and
+ *   a marker after the replay naming where the stream has reached.
  * It lets a test script what the real server cannot be asked for: another
  * writer between a read and a write, a refusal, a delay, a cursor the log
- * no longer holds, a stream that ends early or never reaches its head.
+ * no longer holds, a stream that ends early or whose replay never finishes.
  */
 
 export interface Row {
@@ -121,7 +122,7 @@ export class ScriptedServer {
   tooOld = false;
   /** The stream ends with `stream_incomplete` after this many frames. */
   incompleteAfter: number | undefined;
-  /** The stream never says it is live, and stays open: a server without the marker. */
+  /** The stream never says it is live, and stays open: a replay that never finishes. */
   withholdLive = false;
   /** The stream stops writing after this many frames and stays open, as a slow server does. */
   stallAfter: number | undefined;
@@ -628,8 +629,9 @@ export class ScriptedServer {
 
   /**
    * The stream: a comment, the head, then every event after the cursor of
-   * the type asked for, each frame carrying the row as it then was; and
-   * then it stays open, as the real one does, until the reader closes it.
+   * the type asked for, each frame carrying the row as it then was, then
+   * the marker naming where the stream has reached; and then it stays
+   * open, as the real one does, until the reader closes it.
    */
   private stream(
     query: URLSearchParams,

@@ -149,7 +149,7 @@ export function testConnector(held: Vendor) {
  * the vendor's id back where the test says one, and throws where the test
  * says so.
  */
-export function twoWayConnector(held: Vendor) {
+function twoWayConnector(held: Vendor) {
   return defineConnector({
     name: "test",
     description: "A two-way connector the kit's tests drive.",

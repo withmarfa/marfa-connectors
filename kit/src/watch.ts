@@ -161,7 +161,7 @@ export class Watch {
     private readonly stored: WatchState,
     private readonly memory: Memory,
     private readonly signal: AbortSignal,
-    /** The link field, where the connector declares one. */
+    /** The link property, where the connector declares one. */
     private readonly link: string | undefined,
     /** The connector's own source, under which its rows carry a natural key. */
     private readonly source: string,

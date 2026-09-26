@@ -321,7 +321,9 @@ describe("a row Todoist knows", () => {
     // The row as the person leaves it, whole: no description, no due date.
     const current = marfa.byId(row.id);
     const { description, due_at, precision, ...rest } = current.properties;
-    expect([description, due_at, precision]).toBeDefined();
+    expect(description).toBe("Now with details");
+    expect(due_at).toBe("2026-09-30T23:00:00.000Z");
+    expect(precision).toBe("day");
     marfa.rewrite(`${todoist.account}:a`, rest);
     await landed();
     expect(todoist.commands("item_update").at(-1)?.args).toEqual({
@@ -862,8 +864,7 @@ describe("the account's zone", () => {
   });
 
   it("is not kept by the carry, so the sync still reads every whole-day date anew when it first learns the zone", async () => {
-    // A state with a token and no zone: a sync that named none, or one
-    // from before the zone was kept.
+    // A state with a token and no zone: a sync that named none.
     todoist.timezone = null;
     todoist.put(
       todoist.task("a", { content: "Whole day", due: { date: "2026-09-30" } }),

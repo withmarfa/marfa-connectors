@@ -112,7 +112,7 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   /**
    * The property on the type that holds the vendor's own id for a row. With a
    * link, every row of the type is the connector's to read and write,
-   * whoever created it: an entry finds its row by this field first and by
+   * whoever created it: an entry finds its row by this property first and by
    * its natural key under the connector's source second, and a row that
    * carries no value is one the vendor has not been told about.
    */
