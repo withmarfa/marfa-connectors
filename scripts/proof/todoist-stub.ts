@@ -36,7 +36,6 @@ export interface ReceivedCommand {
 export interface ReceivedRequest {
   method: string;
   path: string;
-  authorized: boolean;
   /** When it arrived, in milliseconds, so a wait between two can be measured. */
   at: number;
   syncToken?: string;
@@ -61,8 +60,8 @@ type CommandStatus = "ok" | Record<string, unknown>;
  * door answers a task open or completed and 404 for one deleted.
  *
  * A command's `uuid` is remembered with its answer, so a command sent
- * again is answered as it was and changes nothing, which is the assumption
- * the connector makes of Todoist for a replayed run. Deltas are by a
+ * again is answered as it was and changes nothing, which is what Todoist
+ * was seen to do with a replayed `item_add` in the real run. Deltas are by a
  * sequence each change moves, so a change the connector made comes back
  * to it on the next sync, as Todoist's does.
  */
@@ -254,12 +253,7 @@ export class TodoistStub {
     ) => void,
   ): void {
     const path = new URL(url, "http://stub").pathname;
-    const record: ReceivedRequest = {
-      method,
-      path,
-      authorized,
-      at: Date.now(),
-    };
+    const record: ReceivedRequest = { method, path, at: Date.now() };
     if (method === "POST" && path === "/api/v1/sync") {
       const form = new URLSearchParams(body);
       const commands = form.get("commands");
@@ -353,15 +347,11 @@ export class TodoistStub {
         // did not run afresh when it is sent again.
         continue;
       }
-      const status = this.apply(command);
+      const { status, made } = this.apply(command);
       let mapped: [string, string] | undefined;
-      if (
-        status === "ok" &&
-        command.type === "item_add" &&
-        command.temp_id !== undefined
-      ) {
-        mapped = [command.temp_id, this.lastMade];
-        temp_id_mapping[command.temp_id] = this.lastMade;
+      if (made !== undefined && command.temp_id !== undefined) {
+        mapped = [command.temp_id, made];
+        temp_id_mapping[command.temp_id] = made;
       }
       this.answered.set(command.uuid, {
         status,
@@ -372,11 +362,18 @@ export class TodoistStub {
     return { sync_status, temp_id_mapping };
   }
 
-  private lastMade = "";
-
-  private apply(command: ReceivedCommand): CommandStatus {
+  /** Runs one command: its status, and the id of a task `item_add` made. */
+  private apply(command: ReceivedCommand): {
+    status: CommandStatus;
+    made?: string;
+  } {
     const args = command.args;
     const id = typeof args["id"] === "string" ? args["id"] : undefined;
+    const notFound: CommandStatus = {
+      error_code: 22,
+      error: "Item not found",
+      http_code: 400,
+    };
     switch (command.type) {
       case "item_add": {
         this.made += 1;
@@ -390,47 +387,40 @@ export class TodoistStub {
           }),
         );
         this.touch(made);
-        this.lastMade = made;
-        return "ok";
+        return { status: "ok", made };
       }
       case "item_update": {
         const task = id === undefined ? undefined : this.tasks.get(id);
-        if (task === undefined || task.is_deleted) {
-          return { error_code: 22, error: "Item not found", http_code: 400 };
-        }
+        if (task === undefined || task.is_deleted) return { status: notFound };
         Object.assign(task, this.fields(args));
         this.touch(task.id);
-        return "ok";
+        return { status: "ok" };
       }
       case "item_close": {
         const task = id === undefined ? undefined : this.tasks.get(id);
-        if (task === undefined || task.is_deleted) {
-          return { error_code: 22, error: "Item not found", http_code: 400 };
-        }
+        if (task === undefined || task.is_deleted) return { status: notFound };
         if (!task.checked) this.complete(task.id);
-        return "ok";
+        return { status: "ok" };
       }
       case "item_uncomplete": {
         const task = id === undefined ? undefined : this.tasks.get(id);
-        if (task === undefined || task.is_deleted) {
-          return { error_code: 22, error: "Item not found", http_code: 400 };
-        }
+        if (task === undefined || task.is_deleted) return { status: notFound };
         if (task.checked) this.reopen(task.id);
-        return "ok";
+        return { status: "ok" };
       }
       case "item_delete": {
         const task = id === undefined ? undefined : this.tasks.get(id);
-        if (task === undefined) {
-          return { error_code: 22, error: "Item not found", http_code: 400 };
-        }
+        if (task === undefined) return { status: notFound };
         this.delete(task.id);
-        return "ok";
+        return { status: "ok" };
       }
       default:
         return {
-          error_code: 16,
-          error: "Invalid command type",
-          http_code: 400,
+          status: {
+            error_code: 16,
+            error: "Invalid command type",
+            http_code: 400,
+          },
         };
     }
   }

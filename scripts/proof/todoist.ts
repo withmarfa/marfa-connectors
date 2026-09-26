@@ -440,9 +440,10 @@ export async function proveTodoist(
       async () => {
         const before = await row("a");
         await edit(marfa, before, { title: "Buy everything, from Marfa" });
-        // Stamped the day before the server's clock, and past the time the
-        // task carried when the two sides last agreed, since the stub's
-        // clock stands still where a vendor's moves.
+        // Stamped the day before the server's clock, so the edit made in
+        // Marfa is the later one; the content differs from what the two
+        // sides last agreed on, so it is a change of the vendor's and a
+        // conflict, not a listing of the same entry again.
         todoist.now = "2026-09-24T12:30:00.000000Z";
         todoist.edit("a", { content: "Buy everything, from Todoist" });
         await runOnce();

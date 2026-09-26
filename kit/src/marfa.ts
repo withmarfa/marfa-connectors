@@ -6,9 +6,8 @@ import {
 } from "@withmarfa/client";
 import type { Item, TypeDefinition } from "./define.js";
 
-export type { Item };
 export type BulkResult = components["schemas"]["BulkResultEntry"];
-export type Version = components["schemas"]["Version"];
+type Version = components["schemas"]["Version"];
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
@@ -150,7 +149,7 @@ export class Marfa {
   /**
    * Lays properties over a row's at the version it was read at, leaving the
    * rest as they are: what the link is written with, since the row is the
-   * vendor's to fill and the link is one field of it.
+   * vendor's to fill and the link is one property of it.
    */
   async merge(
     id: string,
@@ -166,9 +165,10 @@ export class Marfa {
   }
 
   /**
-   * The log from a cursor, as frames: the first names the head, and the
-   * rest are every retained event after the cursor, then whatever is
-   * written while the stream is open. Narrowed to the type and its
+   * The log from a cursor, as frames: the first names the head, then
+   * every retained event after the cursor and whatever was written while
+   * they were replayed, then the marker naming where the stream has
+   * reached, then whatever is written after. Narrowed to the type and its
    * subtree, without edges, and ended by the signal.
    */
   async events(

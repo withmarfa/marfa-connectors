@@ -92,7 +92,7 @@ describe("the connector's own row", () => {
 });
 
 describe("setLink", () => {
-  it("writes the vendor's id onto a row's link field, and the write is the connector's own", async () => {
+  it("writes the vendor's id onto a row's link property, and the write is the connector's own", async () => {
     const theirs = harness.server.insert(
       undefined,
       { title: "Theirs" },
@@ -347,7 +347,13 @@ describe("a row the connector wrote before its link existed", () => {
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    // The condition is not raised again, and the run says it cleared.
     expect(harness.lastRun().summary).not.toContain("before its link existed");
+    expect(harness.lines).toContainEqual(
+      expect.stringContaining(
+        "cleared: 1 row the connector wrote before its link existed",
+      ),
+    );
   });
 });
 
@@ -378,5 +384,90 @@ describe("a row restored after its trash was carried back", () => {
     await harness.twoWay(held);
     expect(harness.server.row("a:1").state).toBe("archived");
     expect(harness.lastRun().summary).toMatch(/archived 1/);
+  });
+});
+
+describe("what the two sides agree on, after each kind of agreement", () => {
+  it("is the vendor's entry as written, so listing it again after an edit in Marfa is no conflict", async () => {
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    // The vendor changes the entry, and the change is written.
+    const changed = {
+      ...one,
+      properties: { ...one.properties, title: "One, by the vendor" },
+      changed_at: "2026-09-27T00:00:00.000Z",
+    };
+    held.entries = [changed];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    // A person edits the row; the vendor lists the same entry again.
+    harness.server.edit(harness.server.row("a:1").id, {
+      title: "One, by a person",
+    });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    // The write of the vendor's change is read back as the connector's own.
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 1, conflicts 0$/);
+  });
+
+  it("is the vendor's entry as found unchanged, which a row made in Marfa gains once the vendor lists it", async () => {
+    // Made in Marfa and carried: what was agreed on is the row without
+    // its link, until the vendor's listing of it, link and all, is found
+    // unchanged and becomes the agreement.
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    const held = vendor([]);
+    held.vendorIdFor = (change) =>
+      change.item.id === theirs.id ? "v-theirs" : undefined;
+    expect(await harness.twoWay(held)).toBe(0);
+    held.entries = [
+      {
+        source_id: "v-theirs",
+        properties: { title: "Theirs", vendor_id: "v-theirs" },
+        changed_at: "2026-09-01T00:00:00.000Z",
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toMatch(/unchanged 1/);
+    // A person edits the row; the vendor lists the same entry again.
+    harness.server.edit(theirs.id, { title: "Theirs, by a person" });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.byId(theirs.id).properties["title"]).toBe(
+      "Theirs, by a person",
+    );
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 0, conflicts 0$/);
+  });
+});
+
+describe("a row relinked by the vendor's entry", () => {
+  it("is not found under its old value in the same run", async () => {
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    // The vendor now lists the entry under a new id, and deletes the old
+    // one: the row moves to the new id, and the deletion finds nothing.
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, vendor_id: "v1-new" },
+        changed_at: "2026-09-27T00:00:00.000Z",
+      },
+    ];
+    held.archived = ["v1"];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1-new");
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(harness.lastRun().summary).toMatch(/updated 1, archived 0/);
   });
 });

@@ -124,7 +124,7 @@ function transition(change: Change): boolean {
 }
 
 /** How the rows are found and written back: with nothing carried back, or two-way. */
-export interface RowsOptions {
+interface RowsOptions {
   /** The property holding the vendor's id, where the connector declares one. */
   link: string | undefined;
   /**
@@ -169,8 +169,8 @@ export class Rows {
   private readonly byKey = new Map<string, Row>();
   /** The link value each row was last indexed under, by row id. */
   private readonly linkByRow = new Map<string, string>();
-  /** The vendor's time on each entry created this run, by natural key, for the memory. */
-  private readonly vendorAtByKey = new Map<string, string>();
+  /** The fingerprint of each entry created this run, by natural key, for the memory. */
+  private readonly agreedByKey = new Map<string, string>();
   /** Rows counted as a conflict this run, so one is counted once. */
   private readonly conflicted = new Set<string>();
 
@@ -198,9 +198,7 @@ export class Rows {
           this.counts.skipped += 1;
           continue;
         }
-        if (entry.changed_at !== undefined) {
-          this.vendorAtByKey.set(entry.source_id, entry.changed_at);
-        }
+        this.agreedByKey.set(entry.source_id, fingerprint(properties));
         creates.push({
           source_id: entry.source_id,
           properties,
@@ -215,9 +213,9 @@ export class Rows {
       const timeUnchanged =
         occurredAt === undefined || sameInstant(row.occurred_at, occurredAt);
       if (same(row.properties, properties) && timeUnchanged) {
-        // The two sides agree, and the vendor's time on the entry says so
-        // until the vendor moves it.
-        this.options.memory.agreeVendor(row.id, entry.changed_at);
+        // The two sides agree on these properties, whatever the vendor's
+        // time on them from here.
+        this.options.memory.agree(row.id, fingerprint(properties));
         this.counts.unchanged += 1;
         continue;
       }
@@ -231,7 +229,7 @@ export class Rows {
           occurredAt,
         );
         this.remember(item);
-        this.options.memory.agreeVendor(item.id, entry.changed_at);
+        this.options.memory.agree(item.id, fingerprint(properties));
         // More than one step means another write landed between the read
         // and this one, and the row holds that writer's changes beside this
         // run's.
@@ -332,24 +330,15 @@ export class Rows {
     }
     if (transition(change)) return true;
     // A vendor that lists every entry sends this one whether or not it
-    // changed. One carrying the time it carried when the two sides last
-    // agreed is unchanged there: the change in Marfa stands, is carried,
-    // and is no conflict.
-    const record = this.options.memory.written[row.id];
+    // changed, and the vendor's copy of a change carried there comes back
+    // under a new time. An entry equal to what the two sides last agreed
+    // on is unchanged at the vendor, whatever its time: the change in
+    // Marfa stands, is carried, and is no conflict.
+    const agreed = this.options.memory.written[row.id]?.agreed;
     if (
-      record?.vendorAt !== undefined &&
-      entry.changed_at === record.vendorAt
+      agreed !== undefined &&
+      fingerprint(cleaned(entry.properties)) === agreed
     ) {
-      return false;
-    }
-    // The vendor's copy of what the connector carried there, come back
-    // under the vendor's own time: the agreement the carry asked for, and
-    // the change in Marfa since it stands.
-    if (
-      record?.carried !== undefined &&
-      fingerprint(cleaned(entry.properties)) === record.carried
-    ) {
-      this.options.memory.agreeVendor(row.id, entry.changed_at);
       return false;
     }
     if (change.kind === "restored") {
@@ -634,7 +623,7 @@ export class Rows {
         result.id,
         1,
         "active",
-        this.vendorAtByKey.get(created.source_id),
+        this.agreedByKey.get(created.source_id),
       );
       this.counts.created += 1;
       return;

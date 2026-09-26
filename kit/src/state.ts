@@ -8,18 +8,14 @@ export interface Written {
   version: number;
   state: string;
   /**
-   * The vendor's own time on the entry the two sides last agreed on, so
-   * an entry carrying it again is one the vendor has not changed since.
-   * Absent where the vendor named no time, or the connector's last word
-   * on the row was a change it carried there.
+   * A fingerprint of the properties the two sides last agreed on: the
+   * vendor's entry as it was written or found unchanged, or the row as a
+   * change to it was carried there. An entry equal to it is one the vendor
+   * has not changed since, whatever its time, as a vendor that lists
+   * everything sends every run and as the vendor's copy of a carried
+   * change comes back.
    */
-  vendorAt?: string;
-  /**
-   * A fingerprint of the row's properties as the connector last carried
-   * them to the vendor, so the vendor's copy of that change, when it
-   * comes back, is taken as the agreement it is rather than a change.
-   */
-  carried?: string;
+  agreed?: string;
 }
 
 /**
