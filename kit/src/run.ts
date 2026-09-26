@@ -14,6 +14,7 @@ import type { Marfa } from "./marfa.js";
 import { Rows, Stopped, type Counts } from "./rows.js";
 import type { Clock } from "./runtime.js";
 import type { StateFile } from "./state.js";
+import { cleaned, fingerprint } from "./values.js";
 import { Memory, Watch, type WatchRead } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
@@ -195,6 +196,14 @@ export async function runOnce<E extends EnvDeclaration>(
       if (change.kind === "purged") memory.forget(change.item.id);
       else if (record === undefined || record.version <= change.item.version) {
         memory.remember(change.item.id, change.item.version, change.item.state);
+      }
+      // What was carried, so the vendor's copy of it, when it comes back
+      // under the vendor's own time, is the agreement and not a change.
+      if (change.kind !== "purged") {
+        memory.carry(
+          change.item.id,
+          fingerprint(cleaned(change.item.properties)),
+        );
       }
     };
     if (pending !== undefined && connector.onChange !== undefined) {

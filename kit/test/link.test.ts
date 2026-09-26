@@ -279,6 +279,26 @@ describe("a vendor that lists every entry", () => {
       /^created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 1, conflicts 0$/,
     );
 
+    // The vendor's copy of the carried change comes back under a new
+    // time; a second edit made since is carried too, and no conflict.
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by a person" },
+        changed_at: "2026-09-25T00:00:30.000Z",
+      },
+    ];
+    harness.server.edit(row.id, { title: "One, by a person, twice" });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by a person, twice",
+    );
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["One, by a person, twice"]);
+    expect(harness.lastRun().summary).toMatch(/pushed 1, own 0, conflicts 0$/);
+
     // The witness: an entry stamped after the agreement is a conflict.
     harness.server.edit(row.id, { title: "One, by a person again" });
     held.entries = [

@@ -14,6 +14,12 @@ export interface Written {
    * on the row was a change it carried there.
    */
   vendorAt?: string;
+  /**
+   * A fingerprint of the row's properties as the connector last carried
+   * them to the vendor, so the vendor's copy of that change, when it
+   * comes back, is taken as the agreement it is rather than a change.
+   */
+  carried?: string;
 }
 
 /**

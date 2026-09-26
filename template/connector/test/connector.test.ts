@@ -55,6 +55,14 @@ beforeEach(async () => {
   refuseNextWrite = undefined;
   let made = 0;
   const madeByKey = new Map<string, string>();
+  // A clock of the vendor's own, moving a second per write and standing
+  // the day before the scripted server's, so a change in Marfa is later
+  // than the vendor's, as it is with real clocks.
+  let vendorClock = Date.parse("2026-09-24T00:00:00.000Z");
+  const stamp = (): string => {
+    vendorClock += 1000;
+    return new Date(vendorClock).toISOString();
+  };
   vendor = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -99,11 +107,12 @@ beforeEach(async () => {
           return;
         }
         made += 1;
+        const at = stamp();
         const item: VendorItem = {
           id: `made-${String(made)}`,
           ...(withoutNulls(body) as Partial<VendorItem>),
-          created: "2026-09-25T09:00:00.000Z",
-          updated: "2026-09-25T09:00:00.000Z",
+          created: at,
+          updated: at,
         };
         items.push(item);
         if (idempotencyKey !== undefined) {
@@ -126,7 +135,7 @@ beforeEach(async () => {
           else Reflect.set(found, key, value);
         }
       }
-      found.updated = "2026-09-25T10:00:00.000Z";
+      found.updated = stamp();
       res.end(JSON.stringify({ id }));
     });
   });
@@ -385,6 +394,34 @@ describe("the template, run as a process", () => {
       "created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 1, conflicts 0",
     );
     expect(items[0]?.title).toBe("One, edited in Marfa");
+  });
+
+  it("carries a second edit made after a carried one, and counts no conflict on the vendor's copy of the first", async () => {
+    items = [
+      {
+        id: "1",
+        title: "One",
+        created: "2026-09-01T10:00:00.000Z",
+        updated: "2026-09-01T10:00:00.000Z",
+      },
+    ];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.edit(mine.id, { title: "A" });
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.title).toBe("A");
+    marfa.edit(mine.id, { title: "B" });
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.title).toBe("B");
+    expect(marfa.byId(mine.id).properties["title"]).toBe("B");
+    expect(marfa.runs.at(-1)?.summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 0, conflicts 0",
+    );
+    // And a run with nothing changed on either side moves nothing.
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toMatch(
+      /^created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 0, own 0, conflicts 0$/,
+    );
   });
 
   it("takes an item already gone as deleted, sends one create under a repeated key, and names a link another row carries", async () => {

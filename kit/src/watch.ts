@@ -46,12 +46,23 @@ export class Memory {
     };
   }
 
-  /** The vendor's time on the entry the record's row was last agreed with. */
+  /**
+   * The vendor's time on the entry the record's row was last agreed with.
+   * An agreement closes what was carried: the vendor's copy has come back.
+   */
   agreeVendor(id: string, vendorAt: string | undefined): void {
     const record = this.written[id];
     if (record === undefined) return;
     if (vendorAt === undefined) Reflect.deleteProperty(record, "vendorAt");
     else record.vendorAt = vendorAt;
+    Reflect.deleteProperty(record, "carried");
+  }
+
+  /** What the row's properties were when a change to it was carried to the vendor. */
+  carry(id: string, fingerprint: string): void {
+    const record = this.written[id];
+    if (record === undefined) return;
+    record.carried = fingerprint;
   }
 
   forget(id: string): void {
@@ -60,8 +71,8 @@ export class Memory {
 
   /**
    * Whether the event is nothing new to the vendor: the connector's own
-   * write, or a frame from before the two sides last agreed. Forgets a
-   * record the event has moved past.
+   * write, or a frame from before the two sides last agreed. A purge
+   * forgets the record; any other event leaves it standing.
    */
   own(kind: ChangeKind, item: Item): boolean {
     const record = this.written[item.id];

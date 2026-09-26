@@ -1,6 +1,6 @@
 import type { Change, Entry, Item } from "./define.js";
 import { Refusal, type BulkResult, type Marfa, type NewRow } from "./marfa.js";
-import { cleaned, instant, same, sameInstant } from "./values.js";
+import { cleaned, fingerprint, instant, same, sameInstant } from "./values.js";
 import type { Memory } from "./watch.js";
 
 export interface Counts {
@@ -335,8 +335,23 @@ export class Rows {
     // changed. One carrying the time it carried when the two sides last
     // agreed is unchanged there: the change in Marfa stands, is carried,
     // and is no conflict.
-    const agreedAt = this.options.memory.written[row.id]?.vendorAt;
-    if (agreedAt !== undefined && entry.changed_at === agreedAt) return false;
+    const record = this.options.memory.written[row.id];
+    if (
+      record?.vendorAt !== undefined &&
+      entry.changed_at === record.vendorAt
+    ) {
+      return false;
+    }
+    // The vendor's copy of what the connector carried there, come back
+    // under the vendor's own time: the agreement the carry asked for, and
+    // the change in Marfa since it stands.
+    if (
+      record?.carried !== undefined &&
+      fingerprint(cleaned(entry.properties)) === record.carried
+    ) {
+      this.options.memory.agreeVendor(row.id, entry.changed_at);
+      return false;
+    }
     if (change.kind === "restored") {
       // What the vendor sends after a trash was carried back can be the
       // echo of what the trash did there. An entry from before the restore
