@@ -143,6 +143,8 @@ export class ScriptedServer {
   stallAfter: number | undefined;
   /** The marker names no position, as the server's does when its head read outran its budget. */
   liveCursorNull = false;
+  /** The marker names this position in place of the head, as a server whose log was reset would. */
+  liveCursor: string | undefined;
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
@@ -740,7 +742,9 @@ export class ScriptedServer {
     if (this.withholdLive) return;
     frame("stream_live", {
       type: "stream_live",
-      cursor: this.liveCursorNull ? null : String(this.head),
+      cursor: this.liveCursorNull
+        ? null
+        : (this.liveCursor ?? String(this.head)),
     });
   }
 

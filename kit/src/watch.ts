@@ -237,14 +237,15 @@ export class Watch {
         incomplete,
       };
     }
-    // Where to resume from: the position the marker names, which covers
-    // the frames this reader was never sent; else the last frame read;
-    // else where it was.
+    // Where to resume from: the furthest of the position the marker names,
+    // which covers the frames this reader was never sent, the last frame
+    // read and where it was. A marker behind the cursor, from a server
+    // whose log was reset, would otherwise hand back what was already read.
     return {
       changes: [...latest.values()],
       own,
       unlinked,
-      cursor: live ?? last ?? this.stored.cursor,
+      cursor: furthest(live, last, this.stored.cursor),
       resync: false,
       incomplete,
     };
@@ -324,4 +325,13 @@ export class Watch {
     const value = item.properties[field];
     return typeof value === "string" && value !== "";
   }
+}
+
+function furthest(...cursors: (string | undefined)[]): string | undefined {
+  let best: string | undefined;
+  for (const cursor of cursors) {
+    if (cursor === undefined || !/^\d+$/.test(cursor)) continue;
+    if (best === undefined || BigInt(cursor) > BigInt(best)) best = cursor;
+  }
+  return best;
 }

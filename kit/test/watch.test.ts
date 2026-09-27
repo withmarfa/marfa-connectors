@@ -354,6 +354,28 @@ describe("a read that ends early", () => {
     expect((await watchState()).cursor).toBe(String(harness.server.head));
   });
 
+  it("keeps its cursor where the marker names a position behind it", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    harness.server.edit(harness.server.row("a:1").id, { title: "One, edited" });
+    harness.server.edit(harness.server.row("a:2").id, { title: "Two, edited" });
+    await quietRun(held);
+    const before = (await watchState()).cursor;
+    expect(
+      Number(before),
+      "the cursor is not past the position the marker names below, so it cannot be moved back",
+    ).toBeGreaterThan(1);
+    harness.server.liveCursor = "1";
+    expect(await quietRun(held)).toBe(0);
+    expect(
+      (await watchState()).cursor,
+      "a marker behind the cursor moved it back, so the next run reads again what it already took",
+    ).toBe(before);
+    await quietRun(held);
+    expect(streams().at(-1)?.headers["last-event-id"]).toBe(before);
+  });
+
   it("fails the run and holds the cursor when the events request is refused", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
