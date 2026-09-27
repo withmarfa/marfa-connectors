@@ -355,7 +355,7 @@ packages:
     resolution: {integrity: sha512-rbto/mF/SGERxEgYOek7Xm6B9b+y+mVoo+f4b2LymYO8zM1b7uB5nHuhVMTP2hxdzgxvGiZYGxGIaMvL5y180Q==}
 
   '@withmarfa/client@file:vendor/withmarfa-client.tar':
-    resolution: {integrity: sha512-bn+UFixXPzwasvoYTiYybq94kUcyHt9dBIG/jZBQJpgymK+z5zGZsMPp1mGVYMkX+yPPRrBC/KdshnuglfCloA==, tarball: file:vendor/withmarfa-client.tar}
+    resolution: {integrity: sha512-NngK46o41ET0kCpQG8CB8yI2bOE7R8MaIyGxxqFbEHlBp5Y0SURufSgryqNfHWpLDz393dLc4b1n3y1D1W92UQ==, tarball: file:vendor/withmarfa-client.tar}
     version: 0.0.0
 
   acorn-jsx@5.3.2:
