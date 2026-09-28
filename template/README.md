@@ -6,7 +6,8 @@ A connector is a small folder: `src/main.ts`, what the connector is and what one
 - refuses a key that holds more than its type needs;
 - checks its type against the instance's;
 - compares what the run found with the rows already written, and writes only what changed;
-- heartbeats, keeps the connector's state, and reports each run.
+- heartbeats, keeps the connector's state, and reports each run;
+- takes the webhooks a vendor posts, where the connector reads them.
 
 ## Start one
 
@@ -46,6 +47,48 @@ The conflict rule, where a row changed in Marfa since the two sides last agreed 
 
 A connector without `onChange` makes no events request and its state file gains nothing.
 
+## Receiving webhooks
+
+A vendor that posts webhooks, such as GitHub, can tell the connector what changed rather than wait for its schedule. The instance stores each delivery as it arrived and never reads it; the connector declares how to read one:
+
+```ts
+inbound: {
+  // The vendor's signature over the body exactly as it arrived.
+  verify: (delivery, env) =>
+    verifyHmac({
+      secret: env.EXAMPLE_WEBHOOK_SECRET,
+      body: delivery.body,
+      signature: delivery.header("X-Signature"),
+    }),
+  // What the delivery says changed, as ids `run` can fetch.
+  hints: (delivery) => [
+    String(JSON.parse(new TextDecoder().decode(delivery.body)).id),
+  ],
+},
+```
+
+- **`verify`** answers whether a delivery came from the vendor. `verifyHmac` from the kit compares an HMAC in constant time: `prefix` for a header such as GitHub's `sha256=…`, `encoding: "base64"` for a vendor that signs in base64. The secret is declared in `env` as a `secret`, so it never reaches a log line. A delivery that fails, or whose `verify` throws, is marked rejected for good and changes nothing, and the run says how many with a condition, which usually means the secret differs from the one the vendor signs with. Keep `verify` to the delivery and the environment: a check that reaches the network can fail for a passing reason and reject a genuine delivery.
+- **`hints`** answers what the delivery says changed, as the ids `run` fetches, or `"everything"`. A `hints` that throws, as the example does on a body that is not JSON, means everything, and the run says how many with a condition; neither error's text is kept, since it can quote the body. A delivery is a hint, never the vendor's state: the vendor may send them out of order, twice, or not at all, so `run` always fetches what the hint names and writes that.
+- **`run`** reads `context.hints`. It is `undefined` on a scheduled run, which reads the vendor whole, and on a run whose deliveries asked for everything; otherwise it is the set of ids the deliveries named, which may be empty, and the run fetches only those and leaves any cursor into the vendor, such as a sync token, where it was, since the rest was not read. Both write through `upsert` and `archive`, so a delivery and the schedule reach a row the same way.
+- A run the deliveries started clears no condition, having checked only part.
+- A connector with `onChange` is handed no hints: a delivery starts a whole run, which reads the vendor whole and carries back what changed in Marfa as a scheduled run does. Carrying back after a partial read would overwrite vendor entries the run did not see, and writing without carrying would leave changes behind that the next run could no longer tell from the connector's own. Webhooks bring a two-way connector's run forward; they do not make it smaller.
+
+How deliveries are taken:
+
+- Every run first collects what waits at the connector's endpoints, up to five hundred, fetching each body to verify it. A body that cannot be fetched leaves its delivery waiting for a later run, with a condition, and the rest are taken. A verified delivery that repeats one already processed, or one verified earlier in the same collection, by the header the endpoint names, is marked a duplicate.
+- A delivery is marked processed once the run that took it ends without error. A write the run held does not keep it waiting, since the next scheduled run reads the vendor whole and writes it again; a run that fails leaves it waiting for the next.
+- A scheduled run that cannot read the deliveries or the endpoints says so with a condition and still reads the vendor whole.
+- With `--every`, the kit looks for a waiting delivery every ten seconds between scheduled runs, or as often as `--deliveries-every` says, and starts a run for it at once. A run for deliveries that fails, or whose deliveries could not be marked, leaves them for the scheduled run rather than trying again at every look. The schedule stays the safety net, since a vendor does not promise to deliver: GitHub does not retry a failed delivery.
+- Each run's report counts the deliveries it processed, rejected and marked duplicate.
+
+The address comes from the instance, never from the kit. With the connector registered, make an endpoint with its own key or the operator key:
+
+```bash
+marfa connectors endpoints create <connector-id> --label <vendor> --duplicate-header <header>
+```
+
+The answer carries the address in full this once, as `path` and as `url`, the address the binary reached joined to it; later reads show only its last four characters. Give the vendor the instance's public address with that path, and the secret it signs with. `--duplicate-header` names the header a vendor repeats on a redelivery, such as `X-GitHub-Delivery`. A scheduled run whose registration holds no live endpoint says how to make one. `marfa connectors endpoints retire <connector-id> <endpoint-id>` stops an address answering. `marfa connectors deliveries list <connector-id>` shows what waits, with the connector's own key only: the operator key is refused, as on every read of the connector's data.
+
 ## The key
 
 One key per connector per account, minted with the `marfa` binary by a credential that holds `keys.mint`:
@@ -74,11 +117,11 @@ marfa keys create --label <name>-<account> --source <name>-<account> --claim <na
 The environment is `MARFA_URL`, `MARFA_KEY`, `MARFA_STATE_DIR` and whatever `env` declares.
 
 - **`node dist/main.js --once`**: one run, then exit, for launchd, cron or a scheduled container. Exit codes: `0` for a run that succeeded or a clean stop, `1` for a failed run or a start that could not complete, `2` for a missing or malformed setting.
-- **`node dist/main.js --every 15m`**: a long-lived process. Runs never overlap, and the heartbeat has its own one-minute timer. A failed run is reported, and the next waits twice as long, up to eight intervals. SIGTERM stops it cleanly.
+- **`node dist/main.js --every 15m`**: a long-lived process. Runs never overlap, and the heartbeat has its own one-minute timer. A failed run is reported, and the next waits twice as long, up to eight intervals. SIGTERM stops it cleanly. A connector that receives webhooks also looks for waiting deliveries between runs, every ten seconds unless `--every 15m --deliveries-every 30s` says otherwise.
 
 ### launchd
 
-`launchd.plist.example` runs the connector `--once` every fifteen minutes. Copy it to `~/Library/LaunchAgents/`, give it a label and the real paths, and load it with `launchctl bootstrap gui/$(id -u) <plist>`. Its `ProgramArguments` start the connector under a secrets tool, so the key and the vendor's token never sit in the plist.
+`launchd.plist.example` runs the connector `--once` every fifteen minutes. Copy it to `~/Library/LaunchAgents/`, give it a label and the real paths, and load it with `launchctl bootstrap gui/$(id -u) <plist>`. Its `ProgramArguments` start the connector under a secrets tool, so the key and the vendor's token never sit in the plist. Run `--once`, a connector takes its deliveries only when it runs, so a webhook is acted on within the fifteen minutes; run it `--every` to act on one within seconds.
 
 ### A container
 

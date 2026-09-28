@@ -9,6 +9,7 @@ import type {
   WatchContext,
 } from "./define.js";
 import type { Environment } from "./environment.js";
+import { collect, type Collected } from "./inbound.js";
 import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
 import { Rows, Stopped, type Counts } from "./rows.js";
@@ -28,6 +29,27 @@ export interface RunSetup<E extends EnvDeclaration> {
   signal: AbortSignal;
 }
 
+/**
+ * Why a run starts: its schedule, which reads the vendor whole, or a
+ * delivery waiting, which reads what the deliveries named, or the whole
+ * vendor where one asked for everything. A two-way connector reads the
+ * vendor whole either way.
+ */
+export type Trigger = "schedule" | "deliveries";
+
+export interface RunResult {
+  /** No error ended the run, whatever writes it held. */
+  readonly succeeded: boolean;
+  /**
+   * Every delivery the run took is marked and none was left unfetched, so
+   * none waits on its account.
+   */
+  readonly settled: boolean;
+}
+
+/** How many deliveries one request marks. */
+const marksPerRequest = 200;
+
 /** An error's message, with the cause beneath it where there is one. */
 export function describe(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
@@ -37,14 +59,24 @@ export function describe(error: unknown): string {
   return `${error.message} (${code ?? cause.message})`;
 }
 
-/** The counts as a run's summary opens, the two-way ones for a two-way connector. */
+/**
+ * The counts as a run's summary opens: the two-way ones for a two-way
+ * connector, and the deliveries for one that reads them.
+ */
 function tally(
   counts: Counts,
   outbound: { pushed: number; own: number } | undefined,
+  deliveries:
+    { processed: number; rejected: number; duplicate: number } | undefined,
 ): string {
-  const inbound = `created ${String(counts.created)}, updated ${String(counts.updated)}, archived ${String(counts.archived)}, unchanged ${String(counts.unchanged)}, skipped ${String(counts.skipped)}`;
-  if (outbound === undefined) return inbound;
-  return `${inbound}, pushed ${String(outbound.pushed)}, own ${String(outbound.own)}, conflicts ${String(counts.conflicts)}`;
+  let summary = `created ${String(counts.created)}, updated ${String(counts.updated)}, archived ${String(counts.archived)}, unchanged ${String(counts.unchanged)}, skipped ${String(counts.skipped)}`;
+  if (outbound !== undefined) {
+    summary += `, pushed ${String(outbound.pushed)}, own ${String(outbound.own)}, conflicts ${String(counts.conflicts)}`;
+  }
+  if (deliveries !== undefined) {
+    summary += `; deliveries processed ${String(deliveries.processed)}, rejected ${String(deliveries.rejected)}, duplicate ${String(deliveries.duplicate)}`;
+  }
+  return summary;
 }
 
 /** Room left in a summary for saying that more conditions wait. */
@@ -81,18 +113,27 @@ function summarize(
 }
 
 /**
- * One run, start to report: the log read for what changed in Marfa, the
- * creates among those carried to the vendor, the connector's own pull
- * from its vendor written in, the rest of the changes carried back, the
- * run reported. The run's state and the read's cursor are kept only when
- * every write and every push landed; the memory of where the two sides
- * agreed keeps what did land either way, and the conditions are kept
+ * One run, start to report: the waiting deliveries collected and sorted,
+ * the log read for what changed in Marfa, the creates among those carried
+ * to the vendor, the connector's own pull from its vendor written in, the
+ * rest of the changes carried back, the fresh deliveries marked processed,
+ * the run reported. The run's state and the read's cursor are kept only
+ * when every write and every push landed; the memory of where the two
+ * sides agreed keeps what did land either way, and the conditions are kept
  * either way, so a condition is reported on the run it first appears and
  * not on the ones after.
+ *
+ * A run for deliveries reads only what they named and clears no
+ * condition, having checked only part. A two-way connector's is a whole
+ * run: carrying back after a partial read would overwrite vendor entries
+ * the run did not see, and writing without carrying would leave the
+ * memory ahead of changes still to carry, which the next run would then
+ * drop as the connector's own.
  */
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
-): Promise<boolean> {
+  trigger: Trigger,
+): Promise<RunResult> {
   const { connector, logger, clock } = setup;
   const stored = await setup.stateFile.load();
   const draft = structuredClone(stored.state);
@@ -133,11 +174,15 @@ export async function runOnce<E extends EnvDeclaration>(
     condition: (key, message) => raised.set(key, message),
   };
   const env = setup.environment.values as EnvValues<E>;
+  let hints: ReadonlySet<string> | undefined;
   const context: RunContext<E> = {
     env,
     signal: setup.signal,
     state,
     log,
+    get hints() {
+      return hints;
+    },
     upsert: (entries) => rows.upsert(entries),
     archive: (keys) => rows.archive(keys),
   };
@@ -153,7 +198,72 @@ export async function runOnce<E extends EnvDeclaration>(
   let failure: unknown;
   let read: WatchRead | undefined;
   let pushed = 0;
+  let collected: Collected | undefined;
+  const whole = trigger === "schedule" || twoWay;
+  // On a whole run the deliveries are extra: a failure reading them is a
+  // condition, and the vendor is still read whole.
+  const bookkeeping = async <T>(
+    key: string,
+    message: string,
+    step: () => Promise<T>,
+  ): Promise<T | undefined> => {
+    if (!whole) return step();
+    try {
+      return await step();
+    } catch (error) {
+      if (setup.signal.aborted) throw error;
+      raised.set(key, `${message}: ${describe(error)}`);
+      return undefined;
+    }
+  };
   try {
+    const inbound = connector.inbound;
+    if (inbound !== undefined) {
+      collected = await bookkeeping(
+        "deliveries-unread",
+        "the waiting deliveries could not be read, so this run read the vendor whole without them",
+        () =>
+          collect(setup.marfa, setup.connectorId, inbound, env, setup.signal),
+      );
+      if (!whole) hints = collected?.hints;
+      const rejected = collected?.rejected ?? 0;
+      if (rejected > 0) {
+        raised.set(
+          "rejected",
+          `${String(rejected)} ${rejected === 1 ? "delivery" : "deliveries"} failed the signature check and ${rejected === 1 ? "was" : "were"} marked rejected; the secret the sender signs with may not be the one this connector holds`,
+        );
+      }
+      const unreadable = collected?.unreadable ?? 0;
+      if (unreadable > 0) {
+        raised.set(
+          "unreadable",
+          `${String(unreadable)} verified ${unreadable === 1 ? "delivery" : "deliveries"} could not be read for what changed, so the vendor was read whole for ${unreadable === 1 ? "it" : "them"}`,
+        );
+      }
+      const unfetched = collected?.unfetched ?? 0;
+      if (unfetched > 0) {
+        raised.set(
+          "unfetched",
+          `${String(unfetched)} ${unfetched === 1 ? "delivery's body" : "deliveries' bodies"} could not be fetched, so ${unfetched === 1 ? "it waits" : "they wait"} for a later run`,
+        );
+      }
+      const endpoints = whole
+        ? await bookkeeping(
+            "endpoints-unread",
+            "the webhook endpoints could not be read, so whether one is live is not known",
+            () => setup.marfa.endpoints(setup.connectorId),
+          )
+        : undefined;
+      if (
+        endpoints !== undefined &&
+        !endpoints.some((endpoint) => endpoint.retired_at === null)
+      ) {
+        raised.set(
+          "no-endpoint",
+          `no webhook endpoint is live, so nothing reaches this connector but its schedule; make one with \`marfa connectors endpoints create ${setup.connectorId}\``,
+        );
+      }
+    }
     if (pending !== undefined) {
       const watch = new Watch(
         setup.marfa,
@@ -270,9 +380,37 @@ export async function runOnce<E extends EnvDeclaration>(
   const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
   for (const [, message] of fresh) logger.warn(message);
 
+  const landed = failure === undefined && rows.held === 0;
+  // A delivery is processed once the run that took it ends without error.
+  // A write it held is read again by the next scheduled run, which reads
+  // the vendor whole, so the delivery need not wait for it.
+  const taken = collected?.fresh ?? [];
+  let processed = 0;
+  if (failure === undefined && !setup.signal.aborted) {
+    try {
+      for (let at = 0; at < taken.length; at += marksPerRequest) {
+        const marking = taken.slice(at, at + marksPerRequest);
+        await setup.marfa.handled(setup.connectorId, marking, "processed");
+        processed += marking.length;
+      }
+    } catch (error) {
+      logger.warn(
+        `the deliveries could not be marked processed, and are taken again by a later run: ${describe(error)}`,
+      );
+    }
+  }
+  const settled =
+    processed === taken.length && (collected?.unfetched ?? 0) === 0;
   const counts = tally(
     rows.counts,
     twoWay ? { pushed, own: read?.own ?? 0 } : undefined,
+    connector.inbound === undefined
+      ? undefined
+      : {
+          processed,
+          rejected: collected?.rejected ?? 0,
+          duplicate: collected?.duplicate ?? 0,
+        },
   );
   const { summary, carried } = summarize(counts, fresh);
   const outcome = failure === undefined ? "succeeded" : "failed";
@@ -298,13 +436,14 @@ export async function runOnce<E extends EnvDeclaration>(
   }
 
   // A condition counts as reported only once a report carrying it landed.
-  // A run that failed may not have reached what raises one, so nothing it
-  // did not raise is taken to have cleared.
+  // A run that failed, or read only what deliveries named, may not have
+  // reached what raises one, so nothing it did not raise is taken to have
+  // cleared.
   const known = [...raised].filter(
     ([key]) => key in stored.conditions || carried.has(key),
   );
   let conditions = stored.conditions;
-  if (reported && failure === undefined) {
+  if (reported && failure === undefined && whole) {
     for (const [key, message] of Object.entries(stored.conditions)) {
       if (!raised.has(key)) logger.info(`cleared: ${message}`);
     }
@@ -312,7 +451,6 @@ export async function runOnce<E extends EnvDeclaration>(
   } else if (reported) {
     conditions = { ...stored.conditions, ...Object.fromEntries(known) };
   }
-  const landed = failure === undefined && rows.held === 0;
   try {
     await setup.stateFile.save({
       state: landed ? draft : stored.state,
@@ -334,5 +472,5 @@ export async function runOnce<E extends EnvDeclaration>(
   } catch (error) {
     logger.warn(`the state file could not be written: ${describe(error)}`);
   }
-  return failure === undefined;
+  return { succeeded: failure === undefined, settled };
 }

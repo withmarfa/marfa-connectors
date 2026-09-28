@@ -56,6 +56,20 @@ export interface Request {
   body: unknown;
 }
 
+/** A delivery as the server stores it, the body beside it. */
+export interface Delivery {
+  id: string;
+  endpoint_id: string;
+  received_at: string;
+  method: string;
+  query: string;
+  headers: [string, string][];
+  body: Buffer;
+  duplicate_of: string | null;
+  handled_at: string | null;
+  outcome: string | null;
+}
+
 /** One event as the log holds it. */
 export interface Event {
   id: number;
@@ -145,6 +159,12 @@ export class ScriptedServer {
   liveCursorNull = false;
   /** The marker names this position in place of the head, as a server whose log was reset would. */
   liveCursor: string | undefined;
+  /** The registration's webhook endpoints: one live unless a test says not. */
+  endpoints: { id: string; retired_at: string | null }[] = [
+    { id: "endpoint-1", retired_at: null },
+  ];
+  /** What arrived at them, oldest first. */
+  readonly deliveries: Delivery[] = [];
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
@@ -188,6 +208,53 @@ export class ScriptedServer {
     const queue = this.refusals.get(route) ?? [];
     queue.push({ status, code, message });
     this.refusals.set(route, queue);
+  }
+
+  /** A sender's request, stored as the receiving door stores it. */
+  deliver(
+    body: string | Buffer,
+    headers: [string, string][] = [],
+    duplicateOf: string | null = null,
+  ): Delivery {
+    const delivery: Delivery = {
+      id: `delivery-${String(this.deliveries.length + 1)}`,
+      endpoint_id: "endpoint-1",
+      received_at: this.now(),
+      method: "POST",
+      query: "",
+      headers,
+      body: typeof body === "string" ? Buffer.from(body) : body,
+      duplicate_of: duplicateOf,
+      handled_at: null,
+      outcome: null,
+    };
+    this.deliveries.push(delivery);
+    return delivery;
+  }
+
+  private deliveryView(delivery: Delivery): Record<string, unknown> {
+    const original =
+      delivery.duplicate_of === null
+        ? undefined
+        : this.deliveries.find(
+            (candidate) => candidate.id === delivery.duplicate_of,
+          );
+    return {
+      id: delivery.id,
+      endpoint_id: delivery.endpoint_id,
+      received_at: delivery.received_at,
+      method: delivery.method,
+      query: delivery.query,
+      headers: delivery.headers,
+      size: delivery.body.length,
+      sha256: "",
+      duplicate_of:
+        original === undefined
+          ? null
+          : { id: original.id, outcome: original.outcome },
+      handled_at: delivery.handled_at,
+      outcome: delivery.outcome,
+    };
   }
 
   row(sourceId: string): Row {
@@ -495,6 +562,92 @@ export class ScriptedServer {
         ...run,
         id: `run-${String(this.runs.length)}`,
         reported_at: this.now(),
+      });
+      return;
+    }
+    if (
+      method === "GET" &&
+      parts[0] === "connectors" &&
+      parts[2] === "endpoints"
+    ) {
+      send(200, {
+        data: this.endpoints.map((endpoint) => ({
+          ...endpoint,
+          connector_id: parts[1],
+          label: null,
+          duplicate_header: null,
+          path: "/inbound/****abcd",
+          created_at: this.now(),
+        })),
+        next_cursor: null,
+      });
+      return;
+    }
+    if (
+      method === "GET" &&
+      parts[0] === "connectors" &&
+      parts[2] === "deliveries" &&
+      parts[4] === "body"
+    ) {
+      const delivery = this.deliveries.find(
+        (candidate) => candidate.id === parts[3],
+      );
+      if (delivery === undefined) {
+        refuse(404, "delivery_not_found");
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "X-Marfa-Contract": String(CONTRACT_VERSION),
+      });
+      res.end(delivery.body);
+      return;
+    }
+    if (
+      method === "GET" &&
+      parts[0] === "connectors" &&
+      parts[2] === "deliveries"
+    ) {
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const waiting = this.deliveries.filter(
+        (delivery) => delivery.handled_at === null,
+      );
+      const page = waiting.slice(from, from + limit);
+      send(200, {
+        data: page.map((delivery) => this.deliveryView(delivery)),
+        next_cursor:
+          from + limit < waiting.length ? String(from + limit) : null,
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "deliveries" &&
+      parts[3] === "handled"
+    ) {
+      const ids = input["ids"] as string[];
+      if (ids.length === 0 || ids.length > 200) {
+        refuse(400, "validation_error");
+        return;
+      }
+      const marked = ids.map((id) =>
+        this.deliveries.find((delivery) => delivery.id === id),
+      );
+      if (marked.some((delivery) => delivery === undefined)) {
+        refuse(404, "delivery_not_found");
+        return;
+      }
+      for (const delivery of marked) {
+        if (delivery?.handled_at !== null) continue;
+        delivery.handled_at = this.now();
+        delivery.outcome = String(input["outcome"]);
+      }
+      send(200, {
+        data: marked.map((delivery) =>
+          delivery === undefined ? null : this.deliveryView(delivery),
+        ),
       });
       return;
     }

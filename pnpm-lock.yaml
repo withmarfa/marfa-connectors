@@ -65,6 +65,9 @@ importers:
       '@withmarfa/client':
         specifier: file:../vendor/withmarfa-client.tar
         version: file:vendor/withmarfa-client.tar
+      '@withmarfa/connector':
+        specifier: workspace:*
+        version: link:../kit
 
   template/connector:
     dependencies:

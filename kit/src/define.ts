@@ -64,6 +64,15 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly signal: AbortSignal;
   readonly state: State;
   readonly log: Log;
+  /**
+   * What the vendor said changed, as the ids its deliveries named: fetch
+   * these and write them, and leave alone any cursor into the vendor, such
+   * as a sync token, since the rest was not read. `undefined` asks for
+   * everything, as a run on the schedule does, and as one does whose
+   * deliveries asked for it. An empty set, from deliveries that named
+   * nothing, asks for nothing.
+   */
+  readonly hints: ReadonlySet<string> | undefined;
   /** Writes what differs from the connector's own rows, and nothing else. */
   readonly upsert: (entries: readonly Entry[]) => Promise<void>;
   /**
@@ -105,6 +114,37 @@ export interface WatchContext<E extends EnvDeclaration> {
    * refusal names both rows.
    */
   readonly setLink: (item: Item, value: string) => Promise<void>;
+}
+
+/** A request a sender made to one of the connector's webhook endpoints. */
+export interface Delivery {
+  readonly id: string;
+  readonly endpointId: string;
+  readonly receivedAt: string;
+  /** `[name, value]` pairs in the order and case they arrived. */
+  readonly headers: readonly (readonly [string, string])[];
+  /** The first value of a header, its name matched whatever its case. */
+  header(name: string): string | undefined;
+  readonly query: string;
+  /** The body byte for byte, which is what a signature is over. */
+  readonly body: Uint8Array;
+}
+
+/** How a connector reads what its vendor posts to it. */
+export interface Inbound<E extends EnvDeclaration> {
+  /**
+   * Whether the delivery came from the vendor, by its signature: one that
+   * did not, or that throws, is marked rejected for good and changes
+   * nothing, so a check that can fail for a passing reason, such as one
+   * reaching the network, rejects deliveries that were genuine.
+   */
+  verify(delivery: Delivery, env: EnvValues<E>): boolean | Promise<boolean>;
+  /**
+   * What the delivery says changed, as ids the run can fetch, or
+   * `"everything"`, which a throw also means. A delivery is a hint, never
+   * the vendor's state.
+   */
+  hints(delivery: Delivery): readonly string[] | "everything";
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
@@ -149,6 +189,14 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * read, where the conflict rule decides it.
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
+  /**
+   * Reads what the vendor posts to the connector's webhook endpoints. Each
+   * run first collects what arrived, and under `--every` the kit looks
+   * between runs and starts one for what waits, handing `run` the hints. A
+   * connector with `onChange` is handed none: its run for deliveries reads
+   * the vendor whole and carries back as a scheduled one does.
+   */
+  readonly inbound?: Inbound<E>;
 }
 
 export function defineConnector<

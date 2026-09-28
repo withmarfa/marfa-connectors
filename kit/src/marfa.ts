@@ -7,6 +7,14 @@ import {
 import type { Item, TypeDefinition } from "./define.js";
 
 export type BulkResult = components["schemas"]["BulkResultEntry"];
+/** A delivery as a listing answers it: the client reads each `[name, value]`
+ *  header pair as a plain array. */
+export type InboundDeliveryRow = Omit<
+  components["schemas"]["InboundDelivery"],
+  "headers"
+> & { headers: string[][] };
+export type InboundEndpoint = components["schemas"]["InboundEndpoint"];
+export type InboundOutcome = NonNullable<InboundDeliveryRow["outcome"]>;
 type Version = components["schemas"]["Version"];
 export type Key = components["schemas"]["ApiKey"];
 export type RunReport = NonNullable<
@@ -252,6 +260,81 @@ export class Marfa {
     });
     if (data === undefined) throw refusal(response, error);
     return data.item;
+  }
+
+  /** The registration's webhook endpoints, retired ones included. */
+  async endpoints(id: string): Promise<InboundEndpoint[]> {
+    const { data, error, response } = await this.client.GET(
+      "/connectors/{id}/endpoints",
+      { params: { path: { id } } },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data.data;
+  }
+
+  /** The deliveries not yet handled, oldest first, at most `limit`. */
+  async pendingDeliveries(
+    id: string,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<InboundDeliveryRow[]> {
+    const rows: InboundDeliveryRow[] = [];
+    let cursor: string | undefined;
+    do {
+      const { data, error, response } = await this.client.GET(
+        "/connectors/{id}/deliveries",
+        {
+          params: {
+            path: { id },
+            query: {
+              state: "pending",
+              limit: Math.min(200, limit - rows.length),
+              ...(cursor !== undefined && { cursor }),
+            },
+          },
+          signal,
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      rows.push(...data.data);
+      cursor = data.next_cursor ?? undefined;
+    } while (cursor !== undefined && rows.length < limit);
+    return rows;
+  }
+
+  async deliveryBody(
+    id: string,
+    deliveryId: string,
+    signal: AbortSignal,
+  ): Promise<Uint8Array> {
+    const { data, error, response } = await this.client.GET(
+      "/connectors/{id}/deliveries/{delivery_id}/body",
+      {
+        params: { path: { id, delivery_id: deliveryId } },
+        parseAs: "arrayBuffer",
+        signal,
+      },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return new Uint8Array(data);
+  }
+
+  /** Marks deliveries, two hundred to a request; the first mark stands. */
+  async handled(
+    id: string,
+    ids: readonly string[],
+    outcome: InboundOutcome,
+  ): Promise<void> {
+    for (let at = 0; at < ids.length; at += 200) {
+      const { data, error, response } = await this.client.POST(
+        "/connectors/{id}/deliveries/handled",
+        {
+          params: { path: { id } },
+          body: { ids: ids.slice(at, at + 200), outcome },
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+    }
   }
 
   async archive(id: string): Promise<void> {
