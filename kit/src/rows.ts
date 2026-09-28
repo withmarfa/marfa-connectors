@@ -129,6 +129,13 @@ export class Rows {
   readonly purged = new Set<string>();
   /** Rows this run's reads left with something in Marfa to carry. */
   readonly marked = new Set<string>();
+  /** Rows the vendor's word reached this run: an entry, or an archive. */
+  readonly reached = new Set<string>();
+  /**
+   * On a run for what deliveries named, the keys it may archive: the rest
+   * of the vendor was not read, so its silence says nothing.
+   */
+  archivable: ReadonlySet<string> | undefined;
   private loaded: Promise<void> | undefined;
   private readonly byId = new Map<string, Item>();
   private readonly byLink = new Map<string, string>();
@@ -220,6 +227,7 @@ export class Rows {
 
   /** The vendor's entry written over the row, where it changed anything. */
   private async apply(entry: Entry, found: Item): Promise<void> {
+    this.reached.add(found.id);
     if (found.state === "trashed") {
       this.counts.skipped += 1;
       return;
@@ -441,6 +449,15 @@ export class Rows {
     });
     await this.store.fetch(rows.map(({ row }) => row.id));
     for (const { key, row } of rows) {
+      if (this.archivable !== undefined && !this.archivable.has(key)) {
+        this.counts.skipped += 1;
+        this.hooks.condition(
+          `unhinted:${key}`,
+          `${key} was named for archiving by a run for what deliveries named, which did not read it, so it was not archived`,
+        );
+        continue;
+      }
+      this.reached.add(row.id);
       if (row.state === "trashed") {
         this.counts.skipped += 1;
         continue;

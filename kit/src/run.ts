@@ -61,6 +61,9 @@ export interface RunResult {
 /** A row the vendor has not been told about. */
 const createKey = "@create";
 
+/** Waiting rows past which a run for deliveries reads the vendor whole. */
+const wholeAbove = 200;
+
 /** How many deliveries one request marks. */
 const marksPerRequest = 200;
 
@@ -321,7 +324,7 @@ export async function runOnce<E extends EnvDeclaration>(
   let pushed = 0;
   let own = 0;
   let collected: Collected | undefined;
-  const whole = trigger === "schedule" || twoWay;
+  const whole = trigger === "schedule";
   // On a whole run the deliveries are extra: a failure reading them is a
   // condition, and the vendor is still read whole.
   const bookkeeping = async <T>(
@@ -393,6 +396,35 @@ export async function runOnce<E extends EnvDeclaration>(
       ...(Object.keys(waiting).length > 0 && { waiting }),
     });
   };
+  /**
+   * A run for deliveries also fetches the rows waiting to be carried, so
+   * their fields go over what the vendor now holds; past a few hundred, it
+   * reads the vendor whole.
+   */
+  const withWaiting = async (
+    named: ReadonlyMap<string, ReadonlySet<string>>,
+    ids: ReadonlySet<string>,
+  ): Promise<ReadonlyMap<string, ReadonlySet<string>> | undefined> => {
+    if (ids.size > wholeAbove) return undefined;
+    const merged = new Map(
+      [...named].map(([type, values]) => [type, new Set(values)]),
+    );
+    for (const id of ids) {
+      const link = store.get(id)?.link;
+      const found = link === undefined ? undefined : await find(id);
+      if (link === undefined || found === undefined) continue;
+      const values = merged.get(found.spec.type) ?? new Set<string>();
+      values.add(link);
+      merged.set(found.spec.type, values);
+    }
+    for (const [type, values] of merged) {
+      lane(type).rows.archivable = values;
+    }
+    for (const { spec, rows } of lanes.values()) {
+      rows.archivable ??= merged.get(spec.type) ?? new Set();
+    }
+    return merged;
+  };
   const carry = async (item: Item, agreement: Agreement): Promise<void> => {
     if (setup.signal.aborted) throw new Stopped();
     const { spec: kind, rows } = lane(item.type);
@@ -433,6 +465,15 @@ export async function runOnce<E extends EnvDeclaration>(
         : changedInMarfa(agreement, carriable, current.properties);
     if (changeKind === "updated" && changed.length === 0) {
       store.set(current.id, withoutWaiting(agreement));
+      return;
+    }
+    // Fields go only over a vendor state this run read; they wait otherwise.
+    if (
+      hints !== undefined &&
+      changeKind !== "created" &&
+      changed.length > 0 &&
+      !rows.reached.has(current.id)
+    ) {
       return;
     }
     let attempted: string | undefined;
@@ -624,6 +665,7 @@ export async function runOnce<E extends EnvDeclaration>(
     // however the rest of the run goes.
     await store.flush();
     for (const id of order) await putBack(id);
+    if (hints !== undefined) hints = await withWaiting(hints, order);
 
     const done = new Set<string>();
     if (twoWay) {

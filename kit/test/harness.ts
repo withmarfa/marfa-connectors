@@ -274,12 +274,26 @@ function inboundTwoWayConnector(held: Vendor) {
   return defineConnector({
     ...base,
     async run(context) {
-      (held.hints ??= []).push(
+      const named =
         context.hints === undefined
           ? undefined
-          : (context.hints.get(testType.id) ?? new Set()),
+          : (context.hints.get(testType.id) ?? new Set<string>());
+      (held.hints ??= []).push(named);
+      if (named === undefined) {
+        await base.run(context);
+        return;
+      }
+      // Fetched alone, as a vendor answers for one item at a time.
+      held.runs += 1;
+      await context.upsert(
+        testType.id,
+        held.entries.filter((entry) =>
+          named.has(String(entry.properties["vendor_id"])),
+        ),
       );
-      await base.run(context);
+      if (held.archived.length > 0) {
+        await context.archive(testType.id, held.archived);
+      }
     },
     inbound: testInbound,
   });

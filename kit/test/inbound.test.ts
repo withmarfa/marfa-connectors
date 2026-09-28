@@ -709,7 +709,7 @@ describe("a two-way connector's run for deliveries", () => {
     await harness.clock.sleeping(10_000);
   }
 
-  it("reads the vendor whole and carries what changed in Marfa, moving the cursor", async () => {
+  it("fetches what the deliveries named and the rows waiting in Marfa, carries what changed, and moves the cursor", async () => {
     const held = vendor([linked]);
     const { exit } = await settledTwoWay(held);
     const cursor = watched();
@@ -718,7 +718,7 @@ describe("a two-way connector's run for deliveries", () => {
     held.changes.length = 0;
 
     await delivered(held, 3);
-    expect(held.hints).toEqual([undefined, undefined, undefined]);
+    expect(held.hints).toEqual([undefined, undefined, new Set(["v1"])]);
     expect(
       held.changes.map((change) => change.item.properties["title"]),
     ).toEqual(["Edited"]);
@@ -837,6 +837,92 @@ describe("a two-way connector's run for deliveries", () => {
         .filter((row) => row.properties["vendor_id"] === "v-theirs")
         .map((row) => row.id),
     ).toEqual([theirs.id]);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});
+
+describe("a two-way connector's run for what deliveries named", () => {
+  const first = {
+    source_id: "a:1",
+    properties: { title: "One", vendor_id: "v1" },
+  };
+  const second = {
+    source_id: "a:2",
+    properties: { title: "Two", vendor_id: "v2" },
+  };
+
+  async function settled(
+    held: Vendor,
+  ): Promise<{ exit: Promise<number> }> {
+    const exit = harness.inboundTwoWay(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    harness.clock.advance(15 * minute);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
+    await harness.clock.sleeping(10_000);
+    return { exit };
+  }
+
+  async function deliver(held: Vendor, ids: string[], runs: number) {
+    const said = signed({ ids });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === runs);
+    await harness.clock.sleeping(10_000);
+  }
+
+  it("carries a row waiting in Marfa whose entry it fetched, though the delivery named another", async () => {
+    const held = vendor([first, second]);
+    const { exit } = await settled(held);
+    harness.server.edit(harness.server.row("a:2").id, { title: "Two, edited" });
+    held.changes.length = 0;
+    await deliver(held, ["v1"], 3);
+    expect(held.hints?.at(-1)).toEqual(new Set(["v1", "v2"]));
+    expect(held.changes.map((change) => change.item.properties["title"])).toEqual(
+      ["Two, edited"],
+    );
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("leaves a field change waiting where the vendor did not send its row, for the scheduled run", async () => {
+    const held = vendor([first, second]);
+    const { exit } = await settled(held);
+    harness.server.edit(harness.server.row("a:2").id, { title: "Two, edited" });
+    // The vendor no longer answers for v2 alone.
+    held.entries = [first];
+    held.changes.length = 0;
+    await deliver(held, ["v1"], 3);
+    expect(held.changes).toEqual([]);
+    expect(
+      harness.server.agreements.get(harness.server.row("a:2").id)?.waiting,
+    ).toBe(true);
+
+    held.entries = [first, second];
+    harness.clock.advance(15 * minute);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 4);
+    await harness.clock.sleeping(10_000);
+    expect(held.changes.map((change) => change.item.properties["title"])).toEqual(
+      ["Two, edited"],
+    );
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("archives only what the deliveries named", async () => {
+    const held = vendor([first, second]);
+    const { exit } = await settled(held);
+    held.archived = ["v2"];
+    await deliver(held, ["v1"], 3);
+    expect(harness.server.row("a:2").state).toBe("active");
+    expect(harness.lastRun().summary).toContain(
+      "v2 was named for archiving by a run for what deliveries named",
+    );
+    // The witness: a delivery naming it archives it.
+    await deliver(held, ["v2"], 4);
+    expect(harness.server.row("a:2").state).toBe("archived");
     harness.stop();
     expect(await exit).toBe(0);
   });
