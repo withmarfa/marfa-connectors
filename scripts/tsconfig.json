@@ -4,5 +4,6 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["proof"]
+  "include": ["proof"],
+  "references": [{ "path": "../kit" }]
 }

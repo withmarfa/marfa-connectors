@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,9 +6,11 @@ import {
   defineConnector,
   type Change,
   type Entry,
+  type Inbound,
   type TypeDefinition,
 } from "../src/define.js";
 import { start } from "../src/main.js";
+import { verifyHmac } from "../src/verify.js";
 import type { Clock, Runtime } from "../src/runtime.js";
 import { ScriptedServer } from "./scripted-server.js";
 
@@ -118,6 +121,8 @@ export interface Vendor {
   gone?: Map<string, string>;
   /** What `remake` was asked, and how many runs had read the vendor then. */
   remakes?: { change: Change; runsBefore: number }[];
+  /** The hints each run was handed, in order. */
+  hints?: (ReadonlySet<string> | undefined)[];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -193,6 +198,73 @@ function twoWayConnector(held: Vendor) {
   });
 }
 
+/**
+ * How the test connectors read deliveries: a delivery is the vendor's when
+ * `X-Signature` is the HMAC of its body under the token, and its body names
+ * what changed as `{"ids": [...]}`, or `{"everything": true}`. One carrying
+ * `X-Throw` makes `verify` throw, quoting the body, and one whose body is not
+ * JSON makes `hints` throw, as `JSON.parse` does.
+ */
+const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
+  verify: (delivery, env) => {
+    if (delivery.header("x-throw") !== undefined) {
+      throw new Error(`cannot read ${new TextDecoder().decode(delivery.body)}`);
+    }
+    return verifyHmac({
+      secret: env.TEST_TOKEN,
+      body: delivery.body,
+      signature: delivery.header("x-signature"),
+    });
+  },
+  hints: (delivery) => {
+    const said = JSON.parse(new TextDecoder().decode(delivery.body)) as {
+      ids?: string[];
+      everything?: boolean;
+    };
+    return said.everything === true ? "everything" : (said.ids ?? []);
+  },
+};
+
+/** The one-way connector reading deliveries. */
+export function inboundConnector(held: Vendor) {
+  const base = testConnector(held);
+  return defineConnector({
+    ...base,
+    async run(context) {
+      (held.hints ??= []).push(context.hints);
+      await base.run(context);
+    },
+    inbound: testInbound,
+  });
+}
+
+/** The two-way connector reading deliveries. */
+function inboundTwoWayConnector(held: Vendor) {
+  const base = twoWayConnector(held);
+  return defineConnector({
+    ...base,
+    async run(context) {
+      (held.hints ??= []).push(context.hints);
+      await base.run(context);
+    },
+    inbound: testInbound,
+  });
+}
+
+/** A body as the test vendor posts it, with the header that signs it. */
+export function signed(
+  said: { ids?: string[]; everything?: boolean },
+  secret = secretToken,
+): { body: string; headers: [string, string][] } {
+  const body = JSON.stringify(said);
+  return {
+    body,
+    headers: [
+      ["X-Signature", createHmac("sha256", secret).update(body).digest("hex")],
+    ],
+  };
+}
+
 export const secretToken = "tok_vendor_secret_value";
 
 export class Harness {
@@ -248,6 +320,20 @@ export class Harness {
     env?: Record<string, string | undefined>,
   ): Promise<number> {
     return start(testConnector(held), this.runtime(["--once"], env));
+  }
+
+  /** The connector that reads deliveries, as the arguments say. */
+  inbound(
+    held: Vendor,
+    argv: readonly string[] = ["--once"],
+    env?: Record<string, string | undefined>,
+  ): Promise<number> {
+    return start(inboundConnector(held), this.runtime(argv, env));
+  }
+
+  /** The two-way connector that reads deliveries, as the arguments say. */
+  inboundTwoWay(held: Vendor, argv: readonly string[]): Promise<number> {
+    return start(inboundTwoWayConnector(held), this.runtime(argv));
   }
 
   /** One run of the two-way connector. */

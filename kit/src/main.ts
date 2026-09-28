@@ -151,6 +151,49 @@ async function registerAndCheck<E extends EnvDeclaration>(
   }
 }
 
+/**
+ * Until the next scheduled run, looks for a waiting delivery every
+ * `everyMs` and runs for it at once. A run for deliveries that fails, or
+ * leaves what it took unmarked, leaves them waiting for the scheduled run
+ * rather than being tried again at every look.
+ */
+async function awaitDeliveries<E extends EnvDeclaration>(
+  setup: RunSetup<E>,
+  everyMs: number,
+  next: number,
+): Promise<void> {
+  const { clock, signal, marfa, connectorId, logger } = setup;
+  // Read through a call, since the signal can abort while a sleep waits.
+  const stopped = (): boolean => signal.aborted;
+  let unreachable = false;
+  while (!stopped()) {
+    const left = next - clock.now().getTime();
+    if (left <= 0) return;
+    await clock.sleep(Math.min(left, everyMs), signal);
+    if (stopped() || clock.now().getTime() >= next) return;
+    let waiting: boolean;
+    try {
+      waiting =
+        (await marfa.pendingDeliveries(connectorId, 1, signal)).length > 0;
+      if (unreachable) logger.info("waiting deliveries can be read again");
+      unreachable = false;
+    } catch (error) {
+      if (stopped()) return;
+      if (!unreachable) {
+        logger.warn(`waiting deliveries could not be read: ${describe(error)}`);
+      }
+      unreachable = true;
+      continue;
+    }
+    if (!waiting || stopped()) continue;
+    const run = await runOnce(setup, "deliveries");
+    if (!run.succeeded || !run.settled) {
+      await clock.sleep(Math.max(0, next - clock.now().getTime()), signal);
+      return;
+    }
+  }
+}
+
 /** Runs the connector as the arguments say, and answers the exit code. */
 export async function start<E extends EnvDeclaration>(
   connector: Connector<E>,
@@ -266,18 +309,24 @@ export async function start<E extends EnvDeclaration>(
   let code = 0;
   try {
     if (schedule.mode === "once") {
-      const succeeded = await runOnce(setup);
+      const { succeeded } = await runOnce(setup, "schedule");
       code = succeeded || stopped() ? 0 : 1;
     } else {
       let failures = 0;
       while (!stopped()) {
-        failures = (await runOnce(setup)) ? 0 : failures + 1;
+        const run = await runOnce(setup, "schedule");
+        failures = run.succeeded ? 0 : failures + 1;
         if (stopped()) break;
         const wait = backoff(schedule.intervalMs, failures);
         if (failures > 0) {
           logger.info(`the next run is in ${describeDuration(wait)}`);
         }
-        await clock.sleep(wait, stop.signal);
+        const next = clock.now().getTime() + wait;
+        if (connector.inbound === undefined || !run.settled) {
+          await clock.sleep(wait, stop.signal);
+          continue;
+        }
+        await awaitDeliveries(setup, schedule.deliveriesMs, next);
       }
     }
   } finally {

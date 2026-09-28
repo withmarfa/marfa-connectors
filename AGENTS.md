@@ -1,13 +1,13 @@
 # marfa-connectors
 
-The connectors for Marfa: a small kit that makes a connector a page of code, a template to copy, and the connectors themselves, one folder each. A connector is a process with a key: it registers itself with an instance, heartbeats, pulls from its vendor, writes what it finds at the feed tier under its own type, carries changes made in Marfa back to the vendor where its brief says so, and reports each run. It writes to the vendor only through the kit's watch phase, and never writes into library types; promoting is a person's or an app's act.
+The connectors for Marfa: a small kit that makes a connector a page of code, a template to copy, and the connectors themselves, one folder each. A connector is a process with a key: it registers itself with an instance, heartbeats, pulls from its vendor, reads what its vendor posts to its webhook endpoints, writes what it finds at the feed tier under its own type, carries changes made in Marfa back to the vendor where its brief says so, and reports each run. It writes to the vendor only through the kit's watch phase, and never writes into library types; promoting is a person's or an app's act.
 
 ## Layout
 
 - `kit/`: the package `@withmarfa/connector`, the only thing here that is imported.
 - `template/`: what a new connector starts from. `template/connector/` is copied to `connectors/<name>/`; beside it are its README, a LaunchAgent and a Dockerfile.
 - `connectors/<name>/`: one folder per connector, run and never published.
-- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness with the vendor stubs it shares with the connectors' tests, and tests that refuse a version in a manifest or a file holding one, a home directory, machine name or personal address, tracked build output, a package left out of the build, and a workflow job off the pool.
+- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness, which builds a connector of its own on the kit, with the vendor stubs it shares with the connectors' tests, and tests that refuse a version in a manifest or a file holding one, a home directory, machine name or personal address, tracked build output, a package left out of the build, and a workflow job off the pool.
 
 ## Commands
 

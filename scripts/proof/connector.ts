@@ -37,24 +37,21 @@ export class ConnectorUnderProof {
     private readonly url: string,
     private readonly key: string,
     private readonly env: Record<string, string>,
+    private readonly entry = join(root, "connectors", name, "dist/main.js"),
   ) {}
 
   async once(): Promise<{ code: number; output: string }> {
     this.stateDir ??= await mkdtemp(join(tmpdir(), `proof-${this.name}-`));
     try {
-      const { stderr } = await run(
-        "node",
-        [join(root, "connectors", this.name, "dist/main.js"), "--once"],
-        {
-          env: {
-            PATH: process.env["PATH"],
-            MARFA_URL: this.url,
-            MARFA_KEY: this.key,
-            MARFA_STATE_DIR: this.stateDir,
-            ...this.env,
-          },
+      const { stderr } = await run("node", [this.entry, "--once"], {
+        env: {
+          PATH: process.env["PATH"],
+          MARFA_URL: this.url,
+          MARFA_KEY: this.key,
+          MARFA_STATE_DIR: this.stateDir,
+          ...this.env,
         },
-      );
+      });
       return { code: 0, output: stderr };
     } catch (error) {
       const failed = error as { code?: number; stderr?: string };
