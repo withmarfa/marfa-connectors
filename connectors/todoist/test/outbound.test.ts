@@ -1,7 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer, type Row } from "../../../kit/test/scripted-server.js";
@@ -34,13 +32,11 @@ const served = {
 
 let marfa: ScriptedServer;
 let todoist: TodoistStub;
-let stateDir: string;
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("todoist").start();
   marfa.types.set("todoist.task", served);
   todoist = await new TodoistStub(token).start();
-  stateDir = await mkdtemp(join(tmpdir(), "connector-todoist-outbound-"));
 });
 
 afterEach(async () => {
@@ -58,7 +54,6 @@ afterEach(async () => {
   }
   await marfa.stop();
   await todoist.close();
-  await rm(stateDir, { recursive: true, force: true });
 });
 
 async function once(): Promise<{ code: number; output: string }> {
@@ -68,7 +63,6 @@ async function once(): Promise<{ code: number; output: string }> {
         PATH: process.env["PATH"],
         MARFA_URL: marfa.url,
         MARFA_KEY: marfa.key,
-        MARFA_STATE_DIR: stateDir,
         TODOIST_API_TOKEN: token,
         TODOIST_API_URL: todoist.url,
       },
@@ -263,7 +257,7 @@ describe("a row Todoist has not been told about", () => {
     marfa.transition(archived.id, "archived");
     await landed();
     expect(todoist.commands()).toEqual([]);
-    expect(summary()).toMatch(/pushed 2, own 0/);
+    expect(summary()).toMatch(/pushed 0, own 0/);
   });
 
   it("records a create Todoist took without naming the task it made", async () => {
@@ -394,10 +388,10 @@ describe("a row Todoist knows", () => {
     // A write that changes no value still moves the version.
     marfa.edit(row.id, { title: "Task a" });
     await landed();
-    expect(todoist.received.filter((r) => r.method === "GET")).toHaveLength(1);
+    // Nothing differs from what was agreed, so Todoist is not even asked.
+    expect(todoist.received.filter((r) => r.method === "GET")).toHaveLength(0);
     expect(todoist.commands()).toEqual([]);
-    // The create of the first run is read back as the connector's own.
-    expect(summary()).toMatch(/pushed 1, own 1, conflicts 0/);
+    expect(summary()).toMatch(/pushed 0, own 2, conflicts 0/);
   });
 
   it("names a task Todoist no longer has as a condition, and the run lands", async () => {
@@ -432,13 +426,13 @@ describe("an echo", () => {
       /^created 1, updated 1, .*pushed 1, own 0, conflicts 0/,
     );
 
-    // The next run reads the seed's create and the row's two writes as
+    // The next run reads the seed's create and the row's last write as
     // the connector's own, Todoist sends nothing new, and nothing goes
     // back.
     await landed();
     expect(marfa.byId(row.id).version).toBe(3);
     expect(todoist.commands()).toHaveLength(1);
-    expect(summary()).toMatch(/pushed 0, own 3, conflicts 0/);
+    expect(summary()).toMatch(/pushed 0, own 2, conflicts 0/);
 
     // And the run after moves nothing either way.
     await landed();
@@ -461,7 +455,7 @@ describe("a conflict", () => {
     expect(todoist.tasks.get("a")?.content).toBe("Task a, from Marfa");
     expect(summary()).toMatch(/conflicts 1/);
     expect(summary()).toContain(
-      `the change made in Marfa to ${row.id} is the later one, so the vendor's is not written and the row's state is carried back`,
+      `the change made in Marfa to title on ${row.id} is the later one, so the vendor's is not written and Marfa's is carried back`,
     );
   });
 
@@ -476,7 +470,7 @@ describe("a conflict", () => {
     expect(todoist.commands()).toEqual([]);
     expect(summary()).toMatch(/pushed 0, own 1, conflicts 1/);
     expect(summary()).toContain(
-      `the vendor's change to ${row.id} is the later one, so the change made in Marfa is not carried back`,
+      `the vendor's change to title on ${row.id} is the later one, so the change made in Marfa is not carried back`,
     );
   });
 });
@@ -572,28 +566,21 @@ describe("Todoist's answers", () => {
   });
 });
 
-describe("the state file", () => {
-  it("keeps the watch's cursor and memory beside the connector's state", async () => {
+describe("the connector's state", () => {
+  it("is kept on the instance beside each row's agreement", async () => {
     const row = await synced("a");
-    const stored = async (): Promise<{
-      state: Record<string, unknown>;
-      watch: { cursor?: string; written: Record<string, unknown> };
-    }> =>
-      JSON.parse(await readFile(join(stateDir, "todoist.json"), "utf8")) as {
-        state: Record<string, unknown>;
-        watch: { cursor?: string; written: Record<string, unknown> };
-      };
+    const kept = (): Record<string, unknown> =>
+      marfa.states.get("todoist") ?? {};
     // The log is read before the run writes, so the first run's cursor
-    // stands before its own create; the create is remembered as its own.
-    const first = await stored();
-    expect(first.state["timezone"]).toBe("Europe/London");
-    expect(first.watch.cursor).toBe("0");
-    expect(first.watch.written[row.id]).toMatchObject({
-      version: 1,
-      state: "active",
+    // stands before its own create, and the create is agreed.
+    expect(kept()["state"]).toMatchObject({ timezone: "Europe/London" });
+    expect(kept()["cursor"]).toBe("0");
+    expect(marfa.agreements.get(row.id)).toMatchObject({
+      waiting: false,
+      record: { state: "active", link: "a" },
     });
     await landed();
-    expect((await stored()).watch.cursor).toBe(String(marfa.head));
+    expect(kept()["cursor"]).toBe(String(marfa.head));
   });
 });
 

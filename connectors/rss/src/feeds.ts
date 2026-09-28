@@ -371,6 +371,7 @@ export const entryFields = [
   "image_url",
   "source_url",
   "source_title",
+  "language",
   "entry_id",
   "feed_origin",
   "feed_hash",

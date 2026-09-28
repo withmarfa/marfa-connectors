@@ -382,7 +382,7 @@ export class Marfa {
           params: {
             path: { id },
             query: {
-              waiting: true,
+              waiting: "true",
               limit: 200,
               ...(cursor !== undefined && { cursor }),
             },

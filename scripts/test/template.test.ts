@@ -61,7 +61,6 @@ it("builds and runs once copied to a connector's place", async () => {
         PATH: process.env["PATH"],
         MARFA_URL: marfa.url,
         MARFA_KEY: marfa.key,
-        MARFA_STATE_DIR: join(place, "state"),
         EXAMPLE_URL: `http://127.0.0.1:${String((vendor.address() as AddressInfo).port)}/`,
         EXAMPLE_TOKEN: "example-vendor-token",
       },

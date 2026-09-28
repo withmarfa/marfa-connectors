@@ -1,10 +1,8 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
@@ -543,7 +541,6 @@ describe("the connector, run as a process", () => {
   let marfa: ScriptedServer;
   let feeds: Server;
   let base: string;
-  let stateDir: string;
   let served: Record<string, Served>;
   let asked: { path: string; headers: IncomingHttpHeaders; answered: number }[];
 
@@ -606,14 +603,12 @@ describe("the connector, run as a process", () => {
     });
     await new Promise<void>((done) => feeds.listen(0, "127.0.0.1", done));
     base = `http://127.0.0.1:${String((feeds.address() as AddressInfo).port)}`;
-    stateDir = await mkdtemp(join(tmpdir(), "connector-rss-"));
   });
 
   afterEach(async () => {
     await marfa.stop();
     feeds.closeAllConnections();
     await new Promise((done) => feeds.close(done));
-    await rm(stateDir, { recursive: true, force: true });
   });
 
   async function once(
@@ -627,7 +622,6 @@ describe("the connector, run as a process", () => {
           PATH: process.env["PATH"],
           MARFA_URL: marfa.url,
           MARFA_KEY: marfa.key,
-          MARFA_STATE_DIR: stateDir,
           RSS_FEEDS: feedList,
         },
         // A process that should have refused its start runs on under
@@ -795,12 +789,12 @@ describe("the connector, run as a process", () => {
     ]);
   });
 
-  it("keeps a token in a feed's query out of the rows and the state file", async () => {
+  it("keeps a token in a feed's query out of the rows and the kept state", async () => {
     expect((await once(["/rss.xml?token=s3cr3t-token"])).code).toBe(0);
     expect(asked.map((request) => request.answered)).toEqual([200]);
     expect(marfa.rows).toHaveLength(2);
     expect(JSON.stringify(marfa.rows)).not.toContain("s3cr3t");
-    const stored = await readFile(join(stateDir, "rss.json"), "utf8");
+    const stored = JSON.stringify(marfa.states.get("rss") ?? {});
     expect(stored).toContain("last_modified");
     expect(stored).not.toContain("s3cr3t");
   });
@@ -826,7 +820,10 @@ describe("the connector, run as a process", () => {
     expect(asked.map((request) => request.answered)).toEqual([200, 404, 200]);
     expect(marfa.rows).toHaveLength(2);
     const reported = JSON.stringify(marfa.runs);
-    const stored = await readFile(join(stateDir, "rss.json"), "utf8");
+    const stored = JSON.stringify([
+      marfa.states.get("rss") ?? {},
+      ...marfa.agreements.values(),
+    ]);
     for (const text of [JSON.stringify(marfa.rows), output, reported, stored]) {
       expect(text).not.toContain(token);
       expect(text).not.toContain("/private/");

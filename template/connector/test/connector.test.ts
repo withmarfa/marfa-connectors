@@ -1,9 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
@@ -46,7 +44,6 @@ let items: VendorItem[];
 let writes: VendorWrite[];
 /** The next write is answered with this status in place of the door. */
 let refuseNextWrite: number | undefined;
-let stateDir: string;
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("example").start();
@@ -154,14 +151,12 @@ beforeEach(async () => {
   });
   await new Promise<void>((done) => vendor.listen(0, "127.0.0.1", done));
   vendorUrl = `http://127.0.0.1:${String((vendor.address() as AddressInfo).port)}/`;
-  stateDir = await mkdtemp(join(tmpdir(), "connector-template-"));
 });
 
 afterEach(async () => {
   await marfa.stop();
   vendor.closeAllConnections();
   await new Promise((done) => vendor.close(done));
-  await rm(stateDir, { recursive: true, force: true });
 });
 
 async function once(
@@ -173,7 +168,6 @@ async function once(
         PATH: process.env["PATH"],
         MARFA_URL: marfa.url,
         MARFA_KEY: marfa.key,
-        MARFA_STATE_DIR: stateDir,
         EXAMPLE_URL: vendorUrl,
         EXAMPLE_TOKEN: token,
         ...env,
@@ -447,7 +441,7 @@ describe("the template, run as a process", () => {
     marfa.edit(marfa.row("acct:1").id, { title: "One, edited in Marfa" });
     expect((await once()).code).toBe(0);
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 1, conflicts 0",
+      "created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 1, own 1, conflicts 0",
     );
     expect(items[0]?.title).toBe("One, edited in Marfa");
   });
@@ -471,7 +465,7 @@ describe("the template, run as a process", () => {
     expect(items[0]?.title).toBe("B");
     expect(marfa.byId(mine.id).properties["title"]).toBe("B");
     expect(marfa.runs.at(-1)?.summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 0, conflicts 0",
+      "created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 1, own 0, conflicts 0",
     );
     // And a run with nothing changed on either side moves nothing.
     expect((await once()).code).toBe(0);

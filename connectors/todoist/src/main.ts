@@ -27,7 +27,6 @@ const connector = defineConnector({
   fields: taskFields,
   // Only what `item_add` and `item_update` take, and completion, travel.
   readOnly: [
-    "completed_at",
     "url",
     "project_id",
     "section_id",
