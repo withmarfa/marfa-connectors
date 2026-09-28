@@ -5,6 +5,7 @@ import {
   type TypeDefinition,
 } from "@withmarfa/connector";
 import {
+  entryFields,
   feedHash,
   feedList,
   feedName,
@@ -55,6 +56,7 @@ const connector = defineConnector({
   // Imported JSON widens every string, so its field types read as `string`
   // here; the check on start holds the file to the server's type.
   type: rssEntry as TypeDefinition,
+  fields: entryFields,
   // A secret, since a private feed's address carries its token.
   env: {
     RSS_FEEDS: "secret",

@@ -84,22 +84,27 @@ export interface RunContext<E extends EnvDeclaration> {
 }
 
 /**
- * What happened to a row in Marfa since the connector last looked, as the
- * log names it: a transition to archived or trashed, a restore, a purge,
- * or a create or an update of its properties.
+ * What happened to a row in Marfa since the vendor last had it: created,
+ * which the vendor has not been told about; updated, its fields; a
+ * transition to archived or trashed, or a restore out of either; a purge.
  */
 export type ChangeKind =
   "created" | "updated" | "restored" | "archived" | "trashed" | "purged";
 
 export interface Change {
   readonly kind: ChangeKind;
-  /** The row as the log last showed it. */
+  /** The row as it stands. */
   readonly item: Item;
   /**
-   * A restore came before this update in the same read of the log, so the
-   * vendor may no longer have the row, as `restored` says of a restore.
+   * The fields changed in Marfa and not yet carried, the read-only ones and
+   * the link left out; any kind may carry some, a trash and a purge none.
    */
-  readonly restored?: boolean;
+  readonly changed: ReadonlySet<string>;
+  /**
+   * For a create: when one was sent before and no link came back, so the
+   * vendor may hold what it made; look for it there before making another.
+   */
+  readonly attempted?: string;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {
@@ -161,6 +166,18 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly source: string;
   readonly type: TypeDefinition;
   /**
+   * The properties the vendor holds for a row: every entry's are among them,
+   * and the rest of a row's are Marfa's own, which the kit never touches.
+   */
+  readonly fields: readonly string[];
+  /**
+   * Fields the vendor holds that are never carried back: Marfa mirrors them,
+   * and a change made to one in Marfa is put back from the vendor. Every
+   * field is read-only for a connector without `onChange`, and the link is
+   * for every connector.
+   */
+  readonly readOnly?: readonly string[];
+  /**
    * The property on the type that holds the vendor's own id for a row. With a
    * link, every row of the type is the connector's to read and write,
    * whoever created it: an entry finds its row by this property first and by
@@ -177,22 +194,24 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly checkEnv?: (env: EnvValues<E>) => void | Promise<void>;
   run(context: RunContext<E>): Promise<void>;
   /**
-   * Carries a change made in Marfa to the vendor. Called once per row that
-   * changed since the last run, in the order the log records: a `created`
-   * change before `run` reads the vendor, the rest after `run` has written
-   * what the vendor had. Resolving means the change landed or
-   * was consciously abandoned with a condition; throwing fails the run and
-   * holds the cursor, so the change is offered again next run.
+   * Carries a change made in Marfa to the vendor, once per row: a `created`
+   * change before `run` reads the vendor, the rest after. It may answer the
+   * vendor's entry as the write left it, which the kit takes as what the
+   * vendor now holds; otherwise the carried values are taken as the
+   * vendor's. Resolving means the change landed or was abandoned with a
+   * condition; throwing fails the run, and the change waits for the next.
    */
-  onChange?(change: Change, context: WatchContext<E>): Promise<void>;
+  onChange?(
+    change: Change,
+    context: WatchContext<E>,
+  ): Promise<Entry | undefined | void>;
   /**
-   * Makes a restored row again at a vendor that no longer has it, and
-   * links the row to what it made. Called before `run` reads the vendor for
-   * a `restored` change, or an update that `restored` marks, so a run that
-   * fails between the vendor's answer and the link cannot read the
+   * Makes a restored row again at a vendor that no longer has it, and links
+   * the row to what it made. Asked before `run` reads the vendor, so a run
+   * that fails between the vendor's answer and the link cannot read the
    * vendor's copy first and create the row's twin. Answers whether it made
-   * the row; one the vendor still has is left to `onChange` after the
-   * read, where the conflict rule decides it.
+   * the row; one the vendor still has is carried by `onChange` after the
+   * read.
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**

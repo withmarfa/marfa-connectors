@@ -8,6 +8,7 @@ import {
   accountOf,
   defaultBase,
   entryOf,
+  taskFields,
   firstSync,
   namedZoneOf,
   sync,
@@ -23,6 +24,18 @@ const connector = defineConnector({
   // Imported JSON widens every string, so its field types read as `string`
   // here; the check on start holds the file to the server's type.
   type: todoistTask as TypeDefinition,
+  fields: taskFields,
+  // Only what `item_add` and `item_update` take, and completion, travel.
+  readOnly: [
+    "completed_at",
+    "url",
+    "project_id",
+    "section_id",
+    "parent_id",
+    "labels",
+    "child_order",
+    "comment_count",
+  ],
   link: linkField,
   env: outboundEnv,
   async run({ env, signal, state, log, upsert, archive }) {

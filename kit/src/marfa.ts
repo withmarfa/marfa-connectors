@@ -337,6 +337,90 @@ export class Marfa {
     }
   }
 
+  /** The state document kept for the key's own source, `{}` where none is. */
+  async connectorState(id: string): Promise<unknown> {
+    const { data, error, response } = await this.client.GET(
+      "/connectors/{id}/state",
+      { params: { path: { id } } },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data.state;
+  }
+
+  async putConnectorState(
+    id: string,
+    process: string,
+    state: Record<string, unknown>,
+  ): Promise<void> {
+    const { data, error, response } = await this.client.PUT(
+      "/connectors/{id}/state",
+      { params: { path: { id } }, body: { process, state } },
+    );
+    if (data === undefined) throw refusal(response, error);
+  }
+
+  /** The agreements the instance holds for the rows named, at most 500. */
+  async findAgreements(
+    id: string,
+    itemIds: readonly string[],
+  ): Promise<{ item_id: string; record: unknown }[]> {
+    const { data, error, response } = await this.client.POST(
+      "/connectors/{id}/agreements/find",
+      { params: { path: { id } }, body: { item_ids: [...itemIds] } },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data.data;
+  }
+
+  /** Every row whose agreement is marked waiting. */
+  async waitingAgreements(id: string, signal: AbortSignal): Promise<string[]> {
+    const ids: string[] = [];
+    const walk = pages(async (cursor) => {
+      const { data, error, response } = await this.client.GET(
+        "/connectors/{id}/agreements",
+        {
+          params: {
+            path: { id },
+            query: {
+              waiting: true,
+              limit: 200,
+              ...(cursor !== undefined && { cursor }),
+            },
+          },
+          signal,
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      return data;
+    });
+    for await (const row of walk) ids.push(row.item_id);
+    return ids;
+  }
+
+  /** Writes and clears agreements, at most 500 of each to a request. */
+  async writeAgreements(
+    id: string,
+    process: string,
+    set: readonly { item_id: string; waiting: boolean; record: object }[],
+    clear: readonly string[],
+  ): Promise<void> {
+    const { data, error, response } = await this.client.POST(
+      "/connectors/{id}/agreements",
+      {
+        params: { path: { id } },
+        body: {
+          process,
+          set: set.map((entry) => ({
+            ...entry,
+            record: entry.record as Record<string, unknown>,
+          })),
+          clear: [...clear],
+        },
+      },
+    );
+    if (data === undefined) throw refusal(response, error);
+  }
+
   async archive(id: string): Promise<void> {
     const { data, error, response } = await this.client.POST(
       "/items/{id}/transition",

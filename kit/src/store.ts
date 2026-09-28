@@ -1,0 +1,144 @@
+import type { Agreement } from "./agreement.js";
+import type { Marfa } from "./marfa.js";
+
+/** What the kit keeps for the connector on the instance, beside the agreements. */
+export interface Kept {
+  /** The connector's own, such as a sync token. */
+  state: Record<string, unknown>;
+  /** Lasting conditions by key, as last reported. */
+  conditions: Record<string, string>;
+  /** Where the read of the log reached. */
+  cursor?: string;
+}
+
+/** How many agreements one request reads or writes. */
+const perRequest = 500;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function keptOf(value: unknown): Kept {
+  const kept = isRecord(value) ? value : {};
+  const state = isRecord(kept["state"]) ? kept["state"] : {};
+  const conditions = isRecord(kept["conditions"])
+    ? Object.fromEntries(
+        Object.entries(kept["conditions"]).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      )
+    : {};
+  const cursor = kept["cursor"];
+  return {
+    state,
+    conditions,
+    ...(typeof cursor === "string" && { cursor }),
+  };
+}
+
+function agreementOf(value: unknown): Agreement | undefined {
+  if (!isRecord(value)) return undefined;
+  const { vendor, marfa, state } = value;
+  if (!isRecord(vendor) || !isRecord(marfa)) return undefined;
+  if (state !== "active" && state !== "archived" && state !== "trashed") {
+    return undefined;
+  }
+  return value as unknown as Agreement;
+}
+
+/**
+ * The connector's state on the instance, under its key's own source, so a
+ * process can start anywhere, empty, and lose nothing still waiting. Each
+ * row's agreement is read as the run first needs it, and written once the
+ * run ends, before the cursor moves past the log that named it.
+ */
+export class Store {
+  /** Read this run; `null` where the instance holds none. */
+  private readonly read = new Map<string, Agreement | null>();
+  /** Written this run and not yet sent; `null` clears. */
+  private readonly pending = new Map<string, Agreement | null>();
+
+  constructor(
+    private readonly marfa: Marfa,
+    private readonly connectorId: string,
+    private readonly process: string,
+  ) {}
+
+  async load(): Promise<Kept> {
+    return keptOf(await this.marfa.connectorState(this.connectorId));
+  }
+
+  save(kept: Kept): Promise<void> {
+    return this.marfa.putConnectorState(this.connectorId, this.process, {
+      state: kept.state,
+      conditions: kept.conditions,
+      ...(kept.cursor !== undefined && { cursor: kept.cursor }),
+    });
+  }
+
+  /** Reads the agreements of the rows named that this run has not read. */
+  async fetch(ids: Iterable<string>): Promise<void> {
+    const wanted = [...new Set(ids)].filter((id) => !this.read.has(id));
+    for (let at = 0; at < wanted.length; at += perRequest) {
+      const page = wanted.slice(at, at + perRequest);
+      const found = await this.marfa.findAgreements(this.connectorId, page);
+      for (const id of page) this.read.set(id, null);
+      for (const row of found) {
+        this.read.set(row.item_id, agreementOf(row.record) ?? null);
+      }
+    }
+  }
+
+  /** The rows with a change still to carry, as the instance records them. */
+  waiting(signal: AbortSignal): Promise<string[]> {
+    return this.marfa.waitingAgreements(this.connectorId, signal);
+  }
+
+  /** The row's agreement as this run holds it; fetch it first. */
+  get(id: string): Agreement | undefined {
+    const pending = this.pending.get(id);
+    if (pending !== undefined) return pending ?? undefined;
+    return this.read.get(id) ?? undefined;
+  }
+
+  set(id: string, agreement: Agreement): void {
+    this.pending.set(id, agreement);
+  }
+
+  clear(id: string): void {
+    this.pending.set(id, null);
+  }
+
+  /** Sends what this run wrote, or only the rows named. */
+  async flush(only?: readonly string[]): Promise<void> {
+    const ids = only ?? [...this.pending.keys()];
+    const set: { item_id: string; waiting: boolean; record: Agreement }[] = [];
+    const clear: string[] = [];
+    for (const id of ids) {
+      const agreement = this.pending.get(id);
+      if (agreement === undefined) continue;
+      if (agreement === null) clear.push(id);
+      else {
+        set.push({
+          item_id: id,
+          waiting: agreement.waiting !== undefined,
+          record: agreement,
+        });
+      }
+    }
+    for (let at = 0; at < Math.max(set.length, clear.length); at += perRequest) {
+      await this.marfa.writeAgreements(
+        this.connectorId,
+        this.process,
+        set.slice(at, at + perRequest),
+        clear.slice(at, at + perRequest),
+      );
+    }
+    for (const id of ids) {
+      const agreement = this.pending.get(id);
+      if (agreement === undefined) continue;
+      this.read.set(id, agreement);
+      this.pending.delete(id);
+    }
+  }
+}

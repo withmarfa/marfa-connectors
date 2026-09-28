@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createClient } from "@withmarfa/client";
 import type { Connector, EnvDeclaration, EnvValues } from "./define.js";
 import {
@@ -15,7 +16,6 @@ import {
   readSchedule,
   type Schedule,
 } from "./schedule.js";
-import { StateFile } from "./state.js";
 import { typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
@@ -301,7 +301,7 @@ export async function start<E extends EnvDeclaration>(
     environment,
     marfa,
     connectorId,
-    stateFile: new StateFile(environment.stateDir, started.source, logger),
+    process: randomUUID(),
     logger,
     clock,
     signal: stop.signal,

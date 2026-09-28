@@ -1,7 +1,14 @@
-import type { Change, Entry, Item } from "./define.js";
+import {
+  laterThan,
+  mark,
+  merge,
+  type Agreement,
+  type Merged,
+} from "./agreement.js";
+import type { Entry, Item } from "./define.js";
 import { Refusal, type BulkResult, type Marfa, type NewRow } from "./marfa.js";
-import { cleaned, fingerprint, instant, same, sameInstant } from "./values.js";
-import type { Memory } from "./watch.js";
+import type { Store } from "./store.js";
+import { cleaned, instant } from "./values.js";
 
 export interface Counts {
   created: number;
@@ -9,7 +16,7 @@ export interface Counts {
   archived: number;
   unchanged: number;
   skipped: number;
-  /** Rows changed on both sides since the two last agreed, decided by the later change. */
+  /** Rows where both sides changed one field, each decided by the later change. */
   conflicts: number;
 }
 
@@ -24,16 +31,16 @@ export class LinkTaken extends Error {
   override name = "LinkTaken";
 }
 
-interface Row {
-  id: string;
-  properties: Record<string, unknown>;
-  state: string;
-  version: number;
-  occurred_at: string | undefined;
-  /** The natural key, under the connector's own source only. */
-  source_id: string | undefined;
-  /** The row as the server answered it; absent for one created this run. */
-  item: Item | undefined;
+/** What the kit knows of the connector's type. */
+export interface Kind {
+  readonly type: string;
+  readonly source: string;
+  /** The property holding the vendor's own id, where the connector declares one. */
+  readonly link: string | undefined;
+  /** The properties the vendor holds. */
+  readonly fields: readonly string[];
+  /** The fields Marfa mirrors from the vendor and never carries. */
+  readonly readOnly: ReadonlySet<string>;
 }
 
 /** Another writer got there first: the row moved or left since it was read. */
@@ -43,9 +50,6 @@ const raced = new Set([
   "item_not_found",
   "invalid_transition",
 ]);
-
-/** The write met another made since it read: the server merged or refused. */
-const stale = new Set(["version_conflict", "ancestor_unavailable"]);
 
 /**
  * What the server answers about one row: its contents, its size, or a
@@ -90,66 +94,19 @@ function paged(creates: readonly NewRow[]): NewRow[][] {
   return pages;
 }
 
-function rowOf(item: Item, ownSource: string): Row {
-  return {
-    id: item.id,
-    properties: item.properties,
-    state: item.state,
-    version: item.version,
-    occurred_at: item.occurred_at,
-    source_id: item.source === ownSource ? item.source_id : undefined,
-    item,
-  };
-}
-
-/** Which of two changes came later; a side that names no time loses, and a tie is not later. */
-function laterThan(
-  candidate: string | undefined,
-  other: string | undefined,
-): boolean {
-  if (candidate === undefined) return false;
-  if (other === undefined) return true;
-  const a = Date.parse(candidate);
-  const b = Date.parse(other);
-  return !Number.isNaN(a) && (Number.isNaN(b) || a > b);
+/** The hooks a run hands the rows, to say what it met. */
+export interface Hooks {
+  refused(sourceId: string, reason: string): void;
+  condition(key: string, message: string): void;
 }
 
 /**
- * A transition the vendor's write proceeds beside whatever the times say:
- * an archive touches no property and asks nothing of the vendor. A
- * restore is met on its own below.
- */
-function transition(change: Change): boolean {
-  return change.kind === "archived";
-}
-
-/** How the rows are found and written back: with nothing carried back, or two-way. */
-interface RowsOptions {
-  /** The property holding the vendor's id, where the connector declares one. */
-  link: string | undefined;
-  /**
-   * The versions at which the two sides last agreed, by row: the
-   * connector's own writes and the changes it carried back.
-   */
-  memory: Memory;
-  /**
-   * Changes read from the log this run, by row id, still to be carried to
-   * the vendor. A write that meets one is decided by the later change;
-   * the loser leaves the map or is never written. Absent for a connector
-   * that carries nothing back.
-   */
-  pending: Map<string, Change> | undefined;
-  refused: (sourceId: string, reason: string) => void;
-  conflict: (id: string, message: string) => void;
-}
-
-/**
- * The connector's rows, read once per run, and every write compared with
- * them first: only a new row is created and only a changed one is
- * updated. A trashed row is never written, because a person's bin wins over
- * the vendor. With a link, the rows are every row of the type, found by
- * the link first and by the natural key second; without one, the rows
- * under the connector's own source, found by the natural key.
+ * The connector's rows, read once per run, and every entry merged with its
+ * row field by field against what the two sides last agreed, so only what
+ * changed is written. A trashed row is never written: a person's bin wins
+ * over the vendor. With a link, the rows are every row of the type, found by
+ * the link first and by the natural key second; without one, the rows under
+ * the connector's own source, found by the natural key.
  */
 export class Rows {
   readonly counts: Counts = {
@@ -162,315 +119,205 @@ export class Rows {
   };
   /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
+  /** Rows that took the vendor's values with nothing agreed. */
+  seeded = 0;
+  /** Links, or natural keys without a link, of rows purged this run. */
+  readonly purged = new Set<string>();
   private loaded: Promise<void> | undefined;
-  /** By link value, where the connector declares a link. */
-  private readonly byLink = new Map<string, Row>();
-  /** By natural key, under the connector's own source. */
-  private readonly byKey = new Map<string, Row>();
-  /** The link value each row was last indexed under, by row id. */
+  private readonly byId = new Map<string, Item>();
+  private readonly byLink = new Map<string, string>();
+  private readonly byKey = new Map<string, string>();
   private readonly linkByRow = new Map<string, string>();
-  /** The fingerprint of each entry created this run, by natural key, for the memory. */
-  private readonly agreedByKey = new Map<string, string>();
-  /** Rows counted as a conflict this run, so one is counted once. */
-  private readonly conflicted = new Set<string>();
 
   constructor(
     private readonly marfa: Marfa,
-    private readonly type: string,
-    private readonly source: string,
+    private readonly kind: Kind,
+    private readonly store: Store,
     private readonly signal: AbortSignal,
-    private readonly options: RowsOptions,
+    private readonly hooks: Hooks,
   ) {}
+
+  /** The row as the run last knew it, in any state. */
+  async row(id: string): Promise<Item | undefined> {
+    await this.load();
+    return this.byId.get(id);
+  }
 
   async upsert(entries: readonly Entry[]): Promise<void> {
     await this.load();
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
-    const creates: NewRow[] = [];
+    const matched: [Entry, Item][] = [];
+    const creates: [Entry, NewRow][] = [];
     for (const entry of latest.values()) {
       const properties = cleaned(entry.properties);
-      const occurredAt = instant(entry.occurred_at);
-      const row = this.find(entry);
-      if (row === undefined) {
-        if (this.purged(entry)) {
-          // A person emptied the bin of the row: the purge wins, and is
-          // carried back rather than undone by a create.
-          this.counts.skipped += 1;
-          continue;
-        }
-        this.agreedByKey.set(entry.source_id, fingerprint(properties));
-        creates.push({
-          source_id: entry.source_id,
-          properties,
-          ...(occurredAt !== undefined && { occurred_at: occurredAt }),
-        });
+      const value = this.linkOf(properties);
+      if (this.kind.link !== undefined && value === undefined) {
+        this.counts.skipped += 1;
+        this.hooks.condition(
+          `unlinked:${entry.source_id}`,
+          `the entry ${entry.source_id} names no ${this.kind.link}, so it is not written`,
+        );
         continue;
       }
-      if (row.state === "trashed") {
+      const row = this.find(value, entry.source_id);
+      if (row !== undefined) {
+        matched.push([entry, row]);
+        continue;
+      }
+      if (this.purged.has(value ?? entry.source_id)) {
+        // A person emptied the bin of the row this run: the purge wins.
         this.counts.skipped += 1;
         continue;
       }
-      const timeUnchanged =
-        occurredAt === undefined || sameInstant(row.occurred_at, occurredAt);
-      if (same(row.properties, properties) && timeUnchanged) {
-        // The two sides agree on these properties, whatever the vendor's
-        // time on them from here.
-        this.options.memory.agree(row.id, fingerprint(properties));
+      const occurredAt = instant(entry.occurred_at);
+      creates.push([
+        entry,
+        {
+          source_id: entry.source_id,
+          properties,
+          ...(occurredAt !== undefined && { occurred_at: occurredAt }),
+        },
+      ]);
+    }
+    await this.store.fetch(matched.map(([, row]) => row.id));
+    for (const [entry, row] of matched) await this.apply(entry, row);
+    const made = new Map(creates.map(([entry, row]) => [row, entry]));
+    for (const page of paged(creates.map(([, row]) => row))) {
+      await this.createPage(page, made);
+    }
+  }
+
+  /** The vendor's entry written over the row, where it changed anything. */
+  private async apply(entry: Entry, found: Item): Promise<void> {
+    if (found.state === "trashed") {
+      this.counts.skipped += 1;
+      return;
+    }
+    const agreement = this.store.get(found.id);
+    if (laterThan(agreement?.changedAt, entry.changed_at)) {
+      // Older than what the two sides agreed on: a read that lagged.
+      this.counts.skipped += 1;
+      return;
+    }
+    let row = found;
+    for (let attempt = 0; ; attempt += 1) {
+      const merged = this.merged(entry, row, agreement);
+      if (!merged.write) {
+        this.agree(row.id, merged.agreement, entry);
         this.counts.unchanged += 1;
-        continue;
+        return;
       }
-      if (!this.vendorWins(row, entry)) continue;
       this.checkStopped();
       try {
-        const item = await this.marfa.update(
+        const written = await this.marfa.update(
           row.id,
           row.version,
-          properties,
-          occurredAt,
+          merged.properties,
+          merged.occurredAt,
         );
-        this.remember(item);
-        this.options.memory.agree(item.id, fingerprint(properties));
-        // More than one step means another write landed between the read
-        // and this one, and the row holds that writer's changes beside this
-        // run's.
-        if (item.version === row.version + 1) {
-          this.counts.updated += 1;
-        } else {
-          await this.raced(row, entry, properties, occurredAt, item);
-        }
+        this.index(written);
+        this.agree(row.id, merged.agreement, entry);
+        this.report(row.id, merged);
+        this.counts.updated += 1;
+        return;
       } catch (error) {
+        // A field another writer changed since the read collides: read the
+        // row as it now stands and merge again, once.
         if (
+          attempt === 0 &&
           error instanceof Refusal &&
-          stale.has(error.code) &&
-          this.options.pending !== undefined
+          error.code === "version_conflict"
         ) {
-          await this.raced(row, entry, properties, occurredAt, undefined);
-          continue;
+          const current = await this.marfa.item(row.id);
+          if (current !== undefined) {
+            this.index(current);
+            row = current;
+            continue;
+          }
         }
         this.absorb(error, entry.source_id, refusedUpdate);
+        return;
       }
     }
-    for (const page of paged(creates)) await this.createPage(page);
+  }
+
+  private merged(
+    entry: Entry,
+    row: Item,
+    agreement: Agreement | undefined,
+  ): Merged {
+    const merged = merge({
+      fields: this.kind.fields,
+      readOnly: (field) => this.kind.readOnly.has(field),
+      agreement,
+      row: {
+        properties: row.properties,
+        occurred_at: row.occurred_at,
+        updated_at: row.updated_at,
+      },
+      entry,
+    });
+    if (agreement === undefined && merged.seeded.length > 0) this.seeded += 1;
+    return merged;
+  }
+
+  private report(id: string, merged: Merged): void {
+    if (merged.lost.length > 0 || merged.kept.length > 0) {
+      this.counts.conflicts += 1;
+    }
+    if (merged.lost.length > 0) {
+      this.hooks.condition(
+        `conflict:${id}`,
+        `the vendor's change to ${merged.lost.join(", ")} on ${id} is the later one, so the change made in Marfa is not carried back`,
+      );
+    }
+    if (merged.kept.length > 0) {
+      this.hooks.condition(
+        `conflict:${id}`,
+        `the change made in Marfa to ${merged.kept.join(", ")} on ${id} is the later one, so the vendor's is not written and Marfa's is carried back`,
+      );
+    }
+    if (merged.putBack.length > 0) {
+      this.hooks.condition(
+        `put-back:${id}`,
+        `${merged.putBack.join(", ")} on ${id} ${merged.putBack.length === 1 ? "was" : "were"} changed in Marfa and put back from the vendor, which Marfa mirrors`,
+      );
+    }
+  }
+
+  /** Records what the two sides now agree on, and the link the row is known by. */
+  private agree(id: string, agreement: Agreement, entry: Entry): void {
+    const value = this.linkOf(cleaned(entry.properties));
+    this.store.set(id, {
+      ...agreement,
+      ...(value !== undefined && { link: value }),
+    });
   }
 
   /** The row an entry names: by its link value, then by its natural key. */
-  private find(entry: Entry): Row | undefined {
-    const value = this.linkOf(entry.properties);
-    if (value !== undefined) {
-      const linked = this.byLink.get(value);
-      if (linked !== undefined) return linked;
-    }
-    return this.byKey.get(entry.source_id);
+  private find(value: string | undefined, sourceId: string): Item | undefined {
+    const id =
+      (value === undefined ? undefined : this.byLink.get(value)) ??
+      this.byKey.get(sourceId);
+    return id === undefined ? undefined : this.byId.get(id);
   }
 
-  /** Whether a purge of the entry's row is waiting to be carried back. */
-  private purged(entry: Entry): boolean {
-    const pending = this.options.pending;
-    if (pending === undefined) return false;
-    const value = this.linkOf(entry.properties);
-    for (const change of pending.values()) {
-      if (change.kind !== "purged") continue;
-      const { item } = change;
-      if (value !== undefined && this.linkOf(item.properties) === value) {
-        return true;
-      }
-      if (item.source === this.source && item.source_id === entry.source_id) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private linkOf(
-    properties: Readonly<Record<string, unknown>>,
-  ): string | undefined {
-    const link = this.options.link;
+  linkOf(properties: Readonly<Record<string, unknown>>): string | undefined {
+    const link = this.kind.link;
     if (link === undefined) return undefined;
     const value = properties[link];
     return typeof value === "string" && value !== "" ? value : undefined;
   }
 
-  /**
-   * Whether the vendor's entry is written over a row that changed in Marfa
-   * since the two sides last agreed. The memory holds that version, from
-   * the connector's own writes and the changes it carried back; a row past
-   * it has been changed by somebody else since, whether or not the log
-   * read showed it, since a read cut short cannot hide a moved version. A
-   * row the memory knows nothing of takes the vendor's word. An archive
-   * touches no property: the write proceeds and the archive is still
-   * carried back. Otherwise the later change wins; the loser is a
-   * condition, and where the vendor loses its entry is not written and the
-   * row's state is carried back. A trash in Marfa is met before this, as
-   * any trashed row is.
-   */
-  private vendorWins(row: Row, entry: Entry): boolean {
-    const pending = this.options.pending;
-    if (pending === undefined) return true;
-    let change = pending.get(row.id);
-    if (change === undefined) {
-      const record = this.options.memory.written[row.id];
-      if (
-        record === undefined ||
-        (record.version === row.version && record.state === row.state) ||
-        row.item === undefined
-      ) {
-        return true;
-      }
-      // What moved is what the row shows: a state the record does not
-      // hold is a transition, decided as one; a version moved is an
-      // update, decided by the times.
-      const kind =
-        row.state !== record.state
-          ? row.state === "archived"
-            ? "archived"
-            : "restored"
-          : "updated";
-      change = { kind, item: row.item };
-      pending.set(row.id, change);
-    }
-    if (transition(change)) return true;
-    // A vendor that lists every entry sends this one whether or not it
-    // changed, and the vendor's copy of a change carried there comes back
-    // under a new time. An entry equal to what the two sides last agreed
-    // on is unchanged at the vendor, whatever its time: the change in
-    // Marfa stands, is carried, and is no conflict.
-    const agreed = this.options.memory.written[row.id]?.agreed;
-    if (
-      agreed !== undefined &&
-      fingerprint(cleaned(entry.properties)) === agreed
-    ) {
-      return false;
-    }
-    if (change.kind === "restored") {
-      // What the vendor sends after a trash was carried back can be the
-      // echo of what the trash did there. An entry from before the restore
-      // is left unwritten and nothing is lost: carrying the restore moves
-      // the vendor's copy, and a change of the vendor's own comes again
-      // with it. A later entry is a change of its own and is written, and
-      // the restore, which touches no property, has nothing left to carry:
-      // the vendor has the row, and carrying the row as the restore showed
-      // it would put back what the vendor changed since.
-      if (!laterThan(entry.changed_at, change.item.updated_at)) return false;
-      pending.delete(row.id);
-      return true;
-    }
-    this.conflict(row.id);
-    if (laterThan(entry.changed_at, change.item.updated_at)) {
-      pending.delete(row.id);
-      this.options.conflict(
-        row.id,
-        `the vendor's change to ${row.id} is the later one, so the change made in Marfa is not carried back`,
-      );
-      return true;
-    }
-    this.options.conflict(
-      row.id,
-      `the change made in Marfa to ${row.id} is the later one, so the vendor's is not written and the row's state is carried back`,
-    );
-    return false;
-  }
-
-  private conflict(id: string): void {
-    if (this.conflicted.has(id)) return;
-    this.conflicted.add(id);
-    this.counts.conflicts += 1;
-  }
-
-  /**
-   * The write met a change made between the read and the write: merged,
-   * where nothing collided, or refused. For a connector that carries
-   * nothing back the state is held for a run that reads the row as it now
-   * is. For one that does, the later change decides: the vendor's is
-   * written again over the row as it now stands, once; or the row is put
-   * back as the person left it, where the merge changed it, and its state
-   * is carried back to the vendor.
-   */
-  private async raced(
-    row: Row,
-    entry: Entry,
-    properties: Record<string, unknown>,
-    occurredAt: string | undefined,
-    merged: Item | undefined,
+  private async createPage(
+    page: NewRow[],
+    made: Map<NewRow, Entry>,
   ): Promise<void> {
-    const pending = this.options.pending;
-    if (pending === undefined) {
-      this.counts.skipped += 1;
-      this.held += 1;
-      return;
-    }
-    const current = await this.marfa.item(row.id);
-    if (current === undefined) {
-      this.counts.skipped += 1;
-      this.held += 1;
-      return;
-    }
-    this.conflict(row.id);
-    // When the person's change was made. A refused write left the row as
-    // the person wrote it. A merged one moved it a step past that, writing
-    // the snapshot of the person's state at its own moment; the person's
-    // moment is the one that wrote the snapshot before that. A transition
-    // writes a snapshot of its version too, without moving it, so the
-    // latest of a version's snapshots is the one that left it.
-    const theirs =
-      merged === undefined
-        ? current.updated_at
-        : latestSnapshot(await this.marfa.versions(row.id), merged.version - 2)
-            ?.created_at;
-    if (laterThan(entry.changed_at, theirs)) {
-      this.options.conflict(
-        row.id,
-        `the vendor's change to ${row.id} is the later one and is written over the change made in Marfa since the read`,
-      );
-      pending.delete(row.id);
-      try {
-        const item = await this.marfa.update(
-          current.id,
-          current.version,
-          properties,
-          occurredAt,
-        );
-        this.remember(item);
-        this.counts.updated += 1;
-      } catch (error) {
-        this.absorb(error, entry.source_id, refusedUpdate);
-      }
-      return;
-    }
-    this.options.conflict(
-      row.id,
-      `the change made in Marfa to ${row.id} since the read is the later one, so the vendor's is not written and the row's state is carried back`,
-    );
-    let standing = current;
-    if (merged !== undefined) {
-      // Put back whole from the snapshot the merge was applied over, so
-      // nothing stays merged property by property.
-      const before = latestSnapshot(
-        await this.marfa.versions(row.id),
-        merged.version - 1,
-      );
-      if (before !== undefined) {
-        try {
-          standing = await this.marfa.update(
-            current.id,
-            current.version,
-            before.properties,
-            undefined,
-          );
-          this.remember(standing);
-        } catch (error) {
-          this.absorb(error, entry.source_id, refusedUpdate);
-          return;
-        }
-      }
-    }
-    pending.set(standing.id, { kind: "updated", item: standing });
-  }
-
-  private async createPage(page: NewRow[]): Promise<void> {
     this.checkStopped();
     let results;
     try {
-      results = await this.marfa.create(this.type, this.source, page);
+      results = await this.marfa.create(this.kind.type, this.kind.source, page);
     } catch (error) {
       const first = page[0];
       if (
@@ -485,38 +332,46 @@ export class Rows {
         return;
       }
       const half = Math.ceil(page.length / 2);
-      await this.createPage(page.slice(0, half));
-      await this.createPage(page.slice(half));
+      await this.createPage(page.slice(0, half), made);
+      await this.createPage(page.slice(half), made);
       return;
     }
     for (const result of results) {
       const created = page[result.index];
-      if (created !== undefined) this.settle(result, created);
+      if (created === undefined) continue;
+      const entry = made.get(created);
+      if (entry !== undefined) this.settle(result, created, entry);
     }
   }
 
   /**
-   * Archives the rows the keys name: link values with a link, natural keys
-   * without.
+   * Archives the rows the keys name that are active: link values with a
+   * link, natural keys without. The vendor put them away, so a later entry
+   * for one brings it back.
    */
   async archive(keys: readonly string[]): Promise<void> {
     await this.load();
-    for (const key of new Set(keys)) {
-      const row =
-        this.options.link === undefined
-          ? this.byKey.get(key)
-          : this.byLink.get(key);
-      if (row === undefined) continue;
+    const rows = [...new Set(keys)].flatMap((key) => {
+      const id =
+        this.kind.link === undefined ? this.byKey.get(key) : this.byLink.get(key);
+      const row = id === undefined ? undefined : this.byId.get(id);
+      return row === undefined ? [] : [{ key, row }];
+    });
+    await this.store.fetch(rows.map(({ row }) => row.id));
+    for (const { key, row } of rows) {
       if (row.state === "trashed") {
         this.counts.skipped += 1;
         continue;
       }
+      const agreement = this.store.get(row.id);
       // A row a person restored since the two sides last agreed is not
-      // put away again on the vendor's word: what the vendor deleted can
-      // be the echo of the trash that was carried back, and the restore,
-      // still pending, is carried and reinstates the vendor's copy.
-      const change = this.options.pending?.get(row.id);
-      if (change?.kind === "restored" || change?.restored === true) {
+      // put away again on the vendor's word: the restore is carried, and
+      // reinstates the vendor's copy.
+      if (
+        row.state === "active" &&
+        agreement !== undefined &&
+        agreement.state !== "active"
+      ) {
         this.counts.skipped += 1;
         continue;
       }
@@ -527,8 +382,14 @@ export class Rows {
       this.checkStopped();
       try {
         await this.marfa.archive(row.id);
-        row.state = "archived";
-        this.options.memory.remember(row.id, row.version, "archived");
+        this.index({ ...row, state: "archived" });
+        this.store.set(row.id, {
+          vendor: agreement?.vendor ?? {},
+          marfa: agreement?.marfa ?? {},
+          ...agreement,
+          state: "archived",
+          archivedByVendor: true,
+        });
         this.counts.archived += 1;
       } catch (error) {
         this.absorb(error, key, refusedUpdate);
@@ -542,15 +403,15 @@ export class Rows {
    * since. A value another row carries is refused, naming both.
    */
   async setLink(item: Item, value: string): Promise<void> {
-    const link = this.options.link;
+    const link = this.kind.link;
     if (link === undefined) {
       throw new Error("the connector declares no link property to write");
     }
     await this.load();
     const holder = this.byLink.get(value);
-    if (holder !== undefined && holder.id !== item.id) {
+    if (holder !== undefined && holder !== item.id) {
       throw new LinkTaken(
-        `the link ${value} is already carried by ${holder.id}, so it is not written onto ${item.id}`,
+        `the link ${value} is already carried by ${holder}, so it is not written onto ${item.id}`,
       );
     }
     this.checkStopped();
@@ -560,7 +421,13 @@ export class Rows {
         [link]: value,
       });
     } catch (error) {
-      if (!(error instanceof Refusal) || !stale.has(error.code)) throw error;
+      if (
+        !(error instanceof Refusal) ||
+        (error.code !== "version_conflict" &&
+          error.code !== "ancestor_unavailable")
+      ) {
+        throw error;
+      }
       const current = await this.marfa.item(item.id);
       if (current === undefined) {
         throw new Refusal(404, "item_not_found", `${item.id} is gone`);
@@ -569,7 +436,18 @@ export class Rows {
         [link]: value,
       });
     }
-    this.remember(written);
+    this.index(written);
+    // Only the value sent: what the server merged in beside it is a
+    // person's change, still to carry.
+    const agreement = this.store.get(item.id);
+    const marked = mark(value);
+    this.store.set(item.id, {
+      vendor: { ...agreement?.vendor, [link]: marked },
+      marfa: { ...agreement?.marfa, [link]: marked },
+      state: agreement?.state ?? "active",
+      ...(agreement?.waiting !== undefined && { waiting: agreement.waiting }),
+      link: value,
+    });
   }
 
   /** Read once, however many calls ask for it at once. */
@@ -579,73 +457,68 @@ export class Rows {
   }
 
   private async read(): Promise<void> {
-    const link = this.options.link;
     const items = await this.marfa.ownRows(
-      this.type,
-      link === undefined ? this.source : undefined,
+      this.kind.type,
+      this.kind.link === undefined ? this.kind.source : undefined,
     );
     for (const item of items) {
       // The type filter also answers types that inherit from this one,
       // whose rows are not this connector's to write.
-      if (item.type !== this.type) continue;
-      this.index(rowOf(item, this.source));
+      if (item.type !== this.kind.type) continue;
+      this.index(item);
     }
   }
 
-  private index(row: Row): void {
-    if (row.source_id !== undefined) this.byKey.set(row.source_id, row);
-    const value = this.linkOf(row.properties);
+  private index(item: Item): void {
+    this.byId.set(item.id, item);
+    if (item.source === this.kind.source && item.source_id !== undefined) {
+      this.byKey.set(item.source_id, item.id);
+    }
+    const value = this.linkOf(item.properties);
     // A row relinked gives up the value it carried, or an entry under the
     // old value would still find it.
-    const before = this.linkByRow.get(row.id);
+    const before = this.linkByRow.get(item.id);
     if (before !== undefined && before !== value) this.byLink.delete(before);
     if (value !== undefined) {
-      this.byLink.set(value, row);
-      this.linkByRow.set(row.id, value);
+      this.byLink.set(value, item.id);
+      this.linkByRow.set(item.id, value);
     } else {
-      this.linkByRow.delete(row.id);
+      this.linkByRow.delete(item.id);
     }
   }
 
-  /** A write of the connector's own, as the rows and the memory now hold it. */
-  private remember(item: Item): void {
-    this.index(rowOf(item, this.source));
-    this.options.memory.remember(item.id, item.version, item.state);
-  }
-
-  private settle(result: BulkResult, created: NewRow): void {
+  private settle(result: BulkResult, created: NewRow, entry: Entry): void {
     if (result.outcome === "created" && result.id !== undefined) {
+      const now = new Date().toISOString();
       this.index({
         id: result.id,
-        properties: created.properties,
+        type: this.kind.type,
         state: "active",
-        version: 1,
-        occurred_at: created.occurred_at,
+        properties: created.properties,
+        source: this.kind.source,
         source_id: created.source_id,
-        item: undefined,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+        occurred_at: created.occurred_at ?? now,
+      } as Item);
+      const merged = merge({
+        fields: this.kind.fields,
+        readOnly: () => true,
+        agreement: undefined,
+        row: {
+          properties: created.properties,
+          occurred_at: created.occurred_at,
+          updated_at: undefined,
+        },
+        entry,
       });
-      this.options.memory.remember(
-        result.id,
-        1,
-        "active",
-        this.agreedByKey.get(created.source_id),
-      );
+      this.agree(result.id, merged.agreement, entry);
       this.counts.created += 1;
       return;
     }
     if (result.outcome === "skipped") {
       // A row trashed since the read: left alone like any trashed row.
-      if (result.id !== undefined) {
-        this.index({
-          id: result.id,
-          properties: created.properties,
-          state: "trashed",
-          version: 0,
-          occurred_at: created.occurred_at,
-          source_id: created.source_id,
-          item: undefined,
-        });
-      }
       this.counts.skipped += 1;
       return;
     }
@@ -674,7 +547,7 @@ export class Rows {
       this.counts.skipped += 1;
       this.held += 1;
       if (refusedRow.has(error.code)) {
-        this.options.refused(sourceId, `${error.code}, ${error.detail}`);
+        this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
       }
       return;
     }
@@ -684,24 +557,4 @@ export class Rows {
   private checkStopped(): void {
     if (this.signal.aborted) throw new Stopped();
   }
-}
-
-/** The snapshot that left a version, the latest of any it has. */
-function latestSnapshot(
-  versions: readonly {
-    version: number;
-    properties: Record<string, unknown>;
-    created_at: string;
-  }[],
-  version: number,
-): { properties: Record<string, unknown>; created_at: string } | undefined {
-  let found:
-    { properties: Record<string, unknown>; created_at: string } | undefined;
-  for (const candidate of versions) {
-    if (candidate.version !== version) continue;
-    if (found === undefined || candidate.created_at > found.created_at) {
-      found = candidate;
-    }
-  }
-  return found;
 }

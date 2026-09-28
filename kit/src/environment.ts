@@ -8,7 +8,6 @@ export class ConfigurationError extends Error {
 export interface Environment {
   url: string;
   key: string;
-  stateDir: string;
   values: Record<string, string | undefined>;
   /** Every value that is never to be printed, the key included. */
   secrets: string[];
@@ -54,7 +53,6 @@ export function readEnvironment<E extends EnvDeclaration>(
 
   const url = need("MARFA_URL");
   const key = need("MARFA_KEY");
-  const stateDir = need("MARFA_STATE_DIR");
   const values: Record<string, string | undefined> = {};
   const secrets = new Map([["MARFA_KEY", key]]);
   for (const [name, kind] of Object.entries(connector.env ?? {})) {
@@ -86,7 +84,7 @@ export function readEnvironment<E extends EnvDeclaration>(
       `${short.map(([name]) => name).join(", ")} is shorter than ${String(shortestSecret)} characters, too short to keep out of the logs`,
     );
   }
-  return { url, key, stateDir, values, secrets: [...secrets.values()] };
+  return { url, key, values, secrets: [...secrets.values()] };
 }
 
 /**

@@ -99,6 +99,9 @@ export const testType: TypeDefinition = {
   },
 };
 
+/** Every property the test vendor holds. */
+export const testFields = ["title", "note", "link", "vendor_id"];
+
 /** What the test vendor holds, which a test changes between runs. */
 export interface Vendor {
   entries: Entry[];
@@ -135,6 +138,7 @@ export function testConnector(held: Vendor) {
     description: "A connector the kit's tests drive.",
     source: "test",
     type: testType,
+    fields: testFields,
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -164,6 +168,7 @@ function twoWayConnector(held: Vendor) {
     description: "A two-way connector the kit's tests drive.",
     source: "test",
     type: testType,
+    fields: testFields,
     link: "vendor_id",
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {

@@ -162,8 +162,9 @@ export async function carry(
   const timeZone = await timeZoneFor(context, todoist);
   let taskId = linkOf(item);
 
-  // Archiving keeps a task; Todoist has no state for a task set aside.
-  if (kind === "archived") return;
+  // Archiving keeps a task; Todoist has no state for a task set aside, so
+  // only the fields changed beside it travel.
+  if (kind === "archived" && change.changed.size === 0) return;
 
   if (taskId === undefined) {
     // A row Todoist was never told about and that is gone has nothing to
