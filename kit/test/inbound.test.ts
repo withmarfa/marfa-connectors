@@ -529,7 +529,7 @@ describe("between scheduled runs", () => {
     expect(await exit).toBe(0);
   });
 
-  it("warns once while waiting deliveries cannot be read, and says when they can", async () => {
+  it("warns once while the look between runs fails, and says when it is answered again", async () => {
     const held = vendor([one]);
     const exit = harness.inbound(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
@@ -552,19 +552,19 @@ describe("between scheduled runs", () => {
 
     const lines = (text: string): number =>
       harness.lines.filter((line) => line.includes(text)).length;
-    expect(lines("waiting deliveries could not be read")).toBe(1);
-    expect(lines("waiting deliveries can be read again")).toBe(1);
+    expect(lines("the look between runs failed")).toBe(1);
+    expect(lines("the look between runs is answered again")).toBe(1);
     expect(outcomes()).toEqual(["processed"]);
     harness.stop();
     expect(await exit).toBe(0);
   });
 
-  it("looks as often as --deliveries-every says", async () => {
+  it("looks as often as --look-every says", async () => {
     const held = vendor([one]);
     const exit = harness.inbound(held, [
       "--every",
       "15m",
-      "--deliveries-every",
+      "--look-every",
       "30s",
     ]);
     await harness.clock.sleeping(30_000);
@@ -572,13 +572,9 @@ describe("between scheduled runs", () => {
     expect(await exit).toBe(0);
   });
 
-  it("refuses --deliveries-every without --every", async () => {
+  it("refuses --look-every without --every", async () => {
     expect(
-      await harness.inbound(vendor([one]), [
-        "--once",
-        "--deliveries-every",
-        "30s",
-      ]),
+      await harness.inbound(vendor([one]), ["--once", "--look-every", "30s"]),
     ).toBe(2);
   });
 
@@ -660,7 +656,7 @@ describe("between scheduled runs", () => {
     const exit = harness.inbound(held, [
       "--every",
       "16m",
-      "--deliveries-every",
+      "--look-every",
       "7m",
     ]);
     await harness.clock.wake(7 * minute);
@@ -852,9 +848,7 @@ describe("a two-way connector's run for what deliveries named", () => {
     properties: { title: "Two", vendor_id: "v2" },
   };
 
-  async function settled(
-    held: Vendor,
-  ): Promise<{ exit: Promise<number> }> {
+  async function settled(held: Vendor): Promise<{ exit: Promise<number> }> {
     const exit = harness.inboundTwoWay(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
     harness.clock.advance(15 * minute);
@@ -879,9 +873,9 @@ describe("a two-way connector's run for what deliveries named", () => {
     held.changes.length = 0;
     await deliver(held, ["v1"], 3);
     expect(held.hints?.at(-1)).toEqual(new Set(["v1", "v2"]));
-    expect(held.changes.map((change) => change.item.properties["title"])).toEqual(
-      ["Two, edited"],
-    );
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["Two, edited"]);
     harness.stop();
     expect(await exit).toBe(0);
   });
@@ -904,9 +898,9 @@ describe("a two-way connector's run for what deliveries named", () => {
     await harness.clock.wake(10_000);
     await until(() => held.runs === 4);
     await harness.clock.sleeping(10_000);
-    expect(held.changes.map((change) => change.item.properties["title"])).toEqual(
-      ["Two, edited"],
-    );
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["Two, edited"]);
     harness.stop();
     expect(await exit).toBe(0);
   });

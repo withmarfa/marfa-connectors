@@ -269,7 +269,7 @@ export async function proveInbound(
       async () => {
         const child = spawn(
           "node",
-          [entry, "--every", "1h", "--deliveries-every", "1s"],
+          [entry, "--every", "1h", "--look-every", "1s"],
           {
             env: {
               PATH: process.env["PATH"],

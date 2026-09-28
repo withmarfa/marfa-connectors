@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -1189,3 +1189,51 @@ describe("the account's zone", () => {
     expect(conditions).toBe(1);
   });
 });
+
+describe("a change made in Marfa between runs", () => {
+  it("reaches Todoist within a look, the task fetched alone and no sync sent", async () => {
+    const row = await synced("a");
+    const child = spawn(
+      "node",
+      [built, "--every", "1h", "--look-every", "1s"],
+      {
+        env: {
+          PATH: process.env["PATH"],
+          MARFA_URL: marfa.url,
+          MARFA_KEY: marfa.key,
+          TODOIST_API_TOKEN: token,
+          TODOIST_API_URL: todoist.url,
+        },
+        stdio: "ignore",
+      },
+    );
+    const exited = new Promise((done) => child.once("exit", done));
+    try {
+      const runs = marfa.runs.length;
+      await eventually(() => marfa.runs.length === runs + 1);
+      const syncs = todoist.received.filter((r) => r.syncToken !== undefined);
+      marfa.edit(row.id, { title: "Task a, renamed" });
+      await eventually(() => todoist.commands("item_update").length === 1);
+      expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
+      expect(
+        todoist.received.filter((r) => r.syncToken !== undefined),
+      ).toHaveLength(syncs.length);
+      expect(
+        todoist.received.some(
+          (r) => r.method === "GET" && r.path === "/api/v1/tasks/a",
+        ),
+      ).toBe(true);
+    } finally {
+      child.kill("SIGTERM");
+      await exited;
+    }
+  });
+});
+
+async function eventually(holds: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!holds()) {
+    if (Date.now() > deadline) throw new Error("the condition never held");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}

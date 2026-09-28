@@ -1,6 +1,7 @@
 import {
   defineConnector,
   main,
+  type Entry,
   type TypeDefinition,
 } from "@withmarfa/connector";
 import { carry, remake, linkField, outboundEnv } from "./outbound.js";
@@ -8,10 +9,11 @@ import {
   accountOf,
   defaultBase,
   entryOf,
-  taskFields,
   firstSync,
+  getTask,
   namedZoneOf,
   sync,
+  taskFields,
   timezoneOf,
 } from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
@@ -43,8 +45,28 @@ const connector = defineConnector({
     },
   ],
   env: outboundEnv,
-  async run({ env, signal, state, log, upsert, archive }) {
+  async run({ env, signal, state, log, hints, upsert, archive }) {
     const base = env.TODOIST_API_URL ?? defaultBase;
+    const keptAccount = state.get("account");
+    if (hints !== undefined && typeof keptAccount === "string") {
+      // What waits, fetched task by task; the sync token stays where it was,
+      // since the rest was not read.
+      const zone = state.get("timezone");
+      const found: Entry[] = [];
+      const gone: string[] = [];
+      for (const id of hints.get(taskType) ?? []) {
+        const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
+        if (task === "missing") gone.push(id);
+        else if (task !== "forbidden") {
+          found.push(
+            entryOf(keptAccount, typeof zone === "string" ? zone : "UTC", task),
+          );
+        }
+      }
+      await upsert(taskType, found);
+      await archive(taskType, gone);
+      return;
+    }
     const held = state.get("sync_token");
     const heldToken = typeof held === "string" ? held : firstSync;
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);

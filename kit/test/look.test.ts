@@ -1,0 +1,83 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { start } from "../src/main.js";
+import { Harness, testConnector, vendor } from "./harness.js";
+
+let harness: Harness;
+beforeEach(async () => {
+  harness = await Harness.create();
+});
+afterEach(async () => {
+  await harness.close();
+});
+
+const one = {
+  source_id: "a:1",
+  properties: { title: "One", vendor_id: "v1" },
+};
+
+async function until(holds: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!holds()) {
+    if (Date.now() > deadline) throw new Error("the condition never held");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+describe("the look between runs, for a connector that carries changes back", () => {
+  it("carries an edit made in Marfa within a look, not at the next schedule", async () => {
+    const held = vendor([one]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    harness.server.edit(harness.server.row("a:1").id, { title: "Edited" });
+    await harness.clock.wake(10_000);
+    await until(() => held.changes.length === 1);
+    expect(held.runs).toBe(2);
+    expect(held.changes[0]?.item.properties["title"]).toBe("Edited");
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("starts no run for the connector's own writes", async () => {
+    const held = vendor([one]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    for (let look = 0; look < 3; look += 1) {
+      await harness.clock.wake(10_000);
+      await harness.clock.sleeping(10_000);
+    }
+    expect(held.runs).toBe(1);
+    // The witness: an edit of a person's does start one.
+    harness.server.edit(harness.server.row("a:1").id, { title: "Edited" });
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});
+
+describe("--look-every", () => {
+  it("is refused for a connector that neither receives webhooks nor carries changes back", async () => {
+    expect(
+      await start(
+        testConnector(vendor([])),
+        harness.runtime(["--every", "15m", "--look-every", "30s"]),
+      ),
+    ).toBe(2);
+    expect(harness.lines.join("\n")).toContain(
+      "--look-every is for a connector that receives webhooks or carries changes back",
+    );
+    expect(harness.server.requests).toEqual([]);
+    // The witness: the two-way connector takes it.
+    const held = vendor([]);
+    const exit = harness.twoWayRunning(held, [
+      "--every",
+      "15m",
+      "--look-every",
+      "30s",
+    ]);
+    await harness.clock.sleeping(30_000);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});

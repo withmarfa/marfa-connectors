@@ -41,16 +41,17 @@ export interface RunSetup<E extends EnvDeclaration> {
 }
 
 /**
- * Why a run starts: its schedule, which reads the vendor whole, or a
- * delivery waiting, which reads what the deliveries named, or the whole
- * vendor where one asked for everything. A two-way connector reads the
- * vendor whole either way.
+ * Why a run starts: its schedule, which reads the vendor whole, or a look
+ * between runs that found a delivery or a change in Marfa waiting, which
+ * reads only what they name, or the whole vendor where a delivery asked.
  */
-export type Trigger = "schedule" | "deliveries";
+export type Trigger = "schedule" | "look";
 
 export interface RunResult {
   /** No error ended the run, whatever writes it held. */
   readonly succeeded: boolean;
+  /** Where the log was kept at once the run ended. */
+  readonly cursor: string | undefined;
   /**
    * Every delivery the run took is marked and none was left unfetched or
    * unverified, so none waits on its account.
@@ -593,6 +594,7 @@ export async function runOnce<E extends EnvDeclaration>(
         );
       }
     }
+    if (!whole && connector.inbound === undefined) hints = new Map();
     read = await new Watch(
       setup.marfa,
       [...specs.keys()],
@@ -874,5 +876,54 @@ export async function runOnce<E extends EnvDeclaration>(
       );
     }
   }
-  return { succeeded: failure === undefined, settled };
+  return {
+    succeeded: failure === undefined,
+    settled,
+    cursor: flushed && read?.cursor !== undefined ? read.cursor : stored.cursor,
+  };
+}
+
+/**
+ * Whether the log past the cursor holds a change the vendor has not had,
+ * for the look between runs; the connector's own echoes are not one.
+ * Answers where the look read to, so echoes are not read again.
+ */
+export async function waitingInMarfa<E extends EnvDeclaration>(
+  setup: RunSetup<E>,
+  cursor: string | undefined,
+): Promise<{ waiting: boolean; cursor: string | undefined }> {
+  const specs = specsOf(
+    setup.connector,
+    setup.environment.values as EnvValues<E>,
+  );
+  const read = await new Watch(
+    setup.marfa,
+    [...specs.keys()],
+    cursor,
+    setup.signal,
+  ).read();
+  if (read.resync) return { waiting: true, cursor };
+  if (read.rows.size === 0) return { waiting: false, cursor: read.cursor };
+  const store = new Store(setup.marfa, setup.connectorId, setup.process);
+  await store.fetch(read.rows.keys());
+  const waiting = [...read.rows].some(([id, seen]) => {
+    const last = seen.frames.at(-1)?.item;
+    const spec = last === undefined ? undefined : specs.get(last.type);
+    if (last === undefined || spec?.twoWay !== true) return false;
+    const agreement = store.get(id);
+    if (agreement === undefined) {
+      return seen.purged || last.state === "active";
+    }
+    return (
+      seen.purged ||
+      agreement.waiting !== undefined ||
+      agreedState(last.state) !== agreement.state ||
+      changedInMarfa(
+        agreement,
+        spec.fields.filter((field) => !spec.readOnly.has(field)),
+        last.properties,
+      ).length > 0
+    );
+  });
+  return { waiting, cursor: read.cursor };
 }

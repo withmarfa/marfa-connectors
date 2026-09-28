@@ -5,17 +5,22 @@ export type Schedule =
   | {
       mode: "every";
       intervalMs: number;
-      /** How often, between runs, a connector that reads deliveries looks for one waiting. */
-      deliveriesMs: number;
+      /**
+       * How often, between runs, the connector looks for a waiting delivery
+       * or a change in Marfa to carry back.
+       */
+      lookMs: number;
+      /** `--look-every` was given, which only a connector that looks may take. */
+      lookGiven: boolean;
     };
 
 const units = { s: 1000, m: 60_000, h: 3_600_000 } as const;
 
 const usage =
-  "run with --once, or with --every <interval> such as 30s, 15m or 1h, and --deliveries-every <interval> after it to change how often waiting deliveries are looked for";
+  "run with --once, or with --every <interval> such as 30s, 15m or 1h, and --look-every <interval> after it to change how often the connector looks between runs";
 
-/** Often enough that a delivery is acted on in seconds, and cheap: one short listing. */
-export const defaultDeliveriesMs = 10_000;
+/** Often enough that a delivery or an edit is acted on in seconds, and cheap. */
+export const defaultLookMs = 10_000;
 
 function interval(text: string | undefined): number | undefined {
   const match = /^([1-9]\d*)([smh])$/.exec(text ?? "");
@@ -27,14 +32,14 @@ export function readSchedule(argv: readonly string[]): Schedule {
   if (argv.length === 1 && argv[0] === "--once") return { mode: "once" };
   if (argv[0] === "--every" && (argv.length === 2 || argv.length === 4)) {
     const intervalMs = interval(argv[1]);
-    const deliveriesMs =
-      argv.length === 2
-        ? defaultDeliveriesMs
-        : argv[2] === "--deliveries-every"
-          ? interval(argv[3])
-          : undefined;
-    if (intervalMs !== undefined && deliveriesMs !== undefined) {
-      return { mode: "every", intervalMs, deliveriesMs };
+    const lookGiven = argv.length === 4;
+    const lookMs = !lookGiven
+      ? defaultLookMs
+      : argv[2] === "--look-every"
+        ? interval(argv[3])
+        : undefined;
+    if (intervalMs !== undefined && lookMs !== undefined) {
+      return { mode: "every", intervalMs, lookMs, lookGiven };
     }
   }
   throw new ConfigurationError(`${usage}; got "${argv.join(" ")}"`);

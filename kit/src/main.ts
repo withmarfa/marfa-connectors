@@ -10,6 +10,7 @@ import {
   checkDefinition,
   ConfigurationError,
   readEnvironment,
+  type Environment,
 } from "./environment.js";
 import { cap, Logger } from "./log.js";
 import { Marfa, Refusal, type Key } from "./marfa.js";
@@ -17,6 +18,8 @@ import { Hold } from "./hold.js";
 import {
   describe,
   runOnce,
+  specsOf,
+  waitingInMarfa,
   type RunResult,
   type RunSetup,
   type Trigger,
@@ -168,47 +171,75 @@ async function registerAndCheck<E extends EnvDeclaration>(
   return { id, source, problem: undefined };
 }
 
+/** Whether the connector carries any of its types back. */
+function carriesBack<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  environment: Environment,
+): boolean {
+  return [
+    ...specsOf(connector, environment.values as EnvValues<E>).values(),
+  ].some((spec) => spec.twoWay);
+}
+
+/** Whether the connector looks between runs: for deliveries, or for changes to carry back. */
+function looks<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  environment: Environment,
+): boolean {
+  return connector.inbound !== undefined || carriesBack(connector, environment);
+}
+
 /**
- * Until the next scheduled run, looks for a waiting delivery every
- * `everyMs` and runs for it at once. A run for deliveries that fails, or
- * leaves what it took unmarked, leaves them waiting for the scheduled run
- * rather than being tried again at every look.
+ * Until the next scheduled run, looks every `everyMs` for a waiting
+ * delivery or a change in Marfa to carry back, and runs for it at once. A
+ * run that fails, or leaves what it took unmarked, leaves the rest for the
+ * scheduled run rather than trying again at every look.
  */
-async function awaitDeliveries<E extends EnvDeclaration>(
+async function awaitChanges<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   held: (trigger: Trigger) => Promise<RunResult | undefined>,
   everyMs: number,
   next: number,
+  cursor: string | undefined,
 ): Promise<void> {
-  const { clock, signal, marfa, connectorId, logger } = setup;
+  const { clock, signal, marfa, connectorId, logger, connector } = setup;
   // Read through a call, since the signal can abort while a sleep waits.
   const stopped = (): boolean => signal.aborted;
   let unreachable = false;
+  let peeked = cursor;
   while (!stopped()) {
     const left = next - clock.now().getTime();
     if (left <= 0) return;
     await clock.sleep(Math.min(left, everyMs), signal);
     if (stopped() || clock.now().getTime() >= next) return;
-    let waiting: boolean;
+    let waiting = false;
     try {
-      waiting =
-        (await marfa.pendingDeliveries(connectorId, 1, signal)).length > 0;
-      if (unreachable) logger.info("waiting deliveries can be read again");
+      if (connector.inbound !== undefined) {
+        waiting =
+          (await marfa.pendingDeliveries(connectorId, 1, signal)).length > 0;
+      }
+      if (!waiting && carriesBack(connector, setup.environment)) {
+        const log = await waitingInMarfa(setup, peeked);
+        waiting = log.waiting;
+        if (!waiting) peeked = log.cursor;
+      }
+      if (unreachable) logger.info("the look between runs is answered again");
       unreachable = false;
     } catch (error) {
       if (stopped()) return;
       if (!unreachable) {
-        logger.warn(`waiting deliveries could not be read: ${describe(error)}`);
+        logger.warn(`the look between runs failed: ${describe(error)}`);
       }
       unreachable = true;
       continue;
     }
     if (!waiting || stopped()) continue;
-    const run = await held("deliveries");
+    const run = await held("look");
     if (run === undefined || !run.succeeded || !run.settled) {
       await clock.sleep(Math.max(0, next - clock.now().getTime()), signal);
       return;
     }
+    peeked = run.cursor;
   }
 }
 
@@ -227,6 +258,15 @@ export async function start<E extends EnvDeclaration>(
     checkDefinition(connector);
     schedule = readSchedule(runtime.argv);
     environment = readEnvironment(connector, runtime.env);
+    if (
+      schedule.mode === "every" &&
+      schedule.lookGiven &&
+      !looks(connector, environment)
+    ) {
+      throw new ConfigurationError(
+        "--look-every is for a connector that receives webhooks or carries changes back, which this one does not",
+      );
+    }
   } catch (error) {
     if (!(error instanceof ConfigurationError)) throw error;
     new Logger(write, clock).error(error.message);
@@ -334,7 +374,7 @@ export async function start<E extends EnvDeclaration>(
     } catch (error) {
       if (stopped()) return undefined;
       logger.error(`the hold could not be taken: ${describe(error)}`);
-      return { succeeded: false, settled: false };
+      return { succeeded: false, settled: false, cursor: undefined };
     }
     if (!taken.held) {
       logger.warn(
@@ -367,11 +407,11 @@ export async function start<E extends EnvDeclaration>(
           logger.info(`the next run is in ${describeDuration(wait)}`);
         }
         const next = clock.now().getTime() + wait;
-        if (connector.inbound === undefined || !run.settled) {
+        if (!looks(connector, environment) || !run.settled) {
           await clock.sleep(wait, stop.signal);
           continue;
         }
-        await awaitDeliveries(setup, held, schedule.deliveriesMs, next);
+        await awaitChanges(setup, held, schedule.lookMs, next, run.cursor);
       }
     }
   } finally {

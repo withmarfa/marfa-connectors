@@ -377,6 +377,11 @@ export class Harness {
     return start(inboundTwoWayConnector(held), this.runtime(argv));
   }
 
+  /** The two-way connector without webhooks, as the arguments say. */
+  twoWayRunning(held: Vendor, argv: readonly string[]): Promise<number> {
+    return start(twoWayConnector(held), this.runtime(argv));
+  }
+
   /** One run of the two-way connector. */
   twoWay(
     held: Vendor,
