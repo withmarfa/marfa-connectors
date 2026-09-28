@@ -7,7 +7,7 @@ The connectors for Marfa: a small kit that makes a connector a page of code, a t
 - `kit/`: the package `@withmarfa/connector`, the only thing here that is imported.
 - `template/`: what a new connector starts from. `template/connector/` is copied to `connectors/<name>/`; beside it are its README, a LaunchAgent and a Dockerfile.
 - `connectors/<name>/`: one folder per connector, run and never published.
-- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness, which builds a connector of its own on the kit, with the vendor stubs it shares with the connectors' tests, and tests that refuse a version in a manifest or a file holding one, a home directory, machine name or personal address, tracked build output, a package left out of the build, and a workflow job off the pool.
+- `scripts/`: the scripts that fetch the pinned monorepo and pack the client into `vendor/`, the proof harness, which builds a connector of its own on the kit, with the vendor stubs it shares with the connectors' tests, and tests that refuse a version in a manifest or a file holding one, a home directory, machine name or personal address, tracked build output, a package left out of the build, and a workflow job off standard GitHub-hosted runners.
 
 ## Commands
 
@@ -28,7 +28,8 @@ A connector reads its secrets from the environment, and nothing here holds a val
 
 - American English in code, comments and commits. Scoped Conventional Commits (`feat(kit):`, `fix(rss):`).
 - Feature branches and pull requests; never push `main`. A session merges its own pull request once every required check is green and its reviewers have run: squash, branch deleted.
-- Every Actions workflow runs on the self-hosted runner pool, never on GitHub-hosted runners.
+- This repository is being made public while development continues. Public visibility is not a release milestone.
+- Every Actions workflow uses standard GitHub-hosted runners, never personal self-hosted runners or paid third-party runners.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
 - A comment survives only if it explains a why the code cannot.
