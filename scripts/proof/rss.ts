@@ -316,7 +316,6 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
       },
     );
   } finally {
-    await connector?.dispose();
     await served.close();
   }
 }

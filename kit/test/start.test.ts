@@ -24,12 +24,7 @@ describe("configuration", () => {
     const reached = harness.server.requests.length;
     expect(reached).toBeGreaterThan(0);
 
-    const required = [
-      "MARFA_URL",
-      "MARFA_KEY",
-      "MARFA_STATE_DIR",
-      "TEST_TOKEN",
-    ];
+    const required = ["MARFA_URL", "MARFA_KEY", "TEST_TOKEN"];
     for (const name of required) {
       harness.lines.length = 0;
       expect(await harness.once(vendor([entry]), { [name]: undefined })).toBe(

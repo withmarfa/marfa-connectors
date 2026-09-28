@@ -1,5 +1,3 @@
-import { readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
 import { Harness, testConnector, vendor } from "./harness.js";
@@ -47,7 +45,7 @@ describe("rows too big for one request", () => {
     expect(await harness.once(held)).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
     expect(harness.lastRun().summary).toContain("a:big");
-    expect(await harness.stateFile()).toHaveProperty("state", {});
+    expect(harness.kept()).toHaveProperty("state", {});
   });
 
   it("refuse one update and leave the others landed", async () => {
@@ -87,14 +85,16 @@ describe("a row a person purged", () => {
     );
   });
 
-  it("leaves nothing of the bin in the state file", async () => {
+  it("keeps nothing of the bin in the connector's state", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
     harness.server.row("a:1").state = "trashed";
     await harness.once(held);
-    const stored = await harness.stateFile();
-    expect(stored).toEqual({ state: { token: "t1" }, conditions: {} });
+    expect(harness.kept()).toMatchObject({
+      state: { token: "t1" },
+      conditions: {},
+    });
   });
 });
 
@@ -113,7 +113,7 @@ describe("a row trashed while a run is writing", () => {
     ];
     expect(await harness.once(held)).toBe(0);
     expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
   it("answers an archive invalid_transition, which is skipped and holds the state", async () => {
@@ -129,7 +129,7 @@ describe("a row trashed while a run is writing", () => {
     held.archived = ["a:1"];
     expect(await harness.once(held)).toBe(0);
     expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
   it("is not archived when it was already in the bin, and holds nothing", async () => {
@@ -145,7 +145,7 @@ describe("a row trashed while a run is writing", () => {
         request.path.endsWith("/transition"),
       ),
     ).toEqual([]);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 });
 
@@ -166,19 +166,6 @@ describe("a stop before a write", () => {
       false,
     );
     expect(harness.lastRun().error).toContain("stopped");
-  });
-});
-
-describe("the state directory", () => {
-  it("is made when it does not exist", async () => {
-    const nested = join(harness.stateDir, "not", "yet");
-    expect(await harness.once(vendor([one]), { MARFA_STATE_DIR: nested })).toBe(
-      0,
-    );
-    expect(
-      JSON.parse(await readFile(join(nested, "test.json"), "utf8")),
-    ).toHaveProperty("state");
-    await rm(nested, { recursive: true, force: true });
   });
 });
 
@@ -204,8 +191,8 @@ describe("a connector's name", () => {
   });
 });
 
-describe("the state file", () => {
-  it("is the key's own, so two accounts sharing a directory keep theirs apart", async () => {
+describe("the connector's state", () => {
+  it("is the key's own source's, so two accounts keep theirs apart", async () => {
     const first = vendor([one]);
     first.token = "t-first";
     expect(await harness.once(first)).toBe(0);
@@ -215,15 +202,11 @@ describe("the state file", () => {
     second.token = "t-second";
     expect(await harness.once(second)).toBe(0);
 
-    expect(await harness.stateFile()).toMatchObject({
+    expect(harness.server.states.get("test")).toMatchObject({
       state: { token: "t-first" },
     });
-    expect(await harness.stateFile("test/account 2")).toMatchObject({
+    expect(harness.server.states.get("test/account 2")).toMatchObject({
       state: { token: "t-second" },
     });
-    expect((await readdir(harness.stateDir)).sort()).toEqual([
-      "test%2Faccount%202.json",
-      "test.json",
-    ]);
   });
 });

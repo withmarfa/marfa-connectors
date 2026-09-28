@@ -1,9 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
@@ -124,7 +122,6 @@ export async function proveInbound(
 ): Promise<void> {
   const vendor = await serveThings();
   let connector: ConnectorUnderProof | undefined;
-  const stateDir = await mkdtemp(join(tmpdir(), "proof-inbound-every-"));
   try {
     const key = await mintAsReadmeSays(marfa, {
       label: "proof-inbound",
@@ -280,7 +277,6 @@ export async function proveInbound(
               PATH: process.env["PATH"],
               MARFA_URL: url,
               MARFA_KEY: key.key,
-              MARFA_STATE_DIR: stateDir,
               ...env,
             },
             stdio: "ignore",
@@ -347,8 +343,6 @@ export async function proveInbound(
       },
     );
   } finally {
-    await connector?.dispose();
-    await rm(stateDir, { recursive: true, force: true });
     await vendor.close();
   }
 }

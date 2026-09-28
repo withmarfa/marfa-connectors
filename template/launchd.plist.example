@@ -24,8 +24,6 @@
   <dict>
     <key>MARFA_URL</key>
     <string>https://marfa.example.com</string>
-    <key>MARFA_STATE_DIR</key>
-    <string>/path/to/state</string>
     <key>EXAMPLE_URL</key>
     <string>https://vendor.example.com/</string>
   </dict>

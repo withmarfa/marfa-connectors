@@ -18,7 +18,7 @@ export interface Seen {
 
 /** What the read of the log came back with. */
 export interface LogRead {
-  /** By row id, in the order the log first named each. */
+  /** By row id, in the order of each row's latest frame. */
   readonly rows: Map<string, Seen>;
   /** Where the read reached, to resume from; unchanged where nothing was read. */
   readonly cursor: string | undefined;
@@ -95,7 +95,11 @@ export class Watch {
     const closing = new AbortController();
     const signal = AbortSignal.any([this.signal, closing.signal]);
     try {
-      const body = await this.marfa.events(this.type, this.cursor ?? "0", signal);
+      const body = await this.marfa.events(
+        this.type,
+        this.cursor ?? "0",
+        signal,
+      );
       for await (const frame of frames(body)) {
         if (frame.event === "stream_cursor") continue;
         if (frame.event === "stream_live") {
@@ -120,6 +124,8 @@ export class Watch {
         if (item?.type !== this.type) continue;
         const seen = rows.get(item.id) ?? { frames: [], purged: false };
         seen.frames.push({ event: frame.event, item });
+        // In the order of each row's latest frame.
+        rows.delete(item.id);
         rows.set(item.id, {
           frames: seen.frames,
           purged: frame.event === "item.purged",

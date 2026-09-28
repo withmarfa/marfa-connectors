@@ -71,6 +71,8 @@ const connector = defineConnector({
   // Imported JSON widens every string, so its field types read as `string`
   // here; the check on start holds the file to the server's type.
   type: exampleItem as TypeDefinition,
+  // What the vendor holds; the rest of a row's properties are Marfa's own.
+  fields: ["example_id", "title", "url", "note"],
   // The property holding the vendor's own id. With it, every row of the
   // type is the connector's, whoever created it.
   link: "example_id",
@@ -99,8 +101,7 @@ const connector = defineConnector({
           : `${String(untitled.length)} items have no title and are left out`,
       );
     }
-    // Every entry carries the link: without it a row read from the vendor
-    // would be handed back as a create once the state is lost.
+    // Every entry carries the link: the kit refuses one without it.
     const entries: Entry[] = items
       .filter((item) => item.deleted !== true && item.title !== undefined)
       .map((item) => ({
@@ -121,9 +122,10 @@ const connector = defineConnector({
       items.filter((item) => item.deleted === true).map((item) => item.id),
     );
   },
-  async onChange({ kind, item, restored }, { env, signal, log, setLink }) {
-    // The vendor has no state for a row set aside.
-    if (kind === "archived") return;
+  async onChange({ kind, item, changed }, { env, signal, log, setLink }) {
+    // The vendor has no state for a row set aside: only what changed
+    // beside it travels.
+    if (kind === "archived" && changed.size === 0) return;
     const id = item.properties["example_id"];
     const linked = typeof id === "string" && id !== "" ? id : undefined;
     // Null for a property the row does not have, so a value cleared in
@@ -162,7 +164,7 @@ const connector = defineConnector({
       // An update, or a restore, which brings a deleted item back.
       await call(env, signal, "PUT", path, {
         ...body,
-        ...((kind === "restored" || restored === true) && { deleted: false }),
+        ...(kind === "restored" && { deleted: false }),
       });
     } catch (error) {
       // One row the vendor refuses is a condition, and the run goes on;

@@ -126,7 +126,11 @@ export class Store {
         });
       }
     }
-    for (let at = 0; at < Math.max(set.length, clear.length); at += perRequest) {
+    for (
+      let at = 0;
+      at < Math.max(set.length, clear.length);
+      at += perRequest
+    ) {
       await this.marfa.writeAgreements(
         this.connectorId,
         this.process,

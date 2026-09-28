@@ -39,6 +39,12 @@ export interface Entry {
    * wins, and a vendor that names no time loses.
    */
   changed_at?: string | undefined;
+  /**
+   * The link the row was known by before the vendor moved it, such as an
+   * issue transferred to another repository: the row is found by it and
+   * takes the entry's link.
+   */
+  movedFrom?: string | undefined;
 }
 
 export interface State {

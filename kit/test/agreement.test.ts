@@ -57,9 +57,9 @@ describe("merge", () => {
     expect(merged.agreement.waiting).toEqual({
       title: "2026-09-28T10:05:00.000Z",
     });
-    expect(
-      changedInMarfa(merged.agreement, fields, merged.properties),
-    ).toEqual(["title"]);
+    expect(changedInMarfa(merged.agreement, fields, merged.properties)).toEqual(
+      ["title"],
+    );
   });
 
   it("gives a field both sides changed to the later change, and a tie to Marfa", () => {
@@ -113,9 +113,9 @@ describe("merge", () => {
     expect(merged.lost).toEqual([]);
     expect(merged.kept).toEqual([]);
     expect(merged.write).toBe(false);
-    expect(
-      changedInMarfa(merged.agreement, fields, merged.properties),
-    ).toEqual([]);
+    expect(changedInMarfa(merged.agreement, fields, merged.properties)).toEqual(
+      [],
+    );
   });
 
   it("puts a read-only field back from the vendor, and names it", () => {
@@ -123,7 +123,10 @@ describe("merge", () => {
       fields,
       readOnly: always,
       agreement: agreed(base),
-      row: row({ ...base, body: "Edited in Marfa" }, "2026-09-28T11:00:00.000Z"),
+      row: row(
+        { ...base, body: "Edited in Marfa" },
+        "2026-09-28T11:00:00.000Z",
+      ),
       entry: {
         source_id: "a:1",
         properties: base,
@@ -155,9 +158,9 @@ describe("merge", () => {
       },
     });
     expect(merged.write).toBe(false);
-    expect(
-      changedInMarfa(merged.agreement, fields, merged.properties),
-    ).toEqual([]);
+    expect(changedInMarfa(merged.agreement, fields, merged.properties)).toEqual(
+      [],
+    );
   });
 
   it("clears a field the vendor cleared, and keeps a field the vendor does not hold", () => {
@@ -193,9 +196,9 @@ describe("merge", () => {
     });
     expect(merged.properties).toEqual({ ...base, notes: "kept" });
     expect(merged.seeded).toEqual(["title"]);
-    expect(
-      changedInMarfa(merged.agreement, fields, merged.properties),
-    ).toEqual([]);
+    expect(changedInMarfa(merged.agreement, fields, merged.properties)).toEqual(
+      [],
+    );
   });
 
   it("keeps waiting marks that are not fields through a merge", () => {

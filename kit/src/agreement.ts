@@ -38,7 +38,15 @@ export function mark(value: unknown): string {
 }
 
 function at(side: Readonly<Record<string, string>>, key: string): string {
-  return side[key] ?? "";
+  return Object.hasOwn(side, key) ? (side[key] ?? "") : "";
+}
+
+/** A property the object holds itself, never one every object answers for its name. */
+export function held(
+  properties: Readonly<Record<string, unknown>>,
+  field: string,
+): unknown {
+  return Object.hasOwn(properties, field) ? properties[field] : undefined;
 }
 
 /** The marks of the named fields, leaving out the ones the side does not hold. */
@@ -48,7 +56,7 @@ export function sideOf(
 ): Record<string, string> {
   const side: Record<string, string> = {};
   for (const field of fields) {
-    const value = mark(properties[field]);
+    const value = mark(held(properties, field));
     if (value !== "") side[field] = value;
   }
   return side;
@@ -66,6 +74,18 @@ export function laterThan(
   return !Number.isNaN(a) && (Number.isNaN(b) || a > b);
 }
 
+/** Whether the entry holds what the vendor last held, field by field. */
+export function unchangedAtVendor(
+  agreement: Agreement,
+  fields: readonly string[],
+  properties: Readonly<Record<string, unknown>>,
+): boolean {
+  const theirs = cleaned(properties);
+  return fields.every(
+    (field) => mark(held(theirs, field)) === at(agreement.vendor, field),
+  );
+}
+
 /** The fields whose value in Marfa differs from what the kit last wrote or carried. */
 export function changedInMarfa(
   agreement: Agreement,
@@ -73,7 +93,7 @@ export function changedInMarfa(
   properties: Readonly<Record<string, unknown>>,
 ): string[] {
   return fields.filter(
-    (field) => mark(properties[field]) !== at(agreement.marfa, field),
+    (field) => mark(held(properties, field)) !== at(agreement.marfa, field),
   );
 }
 
@@ -147,7 +167,7 @@ export function merge(input: MergeInput): Merged {
   const putBack: string[] = [];
   const seeded: string[] = [];
   const take = (field: string): void => {
-    const value = theirs[field];
+    const value = held(theirs, field);
     if (value === undefined) Reflect.deleteProperty(properties, field);
     else properties[field] = value;
   };
@@ -155,14 +175,14 @@ export function merge(input: MergeInput): Merged {
     if (agreement === undefined) return;
     const agreed = at(agreement.marfa, field);
     if (agreed !== "") marfa[field] = agreed;
-    if (mark(properties[field]) !== agreed && since !== undefined) {
+    if (mark(held(properties, field)) !== agreed && since !== undefined) {
       waiting[field] = since;
     }
   };
 
   for (const field of fields) {
-    const vendorNow = mark(theirs[field]);
-    const marfaNow = mark(properties[field]);
+    const vendorNow = mark(held(theirs, field));
+    const marfaNow = mark(held(properties, field));
     if (agreement === undefined) {
       if (vendorNow !== marfaNow) {
         seeded.push(field);
@@ -241,7 +261,8 @@ export function merge(input: MergeInput): Merged {
   const write =
     occurredAt !== undefined ||
     fields.some(
-      (field) => mark(properties[field]) !== mark(row.properties[field]),
+      (field) =>
+        mark(held(properties, field)) !== mark(held(row.properties, field)),
     );
   return {
     properties,
@@ -277,7 +298,7 @@ export function carried(input: CarriedInput): Agreement {
   const marfa = { ...agreement?.marfa };
   const vendor = { ...agreement?.vendor };
   for (const field of changed) {
-    const value = mark(properties[field]);
+    const value = mark(held(properties, field));
     if (value === "") Reflect.deleteProperty(marfa, field);
     else marfa[field] = value;
     if (answered !== undefined) continue;
@@ -285,7 +306,9 @@ export function carried(input: CarriedInput): Agreement {
     else vendor[field] = value;
   }
   const answeredSide =
-    answered === undefined ? undefined : sideOf(fields, cleaned(answered.properties));
+    answered === undefined
+      ? undefined
+      : sideOf(fields, cleaned(answered.properties));
   if (answeredSide !== undefined) {
     for (const field of fields) Reflect.deleteProperty(vendor, field);
     Object.assign(vendor, answeredSide);

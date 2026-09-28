@@ -1,7 +1,4 @@
 import { createHmac } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   defineConnector,
   type Change,
@@ -99,8 +96,8 @@ export const testType: TypeDefinition = {
   },
 };
 
-/** Every property the test vendor holds. */
-export const testFields = ["title", "note", "link", "vendor_id"];
+/** Every property the test vendor holds; `toString` is a name every object answers. */
+export const testFields = ["title", "note", "link", "vendor_id", "toString"];
 
 /** What the test vendor holds, which a test changes between runs. */
 export interface Vendor {
@@ -290,20 +287,14 @@ export class Harness {
   requestTimeoutMs = 5000;
   private stopListener: (() => void) | undefined;
 
-  constructor(
-    readonly server: ScriptedServer,
-    readonly stateDir: string,
-  ) {}
+  constructor(readonly server: ScriptedServer) {}
 
   static async create(): Promise<Harness> {
-    const server = await new ScriptedServer("test").start();
-    const dir = await mkdtemp(join(tmpdir(), "connector-kit-"));
-    return new Harness(server, dir);
+    return new Harness(await new ScriptedServer("test").start());
   }
 
   async close(): Promise<void> {
     await this.server.stop();
-    await rm(this.stateDir, { recursive: true, force: true });
   }
 
   runtime(
@@ -315,7 +306,6 @@ export class Harness {
       env: {
         MARFA_URL: this.server.url,
         MARFA_KEY: this.server.key,
-        MARFA_STATE_DIR: this.stateDir,
         TEST_TOKEN: secretToken,
         ...env,
       },
@@ -361,14 +351,14 @@ export class Harness {
     return start(twoWayConnector(held), this.runtime(["--once"], env));
   }
 
-  /** The state file kept for a key whose own source is `keySource`. */
-  async stateFile(keySource = "test"): Promise<unknown> {
-    return JSON.parse(
-      await readFile(
-        join(this.stateDir, `${encodeURIComponent(keySource)}.json`),
-        "utf8",
-      ),
-    );
+  /** The state document the instance keeps for the connector. */
+  kept(): Record<string, unknown> {
+    return this.server.connectorState ?? {};
+  }
+
+  /** The agreement the instance keeps for a row. */
+  agreement(id: string): Record<string, unknown> | undefined {
+    return this.server.agreements.get(id)?.record;
   }
 
   lastRun() {

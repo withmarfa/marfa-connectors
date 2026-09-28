@@ -1,7 +1,9 @@
 import {
+  held,
   laterThan,
   mark,
   merge,
+  unchangedAtVendor,
   type Agreement,
   type Merged,
 } from "./agreement.js";
@@ -42,6 +44,9 @@ export interface Kind {
   /** The fields Marfa mirrors from the vendor and never carries. */
   readonly readOnly: ReadonlySet<string>;
 }
+
+/** A state change waiting to be carried, beside the fields. */
+export const stateKey = "@state";
 
 /** Another writer got there first: the row moved or left since it was read. */
 const raced = new Set([
@@ -123,6 +128,8 @@ export class Rows {
   seeded = 0;
   /** Links, or natural keys without a link, of rows purged this run. */
   readonly purged = new Set<string>();
+  /** Rows this run's reads left with something in Marfa to carry. */
+  readonly marked = new Set<string>();
   private loaded: Promise<void> | undefined;
   private readonly byId = new Map<string, Item>();
   private readonly byLink = new Map<string, string>();
@@ -151,6 +158,17 @@ export class Rows {
     const creates: [Entry, NewRow][] = [];
     for (const entry of latest.values()) {
       const properties = cleaned(entry.properties);
+      const stray = Object.keys(properties).filter(
+        (field) => !this.kind.fields.includes(field),
+      );
+      if (stray.length > 0) {
+        this.counts.skipped += 1;
+        this.hooks.condition(
+          `undeclared:${entry.source_id}`,
+          `the entry ${entry.source_id} carries ${stray.join(", ")}, which the connector does not declare among its fields, so it is not written`,
+        );
+        continue;
+      }
       const value = this.linkOf(properties);
       if (this.kind.link !== undefined && value === undefined) {
         this.counts.skipped += 1;
@@ -160,7 +178,15 @@ export class Rows {
         );
         continue;
       }
-      const row = this.find(value, entry.source_id);
+      const row = this.find(value, entry.movedFrom, entry.source_id);
+      if (row === "elsewhere") {
+        this.counts.skipped += 1;
+        this.hooks.condition(
+          `held-key:${entry.source_id}`,
+          `the entry ${entry.source_id} names ${value ?? "no link"}, and a row linked to another of the vendor's items holds its natural key, so it is not written`,
+        );
+        continue;
+      }
       if (row !== undefined) {
         matched.push([entry, row]);
         continue;
@@ -194,17 +220,48 @@ export class Rows {
       this.counts.skipped += 1;
       return;
     }
-    const agreement = this.store.get(found.id);
+    let agreement = this.store.get(found.id);
     if (laterThan(agreement?.changedAt, entry.changed_at)) {
       // Older than what the two sides agreed on: a read that lagged.
       this.counts.skipped += 1;
       return;
+    }
+    if (
+      agreement !== undefined &&
+      agreement.state !== "active" &&
+      found.state === "active" &&
+      !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
+    ) {
+      // A restore waits to be carried. A vendor change from before it can
+      // be the vendor's echo of the trash, and is left; a later one means
+      // the vendor has the row, so the restore needs nothing more.
+      const since = agreement.waiting?.[stateKey] ?? found.updated_at;
+      if (!laterThan(entry.changed_at, since)) {
+        this.counts.skipped += 1;
+        return;
+      }
+      const waiting = { ...agreement.waiting };
+      Reflect.deleteProperty(waiting, stateKey);
+      agreement = { ...agreement, state: "active" };
+      Reflect.deleteProperty(agreement, "waiting");
+      if (Object.keys(waiting).length > 0) agreement.waiting = waiting;
+    } else if (
+      agreement !== undefined &&
+      found.state !== agreement.state &&
+      agreement.waiting?.[stateKey] === undefined
+    ) {
+      // A transition the log has not shown yet: carried this run.
+      agreement = {
+        ...agreement,
+        waiting: { ...agreement.waiting, [stateKey]: found.updated_at },
+      };
     }
     let row = found;
     for (let attempt = 0; ; attempt += 1) {
       const merged = this.merged(entry, row, agreement);
       if (!merged.write) {
         this.agree(row.id, merged.agreement, entry);
+        this.report(row.id, merged);
         this.counts.unchanged += 1;
         return;
       }
@@ -293,20 +350,36 @@ export class Rows {
       ...agreement,
       ...(value !== undefined && { link: value }),
     });
+    if (agreement.waiting !== undefined) this.marked.add(id);
   }
 
-  /** The row an entry names: by its link value, then by its natural key. */
-  private find(value: string | undefined, sourceId: string): Item | undefined {
-    const id =
-      (value === undefined ? undefined : this.byLink.get(value)) ??
-      this.byKey.get(sourceId);
-    return id === undefined ? undefined : this.byId.get(id);
+  /**
+   * The row an entry names: by its link, by the link it moved from, then by
+   * its natural key, which finds only a row linked to nothing or to the same
+   * item; one linked to another is `elsewhere`.
+   */
+  private find(
+    value: string | undefined,
+    movedFrom: string | undefined,
+    sourceId: string,
+  ): Item | "elsewhere" | undefined {
+    const byLink = (key: string | undefined): Item | undefined => {
+      const id = key === undefined ? undefined : this.byLink.get(key);
+      return id === undefined ? undefined : this.byId.get(id);
+    };
+    const linked = byLink(value) ?? byLink(movedFrom);
+    if (linked !== undefined) return linked;
+    const id = this.byKey.get(sourceId);
+    const keyed = id === undefined ? undefined : this.byId.get(id);
+    if (keyed === undefined) return undefined;
+    const held = this.linkOf(keyed.properties);
+    return held === undefined || held === value ? keyed : "elsewhere";
   }
 
   linkOf(properties: Readonly<Record<string, unknown>>): string | undefined {
     const link = this.kind.link;
     if (link === undefined) return undefined;
-    const value = properties[link];
+    const value = held(properties, link);
     return typeof value === "string" && value !== "" ? value : undefined;
   }
 
@@ -353,7 +426,9 @@ export class Rows {
     await this.load();
     const rows = [...new Set(keys)].flatMap((key) => {
       const id =
-        this.kind.link === undefined ? this.byKey.get(key) : this.byLink.get(key);
+        this.kind.link === undefined
+          ? this.byKey.get(key)
+          : this.byLink.get(key);
       const row = id === undefined ? undefined : this.byId.get(id);
       return row === undefined ? [] : [{ key, row }];
     });

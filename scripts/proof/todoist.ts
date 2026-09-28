@@ -663,35 +663,28 @@ export async function proveTodoist(
           TODOIST_API_TOKEN: "todoist-proof-token",
           TODOIST_API_URL: todoist.url,
         });
-        try {
-          const { code, output } = await refused.once();
-          const changed = moved(before, await rows());
-          if (
-            code !== 1 ||
-            !output.includes(
-              "holds more than read and write on todoist.task",
-            ) ||
-            !output.includes("keys.mint") ||
-            !output.includes("items.purge") ||
-            output.includes("type todoist.task") ||
-            changed.length > 0 ||
-            todoist.commands().length !== sent
-          ) {
-            throw new Error(
-              `exit ${String(code)}; moved ${changed.join(", ") || "nothing"}; ${String(todoist.commands().length - sent)} commands; ${output.slice(-400)}`,
-            );
-          }
-          const line = output
-            .split("\n")
-            .find((l) => l.includes("holds more than"));
-          return `exit 1, nothing written or sent: ${String(line).slice(0, 300)}`;
-        } finally {
-          await refused.dispose();
+        const { code, output } = await refused.once();
+        const changed = moved(before, await rows());
+        if (
+          code !== 1 ||
+          !output.includes("holds more than read and write on todoist.task") ||
+          !output.includes("keys.mint") ||
+          !output.includes("items.purge") ||
+          output.includes("type todoist.task") ||
+          changed.length > 0 ||
+          todoist.commands().length !== sent
+        ) {
+          throw new Error(
+            `exit ${String(code)}; moved ${changed.join(", ") || "nothing"}; ${String(todoist.commands().length - sent)} commands; ${output.slice(-400)}`,
+          );
         }
+        const line = output
+          .split("\n")
+          .find((l) => l.includes("holds more than"));
+        return `exit 1, nothing written or sent: ${String(line).slice(0, 300)}`;
       },
     );
   } finally {
-    await connector?.dispose();
     await todoist.close();
   }
 }

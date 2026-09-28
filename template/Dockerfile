@@ -3,8 +3,8 @@
 #
 #   docker build -f template/Dockerfile --build-arg CONNECTOR=<name> -t <name> .
 #
-# The image runs one connector as a long-lived process. Mount a volume at
-# /state: a new container without it begins with a full read of the vendor.
+# The image runs one connector as a long-lived process. It needs no volume:
+# the connector's state is kept on the instance.
 FROM node:22-slim AS build
 ARG CONNECTOR
 WORKDIR /repo
@@ -17,8 +17,6 @@ RUN pnpm install --frozen-lockfile \
 FROM node:22-slim
 WORKDIR /connector
 COPY --from=build /out .
-RUN mkdir /state && chown node /state
-ENV MARFA_STATE_DIR=/state
 USER node
 ENTRYPOINT ["node", "dist/main.js"]
 CMD ["--every", "15m"]

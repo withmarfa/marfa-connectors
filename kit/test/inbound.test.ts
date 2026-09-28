@@ -684,9 +684,8 @@ describe("a two-way connector's run for deliveries", () => {
     properties: { title: "One", note: "first", vendor_id: "v1" },
   };
 
-  async function watched(): Promise<unknown> {
-    return ((await harness.stateFile()) as { watch: { cursor?: string } }).watch
-      .cursor;
+  function watched(): unknown {
+    return harness.kept()["cursor"];
   }
 
   /** Two scheduled runs, so the second reads the first's writes as its own. */
@@ -713,7 +712,7 @@ describe("a two-way connector's run for deliveries", () => {
   it("reads the vendor whole and carries what changed in Marfa, moving the cursor", async () => {
     const held = vendor([linked]);
     const { exit } = await settledTwoWay(held);
-    const cursor = await watched();
+    const cursor = watched();
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { ...linked.properties, title: "Edited" });
     held.changes.length = 0;
@@ -723,7 +722,7 @@ describe("a two-way connector's run for deliveries", () => {
     expect(
       held.changes.map((change) => change.item.properties["title"]),
     ).toEqual(["Edited"]);
-    expect(await watched()).not.toBe(cursor);
+    expect(watched()).not.toBe(cursor);
     expect(outcomes()).toEqual(["processed"]);
     harness.stop();
     expect(await exit).toBe(0);
@@ -754,7 +753,7 @@ describe("a two-way connector's run for deliveries", () => {
     expect(await exit).toBe(0);
   });
 
-  it("carries a person's edit that beat the vendor's mid-write, and the vendor's older entry never writes over it", async () => {
+  it("carries a person's edit that beat the vendor's mid-write on the next run, and the vendor's older entry never writes over it", async () => {
     const held = vendor([linked]);
     const { exit } = await settledTwoWay(held);
     const row = harness.server.row("a:1");
@@ -775,24 +774,23 @@ describe("a two-way connector's run for deliveries", () => {
     held.changes.length = 0;
 
     await delivered(held, 3);
-    expect(
-      held.changes.map((change) => change.item.properties["note"]),
-    ).toEqual(["by a person, since the read"]);
+    // Merged beside the vendor's write, and read from the log next run.
+    expect(harness.server.row("a:1").properties).toMatchObject({
+      title: "By the vendor",
+      note: "by a person, since the read",
+    });
+    expect(held.changes).toEqual([]);
 
-    // The vendor now holds what was carried to it.
-    held.entries = [
-      {
-        ...linked,
-        properties: {
-          ...linked.properties,
-          note: "by a person, since the read",
-        },
-      },
-    ];
     harness.clock.advance(15 * minute);
     await harness.clock.wake(10_000);
     await until(() => held.runs === 4);
     await harness.clock.sleeping(10_000);
+    expect(
+      held.changes.map((change) => [
+        change.item.properties["note"],
+        [...change.changed],
+      ]),
+    ).toEqual([["by a person, since the read", ["note"]]]);
     expect(harness.server.row("a:1").properties["note"]).toBe(
       "by a person, since the read",
     );

@@ -70,6 +70,13 @@ export interface Delivery {
   outcome: string | null;
 }
 
+/** An agreement as the instance keeps it. */
+interface Held {
+  waiting: boolean;
+  record: Record<string, unknown>;
+  updated_at: string;
+}
+
 /** One event as the log holds it. */
 export interface Event {
   id: number;
@@ -165,6 +172,25 @@ export class ScriptedServer {
   ];
   /** What arrived at them, oldest first. */
   readonly deliveries: Delivery[] = [];
+  /** The state document kept for each key's own source. */
+  readonly states = new Map<string, Record<string, unknown>>();
+  /** Each row's agreement, by source and then by item id. */
+  private readonly agreementsBySource = new Map<string, Map<string, Held>>();
+
+  /** The state document kept for the calling key's own source. */
+  get connectorState(): Record<string, unknown> | undefined {
+    return this.states.get(this.keySource);
+  }
+
+  /** The agreements kept for the calling key's own source. */
+  get agreements(): Map<string, Held> {
+    let held = this.agreementsBySource.get(this.keySource);
+    if (held === undefined) {
+      held = new Map();
+      this.agreementsBySource.set(this.keySource, held);
+    }
+    return held;
+  }
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
@@ -339,6 +365,8 @@ export class ScriptedServer {
   purgeById(id: string): void {
     const row = this.byId(id);
     this.rows = this.rows.filter((candidate) => candidate.id !== id);
+    // A row's agreement goes with it, as the instance's foreign key takes it.
+    for (const held of this.agreementsBySource.values()) held.delete(id);
     this.announce("item.purged", row);
   }
 
@@ -648,6 +676,101 @@ export class ScriptedServer {
         data: marked.map((delivery) =>
           delivery === undefined ? null : this.deliveryView(delivery),
         ),
+      });
+      return;
+    }
+    if (
+      parts[0] === "connectors" &&
+      parts[2] === "state" &&
+      (method === "GET" || method === "PUT")
+    ) {
+      if (method === "PUT") {
+        const state = input["state"];
+        if (typeof state !== "object" || state === null) {
+          refuse(400, "validation_error");
+          return;
+        }
+        this.states.set(
+          this.keySource,
+          structuredClone(state) as Record<string, unknown>,
+        );
+      }
+      send(200, {
+        state: this.connectorState ?? {},
+        updated_at: this.connectorState === undefined ? null : this.now(),
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "agreements" &&
+      parts[3] === "find"
+    ) {
+      const ids = input["item_ids"] as string[];
+      if (ids.length > 500) {
+        refuse(400, "validation_error");
+        return;
+      }
+      send(200, {
+        data: ids.flatMap((id) => {
+          const held = this.agreements.get(id);
+          return held === undefined
+            ? []
+            : [{ item_id: id, ...structuredClone(held) }];
+        }),
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "agreements"
+    ) {
+      const set = (input["set"] ?? []) as {
+        item_id: string;
+        waiting: boolean;
+        record: Record<string, unknown>;
+      }[];
+      const clear = (input["clear"] ?? []) as string[];
+      if (set.length > 500 || clear.length > 500) {
+        refuse(400, "validation_error");
+        return;
+      }
+      const skipped: string[] = [];
+      for (const entry of set) {
+        if (!this.rows.some((row) => row.id === entry.item_id)) {
+          skipped.push(entry.item_id);
+          continue;
+        }
+        this.agreements.set(entry.item_id, {
+          waiting: entry.waiting,
+          record: structuredClone(entry.record),
+          updated_at: this.now(),
+        });
+      }
+      for (const id of clear) this.agreements.delete(id);
+      send(200, {
+        set: set.length - skipped.length,
+        cleared: clear.length,
+        skipped,
+      });
+      return;
+    }
+    if (
+      method === "GET" &&
+      parts[0] === "connectors" &&
+      parts[2] === "agreements"
+    ) {
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const waiting = [...this.agreements]
+        .filter(([, held]) => held.waiting)
+        .map(([id, held]) => ({ item_id: id, ...structuredClone(held) }));
+      send(200, {
+        data: waiting.slice(from, from + limit),
+        next_cursor:
+          from + limit < waiting.length ? String(from + limit) : null,
       });
       return;
     }

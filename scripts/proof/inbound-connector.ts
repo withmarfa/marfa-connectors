@@ -20,6 +20,7 @@ const connector = defineConnector({
     description: "A thing from the proof's stub vendor.",
     fields: { title: { type: "string", required: true } },
   },
+  fields: ["title"],
   env: { PROOF_VENDOR_URL: "required", PROOF_WEBHOOK_SECRET: "secret" },
   async run({ env, signal, hints, upsert }) {
     const fetched = async (path: string): Promise<unknown> => {

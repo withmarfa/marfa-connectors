@@ -22,7 +22,7 @@ import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
-import { Rows, Stopped, type Counts, type Kind } from "./rows.js";
+import { Rows, stateKey, Stopped, type Counts, type Kind } from "./rows.js";
 import type { Clock } from "./runtime.js";
 import { Store } from "./store.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
@@ -57,8 +57,6 @@ export interface RunResult {
   readonly settled: boolean;
 }
 
-/** A state change waiting to be carried, beside the fields. */
-const stateKey = "@state";
 /** A row the vendor has not been told about. */
 const createKey = "@create";
 
@@ -157,18 +155,25 @@ function waitingOf(
  * The agreement with what the log shows of the row since: each field that
  * differs from what the kit last wrote or carried waits, from when it was
  * first seen, and so does a state the two sides did not agree on. `own`
- * where nothing waits that did not before, which is the kit's own writes.
+ * counts the frames showing the row as the kit last left it: its own writes.
  */
 function observe(
   kind: Kind,
   twoWay: boolean,
   seen: Seen,
   agreement: Agreement,
-): { next: Agreement; own: boolean } {
+): { next: Agreement; own: number } {
   let waiting: Record<string, string> = { ...agreement.waiting };
   Reflect.deleteProperty(waiting, stateKey);
   let stateSince = agreement.waiting?.[stateKey];
+  let own = 0;
   for (const { item } of seen.frames) {
+    if (
+      item.state === agreement.state &&
+      changedInMarfa(agreement, kind.fields, item.properties).length === 0
+    ) {
+      own += 1;
+    }
     const fields =
       noteWaiting(
         { ...agreement, waiting },
@@ -189,8 +194,7 @@ function observe(
   const next: Agreement = { ...agreement };
   Reflect.deleteProperty(next, "waiting");
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
-  const before = JSON.stringify(agreement.waiting ?? {});
-  return { next, own: JSON.stringify(next.waiting ?? {}) === before };
+  return { next, own };
 }
 
 /** A row's state as the two sides agree on it; a revoked row counts as trashed. */
@@ -320,16 +324,15 @@ export async function runOnce<E extends EnvDeclaration>(
     const base = store.get(current.id) ?? agreement;
     const unlinked =
       kind.link !== undefined && rows.linkOf(current.properties) === undefined;
-    const changeKind: ChangeKind =
-      unlinked
-        ? "created"
-        : current.state !== base.state
-          ? current.state === "trashed"
-            ? "trashed"
-            : current.state === "archived"
-              ? "archived"
-              : "restored"
-          : "updated";
+    const changeKind: ChangeKind = unlinked
+      ? "created"
+      : current.state !== base.state
+        ? current.state === "trashed"
+          ? "trashed"
+          : current.state === "archived"
+            ? "archived"
+            : "restored"
+        : "updated";
     const trashed = changeKind === "trashed";
     const changed = trashed
       ? []
@@ -396,9 +399,10 @@ export async function runOnce<E extends EnvDeclaration>(
     store.set(item.id, {
       ...next,
       ...(linked !== undefined && { link: linked }),
-      ...(Object.keys(waiting).length > 0 && item.state !== "trashed" && {
-        waiting,
-      }),
+      ...(Object.keys(waiting).length > 0 &&
+        item.state !== "trashed" && {
+          waiting,
+        }),
     });
   };
 
@@ -488,9 +492,10 @@ export async function runOnce<E extends EnvDeclaration>(
       if (last === undefined) continue;
       const agreement = store.get(id);
       if (seen.purged) {
-        if (agreement === undefined) continue;
+        const link = agreement?.link ?? rows.linkOf(last.properties);
+        if (agreement === undefined && link === undefined) continue;
         store.clear(id);
-        rows.purged.add(agreement.link ?? last.source_id ?? id);
+        rows.purged.add(link ?? last.source_id ?? id);
         if (twoWay) purged.set(id, last);
         continue;
       }
@@ -512,8 +517,9 @@ export async function runOnce<E extends EnvDeclaration>(
         }
         continue;
       }
-      const { next, own: nothing } = observe(kind, twoWay, seen, agreement);
-      if (nothing) own += 1;
+      const observed = observe(kind, twoWay, seen, agreement);
+      own += observed.own;
+      const next = observed.next;
       store.set(id, next);
       if (next.waiting !== undefined) order.push(id);
     }
@@ -525,7 +531,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (unagreed > 0) {
       raised.set(
         "unagreed",
-        `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} changed in Marfa ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor, so ${unagreed === 1 ? "it takes" : "they take"} the vendor's values when it next sends ${unagreed === 1 ? "it" : "them"}`,
+        `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} the log named ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor yet, so nothing is carried for ${unagreed === 1 ? "it" : "them"} until the vendor next sends ${unagreed === 1 ? "it" : "them"}, whose values ${unagreed === 1 ? "it takes" : "they take"} where they differ`,
       );
     }
     // Everything the log named is recorded, so the cursor may move past it
@@ -580,6 +586,7 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     await connector.run(context);
     if (twoWay) {
+      for (const id of rows.marked) if (!order.includes(id)) order.push(id);
       for (const id of order) {
         if (done.has(id)) continue;
         const agreement = store.get(id);
@@ -606,7 +613,9 @@ export async function runOnce<E extends EnvDeclaration>(
   } catch (error) {
     flushed = false;
     failure ??= error;
-    logger.warn(`what the two sides agreed on could not be kept: ${describe(error)}`);
+    logger.warn(
+      `what the two sides agreed on could not be kept: ${describe(error)}`,
+    );
   }
   const finishedAt = clock.now();
 

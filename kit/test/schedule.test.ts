@@ -232,7 +232,7 @@ describe("--every", () => {
     expect(run.outcome).toBe("failed");
     expect(run.error).toContain("stopped");
     expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
-    expect(await harness.stateFile()).toMatchObject({
+    expect(harness.kept()).toMatchObject({
       state: { token: "t-old" },
     });
   });
