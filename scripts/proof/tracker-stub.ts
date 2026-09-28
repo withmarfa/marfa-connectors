@@ -44,7 +44,7 @@ export class Tracker {
   slowList = 0;
   url = "";
   private next = 100;
-  private clock = Date.parse("2026-10-01T00:00:00.000Z");
+  private clock = 0;
   private readonly http = createServer((req, res) => {
     void this.answer(req).then(
       ([status, body, type]) => {
@@ -78,9 +78,10 @@ export class Tracker {
     });
   }
 
-  /** A change at the vendor, later than any before it. */
+  /** A change at the vendor, later than any before it, by real time: the
+   *  instance weighs it against purges and edits it stamps by its own. */
   touch(): string {
-    this.clock += 60_000;
+    this.clock = Math.max(Date.now(), this.clock + 1);
     return new Date(this.clock).toISOString();
   }
 

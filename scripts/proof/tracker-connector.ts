@@ -172,11 +172,16 @@ const connector = defineConnector({
           item.properties[field] ?? "",
         ]),
       );
-      issue = await send(
-        "PATCH",
-        `issues/${encodeURIComponent(linkOf(item))}`,
-        { ...fields, ...(change.kind === "restored" && { state: "open" }) },
-      );
+      const patch = {
+        ...fields,
+        ...(change.kind === "restored" && { state: "open" }),
+      };
+      const path = `issues/${encodeURIComponent(linkOf(item))}`;
+      // A change of connections alone writes nothing to the issue itself.
+      issue =
+        Object.keys(patch).length > 0
+          ? await send("PATCH", path, patch)
+          : await send("GET", path);
     }
     const id = encodeURIComponent(issue.id);
     const subs = change.connections?.["proof.sub-issue"];

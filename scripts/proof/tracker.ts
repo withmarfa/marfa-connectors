@@ -197,23 +197,14 @@ export async function proveTracker(
     await check(
       "tracker: the pinned server reads the attachment's dimensions, its type inheriting from core.file.image",
       async () => {
-        const { error, response } = await marfa.POST(
-          "/housekeeping/{name}/run",
-          { params: { path: { name: "enrichment-sweep" } } },
-        );
-        if (!response.ok)
-          throw new Error(`the sweep was refused: ${JSON.stringify(error)}`);
-        const file = (await rowsOf(marfa, "proof.attachment", source)).get(
-          attachment.id,
-        );
-        if (
-          file?.properties["width"] !== 1 ||
-          file.properties["height"] !== 1
-        ) {
-          throw new Error(
-            `the attachment holds ${JSON.stringify(file?.properties)}`,
+        await until(async () => {
+          const file = (await rowsOf(marfa, "proof.attachment", source)).get(
+            attachment.id,
           );
-        }
+          return (
+            file?.properties["width"] === 1 && file.properties["height"] === 1
+          );
+        }, "width and height on the attachment");
         return "width 1 and height 1 on the connector's own attachment type";
       },
     );
@@ -331,10 +322,17 @@ export async function proveTracker(
         await runOnce();
         const onPurge = writesSince(written);
         const connectorId = (await registration(marfa, key.id)).id;
-        const cleared = await marfa.DELETE("/connectors/{id}/state", {
+        const cleared = await createClient({
+          baseUrl: url,
+          credential: key.key,
+        }).DELETE("/connectors/{id}/state", {
           params: { path: { id: connectorId } },
         });
-        if (!cleared.response.ok) throw new Error("the clear was refused");
+        if (!cleared.response.ok) {
+          throw new Error(
+            `the clear was refused: ${JSON.stringify(cleared.error)}`,
+          );
+        }
         const revoked = await marfa.DELETE("/keys/{id}", {
           params: { path: { id: key.id } },
         });

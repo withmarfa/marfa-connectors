@@ -85,6 +85,8 @@ export class ProofServer {
       ...process.env,
       MARFA_SERVER_REPO: monorepo,
       MARFA_SERVER_ENV: this.envFile(),
+      // The tracker waits on the enrichment sweep, every 30 s by default.
+      MARFA_ENRICHMENT_INTERVAL_MS: "1000",
     };
     for (const name of bootChoices) Reflect.deleteProperty(env, name);
     return env;
