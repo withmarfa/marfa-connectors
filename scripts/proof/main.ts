@@ -12,13 +12,14 @@ import { witnessTypeAnswers } from "./connector.js";
 import { proveInbound } from "./inbound.js";
 import { proveRss } from "./rss.js";
 import { proveTodoist } from "./todoist.js";
+import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 /**
  * Every statement the proof makes, so one dropped or skipped leaves the
  * proof short, and a short proof fails.
  */
-const statements = 40;
+const statements = 52;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -84,6 +85,7 @@ try {
   await proveRss(marfa, booted.url);
   await proveTodoist(marfa, booted.url);
   await proveInbound(marfa, booted.url);
+  await proveTracker(marfa, booted.url);
   if (statementsHeld() !== statements) {
     throw new Error(
       `${String(statementsHeld())} statements held, where the proof makes ${String(statements)}`,
