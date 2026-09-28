@@ -20,8 +20,6 @@ export interface Agreement {
   state: AgreedState;
   /** The vendor's own id for the row, which is the connector's to keep. */
   link?: string;
-  /** The vendor, not a person, put the row in the archive. */
-  archivedByVendor?: true;
   /** The vendor's time on the entry last agreed. */
   changedAt?: string;
   /** Changes in Marfa not yet carried, each with when it was first seen. */
@@ -150,11 +148,8 @@ export interface Merged {
 }
 
 /**
- * The vendor's entry merged into the row, field by field. A field only one
- * side changed since the agreement takes that side's value; one both
- * changed, to different values, goes to the later change, and a tie to
- * Marfa. A read-only field always takes the vendor's. With no agreement,
- * a field that differs takes the vendor's, and nothing is carried back.
+ * The entry merged into the row field by field: one side's change wins, both
+ * sides' goes to the later, a tie and nothing agreed yet as the rules say.
  */
 export function merge(input: MergeInput): Merged {
   const { fields, readOnly, agreement, row, entry } = input;
@@ -254,7 +249,6 @@ export function merge(input: MergeInput): Merged {
     marfa,
     state: agreement?.state ?? "active",
     ...(agreement?.link !== undefined && { link: agreement.link }),
-    ...(agreement?.archivedByVendor === true && { archivedByVendor: true }),
     ...(changedAt !== undefined && { changedAt }),
     ...(Object.keys(waiting).length > 0 && { waiting }),
   };
@@ -289,9 +283,9 @@ export interface CarriedInput {
 }
 
 /**
- * The agreement once a change reached the vendor. Marfa's side takes what
- * was carried; the vendor's takes its answer, or, without one, the carried
- * values, as the vendor's copy of them.
+ * The agreement once a change reached the vendor, without waiting marks:
+ * Marfa's side takes what was carried, the vendor's its answer or else the
+ * carried values.
  */
 export function carried(input: CarriedInput): Agreement {
   const { fields, agreement, properties, state, changed, answered } = input;
@@ -313,8 +307,6 @@ export function carried(input: CarriedInput): Agreement {
     for (const field of fields) Reflect.deleteProperty(vendor, field);
     Object.assign(vendor, answeredSide);
   }
-  const waiting = { ...agreement?.waiting };
-  for (const field of changed) Reflect.deleteProperty(waiting, field);
   const changedAt = answered?.changed_at ?? agreement?.changedAt;
   return {
     vendor,
@@ -322,6 +314,5 @@ export function carried(input: CarriedInput): Agreement {
     state,
     ...(agreement?.link !== undefined && { link: agreement.link }),
     ...(changedAt !== undefined && { changedAt }),
-    ...(Object.keys(waiting).length > 0 && { waiting }),
   };
 }

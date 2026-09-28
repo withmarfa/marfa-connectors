@@ -113,6 +113,10 @@ export interface Vendor {
   runs: number;
   /** What the two-way connector was handed to carry back, in order. */
   changes: Change[];
+  /** What `onChange` answers as the vendor's entry after its write. */
+  answer?: ((change: Change) => Entry | undefined) | undefined;
+  /** Called while `remake` makes the row again, before it links it. */
+  duringRemake?: (() => void) | undefined;
   /** Thrown once the run has written what the vendor sent. */
   failAfter?: Error | undefined;
   /** A push that throws, the first time the named row is offered. */
@@ -191,12 +195,14 @@ function twoWayConnector(held: Vendor) {
       }
       const id = held.vendorIdFor?.(change);
       if (id !== undefined) await context.setLink(change.item, id);
+      return held.answer?.(change);
     },
     async remake(change, context) {
       (held.remakes ??= []).push({ change, runsBefore: held.runs });
       const id = held.gone?.get(change.item.id);
       if (id === undefined) return false;
       held.gone?.delete(change.item.id);
+      held.duringRemake?.();
       await context.setLink(change.item, id);
       return true;
     },

@@ -1142,3 +1142,163 @@ describe("an entry", () => {
     expect(harness.lastRun().summary).toContain("names no vendor_id");
   });
 });
+
+describe("a row in the bin", () => {
+  it("is carried as a trash by the link the two sides agreed, where a person changed it first", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { vendor_id: "v-mistaken" });
+    harness.server.trash(row.id);
+    held.entries = [];
+    expect(await quietRun(held)).toBe(0);
+    expect(
+      held.changes.map((change) => [
+        change.kind,
+        change.item.properties["vendor_id"],
+      ]),
+    ).toEqual([["trashed", "v1"]]);
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("carries nothing, and keeps nothing, where its create never reached the vendor", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: theirs.id, error: new Error("the vendor is down") };
+    expect(await quietRun(held)).toBe(1);
+    harness.server.trash(theirs.id);
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.agreements.get(theirs.id)).toBeUndefined();
+  });
+});
+
+describe("a row made again", () => {
+  it("carries an edit a person made while it was made, on the next run", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await quietRun(held);
+    harness.server.restore(row.id);
+    held.gone = new Map([[row.id, "v1-again"]]);
+    held.duringRemake = () => {
+      harness.server.edit(row.id, { note: "edited meanwhile" });
+    };
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    held.duringRemake = undefined;
+    await quietRun(held);
+    expect(
+      held.changes.map((change) => [change.kind, [...change.changed]]),
+    ).toEqual([["updated", ["note"]]]);
+  });
+});
+
+describe("the connector's state", () => {
+  it("is not written over with nothing when it cannot be read", async () => {
+    const held = vendor([one]);
+    held.token = "t1";
+    await harness.twoWay(held);
+    const before = structuredClone(harness.kept());
+    harness.server.refuseNext(
+      "GET /connectors/connector-1/state",
+      503,
+      "unavailable",
+    );
+    held.token = "t2";
+    expect(await quietRun(held)).toBe(1);
+    expect(harness.kept()).toEqual(before);
+  });
+});
+
+describe("an entry naming no time", () => {
+  it("is written over what was agreed at a time, as a vendor that names none is", async () => {
+    const held = vendor([{ ...one, changed_at: "2026-09-20T00:00:00.000Z" }]);
+    await harness.twoWay(held);
+    held.entries = [
+      { ...one, properties: { ...one.properties, title: "One, untimed" } },
+    ];
+    await quietRun(held);
+    expect(harness.server.row("a:1").properties["title"]).toBe("One, untimed");
+  });
+});
+
+describe("a purge of a row the vendor moved", () => {
+  it("is not written back under the item's new link", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    harness.server.purgeById(row.id);
+    held.entries = [
+      {
+        ...one,
+        source_id: "a:1-moved",
+        properties: { ...one.properties, vendor_id: "v1-moved" },
+        movedFrom: "v1",
+      },
+    ];
+    await quietRun(held);
+    expect(harness.server.rows).toHaveLength(0);
+  });
+});
+
+describe("an answered entry", () => {
+  it("is what the vendor holds, so a value it normalizes is carried once and nothing loops", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "  One, spaced  " });
+    held.entries = [];
+    held.answer = (change) => ({
+      source_id: "a:1",
+      properties: {
+        ...change.item.properties,
+        title: String(change.item.properties["title"]).trim(),
+      },
+      changed_at: "2026-09-29T00:00:00.000Z",
+    });
+    await quietRun(held);
+    expect(held.changes).toHaveLength(1);
+
+    // The vendor lists what it holds; Marfa keeps what the person wrote.
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, spaced" },
+        changed_at: "2026-09-29T00:00:00.000Z",
+      },
+    ];
+    await quietRun(held);
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "  One, spaced  ",
+    );
+  });
+});
+
+describe("a change a person undid", () => {
+  it("is carried as nothing, and waits no more", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, briefly" });
+    harness.server.edit(row.id, { title: "One" });
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.agreements.get(row.id)?.waiting).toBe(false);
+  });
+});

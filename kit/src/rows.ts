@@ -3,6 +3,7 @@ import {
   laterThan,
   mark,
   merge,
+  sideOf,
   unchangedAtVendor,
   type Agreement,
   type Merged,
@@ -43,6 +44,8 @@ export interface Kind {
   readonly fields: readonly string[];
   /** The fields Marfa mirrors from the vendor and never carries. */
   readonly readOnly: ReadonlySet<string>;
+  /** The connector carries changes back. */
+  readonly twoWay: boolean;
 }
 
 /** A state change waiting to be carried, beside the fields. */
@@ -106,12 +109,8 @@ export interface Hooks {
 }
 
 /**
- * The connector's rows, read once per run, and every entry merged with its
- * row field by field against what the two sides last agreed, so only what
- * changed is written. A trashed row is never written: a person's bin wins
- * over the vendor. With a link, the rows are every row of the type, found by
- * the link first and by the natural key second; without one, the rows under
- * the connector's own source, found by the natural key.
+ * The connector's rows, read once per run: each entry is merged with its row
+ * field by field against the agreement, and a trashed row is never written.
  */
 export class Rows {
   readonly counts: Counts = {
@@ -126,7 +125,7 @@ export class Rows {
   held = 0;
   /** Rows that took the vendor's values with nothing agreed. */
   seeded = 0;
-  /** Links, or natural keys without a link, of rows purged this run. */
+  /** Rows purged this run, by `link:` and by `key:`, which are not written again. */
   readonly purged = new Set<string>();
   /** Rows this run's reads left with something in Marfa to carry. */
   readonly marked = new Set<string>();
@@ -191,7 +190,12 @@ export class Rows {
         matched.push([entry, row]);
         continue;
       }
-      if (this.purged.has(value ?? entry.source_id)) {
+      if (
+        this.purged.has(`key:${entry.source_id}`) ||
+        (value !== undefined && this.purged.has(`link:${value}`)) ||
+        (entry.movedFrom !== undefined &&
+          this.purged.has(`link:${entry.movedFrom}`))
+      ) {
         // A person emptied the bin of the row this run: the purge wins.
         this.counts.skipped += 1;
         continue;
@@ -221,7 +225,10 @@ export class Rows {
       return;
     }
     let agreement = this.store.get(found.id);
-    if (laterThan(agreement?.changedAt, entry.changed_at)) {
+    if (
+      entry.changed_at !== undefined &&
+      laterThan(agreement?.changedAt, entry.changed_at)
+    ) {
       // Older than what the two sides agreed on: a read that lagged.
       this.counts.skipped += 1;
       return;
@@ -246,6 +253,7 @@ export class Rows {
       Reflect.deleteProperty(agreement, "waiting");
       if (Object.keys(waiting).length > 0) agreement.waiting = waiting;
     } else if (
+      this.kind.twoWay &&
       agreement !== undefined &&
       found.state !== agreement.state &&
       agreement.waiting?.[stateKey] === undefined
@@ -315,23 +323,23 @@ export class Rows {
       },
       entry,
     });
-    if (agreement === undefined && merged.seeded.length > 0) this.seeded += 1;
     return merged;
   }
 
   private report(id: string, merged: Merged): void {
+    if (merged.seeded.length > 0) this.seeded += 1;
     if (merged.lost.length > 0 || merged.kept.length > 0) {
       this.counts.conflicts += 1;
     }
     if (merged.lost.length > 0) {
       this.hooks.condition(
-        `conflict:${id}`,
+        `conflict-lost:${id}`,
         `the vendor's change to ${merged.lost.join(", ")} on ${id} is the later one, so the change made in Marfa is not carried back`,
       );
     }
     if (merged.kept.length > 0) {
       this.hooks.condition(
-        `conflict:${id}`,
+        `conflict-kept:${id}`,
         `the change made in Marfa to ${merged.kept.join(", ")} on ${id} is the later one, so the vendor's is not written and Marfa's is carried back`,
       );
     }
@@ -419,8 +427,7 @@ export class Rows {
 
   /**
    * Archives the rows the keys name that are active: link values with a
-   * link, natural keys without. The vendor put them away, so a later entry
-   * for one brings it back.
+   * link, natural keys without.
    */
   async archive(keys: readonly string[]): Promise<void> {
     await this.load();
@@ -458,18 +465,60 @@ export class Rows {
       try {
         await this.marfa.archive(row.id);
         this.index({ ...row, state: "archived" });
+        const side = sideOf(this.kind.fields, row.properties);
         this.store.set(row.id, {
-          vendor: agreement?.vendor ?? {},
-          marfa: agreement?.marfa ?? {},
+          vendor: side,
+          marfa: side,
           ...agreement,
           state: "archived",
-          archivedByVendor: true,
         });
         this.counts.archived += 1;
       } catch (error) {
         this.absorb(error, key, refusedUpdate);
       }
     }
+  }
+
+  /**
+   * Puts read-only fields a person changed back to what the kit last wrote,
+   * found in the row's versions; one no version still holds waits for the
+   * vendor to send it again. Answers the fields put back.
+   */
+  async putBack(id: string, fields: readonly string[]): Promise<string[]> {
+    const row = this.byId.get(id);
+    const agreement = this.store.get(id);
+    if (row === undefined || agreement === undefined) return [];
+    const versions = [...(await this.marfa.versions(id))].reverse();
+    const properties: Record<string, unknown> = { ...cleaned(row.properties) };
+    const found: string[] = [];
+    for (const field of fields) {
+      const wanted = agreement.marfa[field] ?? "";
+      const holding = versions.find(
+        (version) => mark(held(version.properties, field)) === wanted,
+      );
+      if (holding === undefined) continue;
+      const value = held(holding.properties, field);
+      if (value === undefined || value === null) {
+        Reflect.deleteProperty(properties, field);
+      } else properties[field] = value;
+      found.push(field);
+    }
+    if (found.length === 0) return [];
+    this.checkStopped();
+    try {
+      this.index(
+        await this.marfa.update(row.id, row.version, properties, undefined),
+      );
+    } catch (error) {
+      this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+      return [];
+    }
+    this.counts.updated += 1;
+    this.hooks.condition(
+      `put-back:${id}`,
+      `${found.join(", ")} on ${id} ${found.length === 1 ? "was" : "were"} changed in Marfa and put back from the vendor, which Marfa mirrors`,
+    );
+    return found;
   }
 
   /**

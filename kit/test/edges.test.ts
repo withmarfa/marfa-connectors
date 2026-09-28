@@ -67,7 +67,7 @@ describe("rows too big for one request", () => {
 });
 
 describe("a row a person purged", () => {
-  it("is written again while the vendor still has it, since nothing remembers it", async () => {
+  it("is not written back by the run that reads its purge, and written again after, since nothing remembers it yet", async () => {
     await harness.once(vendor([one, two]));
     harness.server.row("a:1").state = "trashed";
     await harness.once(vendor([one, two]));
@@ -76,13 +76,15 @@ describe("a row a person purged", () => {
     );
     harness.server.purge("a:1");
     expect(await harness.once(vendor([one, two]))).toBe(0);
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
+    expect(harness.lastRun().summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 1, skipped 1",
+    );
+    expect(await harness.once(vendor([one, two]))).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual([
       "a:2",
       "a:1",
     ]);
-    expect(harness.lastRun().summary).toBe(
-      "created 1, updated 0, archived 0, unchanged 1, skipped 0",
-    );
   });
 
   it("keeps nothing of the bin in the connector's state", async () => {

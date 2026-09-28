@@ -311,6 +311,20 @@ describe("archive", () => {
   });
 });
 
+describe("a field Marfa mirrors", () => {
+  it("is put back on the next run from what the kit last wrote, though the vendor sends nothing", async () => {
+    await harness.once(vendor([one]));
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+    expect(await harness.once(vendor([]))).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    expect(harness.lastRun().summary).toContain(
+      "title on " + row.id + " was changed in Marfa and put back",
+    );
+    expect(harness.server.agreements.get(row.id)?.waiting).toBe(false);
+  });
+});
+
 describe("the state", () => {
   it("is kept when every write landed", async () => {
     const held = vendor([one]);

@@ -46,12 +46,7 @@ function agreementOf(value: unknown): Agreement | undefined {
   return value as unknown as Agreement;
 }
 
-/**
- * The connector's state on the instance, under its key's own source, so a
- * process can start anywhere, empty, and lose nothing still waiting. Each
- * row's agreement is read as the run first needs it, and written once the
- * run ends, before the cursor moves past the log that named it.
- */
+/** The connector's state and each row's agreement, kept on the instance under the key's own source. */
 export class Store {
   /** Read this run; `null` where the instance holds none. */
   private readonly read = new Map<string, Agreement | null>();

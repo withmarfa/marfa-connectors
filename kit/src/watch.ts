@@ -2,9 +2,8 @@ import type { Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 import { frames } from "./sse.js";
 
-/** One frame the log holds for a row: what the row then held, and when. */
+/** One frame the log holds for a row: the row as it then stood. */
 export interface Frame {
-  readonly event: string;
   readonly item: Item;
 }
 
@@ -67,13 +66,8 @@ function furthest(...cursors: (string | undefined)[]): string | undefined {
 }
 
 /**
- * A read of the log for the connector's type: from the cursor to the
- * marker the stream sends once its replay is done, every frame kept by
- * row. The marker names the position the stream has sent or withheld up
- * to, which the frames alone cannot show, since the stream writes nothing
- * for an event the credential may not see. A stream that ends early keeps
- * what was read and resumes from the last id received; a cursor the log no
- * longer serves lists every row of the type instead.
+ * The log for the connector's type from the cursor to the stream's live
+ * marker, whose position covers frames this reader was never sent.
  */
 export class Watch {
   constructor(
@@ -123,7 +117,7 @@ export class Watch {
         // this connector's.
         if (item?.type !== this.type) continue;
         const seen = rows.get(item.id) ?? { frames: [], purged: false };
-        seen.frames.push({ event: frame.event, item });
+        seen.frames.push({ item });
         // In the order of each row's latest frame.
         rows.delete(item.id);
         rows.set(item.id, {
@@ -148,7 +142,7 @@ export class Watch {
       for (const item of await this.marfa.ownRows(this.type)) {
         if (item.type !== this.type) continue;
         listed.set(item.id, {
-          frames: [{ event: "item.listed", item }],
+          frames: [{ item }],
           purged: false,
         });
       }

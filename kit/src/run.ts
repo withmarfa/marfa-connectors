@@ -141,14 +141,13 @@ export function kindOf<E extends EnvDeclaration>(
     link: connector.link,
     fields: connector.fields,
     readOnly,
+    twoWay,
   };
 }
 
 /**
- * The agreement with what the log shows of the row since: each field that
- * differs from what the kit last wrote or carried waits, from when it was
- * first seen, and so does a state the two sides did not agree on. `own`
- * counts the frames showing the row as the kit last left it: its own writes.
+ * What waits once the log's frames of a row are read, each field from when
+ * it first differed; `own` counts frames showing the row as the kit left it.
  */
 function observe(
   kind: Kind,
@@ -196,15 +195,8 @@ function agreedState(state: string): AgreedState {
 }
 
 /**
- * One run, start to report: the waiting deliveries collected and sorted;
- * the log read, and each row it names compared with what the two sides
- * last agreed on, recording what waits to be carried; the creates carried
- * and the restored rows made again at the vendor; the connector's own pull
- * written in, field by field against the agreements; the rest of what
- * waits carried back; the agreements written, and only then the cursor
- * moved past the log that named them; the fresh deliveries marked; the run
- * reported. The connector's own state is kept only when every write
- * landed; what waits is kept either way, so a failed run loses nothing.
+ * One run: deliveries collected, the log recorded as what waits, creates
+ * and remakes carried, the vendor read, the rest carried, then reported.
  */
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
@@ -296,72 +288,117 @@ export async function runOnce<E extends EnvDeclaration>(
   /** Rows the log showed that nothing was agreed for, not carried. */
   let unagreed = 0;
 
-  const carry = async (item: Item, agreement: Agreement): Promise<void> => {
-    if (setup.signal.aborted) throw new Stopped();
-    if (connector.onChange === undefined) return;
+  const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
+  const withoutWaiting = (agreement: Agreement): Agreement => {
+    const next = { ...agreement };
+    Reflect.deleteProperty(next, "waiting");
+    return next;
+  };
+  /** Links and read-only fields a person changed, put back before the vendor is read. */
+  const putBack = async (id: string): Promise<void> => {
+    const agreement = store.get(id);
+    const item = await rows.row(id);
+    if (
+      agreement?.waiting === undefined ||
+      item === undefined ||
+      item.state === "trashed"
+    ) {
+      return;
+    }
     let current = item;
-    // The link is the connector's: a row whose link a person changed is
-    // linked back before anything is carried by it.
     if (
       agreement.link !== undefined &&
       rows.linkOf(current.properties) !== agreement.link
     ) {
       await rows.setLink(current, agreement.link);
-      current = (await rows.row(current.id)) ?? current;
+      current = (await rows.row(id)) ?? current;
       raised.set(
-        `link-put-back:${current.id}`,
-        `the ${kind.link ?? "link"} of ${current.id} was changed in Marfa and put back, since it names the vendor's own item`,
+        `link-put-back:${id}`,
+        `the ${kind.link ?? "link"} of ${id} was changed in Marfa and put back, since it names the vendor's own item`,
       );
     }
-    const base = store.get(current.id) ?? agreement;
+    const stale = changedInMarfa(
+      agreement,
+      kind.fields.filter(
+        (field) => kind.readOnly.has(field) && field !== kind.link,
+      ),
+      current.properties,
+    );
+    const back = stale.length === 0 ? [] : await rows.putBack(id, stale);
+    const waiting = { ...store.get(id)?.waiting };
+    for (const field of [
+      ...back,
+      ...(kind.link === undefined ? [] : [kind.link]),
+    ]) {
+      Reflect.deleteProperty(waiting, field);
+    }
+    const now = store.get(id) ?? agreement;
+    store.set(id, {
+      ...withoutWaiting(now),
+      ...(Object.keys(waiting).length > 0 && { waiting }),
+    });
+  };
+  const carry = async (item: Item, agreement: Agreement): Promise<void> => {
+    if (setup.signal.aborted) throw new Stopped();
+    if (connector.onChange === undefined) return;
     const unlinked =
-      kind.link !== undefined && rows.linkOf(current.properties) === undefined;
+      kind.link !== undefined &&
+      agreement.link === undefined &&
+      rows.linkOf(item.properties) === undefined;
+    if (unlinked && item.state === "trashed") {
+      // Never made at the vendor, and now in the bin: nothing to carry.
+      store.clear(item.id);
+      return;
+    }
+    // A row a person relinked that could not be put back, being in the
+    // bin, is carried by the link the two sides agreed.
+    const current =
+      kind.link !== undefined &&
+      agreement.link !== undefined &&
+      rows.linkOf(item.properties) !== agreement.link
+        ? {
+            ...item,
+            properties: { ...item.properties, [kind.link]: agreement.link },
+          }
+        : item;
     const changeKind: ChangeKind = unlinked
       ? "created"
-      : current.state !== base.state
+      : current.state !== agreement.state
         ? current.state === "trashed"
           ? "trashed"
           : current.state === "archived"
             ? "archived"
             : "restored"
         : "updated";
-    const trashed = changeKind === "trashed";
-    const changed = trashed
-      ? []
-      : changedInMarfa(
-          base,
-          kind.fields.filter((field) => !kind.readOnly.has(field)),
-          current.properties,
-        );
+    const changed =
+      changeKind === "trashed"
+        ? []
+        : changedInMarfa(agreement, carriable, current.properties);
     if (changeKind === "updated" && changed.length === 0) {
-      store.set(current.id, { ...base, ...withoutWaiting(base) });
+      store.set(current.id, withoutWaiting(agreement));
       return;
     }
+    let attempted: string | undefined;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
-      const attempted = base.attempted;
-      store.set(current.id, { ...base, attempted: clock.now().toISOString() });
+      attempted = agreement.attempted;
+      store.set(current.id, {
+        ...agreement,
+        attempted: clock.now().toISOString(),
+      });
       await store.flush([current.id]);
-      const change: Change = {
+    }
+    const answered = await connector.onChange(
+      {
         kind: changeKind,
         item: current,
         changed: new Set(changed),
         ...(attempted !== undefined && { attempted }),
-      };
-      settle(current, changed, await connector.onChange(change, watchContext));
-      return;
-    }
-    const answered = await connector.onChange(
-      { kind: changeKind, item: current, changed: new Set(changed) },
+      },
       watchContext,
     );
     settle(current, changed, answered);
-  };
-  const withoutWaiting = (agreement: Agreement): Agreement => {
-    const next = { ...agreement };
-    Reflect.deleteProperty(next, "waiting");
-    return next;
   };
   const settle = (
     item: Item,
@@ -378,22 +415,19 @@ export async function runOnce<E extends EnvDeclaration>(
       changed,
       answered,
     });
-    const linked = store.get(item.id)?.link;
-    // Carried as the row stood; any field still differing waits on.
-    const left = base === undefined ? {} : (base.waiting ?? {});
+    // Only a read-only field not yet put back still waits.
     const waiting: Record<string, string> = {};
-    for (const [key, since] of Object.entries(left)) {
-      if (key.startsWith("@") || changed.includes(key)) continue;
-      waiting[key] = since;
+    if (item.state !== "trashed") {
+      for (const field of changedInMarfa(next, kind.fields, item.properties)) {
+        const since = base?.waiting?.[field];
+        if (kind.readOnly.has(field) && since !== undefined) {
+          waiting[field] = since;
+        }
+      }
     }
-    Reflect.deleteProperty(next, "waiting");
     store.set(item.id, {
       ...next,
-      ...(linked !== undefined && { link: linked }),
-      ...(Object.keys(waiting).length > 0 &&
-        item.state !== "trashed" && {
-          waiting,
-        }),
+      ...(Object.keys(waiting).length > 0 && { waiting }),
     });
   };
 
@@ -477,17 +511,21 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     const waitingIds = await store.waiting(setup.signal);
     await store.fetch([...read.rows.keys(), ...waitingIds]);
-    const order: string[] = [];
+    const order = new Set<string>();
     for (const [id, seen] of read.rows) {
       const last = seen.frames.at(-1)?.item;
       if (last === undefined) continue;
       const agreement = store.get(id);
       if (seen.purged) {
-        const link = agreement?.link ?? rows.linkOf(last.properties);
-        if (agreement === undefined && link === undefined) continue;
+        // The instance drops a purged row's agreement with it, so the row
+        // as the log last showed it names what the vendor knows it by.
+        const link = rows.linkOf(last.properties);
+        if (link !== undefined) rows.purged.add(`link:${link}`);
+        if (last.source_id !== undefined) {
+          rows.purged.add(`key:${last.source_id}`);
+        }
         store.clear(id);
-        rows.purged.add(link ?? last.source_id ?? id);
-        if (twoWay) purged.set(id, last);
+        if (twoWay && link !== undefined) purged.set(id, last);
         continue;
       }
       if (agreement === undefined) {
@@ -502,7 +540,7 @@ export async function runOnce<E extends EnvDeclaration>(
               [createKey]: seen.frames[0]?.item.updated_at ?? last.updated_at,
             },
           });
-          order.push(id);
+          order.add(id);
         } else if (twoWay && !unlinked) {
           unagreed += 1;
         }
@@ -512,12 +550,10 @@ export async function runOnce<E extends EnvDeclaration>(
       own += observed.own;
       const next = observed.next;
       store.set(id, next);
-      if (next.waiting !== undefined) order.push(id);
+      if (next.waiting !== undefined) order.add(id);
     }
     for (const id of waitingIds) {
-      if (!order.includes(id) && store.get(id)?.waiting !== undefined) {
-        order.push(id);
-      }
+      if (store.get(id)?.waiting !== undefined) order.add(id);
     }
     if (unagreed > 0) {
       raised.set(
@@ -528,6 +564,7 @@ export async function runOnce<E extends EnvDeclaration>(
     // Everything the log named is recorded, so the cursor may move past it
     // however the rest of the run goes.
     await store.flush();
+    for (const id of order) await putBack(id);
 
     const done = new Set<string>();
     if (twoWay) {
@@ -552,18 +589,19 @@ export async function runOnce<E extends EnvDeclaration>(
             kind: "restored",
             item,
             changed: new Set(
-              changedInMarfa(
-                agreement,
-                kind.fields.filter((field) => !kind.readOnly.has(field)),
-                item.properties,
-              ),
+              changedInMarfa(agreement, carriable, item.properties),
             ),
           };
           if (await connector.remake(change, watchContext)) {
             pushed += 1;
-            const current = (await rows.row(id)) ?? item;
-            const side = sideOf(kind.fields, current.properties);
+            // What was sent, never the server's answer, which can hold a
+            // person's edit made meanwhile.
             const linked = store.get(id)?.link;
+            const side = sideOf(kind.fields, {
+              ...item.properties,
+              ...(kind.link !== undefined &&
+                linked !== undefined && { [kind.link]: linked }),
+            });
             store.set(id, {
               vendor: side,
               marfa: side,
@@ -577,7 +615,7 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     await connector.run(context);
     if (twoWay) {
-      for (const id of rows.marked) if (!order.includes(id)) order.push(id);
+      for (const id of rows.marked) order.add(id);
       for (const id of order) {
         if (done.has(id)) continue;
         const agreement = store.get(id);
@@ -707,17 +745,22 @@ export async function runOnce<E extends EnvDeclaration>(
   } else if (reported) {
     conditions = { ...stored.conditions, ...Object.fromEntries(known) };
   }
-  try {
-    await store.save({
-      state: landed ? draft : stored.state,
-      conditions,
-      // Past the log only once what it named is kept on the instance.
-      ...(flushed && read?.cursor !== undefined
-        ? { cursor: read.cursor }
-        : stored.cursor !== undefined && { cursor: stored.cursor }),
-    });
-  } catch (error) {
-    logger.warn(`the connector's state could not be kept: ${describe(error)}`);
+  // A state that could not be read is not written over with nothing.
+  if (loaded !== undefined) {
+    try {
+      await store.save({
+        state: landed ? draft : stored.state,
+        conditions,
+        // Past the log only once what it named is kept on the instance.
+        ...(flushed && read?.cursor !== undefined
+          ? { cursor: read.cursor }
+          : stored.cursor !== undefined && { cursor: stored.cursor }),
+      });
+    } catch (error) {
+      logger.warn(
+        `the connector's state could not be kept: ${describe(error)}`,
+      );
+    }
   }
   return { succeeded: failure === undefined, settled };
 }
