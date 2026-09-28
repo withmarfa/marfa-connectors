@@ -23,6 +23,7 @@ import {
   type TaskAnswer,
   type TodoistItem,
 } from "./todoist.js";
+import todoistTask from "./todoist.task.json" with { type: "json" };
 
 /** The environment the connector declares, as `main.ts` passes it on. */
 export const outboundEnv = {
@@ -33,7 +34,7 @@ export const outboundEnv = {
 export type OutboundEnv = typeof outboundEnv;
 
 /** The property that holds the Todoist task a row is. */
-export const linkField = "todoist_id";
+export const linkField = todoistTask.link_field;
 
 /** What of a row travels, as `item_add` and `item_update` take it. */
 export interface TaskArgs {

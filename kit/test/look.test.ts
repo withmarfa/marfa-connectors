@@ -54,6 +54,35 @@ describe("the look between runs, for a connector that carries changes back", () 
     harness.stop();
     expect(await exit).toBe(0);
   });
+
+  it("starts no run for a trash another row's trash made, nor for its purge", async () => {
+    const held = vendor([one]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    const row = harness.server.row("a:1");
+    harness.server.cascadeTrash(row.id, "root-1");
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    harness.server.purgeById(row.id);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    // The witness: a purge of the row's own does start one.
+    held.entries = [];
+    harness.server.insert(
+      "a:2",
+      { title: "Two", vendor_id: "v2" },
+      "test.entry",
+    );
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
+    harness.server.trash(harness.server.row("a:2").id);
+    harness.server.purge("a:2");
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 3);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
 });
 
 describe("--look-every", () => {

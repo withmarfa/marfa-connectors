@@ -38,6 +38,10 @@ export interface Row {
   occurred_at: string;
   created_at: string;
   updated_at: string;
+  /** The row whose trash took this one through a cascade, while in the bin. */
+  trashed_with?: string;
+  /** Told to every key that reads the row; `trashed_with` only to one reading the root. */
+  trashed_by_cascade?: true;
 }
 
 export interface Run {
@@ -103,7 +107,12 @@ interface Snapshot {
 }
 
 type Send = (status: number, payload: unknown) => void;
-type Refuse = (status: number, code: string, message?: string) => void;
+type Refuse = (
+  status: number,
+  code: string,
+  message?: string,
+  details?: Record<string, unknown>,
+) => void;
 
 function changedKeys(
   from: Record<string, unknown>,
@@ -148,8 +157,8 @@ export class ScriptedServer {
   readonly log: Event[] = [];
   /** Bulk entries refused by `source_id`, as the server refuses one entry. */
   readonly entryRefusals = new Map<string, Refusal>();
-  /** Called after an own-rows page is answered, before the next request. */
-  afterList: (() => void) | undefined;
+  /** Called after a read of rows is answered, a listing or a lookup, before the next request. */
+  afterRead: ((request: Request) => void) | undefined;
   /** Awaited before a request is answered, with the request as it arrived. */
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
   /** A body over this many bytes is refused whole, as the server's cap refuses it. */
@@ -178,6 +187,11 @@ export class ScriptedServer {
   holdMs = 180_000;
   /** Every hold taken or renewed, and every release, in order. */
   readonly holds: { process: string; released: boolean }[] = [];
+  /** Tombstones by `type`, then `link:<value>` or `key:<source>:<source_id>`. */
+  readonly tombstones = new Map<
+    string,
+    { purged_at: string; remembered_until: string }
+  >();
   /** The state document kept for each key's own source. */
   readonly states = new Map<string, Record<string, unknown>>();
   /** Each row's agreement, by source and then by item id. */
@@ -332,6 +346,7 @@ export class ScriptedServer {
     const row = this.byId(id);
     this.snapshot(row);
     row.state = state;
+    if (state !== "trashed") this.leaveBin(row);
     row.updated_at = this.now();
     this.announce("item.state_changed", row);
     return row;
@@ -352,14 +367,31 @@ export class ScriptedServer {
     return row;
   }
 
+  /** A cascade from `root`'s trash takes the row with it. */
+  cascadeTrash(id: string, root: string): Row {
+    const row = this.byId(id);
+    row.state = "trashed";
+    row.trashed_with = root;
+    row.trashed_by_cascade = true;
+    row.updated_at = this.now();
+    this.announce("item.deleted", { ...row });
+    return row;
+  }
+
   /** A person brings a row back from the bin. */
   restore(id: string): Row {
     const row = this.byId(id);
     this.snapshot(row);
     row.state = "active";
+    this.leaveBin(row);
     row.updated_at = this.now();
     this.announce("item.restored", row);
     return row;
+  }
+
+  private leaveBin(row: Row): void {
+    Reflect.deleteProperty(row, "trashed_with");
+    Reflect.deleteProperty(row, "trashed_by_cascade");
   }
 
   /** A person empties the bin of this row. */
@@ -368,9 +400,57 @@ export class ScriptedServer {
     this.purgeById(row.id);
   }
 
+  /** The value the row holds in the link its type names, if any. */
+  linkOf(row: Pick<Row, "type" | "properties">): string | undefined {
+    const field = this.types.get(row.type)?.["link_field"];
+    if (typeof field !== "string") return undefined;
+    const value = row.properties[field];
+    return typeof value === "string" && value !== "" ? value : undefined;
+  }
+
+  /** Another row of the type already holding the link these properties would. */
+  private linkHolder(
+    type: string,
+    properties: Record<string, unknown>,
+    except: string | undefined,
+  ): Row | undefined {
+    const value = this.linkOf({ type, properties });
+    if (value === undefined) return undefined;
+    return this.rows.find(
+      (row) =>
+        row.id !== except && row.type === type && this.linkOf(row) === value,
+    );
+  }
+
+  /** A row claiming a link or a natural key takes it back from a tombstone. */
+  private reclaim(row: Row): void {
+    const link = this.linkOf(row);
+    if (link !== undefined)
+      this.tombstones.delete(`${row.type}\u0000link:${link}`);
+    if (row.source_id !== undefined) {
+      this.tombstones.delete(
+        `${row.type}\u0000key:${row.source}:${row.source_id}`,
+      );
+    }
+  }
+
   purgeById(id: string): void {
     const row = this.byId(id);
     this.rows = this.rows.filter((candidate) => candidate.id !== id);
+    const at = this.now();
+    const link = this.linkOf(row);
+    if (link !== undefined) {
+      this.tombstones.set(`${row.type}\u0000link:${link}`, {
+        purged_at: at,
+        remembered_until: at,
+      });
+    }
+    if (row.source_id !== undefined) {
+      this.tombstones.set(
+        `${row.type}\u0000key:${row.source}:${row.source_id}`,
+        { purged_at: at, remembered_until: at },
+      );
+    }
     // A row's agreement goes with it, as the instance's foreign key takes it.
     for (const held of this.agreementsBySource.values()) held.delete(id);
     this.announce("item.purged", row);
@@ -511,8 +591,10 @@ export class ScriptedServer {
       });
       res.end(JSON.stringify(payload));
     };
-    const refuse: Refuse = (status, code, message = code) => {
-      send(status, { error: { code, message } });
+    const refuse: Refuse = (status, code, message = code, details) => {
+      send(status, {
+        error: { code, message, ...(details !== undefined && { details }) },
+      });
     };
 
     if (req.headers.authorization !== `Bearer ${this.key}`) {
@@ -845,7 +927,7 @@ export class ScriptedServer {
     }
     if (method === "GET" && url.pathname === "/items") {
       this.listItems(url.searchParams, send);
-      this.afterList?.();
+      this.afterRead?.(request);
       return;
     }
     if (method === "POST" && url.pathname === "/items") {
@@ -865,6 +947,24 @@ export class ScriptedServer {
         item: this.wire(row),
         metadata: { item_id: row.id, tags: [], extensions: {} },
       });
+      return;
+    }
+    if (method === "POST" && url.pathname === "/items/lookup") {
+      send(200, this.lookup(input));
+      this.afterRead?.(request);
+      return;
+    }
+    if (method === "POST" && url.pathname === "/items/tombstones") {
+      const type = String(input["type"]);
+      const until = String(input["remembered_until"]);
+      const keys = this.tombstoneKeys(type, input);
+      for (const key of keys) {
+        const held = this.tombstones.get(key);
+        if (held !== undefined && until > held.remembered_until) {
+          held.remembered_until = until;
+        }
+      }
+      send(200, { tombstones: this.tombstonesOf(keys) });
       return;
     }
     if (method === "POST" && url.pathname === "/items/bulk") {
@@ -1071,6 +1171,62 @@ export class ScriptedServer {
     });
   }
 
+  private tombstoneKeys(
+    type: string,
+    input: Record<string, unknown>,
+  ): string[] {
+    const links = (input["links"] ?? []) as string[];
+    const sourceIds = (input["source_ids"] ?? []) as string[];
+    return [
+      ...links.map((link) => `${type}\u0000link:${link}`),
+      ...sourceIds.map(
+        (sourceId) => `${type}\u0000key:${String(input["source"])}:${sourceId}`,
+      ),
+    ];
+  }
+
+  private tombstonesOf(keys: readonly string[]): Record<string, unknown>[] {
+    return keys.flatMap((key) => {
+      const held = this.tombstones.get(key);
+      const name = key
+        .slice(key.indexOf("\u0000") + 1)
+        .replace(/^(link|key:[^:]*):/, "");
+      return held === undefined ? [] : [{ key: name, ...held }];
+    });
+  }
+
+  /** Rows in any state by link, natural key or id, with the tombstones among them. */
+  private lookup(input: Record<string, unknown>): unknown {
+    const type = String(input["type"]);
+    const links = input["links"] as string[] | undefined;
+    const sourceIds = input["source_ids"] as string[] | undefined;
+    const ids = input["ids"] as string[] | undefined;
+    const rows =
+      links !== undefined
+        ? links.flatMap((link) =>
+            this.rows.filter(
+              (row) => row.type === type && this.linkOf(row) === link,
+            ),
+          )
+        : sourceIds !== undefined
+          ? sourceIds.flatMap((sourceId) =>
+              this.rows.filter(
+                (row) =>
+                  row.source === input["source"] && row.source_id === sourceId,
+              ),
+            )
+          : (ids ?? []).flatMap((id) =>
+              this.rows.filter((row) => row.id === id),
+            );
+    return {
+      data: rows.map((row) => this.wire(row)),
+      tombstones:
+        ids === undefined
+          ? this.tombstonesOf(this.tombstoneKeys(type, input))
+          : [],
+    };
+  }
+
   private bulk(input: Record<string, unknown>): unknown {
     const entries = input["items"] as Record<string, unknown>[];
     const results = entries.map((entry, index) => {
@@ -1123,6 +1279,22 @@ export class ScriptedServer {
         });
         return { index, outcome: "updated", id: existing.id };
       }
+      const holder = this.linkHolder(
+        String(entry["type"]),
+        (entry["properties"] ?? {}) as Record<string, unknown>,
+        undefined,
+      );
+      if (holder !== undefined) {
+        return {
+          index,
+          outcome: "errored",
+          error: {
+            code: "link_taken",
+            message: "another item holds the link",
+            details: { existing_id: holder.id },
+          },
+        };
+      }
       const row = this.newRow(
         String(entry["type"]),
         source,
@@ -1131,6 +1303,7 @@ export class ScriptedServer {
         entry["occurred_at"] as string | undefined,
         entry["tier"] === "library" ? "library" : "feed",
       );
+      this.reclaim(row);
       this.rows.push(row);
       this.announce("item.created", row);
       return { index, outcome: "created", id: row.id };
@@ -1170,6 +1343,19 @@ export class ScriptedServer {
     }
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
     const occurredAt = input["occurred_at"];
+    const holder = this.linkHolder(
+      row.type,
+      input["properties_mode"] === "replace"
+        ? properties
+        : { ...row.properties, ...properties },
+      row.id,
+    );
+    if (holder !== undefined) {
+      refuse(409, "link_taken", "another item holds the link", {
+        existing_id: holder.id,
+      });
+      return;
+    }
     if (version !== row.version) {
       const ancestor = this.snapshots
         .get(row.id)

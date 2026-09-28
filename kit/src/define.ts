@@ -81,8 +81,9 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
   /**
    * Archives the named rows of the type that are active: by link value where
-   * the type declares a link, by source id where it does not. A trashed row
-   * is left alone.
+   * the type names a `link_field`, by source id where it does not. A trashed
+   * row is left alone, and one archived here comes back when the vendor
+   * sends it again.
    */
   readonly archive: (type: string, keys: readonly string[]) => Promise<void>;
 }
@@ -170,6 +171,12 @@ export interface Inbound<E extends EnvDeclaration> {
 
 /** One kind of item a connector writes. */
 export interface Kind {
+  /**
+   * Its `link_field`, where it names one, holds the vendor's own id for a
+   * row: every row of the type is then the connector's, whoever created it,
+   * found by the link first and by its natural key second, and a row without
+   * a value is one the vendor has not been told about.
+   */
   readonly type: TypeDefinition;
   /**
    * The properties the vendor holds for a row: every entry's are among
@@ -183,12 +190,11 @@ export interface Kind {
    */
   readonly readOnly?: readonly string[];
   /**
-   * The property holding the vendor's own id for a row. With a link, every
-   * row of the type is the connector's, whoever created it, found by the
-   * link first and by its natural key second; a row without a value is one
-   * the vendor has not been told about.
+   * A row in the bin comes back when the vendor changes it, once its trash
+   * has reached the vendor. Carrying that trash must answer the vendor's
+   * entry, or the vendor's own close reads as a change.
    */
-  readonly link?: string;
+  readonly revive?: boolean;
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
@@ -220,6 +226,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * vendor now holds; otherwise the carried values are taken as the
    * vendor's. Resolving means the change landed or was abandoned with a
    * condition; throwing fails the run, and the change waits for the next.
+   * For a purge, the answer's `changed_at` keeps the purge remembered past
+   * the vendor's own change, such as a close.
    */
   onChange?(
     change: Change,
@@ -236,10 +244,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**
    * Reads what the vendor posts to the connector's webhook endpoints. Each
-   * run first collects what arrived, and under `--every` the kit looks
-   * between runs and starts one for what waits, handing `run` the hints. A
-   * connector with `onChange` is handed none: its run for deliveries reads
-   * the vendor whole and carries back as a scheduled one does.
+   * run first collects what arrived, and under `--look-every` the kit looks
+   * between runs and starts one for what waits, handing `run` the hints.
    */
   readonly inbound?: Inbound<E>;
 }

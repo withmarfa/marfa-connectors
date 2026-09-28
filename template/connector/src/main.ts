@@ -75,9 +75,6 @@ const connector = defineConnector({
       type: exampleItem as TypeDefinition,
       // What the vendor holds; the rest of a row's properties are Marfa's.
       fields: ["example_id", "title", "url", "note"],
-      // The vendor's own id. With it, every row of the type is the
-      // connector's, whoever created it.
-      link: "example_id",
     },
   ],
   env: {

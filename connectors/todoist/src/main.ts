@@ -4,7 +4,7 @@ import {
   type Entry,
   type TypeDefinition,
 } from "@withmarfa/connector";
-import { carry, remake, linkField, outboundEnv } from "./outbound.js";
+import { carry, remake, outboundEnv } from "./outbound.js";
 import {
   accountOf,
   defaultBase,
@@ -41,7 +41,6 @@ const connector = defineConnector({
         "child_order",
         "comment_count",
       ],
-      link: linkField,
     },
   ],
   env: outboundEnv,

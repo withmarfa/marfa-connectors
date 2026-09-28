@@ -119,7 +119,7 @@ export function checkDefinition<E extends EnvDeclaration>(
   for (const kind of connector.types) {
     const outside = [
       ...(kind.readOnly ?? []),
-      ...(kind.link === undefined ? [] : [kind.link]),
+      ...(kind.type.link_field === undefined ? [] : [kind.type.link_field]),
     ].filter((field) => !kind.fields.includes(field));
     if (outside.length > 0) {
       problems.push(

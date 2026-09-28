@@ -17,6 +17,10 @@ export type InboundEndpoint = components["schemas"]["InboundEndpoint"];
 export type InboundOutcome = NonNullable<InboundDeliveryRow["outcome"]>;
 type Version = components["schemas"]["Version"];
 export type Key = components["schemas"]["ApiKey"];
+export type Tombstone = components["schemas"]["Tombstone"];
+
+/** Keys one lookup names at most. */
+const lookupCap = 500;
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
@@ -32,6 +36,7 @@ export class Refusal extends Error {
     readonly status: number | undefined,
     readonly code: string,
     readonly detail: string,
+    readonly details: Readonly<Record<string, unknown>> = {},
   ) {
     super(
       `${status === undefined ? "" : `${String(status)} `}${code}: ${detail}`,
@@ -41,14 +46,20 @@ export class Refusal extends Error {
 
 function refusal(response: Response, error: unknown): Refusal {
   const envelope = (
-    error as { error?: { code?: unknown; message?: unknown } } | undefined
+    error as
+      | { error?: { code?: unknown; message?: unknown; details?: unknown } }
+      | undefined
   )?.error;
   const code = typeof envelope?.code === "string" ? envelope.code : "unknown";
   const message =
     typeof envelope?.message === "string"
       ? envelope.message
       : response.statusText;
-  return new Refusal(response.status, code, message);
+  const details =
+    typeof envelope?.details === "object" && envelope.details !== null
+      ? (envelope.details as Record<string, unknown>)
+      : {};
+  return new Refusal(response.status, code, message, details);
 }
 
 export interface NewRow {
@@ -144,6 +155,77 @@ export class Marfa {
     // A page asked for without `include` carries bare items.
     for await (const row of walk) rows.push("item" in row ? row.item : row);
     return rows;
+  }
+
+  /**
+   * Rows in any state by link, natural key or id, with the tombstones the
+   * type keeps for the keys named, asked in pages the door's cap allows.
+   */
+  async lookup(
+    type: string,
+    by:
+      | { links: readonly string[] }
+      | { source: string; source_ids: readonly string[] }
+      | { ids: readonly string[] },
+  ): Promise<{ data: Item[]; tombstones: Tombstone[] }> {
+    const keys =
+      "links" in by ? by.links : "ids" in by ? by.ids : by.source_ids;
+    const found: { data: Item[]; tombstones: Tombstone[] } = {
+      data: [],
+      tombstones: [],
+    };
+    for (let at = 0; at < keys.length; at += lookupCap) {
+      const page = keys.slice(at, at + lookupCap);
+      const { data, error, response } = await this.client.POST(
+        "/items/lookup",
+        {
+          body: {
+            type,
+            ...("links" in by
+              ? { links: page }
+              : "ids" in by
+                ? { ids: page }
+                : { source: by.source, source_ids: page }),
+          },
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      found.data.push(...data.data);
+      found.tombstones.push(...data.tombstones);
+    }
+    return found;
+  }
+
+  /** Keeps the named tombstones remembered until at least `until`. */
+  async remember(
+    type: string,
+    by:
+      | { links: readonly string[] }
+      | { source: string; source_ids: readonly string[] },
+    until: string,
+  ): Promise<void> {
+    const { data, error, response } = await this.client.POST(
+      "/items/tombstones",
+      {
+        body: {
+          type,
+          remembered_until: until,
+          ...("links" in by
+            ? { links: [...by.links] }
+            : { source: by.source, source_ids: [...by.source_ids] }),
+        },
+      },
+    );
+    if (data === undefined) throw refusal(response, error);
+  }
+
+  async transition(id: string, state: "active" | "archived"): Promise<Item> {
+    const { data, error, response } = await this.client.POST(
+      "/items/{id}/transition",
+      { params: { path: { id } }, body: { state } },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data.item;
   }
 
   /** One row as it now stands, or `undefined` once it is purged or in the bin, which no read but its restore reaches. */
@@ -447,17 +529,6 @@ export class Marfa {
           })),
           clear: [...clear],
         },
-      },
-    );
-    if (data === undefined) throw refusal(response, error);
-  }
-
-  async archive(id: string): Promise<void> {
-    const { data, error, response } = await this.client.POST(
-      "/items/{id}/transition",
-      {
-        params: { path: { id } },
-        body: { state: "archived" },
       },
     );
     if (data === undefined) throw refusal(response, error);

@@ -84,12 +84,14 @@ describe("new rows", () => {
     ]);
   });
 
-  it("read the connector's own rows by type and source across every state", async () => {
-    await harness.once(vendor([one]));
-    const listing = harness.server.requestsTo("GET", "/items")[0];
-    expect(listing?.query.get("type")).toBe("test.entry");
-    expect(listing?.query.get("source")).toBe("test");
-    expect(listing?.query.get("state")).toBe("any");
+  it("look up the rows the entries name by their natural keys, and list none", async () => {
+    await harness.once(vendor([one, two]));
+    expect(
+      harness.server.requestsTo("POST", "/items/lookup").map((r) => r.body),
+    ).toEqual([
+      { type: "test.entry", source: "test", source_ids: ["a:1", "a:2"] },
+    ]);
+    expect(harness.server.requestsTo("GET", "/items")).toEqual([]);
   });
 
   it("write one row for an entry the vendor repeats", async () => {
@@ -140,8 +142,10 @@ describe("new rows", () => {
     expect(child?.properties).toEqual({ title: "A child" });
     expect(child?.state).toBe("active");
     expect(
-      harness.server.requestsTo("GET", "/items")[0]?.query.get("type"),
-    ).toBe("test.entry");
+      harness.server
+        .requestsTo("POST", "/items/lookup")
+        .map((request) => (request.body as { type: string }).type),
+    ).toEqual(["test.entry"]);
     expect(harness.lastRun().summary).toContain("skipped 1");
     expect(harness.lastRun().summary).toContain("type_mismatch");
   });
@@ -338,14 +342,16 @@ describe("the state", () => {
     held.token = "t1";
     await harness.once(held);
 
-    harness.server.afterList = () => {
+    // Once the run has read what the entries name, and before it writes.
+    harness.server.afterRead = (request) => {
+      if (!JSON.stringify(request.body).includes("a:3")) return;
       harness.server.touch("a:1", { note: "by another writer" });
       harness.server.insert(
         "a:3",
         { title: "Three, by another writer" },
         "test.entry",
       );
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -381,9 +387,9 @@ describe("the state", () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { title: "One, by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -409,9 +415,9 @@ describe("the state", () => {
     // The witness: the field is there to be cleared.
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { title: "One, by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One" } }];
@@ -435,9 +441,9 @@ describe("the state", () => {
     await harness.once(held);
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { note: "by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One" } }];
@@ -460,9 +466,9 @@ describe("the state", () => {
       toString: "x",
     });
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { title: "One, by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...entry, properties: { title: "One" } }];
@@ -487,9 +493,9 @@ describe("the state", () => {
       toString: "x",
     });
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite("a:1", { title: "One" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...entry, properties: { title: "One, by the vendor" } }];
@@ -508,9 +514,9 @@ describe("the state", () => {
     await harness.once(held);
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite("a:1", { title: "One" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One, by the vendor" } }];
@@ -529,13 +535,13 @@ describe("the state", () => {
     await harness.once(held);
     expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite(
         "a:1",
         harness.server.row("a:1").properties,
         "2026-09-02T10:00:00.000Z",
       );
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -558,13 +564,13 @@ describe("the state", () => {
     await harness.once(held);
     expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite(
         "a:1",
         harness.server.row("a:1").properties,
         "2026-09-02T10:00:00.000Z",
       );
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, occurred_at: "2026-09-03T10:00:00.000Z" }];

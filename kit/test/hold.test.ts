@@ -79,7 +79,8 @@ describe("the hold", () => {
     expect(held.runs).toBe(0);
     harness.server.holder = undefined;
     await harness.clock.wake(15 * minute);
-    await until(() => held.runs === 1);
+    // The run's report, not its start: a stop before the write aborts it.
+    await until(() => harness.server.runs.length === 1);
     harness.stop();
     expect(await exit).toBe(0);
     expect(harness.server.rows).toHaveLength(1);

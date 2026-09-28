@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Harness, vendor, type Vendor } from "./harness.js";
+import { Harness, linkedType, vendor, type Vendor } from "./harness.js";
 
 let harness: Harness;
 beforeEach(async () => {
@@ -38,6 +38,8 @@ describe("the events request", () => {
   it("is sent by every connector, since what one only reads is watched too", async () => {
     await harness.once(vendor([one]));
     expect(streams()).toHaveLength(1);
+    // The two-way connector's type names its link.
+    harness.server.types.set(linkedType.id, { ...linkedType });
     await harness.twoWay(vendor([one]));
     expect(streams()).toHaveLength(2);
     expect(streams()[1]?.query.get("type")).toBe("test.entry");
@@ -491,9 +493,9 @@ describe("a row changed between the read and the write", () => {
     await harness.twoWay(held);
     await quietRun(held);
     const row = harness.server.row("a:1");
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.edit(row.id, { note: "by a person, since the read" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.entries = [
       {
@@ -532,11 +534,11 @@ describe("a row changed between the read and the write", () => {
     const earlier = new Date(
       Date.parse(row.updated_at) - 120_000,
     ).toISOString();
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.edit(row.id, {
         title: "One, by a person, since the read",
       });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.entries = [
       {
@@ -796,9 +798,9 @@ describe("a resync", () => {
     const row = harness.server.row("a:1");
 
     harness.server.tooOld = true;
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.edit(row.id, { title: "One, edited during the resync" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.entries = [];
     await quietRun(held);
@@ -818,7 +820,7 @@ describe("a person's edit found while the vendor is read", () => {
     await quietRun(held);
     const row = harness.server.row("a:1");
     harness.server.beforeAnswer = (request) => {
-      if (request.method === "GET" && request.path === "/items") {
+      if (request.path === "/items/lookup") {
         harness.server.edit(row.id, { note: "by a person" });
         harness.server.beforeAnswer = undefined;
       }
@@ -1000,10 +1002,10 @@ describe("a purge and a transition met by what was agreed", () => {
     await harness.twoWay(held);
     await quietRun(held);
     const row = harness.server.row("a:1");
-    // Between the log's read and the rows' listing, so only the listing
+    // Between the log's read and the rows' lookup, so only the lookup
     // shows the row in a state the two sides did not agree on.
     harness.server.beforeAnswer = (request) => {
-      if (request.method === "GET" && request.path === "/items") {
+      if (request.path === "/items/lookup") {
         harness.server.transition(row.id, "archived");
         harness.server.beforeAnswer = undefined;
       }

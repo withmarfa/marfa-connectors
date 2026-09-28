@@ -23,7 +23,15 @@ import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
-import { Rows, stateKey, Stopped, type Counts, type Spec } from "./rows.js";
+import {
+  cascaded,
+  Rows,
+  stateKey,
+  Stopped,
+  type Counts,
+  type Spec,
+} from "./rows.js";
+import { instant } from "./values.js";
 import type { Clock } from "./runtime.js";
 import { Store } from "./store.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
@@ -145,16 +153,18 @@ export function specsOf<E extends EnvDeclaration>(
     connector.types.map((kind) => {
       const twoWay = carried.has(kind.type.id);
       const readOnly = new Set(twoWay ? (kind.readOnly ?? []) : kind.fields);
-      if (kind.link !== undefined) readOnly.add(kind.link);
+      const link = kind.type.link_field;
+      if (link !== undefined) readOnly.add(link);
       return [
         kind.type.id,
         {
           type: kind.type.id,
           source: connector.source,
-          link: kind.link,
+          link,
           fields: kind.fields,
           readOnly,
           twoWay,
+          revive: kind.revive === true,
         },
       ];
     }),
@@ -164,8 +174,9 @@ export function specsOf<E extends EnvDeclaration>(
 /**
  * What waits once the log's frames of a row are read, each field from when
  * it first differed; `own` counts frames showing the row as the kit left it.
+ * A trash another row's took, and the restore out of it, wait for nothing.
  */
-function observe(
+export function observe(
   kind: Spec,
   seen: Seen,
   agreement: Agreement,
@@ -173,10 +184,12 @@ function observe(
   let waiting: Record<string, string> = { ...agreement.waiting };
   Reflect.deleteProperty(waiting, stateKey);
   let stateSince = agreement.waiting?.[stateKey];
+  let state = agreement.state;
+  let stateBy = agreement.stateBy;
   let own = 0;
   for (const { item } of seen.frames) {
     if (
-      item.state === agreement.state &&
+      item.state === state &&
       changedInMarfa(agreement, kind.fields, item.properties).length === 0
     ) {
       own += 1;
@@ -192,14 +205,26 @@ function observe(
       if (!key.startsWith("@")) Reflect.deleteProperty(waiting, key);
     }
     waiting = { ...waiting, ...fields };
+    if (item.state === "trashed" && cascaded(item) && state !== "trashed") {
+      state = "trashed";
+      stateBy = "cascade";
+      stateSince = undefined;
+      continue;
+    }
+    if (stateBy === "cascade" && item.state !== "trashed") {
+      state = agreedState(item.state);
+      stateBy = undefined;
+    }
     stateSince =
-      kind.twoWay && item.state !== agreement.state
+      kind.twoWay && item.state !== state
         ? (stateSince ?? item.updated_at)
         : undefined;
   }
   if (stateSince !== undefined) waiting[stateKey] = stateSince;
-  const next: Agreement = { ...agreement };
+  const next: Agreement = { ...agreement, state };
   Reflect.deleteProperty(next, "waiting");
+  Reflect.deleteProperty(next, "stateBy");
+  if (stateBy !== undefined) next.stateBy = stateBy;
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
   return { next, own };
 }
@@ -276,15 +301,54 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return found;
   };
+  const inLane = (
+    id: string,
+  ): { item: Item; spec: Spec; rows: Rows } | undefined => {
+    for (const { spec, rows } of lanes.values()) {
+      const item = rows.known(id);
+      if (item !== undefined) return { item, spec, rows };
+    }
+    return undefined;
+  };
+  const asked = new Set<string>();
+  /** Reads the rows named that no lane knows yet, in one lookup, each to its type's lane. */
+  const fetchRows = async (ids: Iterable<string>): Promise<void> => {
+    const fresh = [...new Set(ids)].filter(
+      (id) => !asked.has(id) && inLane(id) === undefined,
+    );
+    if (fresh.length === 0) return;
+    const [first] = specs.keys();
+    if (first === undefined) return;
+    const found = await setup.marfa.lookup(first, { ids: fresh });
+    for (const id of fresh) asked.add(id);
+    for (const item of found.data) lanes.get(item.type)?.rows.adopt(item);
+  };
   /** The row with its type's lane, whichever of the connector's types it is. */
   const find = async (
     id: string,
   ): Promise<{ item: Item; spec: Spec; rows: Rows } | undefined> => {
-    for (const { spec, rows } of lanes.values()) {
-      const item = await rows.row(id);
-      if (item !== undefined) return { item, spec, rows };
+    await fetchRows([id]);
+    return inLane(id);
+  };
+  /** Keeps a purge remembered past the vendor's change carrying it made. */
+  const remember = async (
+    kind: Spec,
+    item: Item,
+    answered: Entry | undefined,
+  ): Promise<void> => {
+    const until = instant(answered?.changed_at);
+    if (until === undefined) return;
+    const link = lane(kind.type).rows.linkOf(item.properties);
+    if (link !== undefined) {
+      await setup.marfa.remember(kind.type, { links: [link] }, until);
     }
-    return undefined;
+    if (item.source === kind.source && item.source_id !== undefined) {
+      await setup.marfa.remember(
+        kind.type,
+        { source: kind.source, source_ids: [item.source_id] },
+        until,
+      );
+    }
   };
   const state: State = {
     get: (key) => draft[key],
@@ -370,7 +434,7 @@ export async function runOnce<E extends EnvDeclaration>(
       rows.linkOf(current.properties) !== agreement.link
     ) {
       await rows.setLink(current, agreement.link);
-      current = (await rows.row(id)) ?? current;
+      current = rows.known(id) ?? current;
       raised.set(
         `link-put-back:${id}`,
         `the ${kind.link ?? "link"} of ${id} was changed in Marfa and put back, since it names the vendor's own item`,
@@ -430,6 +494,8 @@ export async function runOnce<E extends EnvDeclaration>(
     if (setup.signal.aborted) throw new Stopped();
     const { spec: kind, rows } = lane(item.type);
     if (connector.onChange === undefined || !kind.twoWay) return;
+    // What changed before another row's trash took it waits for its restore.
+    if (agreement.stateBy === "cascade") return;
     const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
     const unlinked =
       kind.link !== undefined &&
@@ -612,6 +678,10 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     const waitingIds = await store.waiting(setup.signal);
     await store.fetch([...read.rows.keys(), ...waitingIds]);
+    await fetchRows([
+      ...[...read.rows].filter(([, seen]) => !seen.purged).map(([id]) => id),
+      ...waitingIds,
+    ]);
     const order = new Set<string>();
     for (const [id, seen] of read.rows) {
       const last = seen.frames.at(-1)?.item;
@@ -619,15 +689,17 @@ export async function runOnce<E extends EnvDeclaration>(
       const { spec: kind, rows } = lane(last.type);
       const agreement = store.get(id);
       if (seen.purged) {
-        // The instance drops a purged row's agreement with it, so the row
-        // as the log last showed it names what the vendor knows it by.
-        const link = rows.linkOf(last.properties);
-        if (link !== undefined) rows.purged.add(`link:${link}`);
-        if (last.source_id !== undefined) {
-          rows.purged.add(`key:${last.source_id}`);
-        }
+        // The instance drops a purged row's agreement with it and keeps its
+        // keys as tombstones; the row as the log last showed it names what
+        // the vendor knows it by.
         store.clear(id);
-        if (kind.twoWay && link !== undefined) purged.set(id, last);
+        if (
+          kind.twoWay &&
+          rows.linkOf(last.properties) !== undefined &&
+          !cascaded(last)
+        ) {
+          purged.set(id, last);
+        }
         continue;
       }
       if (agreement === undefined) {
@@ -736,11 +808,12 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       for (const item of purged.values()) {
         if (setup.signal.aborted) throw new Stopped();
-        await connector.onChange?.(
+        const answered = await connector.onChange?.(
           { kind: "purged", item, changed: new Set() },
           watchContext,
         );
         pushed += 1;
+        await remember(lane(item.type).spec, item, answered);
       }
     }
   } catch (error) {
@@ -761,6 +834,13 @@ export async function runOnce<E extends EnvDeclaration>(
   const all = [...lanes.values()].map(({ rows }) => rows);
   const seeded = all.reduce((sum, rows) => sum + rows.seeded, 0);
   const held = all.reduce((sum, rows) => sum + rows.held, 0);
+  const remembered = all.reduce((sum, rows) => sum + rows.remembered, 0);
+  if (remembered > 0) {
+    raised.set(
+      "remembered",
+      `${String(remembered)} ${remembered === 1 ? "entry names a row" : "entries name rows"} purged in Marfa and unchanged at the vendor since, so ${remembered === 1 ? "it is" : "they are"} not written back`,
+    );
+  }
   if (seeded > 0) {
     raised.set(
       "seeded",
@@ -910,19 +990,12 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
     const last = seen.frames.at(-1)?.item;
     const spec = last === undefined ? undefined : specs.get(last.type);
     if (last === undefined || spec?.twoWay !== true) return false;
+    if (seen.purged) return !cascaded(last);
     const agreement = store.get(id);
-    if (agreement === undefined) {
-      return seen.purged || last.state === "active";
-    }
-    return (
-      seen.purged ||
-      agreement.waiting !== undefined ||
-      agreedState(last.state) !== agreement.state ||
-      changedInMarfa(
-        agreement,
-        spec.fields.filter((field) => !spec.readOnly.has(field)),
-        last.properties,
-      ).length > 0
+    if (agreement === undefined) return last.state === "active";
+    // A read-only field is put back by the next scheduled run.
+    return Object.keys(observe(spec, seen, agreement).next.waiting ?? {}).some(
+      (key) => !spec.readOnly.has(key),
     );
   });
   return { waiting, cursor: read.cursor };

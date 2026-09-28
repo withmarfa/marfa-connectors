@@ -6,7 +6,7 @@ import {
   type TypeDefinition,
 } from "../src/define.js";
 import { start } from "../src/main.js";
-import { Harness, testFields, testType } from "./harness.js";
+import { Harness, linkedType, testFields, testType } from "./harness.js";
 
 let harness: Harness;
 beforeEach(async () => {
@@ -36,7 +36,7 @@ function twoTypes(held: Held) {
     name: "test",
     source: "test",
     types: [
-      { type: testType, fields: testFields, link: "vendor_id" },
+      { type: linkedType, fields: testFields },
       { type: noteType, fields: ["title"] },
     ],
     env: { TEST_TOKEN: "secret" },
@@ -180,7 +180,7 @@ describe("the definition", () => {
     });
     const outside = defineConnector({
       ...base,
-      types: [{ type: testType, fields: ["title"], link: "vendor_id" }],
+      types: [{ type: linkedType, fields: ["title"] }],
     });
     expect(await start(outside, harness.runtime(["--once"]))).toBe(2);
     expect(harness.lines.join("\n")).toContain("vendor_id is not");

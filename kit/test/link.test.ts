@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Harness, vendor } from "./harness.js";
+import { Harness, linkedType, vendor } from "./harness.js";
 
 let harness: Harness;
 beforeEach(async () => {
@@ -157,7 +157,7 @@ describe("setLink", () => {
     expect(harness.server.byId(theirs.id).version).toBe(3);
   });
 
-  it("refuses a value another row of the type carries, naming both", async () => {
+  it("is refused by the server where another row of the type carries the value, naming both", async () => {
     const holder = harness.server.insert(
       undefined,
       { title: "Holder", vendor_id: "v-taken" },
@@ -180,7 +180,6 @@ describe("setLink", () => {
     expect(
       harness.server.byId(theirs.id).properties["vendor_id"],
     ).toBeUndefined();
-    expect(patches()).toHaveLength(0);
   });
 });
 
@@ -320,7 +319,7 @@ describe("a vendor that lists every entry", () => {
 });
 
 describe("a row the connector wrote before it declared a link", () => {
-  it("is linked by the vendor's entry as it comes, by its natural key, and not carried as a create", async () => {
+  it("starts once its type names the link, and is linked by the vendor's entry by its natural key, not carried as a create", async () => {
     // Written by the one-way connector, so it carries no link value.
     expect(
       await harness.once(
@@ -331,6 +330,12 @@ describe("a row the connector wrote before it declared a link", () => {
     expect(row.properties["vendor_id"]).toBeUndefined();
 
     const held = vendor([one]);
+    expect(await harness.twoWay(held)).not.toBe(0);
+    expect(harness.lines.join("\n")).toContain(
+      'link_field is "vendor_id" here and nothing on the server',
+    );
+    // A person replaces the type with one naming its link.
+    harness.server.types.set(linkedType.id, { ...linkedType });
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
     expect(harness.server.rows).toHaveLength(1);

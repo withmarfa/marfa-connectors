@@ -67,24 +67,33 @@ describe("rows too big for one request", () => {
 });
 
 describe("a row a person purged", () => {
-  it("is not written back by the run that reads its purge, and written again after, since nothing remembers it yet", async () => {
+  it("is not written back while the vendor has not changed it since, and comes back as a new row once it has", async () => {
     await harness.once(vendor([one, two]));
     harness.server.row("a:1").state = "trashed";
     await harness.once(vendor([one, two]));
     expect(harness.lastRun().summary).toBe(
       "created 0, updated 0, archived 0, unchanged 1, skipped 1",
     );
+    const purged = harness.server.row("a:1").id;
     harness.server.purge("a:1");
     expect(await harness.once(vendor([one, two]))).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
-    expect(harness.lastRun().summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 1, skipped 1",
+    expect(harness.lastRun().summary).toContain(
+      "1 entry names a row purged in Marfa and unchanged at the vendor since, so it is not written back",
     );
+    // Remembered by the instance, not the log: a later run still holds it.
     expect(await harness.once(vendor([one, two]))).toBe(0);
-    expect(harness.server.rows.map((row) => row.source_id)).toEqual([
-      "a:2",
-      "a:1",
-    ]);
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
+
+    const changed = {
+      ...one,
+      properties: { title: "One, changed" },
+      changed_at: "2026-10-01T00:00:00.000Z",
+    };
+    expect(await harness.once(vendor([changed, two]))).toBe(0);
+    const back = harness.server.row("a:1");
+    expect(back.id).not.toBe(purged);
+    expect(back.properties).toEqual({ title: "One, changed" });
   });
 
   it("keeps nothing of the bin in the connector's state", async () => {
@@ -105,9 +114,9 @@ describe("a row trashed while a run is writing", () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.row("a:1").state = "trashed";
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -122,9 +131,9 @@ describe("a row trashed while a run is writing", () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.row("a:1").state = "trashed";
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [];
@@ -155,9 +164,9 @@ describe("a stop before a write", () => {
   it("sends no create and no archive", async () => {
     await harness.once(vendor([one]));
     const before = harness.server.requests.length;
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.stop();
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     const held = vendor([two]);
     held.archived = ["a:1"];

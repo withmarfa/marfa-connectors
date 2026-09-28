@@ -60,8 +60,8 @@ function show(value: unknown): string {
 
 /**
  * How the server's type differs from the one a connector carries, in shape:
- * fields, what each field is, which are required, its parent and what it
- * declares itself compatible with. The server answers a type with its
+ * fields, what each field is, which are required, its parent, what it
+ * declares itself compatible with, and its link. The server answers a type with its
  * parent's fields merged in, named by `inherited`. An empty list means the
  * two agree.
  */
@@ -123,6 +123,12 @@ export function typeDifferences(
   if (JSON.stringify(compatible) !== JSON.stringify(compatibleThere)) {
     differences.push(
       `compatible_with is ${show(compatible)} here and ${show(compatibleThere)} on the server`,
+    );
+  }
+  const linkThere = served["link_field"] ?? undefined;
+  if (carried.link_field !== linkThere) {
+    differences.push(
+      `link_field is ${show(carried.link_field)} here and ${show(linkThere)} on the server`,
     );
   }
   return differences;

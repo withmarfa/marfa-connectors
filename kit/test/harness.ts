@@ -96,6 +96,12 @@ export const testType: TypeDefinition = {
   },
 };
 
+/** The test type with the vendor's id as its link, as the two-way connector declares it. */
+export const linkedType: TypeDefinition = {
+  ...testType,
+  link_field: "vendor_id",
+};
+
 /** Every property the test vendor holds; `toString` is a name every object answers. */
 export const testFields = ["title", "note", "link", "vendor_id", "toString"];
 
@@ -129,6 +135,8 @@ export interface Vendor {
   remakes?: { change: Change; runsBefore: number }[];
   /** The ids each run was handed as hints, in order. */
   hints?: (ReadonlySet<string> | undefined)[];
+  /** The two-way connector's kind brings a trashed row back on the vendor's change. */
+  revive?: boolean;
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -171,7 +179,9 @@ function twoWayConnector(held: Vendor) {
     name: "test",
     description: "A two-way connector the kit's tests drive.",
     source: "test",
-    types: [{ type: testType, fields: testFields, link: "vendor_id" }],
+    types: [
+      { type: linkedType, fields: testFields, revive: held.revive === true },
+    ],
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;

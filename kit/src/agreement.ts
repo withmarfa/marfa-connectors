@@ -18,6 +18,11 @@ export interface Agreement {
   /** The values the kit last wrote to Marfa or carried from it. */
   marfa: Record<string, string>;
   state: AgreedState;
+  /**
+   * What put the row in its state where no change in Marfa did: the
+   * connector's archive, or another row's trash taking it into the bin.
+   */
+  stateBy?: "vendor" | "cascade";
   /** The vendor's own id for the row, which is the connector's to keep. */
   link?: string;
   /** The vendor's time on the entry last agreed. */

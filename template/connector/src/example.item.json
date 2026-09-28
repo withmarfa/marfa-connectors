@@ -2,6 +2,7 @@
   "id": "example.item",
   "label": "Example Item",
   "description": "An item as the example vendor lists it.",
+  "link_field": "example_id",
   "fields": {
     "example_id": {
       "type": "string",

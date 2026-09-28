@@ -9,7 +9,13 @@ import {
   type Merged,
 } from "./agreement.js";
 import type { Entry, Item } from "./define.js";
-import { Refusal, type BulkResult, type Marfa, type NewRow } from "./marfa.js";
+import {
+  Refusal,
+  type BulkResult,
+  type Marfa,
+  type NewRow,
+  type Tombstone,
+} from "./marfa.js";
 import type { Store } from "./store.js";
 import { cleaned, instant } from "./values.js";
 
@@ -46,6 +52,16 @@ export interface Spec {
   readonly readOnly: ReadonlySet<string>;
   /** The connector carries changes back. */
   readonly twoWay: boolean;
+  /** A trashed row comes back on the vendor's change. */
+  readonly revive: boolean;
+}
+
+/** In the bin because another row's trash took it there. */
+export function cascaded(item: Item): boolean {
+  return (
+    (item as Item & { trashed_by_cascade?: boolean }).trashed_by_cascade ===
+    true
+  );
 }
 
 /** A state change waiting to be carried, beside the fields. */
@@ -65,12 +81,17 @@ const raced = new Set([
  * other validation codes describe the request rather than the row, so they
  * end the run instead of hiding a request the kit got wrong.
  */
-const refusedUpdate = new Set(["invalid_properties", "request_too_large"]);
+const refusedUpdate = new Set([
+  "invalid_properties",
+  "request_too_large",
+  "link_taken",
+]);
 const refusedCreate = new Set([
   "invalid_properties",
   "validation_error",
   "type_mismatch",
   "request_too_large",
+  "link_taken",
 ]);
 
 /**
@@ -109,8 +130,9 @@ export interface Hooks {
 }
 
 /**
- * The connector's rows, read once per run: each entry is merged with its row
- * field by field against the agreement, and a trashed row is never written.
+ * The connector's rows of one type, read as entries name them: each entry is
+ * merged with its row field by field against the agreement, and a trashed
+ * row is written only where its kind revives.
  */
 export class Rows {
   readonly counts: Counts = {
@@ -125,8 +147,14 @@ export class Rows {
   held = 0;
   /** Rows that took the vendor's values with nothing agreed. */
   seeded = 0;
-  /** Rows purged this run, by `link:` and by `key:`, which are not written again. */
-  readonly purged = new Set<string>();
+  /** Entries for rows a person purged, remembered, and not written back. */
+  remembered = 0;
+  /** Rows brought back from the bin by the vendor's change. */
+  revived = 0;
+  /** Tombstones met this run, by `link:` and by `key:`. */
+  private readonly buried = new Map<string, Tombstone>();
+  /** What this run has looked up, by `link:` and `key:`. */
+  private readonly asked = new Set<string>();
   /** Rows this run's reads left with something in Marfa to carry. */
   readonly marked = new Set<string>();
   /** Rows the vendor's word reached this run: an entry, or an archive. */
@@ -136,7 +164,6 @@ export class Rows {
    * of the vendor was not read, so its silence says nothing.
    */
   archivable: ReadonlySet<string> | undefined;
-  private loaded: Promise<void> | undefined;
   private readonly byId = new Map<string, Item>();
   private readonly byLink = new Map<string, string>();
   private readonly byKey = new Map<string, string>();
@@ -151,15 +178,27 @@ export class Rows {
   ) {}
 
   /** The row as the run last knew it, in any state. */
-  async row(id: string): Promise<Item | undefined> {
-    await this.load();
+  known(id: string): Item | undefined {
     return this.byId.get(id);
   }
 
+  /** Takes a row read elsewhere in the run, where it is of this type. */
+  adopt(item: Item): void {
+    if (item.type === this.kind.type) this.index(item);
+  }
+
   async upsert(entries: readonly Entry[]): Promise<void> {
-    await this.load();
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
+    await this.know({
+      links: [...latest.values()].flatMap((entry) => [
+        ...[this.linkOf(cleaned(entry.properties))].filter(
+          (value): value is string => value !== undefined,
+        ),
+        ...(entry.movedFrom === undefined ? [] : [entry.movedFrom]),
+      ]),
+      keys: [...latest.keys()],
+    });
     const matched: [Entry, Item][] = [];
     const creates: [Entry, NewRow][] = [];
     for (const entry of latest.values()) {
@@ -197,14 +236,20 @@ export class Rows {
         matched.push([entry, row]);
         continue;
       }
+      const buried =
+        (value === undefined ? undefined : this.buried.get(`link:${value}`)) ??
+        (entry.movedFrom === undefined
+          ? undefined
+          : this.buried.get(`link:${entry.movedFrom}`)) ??
+        this.buried.get(`key:${entry.source_id}`);
       if (
-        this.purged.has(`key:${entry.source_id}`) ||
-        (value !== undefined && this.purged.has(`link:${value}`)) ||
-        (entry.movedFrom !== undefined &&
-          this.purged.has(`link:${entry.movedFrom}`))
+        buried !== undefined &&
+        !laterThan(entry.changed_at, buried.remembered_until)
       ) {
-        // A person emptied the bin of the row this run: the purge wins.
+        // A person purged the row: it comes back only once the vendor
+        // changes it after that.
         this.counts.skipped += 1;
+        this.remembered += 1;
         continue;
       }
       const occurredAt = instant(entry.occurred_at);
@@ -228,10 +273,6 @@ export class Rows {
   /** The vendor's entry written over the row, where it changed anything. */
   private async apply(entry: Entry, found: Item): Promise<void> {
     this.reached.add(found.id);
-    if (found.state === "trashed") {
-      this.counts.skipped += 1;
-      return;
-    }
     let agreement = this.store.get(found.id);
     if (
       entry.changed_at !== undefined &&
@@ -241,16 +282,47 @@ export class Rows {
       this.counts.skipped += 1;
       return;
     }
+    if (found.state === "trashed" && !this.revives(entry, agreement)) {
+      this.counts.skipped += 1;
+      return;
+    }
+    let row = found;
+    let moved = false;
+    if (
+      found.state === "trashed" ||
+      (found.state === "archived" && agreement?.stateBy === "vendor")
+    ) {
+      this.checkStopped();
+      try {
+        row = await this.marfa.transition(found.id, "active");
+      } catch (error) {
+        this.absorb(error, entry.source_id, refusedUpdate);
+        return;
+      }
+      this.index(row);
+      moved = true;
+      if (found.state === "trashed") {
+        this.revived += 1;
+        this.hooks.condition(
+          `revived:${found.id}`,
+          `the vendor changed ${found.id} while it was in the bin, so it was brought back`,
+        );
+      }
+      if (agreement !== undefined) {
+        agreement = { ...agreement, state: "active" };
+        Reflect.deleteProperty(agreement, "stateBy");
+      }
+    }
     if (
       agreement !== undefined &&
       agreement.state !== "active" &&
-      found.state === "active" &&
+      row.state === "active" &&
       !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
     ) {
       // A restore waits to be carried. A vendor change from before it can
       // be the vendor's echo of the trash, and is left; a later one means
       // the vendor has the row, so the restore needs nothing more.
-      const since = agreement.waiting?.[stateKey] ?? found.updated_at;
+      const since = agreement.waiting?.[stateKey] ?? row.updated_at;
       if (!laterThan(entry.changed_at, since)) {
         this.counts.skipped += 1;
         return;
@@ -263,22 +335,22 @@ export class Rows {
     } else if (
       this.kind.twoWay &&
       agreement !== undefined &&
-      found.state !== agreement.state &&
+      row.state !== agreement.state &&
       agreement.waiting?.[stateKey] === undefined
     ) {
       // A transition the log has not shown yet: carried this run.
       agreement = {
         ...agreement,
-        waiting: { ...agreement.waiting, [stateKey]: found.updated_at },
+        waiting: { ...agreement.waiting, [stateKey]: row.updated_at },
       };
     }
-    let row = found;
     for (let attempt = 0; ; attempt += 1) {
       const merged = this.merged(entry, row, agreement);
       if (!merged.write) {
         this.agree(row.id, merged.agreement, entry);
         this.report(row.id, merged);
-        this.counts.unchanged += 1;
+        if (moved) this.counts.updated += 1;
+        else this.counts.unchanged += 1;
         return;
       }
       this.checkStopped();
@@ -313,6 +385,20 @@ export class Rows {
         return;
       }
     }
+  }
+
+  /**
+   * Whether the vendor's change brings a row back from the bin: only for a
+   * kind that revives, once the trash is settled, and never on an entry the
+   * vendor already held.
+   */
+  private revives(entry: Entry, agreement: Agreement | undefined): boolean {
+    return (
+      this.kind.revive &&
+      agreement?.state === "trashed" &&
+      agreement.waiting?.[stateKey] === undefined &&
+      !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
+    );
   }
 
   private merged(
@@ -438,7 +524,7 @@ export class Rows {
    * link, natural keys without.
    */
   async archive(keys: readonly string[]): Promise<void> {
-    await this.load();
+    await this.know(this.kind.link === undefined ? { keys } : { links: keys });
     const rows = [...new Set(keys)].flatMap((key) => {
       const id =
         this.kind.link === undefined
@@ -480,14 +566,14 @@ export class Rows {
       }
       this.checkStopped();
       try {
-        await this.marfa.archive(row.id);
-        this.index({ ...row, state: "archived" });
+        this.index(await this.marfa.transition(row.id, "archived"));
         const side = sideOf(this.kind.fields, row.properties);
         this.store.set(row.id, {
           vendor: side,
           marfa: side,
           ...agreement,
           state: "archived",
+          stateBy: "vendor",
         });
         this.counts.archived += 1;
       } catch (error) {
@@ -548,15 +634,17 @@ export class Rows {
     if (link === undefined) {
       throw new Error("the connector declares no link property to write");
     }
-    await this.load();
-    const holder = this.byLink.get(value);
-    if (holder !== undefined && holder !== item.id) {
-      throw new LinkTaken(
-        `the link ${value} is already carried by ${holder}, so it is not written onto ${item.id}`,
-      );
-    }
     this.checkStopped();
     let written: Item;
+    const taken = (error: unknown): unknown => {
+      if (!(error instanceof Refusal) || error.code !== "link_taken") {
+        return error;
+      }
+      const holder = error.details["existing_id"];
+      return new LinkTaken(
+        `the link ${value} is already carried by ${typeof holder === "string" ? holder : "another row"}, so it is not written onto ${item.id}`,
+      );
+    };
     try {
       written = await this.marfa.merge(item.id, item.version, {
         [link]: value,
@@ -567,15 +655,19 @@ export class Rows {
         (error.code !== "version_conflict" &&
           error.code !== "ancestor_unavailable")
       ) {
-        throw error;
+        throw taken(error);
       }
       const current = await this.marfa.item(item.id);
       if (current === undefined) {
         throw new Refusal(404, "item_not_found", `${item.id} is gone`);
       }
-      written = await this.marfa.merge(current.id, current.version, {
-        [link]: value,
-      });
+      try {
+        written = await this.marfa.merge(current.id, current.version, {
+          [link]: value,
+        });
+      } catch (again) {
+        throw taken(again);
+      }
     }
     this.index(written);
     // Only the value sent: what the server merged in beside it is a
@@ -591,22 +683,50 @@ export class Rows {
     });
   }
 
-  /** Read once, however many calls ask for it at once. */
-  private load(): Promise<void> {
-    this.loaded ??= this.read();
-    return this.loaded;
-  }
-
-  private async read(): Promise<void> {
-    const items = await this.marfa.ownRows(
-      this.kind.type,
-      this.kind.link === undefined ? this.kind.source : undefined,
-    );
-    for (const item of items) {
-      // The type filter also answers types that inherit from this one,
-      // whose rows are not this connector's to write.
-      if (item.type !== this.kind.type) continue;
-      this.index(item);
+  /**
+   * Looks up the rows the links and natural keys name that this run has
+   * neither read nor asked for, in any state, with the tombstones among them.
+   */
+  private async know(named: {
+    links?: readonly string[];
+    keys?: readonly string[];
+  }): Promise<void> {
+    const fresh = (
+      prefix: string,
+      values: readonly string[] = [],
+      held: ReadonlyMap<string, string>,
+    ) =>
+      [...new Set(values)].filter(
+        (value) => !held.has(value) && !this.asked.has(`${prefix}${value}`),
+      );
+    const learn = (
+      prefix: string,
+      values: readonly string[],
+      found: { data: Item[]; tombstones: Tombstone[] },
+    ): void => {
+      for (const value of values) this.asked.add(`${prefix}${value}`);
+      for (const item of found.data) this.adopt(item);
+      for (const tombstone of found.tombstones) {
+        this.buried.set(`${prefix}${tombstone.key}`, tombstone);
+      }
+    };
+    const links =
+      this.kind.link === undefined
+        ? []
+        : fresh("link:", named.links, this.byLink);
+    if (links.length > 0) {
+      learn("link:", links, await this.marfa.lookup(this.kind.type, { links }));
+    }
+    const keys = fresh("key:", named.keys, this.byKey);
+    if (keys.length > 0) {
+      learn(
+        "key:",
+        keys,
+        await this.marfa.lookup(this.kind.type, {
+          source: this.kind.source,
+          source_ids: keys,
+        }),
+      );
     }
   }
 

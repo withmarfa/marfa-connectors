@@ -756,9 +756,9 @@ describe("a two-way connector's run for deliveries", () => {
     const earlier = new Date(
       Date.parse(row.updated_at) - 120_000,
     ).toISOString();
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.edit(row.id, { note: "by a person, since the read" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.entries = [
       {
