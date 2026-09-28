@@ -142,6 +142,13 @@ function keyNarrowerThanTypes(
   ];
 }
 
+/**
+ * Shipped connection types a connector may write between its own rows,
+ * narrowing their ends itself, and never registers: files attach to their
+ * item as apps and folders know attachments.
+ */
+const shippedConnections = new Set(["attached-to"]);
+
 /** Registers each connection the server lacks, or checks the one it holds. */
 async function ensureConnections(
   connections: readonly ConnectionDefinition[],
@@ -151,6 +158,27 @@ async function ensureConnections(
   let served = await marfa.edgeTypes();
   for (const connection of connections) {
     let held = served.find((type) => type.id === connection.id);
+    if (shippedConnections.has(connection.id)) {
+      const differences =
+        held === undefined
+          ? ["the instance does not hold it"]
+          : edgeTypeDifferences(
+              {
+                ...connection,
+                source_type_constraints: held.source_type_constraints,
+                target_type_constraints: held.target_type_constraints,
+                ...(held.reverse_name !== undefined && {
+                  reverse_name: held.reverse_name,
+                }),
+                written_at: held.written_at,
+              },
+              held,
+            );
+      if (differences.length > 0) {
+        return `the connection type ${connection.id} differs from the instance's own: ${differences.join("; ")}`;
+      }
+      continue;
+    }
     if (held === undefined) {
       try {
         await marfa.registerEdgeType(connection);

@@ -63,6 +63,9 @@ export function cascaded(item: Item): boolean {
   return item.trashed_by_cascade === true;
 }
 
+/** The fields a file's bytes are written to. */
+const fileFields = ["blob_ref", "mime_type"];
+
 /** A state change waiting to be carried, beside the fields. */
 export const stateKey = "@state";
 
@@ -158,6 +161,11 @@ export class Rows {
   readonly marked = new Set<string>();
   /** Rows the vendor's word reached this run: an entry, or an archive. */
   readonly reached = new Set<string>();
+  /** The bytes each entry this run carries were uploaded as. */
+  private readonly files = new WeakMap<
+    Entry,
+    { key: string; ref: string; mime: string }
+  >();
   /** The connections each entry this run wrote named, by row id. */
   readonly connecting = new Map<
     string,
@@ -237,6 +245,17 @@ export class Rows {
         );
         continue;
       }
+      if (
+        entry.file !== undefined &&
+        fileFields.some((field) => !this.kind.fields.includes(field))
+      ) {
+        this.counts.skipped += 1;
+        this.hooks.condition(
+          `file-fields:${entry.source_id}`,
+          `the entry ${entry.source_id} carries a file, and its type's fields do not list ${fileFields.join(" and ")}, so it is not written`,
+        );
+        continue;
+      }
       const value = this.linkOf(properties);
       if (this.kind.link !== undefined && value === undefined) {
         this.counts.skipped += 1;
@@ -287,16 +306,84 @@ export class Rows {
     }
     await this.store.fetch(matched.map(([, row]) => row.id));
     for (const [entry, row] of matched) await this.apply(entry, row);
-    const made = new Map(creates.map(([entry, row]) => [row, entry]));
-    for (const page of paged(creates.map(([, row]) => row))) {
+    const made = new Map<NewRow, Entry>();
+    for (const [entry, row] of creates) {
+      const loaded = await this.uploaded(entry);
+      if (loaded === undefined) continue;
+      made.set({ ...row, properties: cleaned(loaded.properties) }, loaded);
+    }
+    for (const page of paged([...made.keys()])) {
       await this.createPage(page, made);
     }
   }
 
+  /**
+   * The entry with its row's bytes as last uploaded where the vendor's key
+   * for them is unchanged; `fresh` where they must be loaded again.
+   */
+  private agreedFile(
+    entry: Entry,
+    agreement: Agreement | undefined,
+  ): { entry: Entry; fresh: boolean } {
+    if (entry.file === undefined) return { entry, fresh: false };
+    const held = agreement?.file;
+    if (held?.key !== entry.file.key) return { entry, fresh: true };
+    const withFile = {
+      ...entry,
+      properties: {
+        ...entry.properties,
+        blob_ref: held.ref,
+        mime_type: held.mime,
+      },
+    };
+    this.files.set(withFile, held);
+    return { entry: withFile, fresh: false };
+  }
+
+  /**
+   * The entry with its bytes loaded from the vendor and uploaded, in the
+   * run that writes the row, since a blob nothing names is swept. One the
+   * vendor would not give is a condition, and the row waits.
+   */
+  private async uploaded(entry: Entry): Promise<Entry | undefined> {
+    const source = entry.file;
+    if (source === undefined) return entry;
+    this.checkStopped();
+    let loaded;
+    try {
+      loaded = await source.load(this.signal);
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      this.counts.skipped += 1;
+      this.hooks.condition(
+        `file-unloaded:${entry.source_id}`,
+        `the file for ${entry.source_id} could not be fetched from the vendor, so its row waits: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    }
+    const stored = await this.marfa.upload(loaded.bytes, loaded.mime_type);
+    const withFile = {
+      ...entry,
+      properties: {
+        ...entry.properties,
+        blob_ref: stored.hash,
+        mime_type: stored.mime_type,
+      },
+    };
+    this.files.set(withFile, {
+      key: source.key,
+      ref: stored.hash,
+      mime: stored.mime_type,
+    });
+    return withFile;
+  }
+
   /** The vendor's entry written over the row, where it changed anything. */
-  private async apply(entry: Entry, found: Item): Promise<void> {
+  private async apply(given: Entry, found: Item): Promise<void> {
     this.reached.add(found.id);
     let agreement = this.store.get(found.id);
+    const agreed = this.agreedFile(given, agreement);
+    let entry = agreed.entry;
     if (
       entry.changed_at !== undefined &&
       laterThan(agreement?.changedAt, entry.changed_at)
@@ -335,6 +422,11 @@ export class Rows {
         agreement = { ...agreement, state: "active" };
         Reflect.deleteProperty(agreement, "stateBy");
       }
+    }
+    if (agreed.fresh) {
+      const loaded = await this.uploaded(entry);
+      if (loaded === undefined) return;
+      entry = loaded;
     }
     if (
       agreement !== undefined &&
@@ -476,11 +568,13 @@ export class Rows {
   private agree(id: string, agreement: Agreement, entry: Entry): void {
     const value = this.linkOf(cleaned(entry.properties));
     const was = this.store.get(id);
+    const file = this.files.get(entry) ?? was?.file;
     this.store.set(id, {
       ...agreement,
       ...(value !== undefined && { link: value }),
       ...(was?.connections !== undefined && { connections: was.connections }),
       ...(was?.pending !== undefined && { pending: was.pending }),
+      ...(file !== undefined && { file }),
     });
     if (agreement.waiting !== undefined) this.marked.add(id);
     if (entry.connections !== undefined) {

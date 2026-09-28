@@ -35,6 +35,8 @@ export interface Agreement {
   connections?: Record<string, string[]>;
   /** Targets the vendor named that Marfa holds no row for yet, as `<type> <id>`. */
   pending?: Record<string, string[]>;
+  /** The vendor's key for the row's bytes, and the blob they were uploaded as. */
+  file?: { key: string; ref: string; mime: string };
 }
 
 /** A short name for a value; the empty string for one the side does not hold. */

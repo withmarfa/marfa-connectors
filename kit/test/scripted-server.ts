@@ -3,6 +3,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { CONTRACT_VERSION } from "@withmarfa/client";
 
@@ -158,8 +159,26 @@ export class ScriptedServer {
   rows: Row[] = [];
   /** Every edge, in the order made. */
   edges: EdgeRow[] = [];
-  /** Edge types registered, by id, as the server stores them. */
-  readonly edgeTypes = new Map<string, Record<string, unknown>>();
+  /** Edge types the instance holds, by id: the shipped `attached-to`, and what is registered. */
+  readonly edgeTypes = new Map<string, Record<string, unknown>>([
+    [
+      "attached-to",
+      {
+        id: "attached-to",
+        cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        reverse_name: "has-attachment",
+        written_at: "source",
+      },
+    ],
+  ]);
+  /** Blobs stored, by hash. */
+  readonly blobs = new Map<string, { bytes: Buffer; mime_type: string }>();
+  /** Every upload, repeats included. */
+  uploads = 0;
   /** Edges a lookup answers per type before its cursor, as the real cap of 50. */
   edgePageCap = 50;
   types = new Map<string, Record<string, unknown>>();
@@ -656,8 +675,13 @@ export class ScriptedServer {
     const url = new URL(req.url ?? "/", this.url);
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
-    const text = Buffer.concat(chunks).toString("utf8");
-    const body: unknown = text === "" ? undefined : JSON.parse(text);
+    const raw = Buffer.concat(chunks);
+    const text = raw.toString("utf8");
+    // Bytes to the blob door, JSON to every other.
+    const body: unknown =
+      text === "" || req.url?.startsWith("/blobs") === true
+        ? undefined
+        : JSON.parse(text);
     const method = req.method ?? "GET";
     const headers: Record<string, string | undefined> = {};
     for (const [name, value] of Object.entries(req.headers)) {
@@ -1041,6 +1065,14 @@ export class ScriptedServer {
       });
       return;
     }
+    if (method === "POST" && url.pathname === "/blobs") {
+      const hash = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+      const mime = req.headers["content-type"] ?? "application/octet-stream";
+      this.blobs.set(hash, { bytes: raw, mime_type: mime });
+      this.uploads += 1;
+      send(201, { hash, mime_type: mime, size_bytes: raw.length });
+      return;
+    }
     if (method === "GET" && url.pathname === "/edge-types") {
       send(200, { data: [...this.edgeTypes.values()], next_cursor: null });
       return;
@@ -1392,6 +1424,7 @@ export class ScriptedServer {
     const allowed = (constraints: unknown, type: string) =>
       !Array.isArray(constraints) ||
       constraints.length === 0 ||
+      constraints.includes("*") ||
       constraints.includes(type);
     if (
       !allowed(kind["source_type_constraints"], source.type) ||

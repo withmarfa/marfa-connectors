@@ -11,6 +11,7 @@ export {
   type EnvDeclaration,
   type EnvKind,
   type EnvValues,
+  type FileSource,
   type Inbound,
   type Item,
   type Kind,

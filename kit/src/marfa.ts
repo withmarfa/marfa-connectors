@@ -240,6 +240,20 @@ export class Marfa {
     return results;
   }
 
+  /** Stores bytes by their content, answering their `sha256:` hash; bytes already held answer theirs. */
+  async upload(
+    bytes: Uint8Array,
+    mimeType: string,
+  ): Promise<{ hash: string; mime_type: string }> {
+    const { data, error, response } = await this.client.POST("/blobs", {
+      body: bytes,
+      bodySerializer: (body) => body,
+      headers: { "Content-Type": mimeType },
+    });
+    if (data === undefined) throw refusal(response, error);
+    return data;
+  }
+
   /** Removes an edge; one already gone is as good. */
   async disconnect(id: string): Promise<void> {
     const { error, response } = await this.client.DELETE("/edges/{id}", {

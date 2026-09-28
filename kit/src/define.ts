@@ -24,6 +24,15 @@ export interface Target {
   readonly id: string;
 }
 
+/** The bytes of a file row, fetched from the vendor only when they changed. */
+export interface FileSource {
+  /** The vendor's own key for the bytes, such as an etag or asset id. */
+  readonly key: string;
+  readonly load: (
+    signal: AbortSignal,
+  ) => Promise<{ bytes: Uint8Array; mime_type: string }>;
+}
+
 /** A connection type's changes in Marfa, as the rows at the other end. */
 export interface Connected {
   readonly added: readonly Item[];
@@ -70,6 +79,12 @@ export interface Entry {
    * is connected once it arrives.
    */
   connections?: Readonly<Record<string, readonly Target[]>> | undefined;
+  /**
+   * The bytes of a row of a file type, uploaded as its `blob_ref` and
+   * `mime_type`, which its kind lists among its fields; loaded only when
+   * `key` differs from the one last uploaded.
+   */
+  file?: FileSource | undefined;
 }
 
 export interface State {
