@@ -22,6 +22,8 @@ export interface Agreement {
    * connector's archive, or another row's trash taking it into the bin.
    */
   stateBy?: "vendor" | "cascade";
+  /** When that happened, so a replayed frame from before it cannot undo it. */
+  stateAt?: string;
   /** The vendor's own id for the row, which is the connector's to keep. */
   link?: string;
   /** The vendor's time on the entry last agreed. */
@@ -266,6 +268,7 @@ export function merge(input: MergeInput): Merged {
     marfa,
     state: agreement?.state ?? agreedState(row.state ?? "active"),
     ...(agreement?.stateBy !== undefined && { stateBy: agreement.stateBy }),
+    ...(agreement?.stateAt !== undefined && { stateAt: agreement.stateAt }),
     ...(agreement?.link !== undefined && { link: agreement.link }),
     ...(changedAt !== undefined && { changedAt }),
     ...(Object.keys(waiting).length > 0 && { waiting }),

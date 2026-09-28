@@ -3,8 +3,8 @@ import type { Marfa } from "./marfa.js";
 import { describe } from "./run.js";
 import type { Clock } from "./runtime.js";
 
-/** How long a hold is trusted after a renewal is asked for: the instance's three minutes, less one. */
-export const trustedMs = 120_000;
+/** How long a hold is trusted where the instance names no window: two thirds of its default three minutes. */
+const defaultTrustMs = 120_000;
 
 /** How long a renewal may take before it counts as failed. */
 const renewalMs = 15_000;
@@ -18,6 +18,9 @@ export class Hold {
   private holding = false;
   /** When the last renewal that landed was asked for. */
   private renewedAt = 0;
+  /** Two thirds of the instance's window, a third left to renew in. */
+  private trustMs = defaultTrustMs;
+  private rearm = new AbortController();
 
   constructor(
     private readonly marfa: Marfa,
@@ -39,7 +42,7 @@ export class Hold {
     if (answer.elsewhere) return { held: false, until: answer.until };
     this.holding = true;
     if (this.fence.signal.aborted) this.fence = new AbortController();
-    this.renewedAt = asked;
+    this.trusted(asked, answer.window);
     return { held: true };
   }
 
@@ -67,14 +70,34 @@ export class Hold {
       this.stop("the hold lapsed before it was renewed, so this run stops");
       return;
     }
+    this.trusted(asked, answer.window);
+  }
+
+  /** How often to renew: twice within the time it is trusted. */
+  get renewEvery(): number {
+    return this.trustMs / 2;
+  }
+
+  /** Aborted when a shorter window is learned, so a wait for the next renewal is cut. */
+  get rearmed(): AbortSignal {
+    return this.rearm.signal;
+  }
+
+  private trusted(asked: number, window: number | undefined): void {
     this.renewedAt = asked;
+    const before = this.trustMs;
+    this.trustMs = window === undefined ? defaultTrustMs : (window * 2) / 3;
+    if (this.trustMs < before) {
+      this.rearm.abort();
+      this.rearm = new AbortController();
+    }
   }
 
   /** Fences the run where the hold can have lapsed since it was last renewed; answers whether it is fenced. */
   check(): boolean {
     if (
       this.holding &&
-      this.clock.now().getTime() - this.renewedAt > trustedMs
+      this.clock.now().getTime() - this.renewedAt > this.trustMs
     ) {
       this.stop("the hold went unrenewed too long, so this run stops");
     }

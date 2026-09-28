@@ -160,6 +160,8 @@ const connector = defineConnector({
       });
       await context.setLink(item, issue.id);
     } else if (change.kind === "trashed" || change.kind === "purged") {
+      // Never linked: the stub keeps no key a lost create could be found by.
+      if (item.properties["issue_id"] === undefined) return undefined;
       const closing = encodeURIComponent(linkOf(item));
       return issueEntry(
         await send("PATCH", `issues/${closing}`, { state: "closed" }),

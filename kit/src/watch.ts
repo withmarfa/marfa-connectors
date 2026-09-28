@@ -97,68 +97,73 @@ export class Watch {
     let resync = false;
     let incomplete: string | undefined;
 
-    // Ended by this read once it has what it came for, so the request and
-    // its body are released rather than left open.
-    const closing = new AbortController();
-    const signal = AbortSignal.any([this.signal, closing.signal]);
-    try {
-      const body = await this.marfa.events(
-        [...this.types],
-        this.cursor ?? "0",
-        signal,
-        this.connections.size > 0,
-      );
-      for await (const frame of frames(body)) {
-        if (frame.event === "stream_cursor") continue;
-        if (frame.event === "stream_live") {
-          const cursor = parse(frame.data)["cursor"];
-          live = typeof cursor === "string" ? cursor : undefined;
-          break;
-        }
-        if (frame.event === "catchup_too_old") {
-          resync = true;
-          break;
-        }
-        if (frame.event === "stream_incomplete") {
-          const reason = parse(frame.data)["reason"];
-          incomplete = `the server ended the stream: ${typeof reason === "string" ? reason : "stream_incomplete"}`;
-          break;
-        }
-        if (frame.id !== undefined) last = frame.id;
-        if (edgeEvents.has(frame.event)) {
-          const data = parse(frame.data);
-          const edge = data["edge"] as Edge | undefined;
-          if (
-            edge !== undefined &&
-            this.connections.has(edge.edge_type) &&
-            data["purged_with"] === undefined &&
-            !connected.has(edge.source_id)
-          ) {
-            connected.set(edge.source_id, edge.updated_at);
+    // With no cursor kept, the rows are compared whole: a replay from the
+    // log's start would carry again what it still holds, purges included.
+    if (this.cursor === undefined) resync = true;
+    else {
+      // Ended by this read once it has what it came for, so the request and
+      // its body are released rather than left open.
+      const closing = new AbortController();
+      const signal = AbortSignal.any([this.signal, closing.signal]);
+      try {
+        const body = await this.marfa.events(
+          [...this.types],
+          this.cursor,
+          signal,
+          this.connections.size > 0,
+        );
+        for await (const frame of frames(body)) {
+          if (frame.event === "stream_cursor") continue;
+          if (frame.event === "stream_live") {
+            const cursor = parse(frame.data)["cursor"];
+            live = typeof cursor === "string" ? cursor : undefined;
+            break;
           }
-          continue;
+          if (frame.event === "catchup_too_old") {
+            resync = true;
+            break;
+          }
+          if (frame.event === "stream_incomplete") {
+            const reason = parse(frame.data)["reason"];
+            incomplete = `the server ended the stream: ${typeof reason === "string" ? reason : "stream_incomplete"}`;
+            break;
+          }
+          if (frame.id !== undefined) last = frame.id;
+          if (edgeEvents.has(frame.event)) {
+            const data = parse(frame.data);
+            const edge = data["edge"] as Edge | undefined;
+            if (
+              edge !== undefined &&
+              this.connections.has(edge.edge_type) &&
+              data["purged_with"] === undefined &&
+              !connected.has(edge.source_id)
+            ) {
+              connected.set(edge.source_id, edge.updated_at);
+            }
+            continue;
+          }
+          if (!itemEvents.has(frame.event)) continue;
+          const item = parse(frame.data)["item"] as Item | undefined;
+          // The filter admits each type's subtree; a row of a subtype is not
+          // this connector's.
+          if (item === undefined || !this.types.has(item.type)) continue;
+          const seen = rows.get(item.id) ?? { frames: [], purged: false };
+          seen.frames.push({ item });
+          // In the order of each row's latest frame.
+          rows.delete(item.id);
+          rows.set(item.id, {
+            frames: seen.frames,
+            purged: frame.event === "item.purged",
+          });
         }
-        if (!itemEvents.has(frame.event)) continue;
-        const item = parse(frame.data)["item"] as Item | undefined;
-        // The filter admits each type's subtree; a row of a subtype is not
-        // this connector's.
-        if (item === undefined || !this.types.has(item.type)) continue;
-        const seen = rows.get(item.id) ?? { frames: [], purged: false };
-        seen.frames.push({ item });
-        // In the order of each row's latest frame.
-        rows.delete(item.id);
-        rows.set(item.id, {
-          frames: seen.frames,
-          purged: frame.event === "item.purged",
-        });
+      } catch (error) {
+        if (!endedEarly(error) || closing.signal.aborted) throw error;
+        incomplete = this.signal.aborted
+          ? "the read was stopped"
+          : "the read timed out";
+      } finally {
+        closing.abort();
       }
-    } catch (error) {
-      if (!endedEarly(error) || closing.signal.aborted) throw error;
-      incomplete = this.signal.aborted
-        ? "the read was stopped"
-        : "the read timed out";
-    } finally {
-      closing.abort();
     }
 
     if (resync) {

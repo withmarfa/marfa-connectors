@@ -412,7 +412,7 @@ export class Connections {
     type: string,
     target: string,
   ): Promise<boolean> {
-    if (this.signal.aborted) throw new Stopped();
+    if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
     try {
       await this.marfa.disconnect(edge);
       return true;
@@ -431,7 +431,7 @@ export class Connections {
     adds: readonly { item: Item; type: string; target: string }[],
   ): Promise<{ id: string; type: string; target: string }[]> {
     if (adds.length === 0) return [];
-    if (this.signal.aborted) throw new Stopped();
+    if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
     const results = await this.marfa.connect(
       adds.map(({ item, type, target }) => ({
         source_id: item.id,

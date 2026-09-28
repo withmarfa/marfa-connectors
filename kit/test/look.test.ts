@@ -55,6 +55,28 @@ describe("the look between runs, for a connector that carries changes back", () 
     expect(await exit).toBe(0);
   });
 
+  it("starts no run for the purge of a row the vendor was never told about", async () => {
+    const held = vendor([one]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    // Made, trashed and purged between two looks.
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    harness.server.trash(theirs.id);
+    harness.server.purgeById(theirs.id);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("starts no run for a trash another row's trash made, nor for its purge", async () => {
     const held = vendor([one]);
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);
@@ -161,6 +183,57 @@ describe("the look, for connections", () => {
       await harness.clock.sleeping(10_000);
     }
     expect(held.runs).toBe(1);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("starts no run for a person's connection to a row of their own, and one for a connection to the connector's", async () => {
+    const held = vendor([
+      {
+        source_id: "a:1",
+        properties: { title: "One", vendor_id: "v1" },
+        connections: { "attached-to": [] },
+      },
+      {
+        source_id: "a:2",
+        properties: { title: "Two", vendor_id: "v2" },
+        connections: { "attached-to": [] },
+      },
+    ]);
+    held.connections = [
+      {
+        id: "attached-to",
+        cardinality: "many-to-many",
+        source_type_constraints: ["test.entry"],
+        target_type_constraints: ["test.entry"],
+      },
+    ];
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "attached-to": "write" },
+    };
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    const one = harness.server.row("a:1");
+    const note = harness.server.insert(
+      undefined,
+      { body: "mine" },
+      "core.note",
+      "person",
+    );
+    harness.server.drawEdge(one.id, note.id, "attached-to");
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    harness.server.drawEdge(
+      one.id,
+      harness.server.row("a:2").id,
+      "attached-to",
+    );
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
     harness.stop();
     expect(await exit).toBe(0);
   });

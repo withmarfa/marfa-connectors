@@ -252,3 +252,169 @@ describe("the state a row is in", () => {
     expect(harness.server.row("a:1").state).toBe("archived");
   });
 });
+
+describe("what another row's trash, a lost store and a create leave", () => {
+  it("does not carry a cascade that lands after the log is read, nor the restore out of it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { note: "edited" });
+    harness.server.beforeAnswer = (request) => {
+      if (request.path !== "/items/lookup") return;
+      harness.server.cascadeTrash(row.id, "parent-1");
+      harness.server.beforeAnswer = undefined;
+    };
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(kinds(held)).toEqual([]);
+    harness.server.restore(row.id);
+    expect(await harness.twoWay(held)).toBe(0);
+    // Back from the bin, the edit made before it is carried, and no restore.
+    expect(kinds(held)).toEqual(["updated"]);
+  });
+
+  it("does not carry again a purge the log still holds once the store is lost", async () => {
+    const two = {
+      source_id: "a:2",
+      properties: { title: "Two", vendor_id: "v2" },
+    };
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [two];
+    await harness.twoWay(held);
+    harness.server.purge("a:1");
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(kinds(held)).toEqual(["purged"]);
+    harness.server.states.clear();
+    harness.server.agreements.clear();
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(kinds(held)).toEqual([]);
+  });
+
+  it("carries an archive a person made before the row's create landed, after the create", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const row = harness.server.insert(
+      undefined,
+      { title: "Made in Marfa" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: row.id, error: new Error("vendor down") };
+    expect(await harness.twoWay(held)).toBe(1);
+    harness.server.transition(row.id, "archived");
+    held.vendorIdFor = () => "v-made";
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.map((change) => `${change.kind}:${change.item.state}`),
+    ).toEqual(["created:archived", "archived:archived"]);
+  });
+});
+
+describe("a row the connector archived", () => {
+  it("comes back on the vendor's word though a person's edit to it was carried meanwhile", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    held.entries = [];
+    held.archived = ["v1"];
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { note: "a note made in Marfa" });
+    held.archived = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(kinds(held)).toEqual(["updated"]);
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, note: "a note made in Marfa" },
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("active");
+  });
+
+  it("comes back on the vendor's word though the log is read again from before the archive", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { starred: true });
+    held.entries = [];
+    held.archived = ["v1"];
+    harness.server.refuseNext(
+      "PUT /connectors/connector-1/state",
+      503,
+      "unavailable",
+    );
+    await harness.twoWay(held);
+    expect(harness.agreement(row.id)?.["stateBy"]).toBe("vendor");
+    held.archived = [];
+    await harness.twoWay(held);
+    held.entries = [one];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("active");
+  });
+});
+
+describe("a kind that revives", () => {
+  it("leaves in the bin a row another row's trash took, since that trash never reached the vendor", async () => {
+    const held = vendor([one]);
+    held.revive = true;
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.cascadeTrash(row.id, "parent-1");
+    await harness.twoWay(held);
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, note: "a comment at the vendor" },
+        changed_at: "2026-10-02T00:00:00.000Z",
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("trashed");
+  });
+});
+
+describe("a purge kept for a type no longer declared", () => {
+  it("is dropped with a condition, rather than fail every run", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const kept = harness.server.states.get("test") ?? {};
+    harness.server.states.set("test", {
+      ...kept,
+      purges: [
+        {
+          id: "0190a000-0000-7000-8000-00000000c0de",
+          type: "test.comment",
+          state: "trashed",
+          properties: { comment_id: "c1" },
+          source: "test",
+          source_id: "a:c1",
+          version: 1,
+          created_at: "2026-09-25T00:00:00.000Z",
+          updated_at: "2026-09-25T00:00:00.000Z",
+          occurred_at: "2026-09-25T00:00:00.000Z",
+        },
+      ],
+    });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      "no longer declares test.comment",
+    );
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(kinds(held)).toEqual([]);
+  });
+});

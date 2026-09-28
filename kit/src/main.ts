@@ -380,6 +380,16 @@ export async function start<E extends EnvDeclaration>(
       runtime.env,
       schedule.mode === "setup",
     );
+    // Without a link, a row made in Marfa cannot be told to the vendor,
+    // nor a purge found there.
+    const unlinked = [
+      ...specsOf(connector, environment.values as EnvValues<E>).values(),
+    ].filter((spec) => spec.twoWay && spec.link === undefined);
+    if (unlinked.length > 0) {
+      throw new ConfigurationError(
+        `${unlinked.map((spec) => spec.type).join(", ")} ${unlinked.length === 1 ? "is" : "are"} carried back, so ${unlinked.length === 1 ? "its type needs" : "their types need"} a link_field`,
+      );
+    }
     if (
       schedule.mode === "every" &&
       schedule.lookGiven &&
@@ -494,7 +504,10 @@ export async function start<E extends EnvDeclaration>(
         }
       };
       await Promise.all([beating(), hold.renew()]);
-      await clock.sleep(heartbeatMs, beat);
+      await clock.sleep(
+        Math.min(heartbeatMs, hold.renewEvery),
+        AbortSignal.any([beat, hold.rearmed]),
+      );
     }
   })();
 

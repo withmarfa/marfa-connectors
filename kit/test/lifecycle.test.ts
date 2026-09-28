@@ -40,12 +40,13 @@ describe("the rows a run reads", () => {
     ];
     held.changes.length = 0;
     const before = lookups().length;
+    const listed = harness.server.requestsTo("GET", "/items").length;
     expect(await harness.twoWay(held)).toBe(0);
     expect(lookups().slice(before)).toEqual([
       { type: "test.entry", ids: [row.id] },
       { type: "test.entry", links: ["v2"] },
     ]);
-    expect(harness.server.requestsTo("GET", "/items")).toEqual([]);
+    expect(harness.server.requestsTo("GET", "/items")).toHaveLength(listed);
     expect(kinds(held.changes)).toEqual(["updated a:1"]);
     expect(harness.server.row("a:2").properties["title"]).toBe("Two, later");
   });

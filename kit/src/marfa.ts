@@ -572,7 +572,13 @@ export class Marfa {
     process: string,
     signal: AbortSignal,
   ): Promise<
-    | { elsewhere: false; until: string; renewed: boolean }
+    | {
+        elsewhere: false;
+        until: string;
+        renewed: boolean;
+        /** How long the instance holds it, by its own clock, where it says. */
+        window: number | undefined;
+      }
     | { elsewhere: true; until: string }
   > {
     const { data, error, response } = await this.client.POST(
@@ -580,10 +586,14 @@ export class Marfa {
       { params: { path: { id } }, body: { process }, signal },
     );
     if (data !== undefined) {
+      const window =
+        Date.parse(data.expires_at) -
+        Date.parse(response.headers.get("date") ?? "");
       return {
         elsewhere: false,
         until: data.expires_at,
         renewed: data.renewed,
+        window: Number.isFinite(window) && window > 0 ? window : undefined,
       };
     }
     const refused = refusal(response, error);

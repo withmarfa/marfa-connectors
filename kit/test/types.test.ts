@@ -43,9 +43,8 @@ function twoTypes(held: Held) {
       { type: noteType, fields: ["title"] },
     ],
     env: { TEST_TOKEN: "secret" },
-    ...(held.carries !== undefined && {
-      carries: () => held.carries ?? [],
-    }),
+    // The note has no link, so only the entry may be carried.
+    carries: () => held.carries ?? ["test.entry"],
     async run(context) {
       await context.upsert(testType.id, held.entries);
       await context.upsert(noteType.id, held.notes);
@@ -186,6 +185,18 @@ describe("a connector of several types", () => {
 });
 
 describe("the definition", () => {
+  it("is refused at start where a type carried back names no link", async () => {
+    const carried = defineConnector({
+      ...twoTypes({ entries: [], notes: [], archived: [], changes: [] }),
+      carries: () => ["test.entry", "test.note"],
+    });
+    expect(await start(carried, harness.runtime(["--once"]))).toBe(2);
+    expect(harness.lines.join("\n")).toContain(
+      "test.note is carried back, so its type needs a link_field",
+    );
+    expect(harness.server.requests).toEqual([]);
+  });
+
   it("is refused at start where a link or read-only field is not among its fields, or a type repeats", async () => {
     const base = twoTypes({
       entries: [],

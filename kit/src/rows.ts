@@ -138,6 +138,8 @@ function paged(creates: readonly NewRow[]): NewRow[][] {
 export interface Hooks {
   refused(sourceId: string, reason: string): void;
   condition(key: string, message: string): void;
+  /** Whether the hold is lost, so nothing more may be written. */
+  fenced(): boolean;
 }
 
 /**
@@ -369,7 +371,8 @@ export class Rows {
       this.counts.skipped += 1;
       this.hooks.condition(
         `file-unloaded:${entry.source_id}`,
-        `the file for ${entry.source_id} could not be fetched from the vendor, so its row waits: ${error instanceof Error ? error.message : String(error)}`,
+        // Not quoted: a loader's error can hold a signed address.
+        `the file for ${entry.source_id} could not be fetched from the vendor, so its row waits`,
       );
       return undefined;
     }
@@ -433,6 +436,7 @@ export class Rows {
       if (agreement !== undefined) {
         agreement = { ...agreement, state: "active" };
         Reflect.deleteProperty(agreement, "stateBy");
+        Reflect.deleteProperty(agreement, "stateAt");
       }
     }
     if (agreed.fresh) {
@@ -462,6 +466,7 @@ export class Rows {
       // Out of another row's trash, which carried nothing either way.
       agreement = { ...agreement, state: agreedState(row.state) };
       Reflect.deleteProperty(agreement, "stateBy");
+      Reflect.deleteProperty(agreement, "stateAt");
     } else if (
       this.kind.twoWay &&
       agreement !== undefined &&
@@ -525,6 +530,8 @@ export class Rows {
     return (
       this.kind.revive &&
       agreement?.state === "trashed" &&
+      // Another row's trash never reached the vendor.
+      agreement.stateBy !== "cascade" &&
       agreement.waiting?.[stateKey] === undefined &&
       !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
     );
@@ -705,7 +712,8 @@ export class Rows {
       }
       this.checkStopped();
       try {
-        this.index(await this.marfa.transition(row.id, "archived"));
+        const archived = await this.marfa.transition(row.id, "archived");
+        this.index(archived);
         const side = sideOf(this.kind.fields, row.properties);
         this.store.set(row.id, {
           vendor: side,
@@ -713,6 +721,7 @@ export class Rows {
           ...agreement,
           state: "archived",
           stateBy: "vendor",
+          stateAt: archived.updated_at,
         });
         this.counts.archived += 1;
       } catch (error) {
@@ -956,6 +965,6 @@ export class Rows {
   }
 
   private checkStopped(): void {
-    if (this.signal.aborted) throw new Stopped();
+    if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
   }
 }

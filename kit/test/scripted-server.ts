@@ -421,11 +421,18 @@ export class ScriptedServer {
   /** A cascade from `root`'s trash takes the row with it. */
   cascadeTrash(id: string, root: string): Row {
     const row = this.byId(id);
+    // Announced as it was before the trash, as `trash` is.
+    const before = {
+      ...row,
+      state: "trashed" as const,
+      trashed_with: root,
+      trashed_by_cascade: true as const,
+    };
     row.state = "trashed";
     row.trashed_with = root;
     row.trashed_by_cascade = true;
     row.updated_at = this.now();
-    this.announce("item.deleted", { ...row });
+    this.announce("item.deleted", before);
     return row;
   }
 
@@ -953,6 +960,8 @@ export class ScriptedServer {
         this.holder?.process === process && this.holder.until > now;
       this.holder = { process, until: now + this.holdMs };
       this.holds.push({ process, released: false });
+      // By the server's own clock, as the real answer's header is.
+      res.setHeader("Date", new Date(now).toUTCString());
       send(200, {
         expires_at: new Date(this.holder.until).toISOString(),
         renewed,
@@ -1695,12 +1704,9 @@ export class ScriptedServer {
     refuse: Refuse,
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
-    if (row === undefined) {
+    // The door reads the row as every read does, the bin left out.
+    if (row === undefined || row.state === "trashed") {
       refuse(404, "item_not_found");
-      return;
-    }
-    if (row.state === "trashed") {
-      refuse(400, "invalid_transition");
       return;
     }
     const version = input["version"];

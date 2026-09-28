@@ -194,3 +194,91 @@ describe("the hold", () => {
     ).toHaveLength(saves);
   });
 });
+
+describe("the hold's window", () => {
+  const linked = {
+    source_id: "a:1",
+    properties: { title: "One", vendor_id: "v1" },
+  };
+
+  it("is the instance's own, so a process past a shorter one carries nothing", async () => {
+    harness.server.holdMs = 30_000;
+    const held = vendor([linked]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { note: "made in Marfa" });
+    const release = gate(held);
+    held.changes.length = 0;
+    const exit = harness.twoWay(held);
+    await until(() => held.runs === 3);
+    // Past the instance's thirty seconds, inside the two minutes it
+    // would be trusted for by default; another process takes it.
+    harness.clock.advance(90_000);
+    harness.server.advance(90_000);
+    heldElsewhere();
+    release();
+    await exit;
+    expect(held.changes).toEqual([]);
+    expect(harness.lines.join("\n")).toContain("went unrenewed too long");
+  });
+
+  it("fences every write, so a run whose hold went unrenewed writes no row", async () => {
+    const held = vendor([linked]);
+    await harness.twoWay(held);
+    const version = harness.server.row("a:1").version;
+    const release = gate(held);
+    held.entries = [
+      {
+        ...linked,
+        properties: { ...linked.properties, note: "from the vendor" },
+      },
+    ];
+    const exit = harness.twoWay(held);
+    await until(() => held.runs === 2);
+    // Five minutes with no renewal, as a laptop asleep.
+    harness.clock.advance(300_000);
+    harness.server.advance(300_000);
+    heldElsewhere();
+    release();
+    expect(await exit).toBe(1);
+    expect(harness.server.row("a:1").version).toBe(version);
+  });
+
+  it("is renewed within it", async () => {
+    harness.server.holdMs = 45_000;
+    const held = vendor([linked]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    // A third of forty-five seconds.
+    await harness.clock.sleeping(15_000);
+    const renewals = harness.server.holds.length;
+    await harness.clock.wake(15_000);
+    await until(() => harness.server.holds.length > renewals);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("is taken anew by the next run under --every, after a run was fenced", async () => {
+    const held = vendor([linked]);
+    const release = gate(held);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await until(() => held.runs === 1);
+    harness.server.holder = undefined;
+    await harness.clock.wake(minute);
+    await until(() =>
+      harness.lines.some((line) =>
+        line.includes("lapsed before it was renewed"),
+      ),
+    );
+    release();
+    await until(() => harness.server.runs.length === 1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    // A failed run's next waits two intervals, looking between.
+    harness.clock.advance(30 * minute);
+    await harness.clock.wake(10_000);
+    await until(() => harness.server.runs.length === 2);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});

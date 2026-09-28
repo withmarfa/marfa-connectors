@@ -25,6 +25,7 @@ const fileType: TypeDefinition = {
   label: "File",
   description: "An attachment from the test vendor.",
   parent: "core.file",
+  link_field: "asset_id",
   fields: { asset_id: { type: "string" } },
 };
 
@@ -134,8 +135,9 @@ describe("a file", () => {
     expect(await once(held)).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
     expect(harness.lastRun().summary).toContain(
-      "the file for f:1 could not be fetched from the vendor, so its row waits: 404 from the vendor",
+      "the file for f:1 could not be fetched from the vendor, so its row waits",
     );
+    expect(harness.lastRun().summary).not.toContain("404 from the vendor");
     held.files = [failing];
     expect(await once(held)).toBe(0);
     expect(harness.server.row("f:1").properties["blob_ref"]).toBe(

@@ -2,6 +2,7 @@ import {
   agreedState,
   carried,
   changedInMarfa,
+  laterThan,
   noteWaiting,
   sideOf,
   type Agreement,
@@ -196,6 +197,7 @@ export function observe(
   let stateSince = agreement.waiting?.[stateKey];
   let state = agreement.state;
   let stateBy = agreement.stateBy;
+  let stateAt = agreement.stateAt;
   let own = 0;
   for (const { item } of seen.frames) {
     if (
@@ -218,15 +220,19 @@ export function observe(
     if (item.state === "trashed" && cascaded(item) && state !== "trashed") {
       state = "trashed";
       stateBy = "cascade";
+      stateAt = item.updated_at;
       stateSince = undefined;
       continue;
     }
-    if (stateBy === "cascade" && item.state !== "trashed") {
+    const after = laterThan(item.updated_at, stateAt);
+    if (stateBy === "cascade" && item.state !== "trashed" && after) {
       state = agreedState(item.state);
       stateBy = undefined;
     }
     // A person moved it: whatever state follows is theirs.
-    if (stateBy === "vendor" && item.state !== state) stateBy = undefined;
+    if (stateBy === "vendor" && item.state !== state && after) {
+      stateBy = undefined;
+    }
     stateSince =
       kind.twoWay && item.state !== state
         ? (stateSince ?? item.updated_at)
@@ -236,7 +242,9 @@ export function observe(
   const next: Agreement = { ...agreement, state };
   Reflect.deleteProperty(next, "waiting");
   Reflect.deleteProperty(next, "stateBy");
+  Reflect.deleteProperty(next, "stateAt");
   if (stateBy !== undefined) next.stateBy = stateBy;
+  if (stateBy !== undefined && stateAt !== undefined) next.stateAt = stateAt;
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
   return { next, own };
 }
@@ -298,6 +306,7 @@ export async function runOnce<E extends EnvDeclaration>(
         `the server refused ${sourceId}: ${reason}`,
       ),
     condition: (key: string, message: string) => raised.set(key, message),
+    fenced: () => setup.fenced?.() === true,
   };
   const lanes = new Map(
     [...specs.values()].map((spec) => [
@@ -442,12 +451,9 @@ export async function runOnce<E extends EnvDeclaration>(
   /** Rows the log showed that nothing was agreed for, not carried. */
   let unagreed = 0;
 
-  /** Nothing in Marfa waits; a target the vendor named and Marfa lacks still does. */
   const withoutWaiting = (agreement: Agreement): Agreement => {
     const next = { ...agreement };
     Reflect.deleteProperty(next, "waiting");
-    const pending = agreement.waiting?.[connectKey];
-    if (pending !== undefined) next.waiting = { [connectKey]: pending };
     return next;
   };
   /** Links and read-only fields a person changed, put back before the vendor is read. */
@@ -546,12 +552,26 @@ export async function runOnce<E extends EnvDeclaration>(
     if (connector.onChange === undefined || !kind.twoWay) return;
     // What changed before another row's trash took it waits for its restore.
     if (agreement.stateBy === "cascade") return;
+    if (item.state === "trashed" && cascaded(item)) {
+      // Taken after the log was read: the log's frame will say the same.
+      store.set(item.id, {
+        ...agreement,
+        state: "trashed",
+        stateBy: "cascade",
+        stateAt: item.updated_at,
+      });
+      return;
+    }
     const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
       rows.linkOf(item.properties) === undefined;
-    if (unlinked && item.state === "trashed") {
+    if (
+      unlinked &&
+      item.state === "trashed" &&
+      agreement.attempted === undefined
+    ) {
       // Never made at the vendor, and now in the bin: nothing to carry.
       store.clear(item.id);
       return;
@@ -567,8 +587,11 @@ export async function runOnce<E extends EnvDeclaration>(
             properties: { ...item.properties, [kind.link]: agreement.link },
           }
         : item;
+    // A trash of a row whose create got no link back may still find it made.
     const changeKind: ChangeKind = unlinked
-      ? "created"
+      ? current.state === "trashed"
+        ? "trashed"
+        : "created"
       : current.state !== agreement.state
         ? current.state === "trashed"
           ? "trashed"
@@ -615,11 +638,10 @@ export async function runOnce<E extends EnvDeclaration>(
     ) {
       return;
     }
-    let attempted: string | undefined;
+    const attempted = unlinked ? agreement.attempted : undefined;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
-      attempted = agreement.attempted;
       store.set(current.id, {
         ...agreement,
         attempted: clock.now().toISOString(),
@@ -637,7 +659,7 @@ export async function runOnce<E extends EnvDeclaration>(
       },
       watchContext,
     );
-    settle(kind, current, changed, answered, moved);
+    settle(kind, current, changeKind, changed, answered, moved);
   };
   /** The connections as carried, and a change to a target not yet at the vendor still waiting. */
   const settledConnections = (
@@ -657,22 +679,30 @@ export async function runOnce<E extends EnvDeclaration>(
   const settle = (
     kind: Spec,
     item: Item,
+    changeKind: ChangeKind,
     changed: readonly string[],
     answered: Entry | undefined,
     moved: Carried | undefined,
   ): void => {
     pushed += 1;
     const base = store.get(item.id);
+    // A vendor makes a row live; a state beside the create is carried next.
+    const later = changeKind === "created" && item.state !== "active";
     const next = carried({
       fields: kind.fields,
       agreement: base,
       properties: item.properties,
-      state: agreedState(item.state),
+      state: later ? "active" : agreedState(item.state),
       changed,
       answered,
     });
+    if (base?.stateBy !== undefined && next.state === base.state) {
+      next.stateBy = base.stateBy;
+      if (base.stateAt !== undefined) next.stateAt = base.stateAt;
+    }
     // Only a read-only field not yet put back, and a target Marfa lacks, still wait.
     const waiting: Record<string, string> = {};
+    if (later) waiting[stateKey] = item.updated_at;
     const pending = base?.waiting?.[connectKey];
     if (pending !== undefined) waiting[connectKey] = pending;
     // Connections this carry did not take, as with a trash, wait for the next.
@@ -785,7 +815,7 @@ export async function runOnce<E extends EnvDeclaration>(
       setup.signal,
       connectionTypes(connector),
     ).read();
-    if (read.resync) {
+    if (read.resync && stored.cursor !== undefined) {
       raised.set(
         "resync",
         "the log no longer holds the cursor, so every row of the connector's types was compared with what was last agreed",
@@ -871,9 +901,8 @@ export async function runOnce<E extends EnvDeclaration>(
         `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} the log named ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor yet, so nothing is carried for ${unagreed === 1 ? "it" : "them"} until the vendor next sends ${unagreed === 1 ? "it" : "them"}, whose values ${unagreed === 1 ? "it takes" : "they take"} where they differ`,
       );
     }
-    // Everything the log named is recorded, so the cursor may move past it
-    // however the rest of the run goes.
-    await store.flush();
+    // Everything the log named is noted; the cursor passes it once the final
+    // flush keeps that on the instance.
     recorded = true;
     for (const id of order) await putBack(id);
     if (hints !== undefined) hints = await withWaiting(hints, order);
@@ -962,6 +991,14 @@ export async function runOnce<E extends EnvDeclaration>(
       for (const item of purged.values()) {
         if (setup.fenced?.() === true || setup.signal.aborted) {
           throw new Stopped();
+        }
+        if (!specs.has(item.type)) {
+          raised.set(
+            `purge-undeclared:${item.id}`,
+            `the purge of ${item.id} is not carried, since the connector no longer declares ${item.type}`,
+          );
+          purged.delete(item.id);
+          continue;
         }
         const answered = await connector.onChange?.(
           { kind: "purged", item, changed: new Set() },
@@ -1156,7 +1193,12 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
     const last = seen.frames.at(-1)?.item;
     const spec = last === undefined ? undefined : specs.get(last.type);
     if (last === undefined || spec?.twoWay !== true) return false;
-    if (seen.purged) return !cascaded(last);
+    // A purge is carried where its row was told to the vendor.
+    if (seen.purged) {
+      const link =
+        spec.link === undefined ? undefined : last.properties[spec.link];
+      return !cascaded(last) && typeof link === "string" && link !== "";
+    }
     const agreement = store.get(id);
     if (agreement === undefined) return last.state === "active";
     // A read-only field is put back by the next scheduled run.
@@ -1180,29 +1222,50 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
           ),
           connectionTypes(setup.connector),
         );
-  // Added in Marfa is a change; removed is one only where the target is
-  // still there, since a purge's removals are never carried.
-  const removed = new Set<string>();
-  let added = false;
+  // A change where Marfa added a connection to one of the connector's own
+  // rows, or removed one whose target is still there: a purge's never counts.
+  const kinds = new Map(
+    (setup.connector.connections ?? []).map((kind) => [kind.id, kind]),
+  );
+  const added: [string, string][] = [];
+  const removed: string[] = [];
   for (const { item, edges } of connected.values()) {
     const spec = specs.get(item.type);
     if (spec?.twoWay !== true) continue;
     const agreed = store.get(item.id)?.connections ?? {};
     for (const type of spec.connections) {
-      const was = new Set(agreed[type] ?? []);
+      const list = agreed[type];
+      if (list === undefined) continue;
+      const was = new Set(list);
       const now = new Set(
         edges
           .filter((edge) => edge.edge_type === type)
           .map((edge) => edge.target_id),
       );
-      added ||= [...now].some((target) => !was.has(target));
-      for (const target of was) if (!now.has(target)) removed.add(target);
+      for (const target of now)
+        if (!was.has(target)) added.push([type, target]);
+      for (const target of was) if (!now.has(target)) removed.push(target);
     }
   }
+  const named = [
+    ...new Set([...added.map(([, target]) => target), ...removed]),
+  ];
+  const rows =
+    first === undefined || named.length === 0
+      ? new Map<string, Item>()
+      : new Map(
+          (await setup.marfa.lookup(first, { ids: named })).data.map((row) => [
+            row.id,
+            row,
+          ]),
+        );
   const changed =
-    added ||
-    (first !== undefined &&
-      removed.size > 0 &&
-      (await setup.marfa.lookup(first, { ids: [...removed] })).data.length > 0);
+    added.some(([type, target]) => {
+      const row = rows.get(target);
+      return (
+        row !== undefined &&
+        kinds.get(type)?.target_type_constraints?.includes(row.type) === true
+      );
+    }) || removed.some((target) => rows.has(target));
   return { waiting: changed, cursor: read.cursor };
 }

@@ -37,14 +37,17 @@ async function quietRun(held: Vendor): Promise<number> {
 describe("the events request", () => {
   it("is sent by every connector, since what one only reads is watched too", async () => {
     await harness.once(vendor([one]));
+    // Nothing kept yet: the first read takes the log's head.
     expect(streams()).toHaveLength(1);
+    expect(streams()[0]?.headers["last-event-id"]).toBeUndefined();
     // The two-way connector's type names its link.
     harness.server.types.set(linkedType.id, { ...linkedType });
     await harness.twoWay(vendor([one]));
     expect(streams()).toHaveLength(2);
     expect(streams()[1]?.query.get("type")).toBe("test.entry");
     expect(streams()[1]?.query.get("edges")).toBe("none");
-    expect(streams()[0]?.headers["last-event-id"]).toBe("0");
+    // Then from the head the first read kept.
+    expect(streams()[1]?.headers["last-event-id"]).toMatch(/^\d+$/);
   });
 });
 
@@ -1165,7 +1168,7 @@ describe("a row in the bin", () => {
     expect(held.changes).toEqual([]);
   });
 
-  it("carries nothing, and keeps nothing, where its create never reached the vendor", async () => {
+  it("is offered as a trash, with when its create was sent, where that create may have reached the vendor", async () => {
     const held = vendor([]);
     await harness.twoWay(held);
     const theirs = harness.server.insert(
@@ -1177,9 +1180,17 @@ describe("a row in the bin", () => {
     held.pushFail = { id: theirs.id, error: new Error("the vendor is down") };
     expect(await quietRun(held)).toBe(1);
     harness.server.trash(theirs.id);
+    held.changes.length = 0;
+    expect(await quietRun(held)).toBe(0);
+    expect(
+      held.changes.map((change) => [
+        change.kind,
+        change.attempted !== undefined,
+      ]),
+    ).toEqual([["trashed", true]]);
+    held.changes.length = 0;
     expect(await quietRun(held)).toBe(0);
     expect(held.changes).toEqual([]);
-    expect(harness.server.agreements.get(theirs.id)).toBeUndefined();
   });
 });
 

@@ -84,14 +84,17 @@ describe("new rows", () => {
     ]);
   });
 
-  it("look up the rows the entries name by their natural keys, and list none", async () => {
+  it("look up the rows the entries name by their natural keys, and list the type only while nothing is kept", async () => {
+    await harness.once(vendor([one]));
+    expect(harness.server.requestsTo("GET", "/items")).toHaveLength(1);
     await harness.once(vendor([one, two]));
     expect(
-      harness.server.requestsTo("POST", "/items/lookup").map((r) => r.body),
-    ).toEqual([
-      { type: "test.entry", source: "test", source_ids: ["a:1", "a:2"] },
-    ]);
-    expect(harness.server.requestsTo("GET", "/items")).toEqual([]);
+      harness.server
+        .requestsTo("POST", "/items/lookup")
+        .slice(-1)
+        .map((r) => r.body),
+    ).toEqual([{ type: "test.entry", source: "test", source_ids: ["a:2"] }]);
+    expect(harness.server.requestsTo("GET", "/items")).toHaveLength(1);
   });
 
   it("write one row for an entry the vendor repeats", async () => {

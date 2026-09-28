@@ -231,6 +231,14 @@ describe("the key check on start", () => {
         { enforcement_override: { strict_mode: { types: ["test.entry"] } } },
         "an enforcement override of strict_mode",
       ],
+      // Registering connection types is for a connector that declares them.
+      [
+        {
+          type_permissions: { "test.entry": "write" },
+          metadata_permissions: { edge_types: "write" },
+        },
+        "metadata edge_types=write",
+      ],
     ] as const) {
       harness.server.grants = grants;
       expect(await harness.once(vendor([entry]))).toBe(1);
