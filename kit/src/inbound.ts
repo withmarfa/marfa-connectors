@@ -1,6 +1,7 @@
 import type { Delivery, EnvDeclaration, EnvValues, Inbound } from "./define.js";
 import type { InboundDeliveryRow, Marfa } from "./marfa.js";
 import { Stopped } from "./rows.js";
+import type { Clock } from "./runtime.js";
 
 /**
  * The most deliveries one run takes. What waits past them is taken by the
@@ -8,6 +9,9 @@ import { Stopped } from "./rows.js";
  * starts one.
  */
 export const deliveriesPerRun = 500;
+
+/** How long one delivery's `verify` may run before the delivery is left waiting. */
+export const verifyLimitMs = 10_000;
 
 export interface Collected {
   /** Verified, and not a repeat of one handled: marked processed once the run succeeds. */
@@ -20,6 +24,38 @@ export interface Collected {
   readonly unreadable: number;
   /** Deliveries whose body could not be fetched, left waiting for a later run. */
   readonly unfetched: number;
+  /** Deliveries whose `verify` ran past its limit, left waiting for a later run. */
+  readonly unverified: number;
+}
+
+/**
+ * The delivery's `verify`, bounded: `late` once it runs past the limit, so
+ * a check that hangs holds neither the run nor the deliveries behind it.
+ */
+async function bounded<E extends EnvDeclaration>(
+  inbound: Inbound<E>,
+  delivery: Delivery,
+  env: EnvValues<E>,
+  signal: AbortSignal,
+  clock: Clock,
+): Promise<boolean | "late"> {
+  const late = new AbortController();
+  const done = new AbortController();
+  const verifying = Promise.resolve().then(() =>
+    inbound.verify(delivery, env, AbortSignal.any([signal, late.signal])),
+  );
+  // Settled after the race is lost, so it must not surface as unhandled.
+  verifying.catch(() => undefined);
+  const deadline = clock
+    .sleep(verifyLimitMs, AbortSignal.any([signal, done.signal]))
+    .then(() => "late" as const);
+  try {
+    const outcome = await Promise.race([verifying, deadline]);
+    if (outcome === "late") late.abort();
+    return outcome;
+  } finally {
+    done.abort();
+  }
 }
 
 function delivery(row: InboundDeliveryRow, body: Uint8Array): Delivery {
@@ -50,8 +86,9 @@ function delivery(row: InboundDeliveryRow, body: Uint8Array): Delivery {
  * processed or verified earlier in the same collection, so a forged
  * delivery sent first cannot hide the real one. The rest are the run's to
  * process. A `verify` that throws rejects its delivery and a `hints` that
- * throws reads everything for it, and a body that cannot be fetched leaves
- * its delivery waiting, so one delivery the connector cannot read never
+ * throws reads everything for it, and a body that cannot be fetched, or a
+ * `verify` that runs past its limit, leaves its delivery waiting, so one
+ * delivery the connector cannot read never
  * holds up the rest; neither error's text is kept, since it can quote the
  * body.
  */
@@ -61,6 +98,7 @@ export async function collect<E extends EnvDeclaration>(
   inbound: Inbound<E>,
   env: EnvValues<E>,
   signal: AbortSignal,
+  clock: Clock,
 ): Promise<Collected> {
   const rows = await marfa.pendingDeliveries(
     connectorId,
@@ -75,6 +113,7 @@ export async function collect<E extends EnvDeclaration>(
   let everything = false;
   let unreadable = 0;
   let unfetched = 0;
+  let unverified = 0;
   // Read through a call, since the signal can abort while a fetch waits.
   const stopped = (): boolean => signal.aborted;
   for (const row of rows) {
@@ -88,11 +127,16 @@ export async function collect<E extends EnvDeclaration>(
       continue;
     }
     const arrived = delivery(row, body);
-    let genuine: boolean;
+    let genuine: boolean | "late";
     try {
-      genuine = await inbound.verify(arrived, env);
+      genuine = await bounded(inbound, arrived, env, signal, clock);
     } catch {
       genuine = false;
+    }
+    if (stopped()) throw new Stopped();
+    if (genuine === "late") {
+      unverified += 1;
+      continue;
     }
     if (!genuine) {
       rejected.push(row.id);
@@ -127,5 +171,6 @@ export async function collect<E extends EnvDeclaration>(
     duplicate: duplicate.length,
     unreadable,
     unfetched,
+    unverified,
   };
 }

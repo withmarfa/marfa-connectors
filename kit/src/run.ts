@@ -41,8 +41,8 @@ export interface RunResult {
   /** No error ended the run, whatever writes it held. */
   readonly succeeded: boolean;
   /**
-   * Every delivery the run took is marked and none was left unfetched, so
-   * none waits on its account.
+   * Every delivery the run took is marked and none was left unfetched or
+   * unverified, so none waits on its account.
    */
   readonly settled: boolean;
 }
@@ -223,7 +223,14 @@ export async function runOnce<E extends EnvDeclaration>(
         "deliveries-unread",
         "the waiting deliveries could not be read, so this run read the vendor whole without them",
         () =>
-          collect(setup.marfa, setup.connectorId, inbound, env, setup.signal),
+          collect(
+            setup.marfa,
+            setup.connectorId,
+            inbound,
+            env,
+            setup.signal,
+            clock,
+          ),
       );
       if (!whole) hints = collected?.hints;
       const rejected = collected?.rejected ?? 0;
@@ -245,6 +252,13 @@ export async function runOnce<E extends EnvDeclaration>(
         raised.set(
           "unfetched",
           `${String(unfetched)} ${unfetched === 1 ? "delivery's body" : "deliveries' bodies"} could not be fetched, so ${unfetched === 1 ? "it waits" : "they wait"} for a later run`,
+        );
+      }
+      const unverified = collected?.unverified ?? 0;
+      if (unverified > 0) {
+        raised.set(
+          "unverified",
+          `${String(unverified)} ${unverified === 1 ? "delivery's signature check" : "deliveries' signature checks"} ran past ten seconds, so ${unverified === 1 ? "it waits" : "they wait"} for a later run`,
         );
       }
       const endpoints = whole
@@ -400,7 +414,9 @@ export async function runOnce<E extends EnvDeclaration>(
     }
   }
   const settled =
-    processed === taken.length && (collected?.unfetched ?? 0) === 0;
+    processed === taken.length &&
+    (collected?.unfetched ?? 0) === 0 &&
+    (collected?.unverified ?? 0) === 0;
   const counts = tally(
     rows.counts,
     twoWay ? { pushed, own: read?.own ?? 0 } : undefined,

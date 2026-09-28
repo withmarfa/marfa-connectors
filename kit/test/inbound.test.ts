@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   Harness,
+  hung,
   secretToken,
   signed,
   vendor,
@@ -11,6 +12,7 @@ import {
 let harness: Harness;
 beforeEach(async () => {
   harness = await Harness.create();
+  hung.length = 0;
 });
 afterEach(async () => {
   await harness.close();
@@ -403,6 +405,46 @@ describe("between scheduled runs", () => {
     expect(said).not.toContain("cannot read");
     harness.stop();
     expect(await exit).toBe(0);
+  });
+
+  it("leaves a delivery whose verify runs past its limit waiting, aborts the check, and takes the ones behind it", async () => {
+    const slow = signed({ ids: ["a:1"] });
+    harness.server.deliver(slow.body, [...slow.headers, ["X-Hang", "1"]]);
+    const after = signed({ ids: ["a:1"] });
+    harness.server.deliver(after.body, after.headers);
+    const held = vendor([one]);
+    const exit = harness.inbound(held, ["--every", "15m"]);
+    await until(() => hung.length === 1);
+    expect(hung[0]?.aborted).toBe(false);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(15 * minute);
+
+    expect(hung[0]?.aborted).toBe(true);
+    expect(outcomes()).toEqual([null, "processed"]);
+    const run = harness.lastRun();
+    expect(run.outcome).toBe("succeeded");
+    expect(run.summary).toContain(
+      "1 delivery's signature check ran past ten seconds, so it waits for a later run",
+    );
+    // Left waiting, the run is not settled, so the next is the schedule's
+    // and no look runs for the delivery in between.
+    expect(looks()).toHaveLength(0);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("hands verify the stop, and ends a run whose check hangs when asked to stop", async () => {
+    const slow = signed({ ids: ["a:1"] });
+    harness.server.deliver(slow.body, [...slow.headers, ["X-Hang", "1"]]);
+    const held = vendor([one]);
+    const exit = harness.inbound(held);
+    await until(() => hung.length === 1);
+    harness.stop();
+
+    expect(await exit).toBe(0);
+    expect(hung[0]?.aborted).toBe(true);
+    expect(outcomes()).toEqual([null]);
+    expect(held.runs).toBe(0);
   });
 
   it("marks what a run took processed though a write was held, and does not run again at the next look", async () => {

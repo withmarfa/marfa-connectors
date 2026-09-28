@@ -136,9 +136,15 @@ export interface Inbound<E extends EnvDeclaration> {
    * Whether the delivery came from the vendor, by its signature: one that
    * did not, or that throws, is marked rejected for good and changes
    * nothing, so a check that can fail for a passing reason, such as one
-   * reaching the network, rejects deliveries that were genuine.
+   * reaching the network, rejects deliveries that were genuine. `signal`
+   * aborts on a stop, or once the check has run for ten seconds, which
+   * leaves the delivery waiting for a later run.
    */
-  verify(delivery: Delivery, env: EnvValues<E>): boolean | Promise<boolean>;
+  verify(
+    delivery: Delivery,
+    env: EnvValues<E>,
+    signal: AbortSignal,
+  ): boolean | Promise<boolean>;
   /**
    * What the delivery says changed, as ids the run can fetch, or
    * `"everything"`, which a throw also means. A delivery is a hint, never

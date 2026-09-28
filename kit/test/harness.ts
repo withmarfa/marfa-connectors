@@ -198,15 +198,27 @@ function twoWayConnector(held: Vendor) {
   });
 }
 
+/** The signals handed to each `verify` that hung, in the order they hung. */
+export const hung: AbortSignal[] = [];
+
 /**
  * How the test connectors read deliveries: a delivery is the vendor's when
  * `X-Signature` is the HMAC of its body under the token, and its body names
  * what changed as `{"ids": [...]}`, or `{"everything": true}`. One carrying
- * `X-Throw` makes `verify` throw, quoting the body, and one whose body is not
- * JSON makes `hints` throw, as `JSON.parse` does.
+ * `X-Throw` makes `verify` throw, quoting the body, one carrying `X-Hang`
+ * makes it wait until its signal aborts, and one whose body is not JSON
+ * makes `hints` throw, as `JSON.parse` does.
  */
 const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
-  verify: (delivery, env) => {
+  verify: (delivery, env, signal) => {
+    if (delivery.header("x-hang") !== undefined) {
+      hung.push(signal);
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          resolve(true);
+        });
+      });
+    }
     if (delivery.header("x-throw") !== undefined) {
       throw new Error(`cannot read ${new TextDecoder().decode(delivery.body)}`);
     }
