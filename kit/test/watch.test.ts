@@ -141,7 +141,7 @@ describe("what is carried back", () => {
     expect(harness.lastRun().summary).toMatch(/pushed 1, own 1/);
   });
 
-  it("is a person's transition at the connector's own version", async () => {
+  it("is a person's transition, which moves no version", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
     const row = harness.server.row("a:1");
@@ -908,8 +908,8 @@ describe("a purge and a transition met by what was agreed", () => {
     harness.server.trash(row.id);
     await quietRun(held);
     expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
-    // The purge's frame shows the version and state the trash left, which
-    // the memory holds as its own; the row is gone all the same.
+    // The purge's frame shows the row as the carried trash left it; the row
+    // is gone all the same.
     harness.server.purgeById(row.id);
     await quietRun(held);
     expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
@@ -972,7 +972,7 @@ describe("a purge and a transition met by what was agreed", () => {
     expect(harness.lastRun().summary).toMatch(/conflicts 0/);
 
     // The witness: a vendor change later than the restore lands, and the
-    // restore is carried beside it.
+    // restore needs no carrying.
     harness.server.trash(row.id);
     await quietRun(held);
     const again = harness.server.restore(row.id);
@@ -1000,8 +1000,8 @@ describe("a purge and a transition met by what was agreed", () => {
     await harness.twoWay(held);
     await quietRun(held);
     const row = harness.server.row("a:1");
-    // Between the log's read and the rows' listing, so the listing shows
-    // the row in a state the memory does not hold, at the same version.
+    // Between the log's read and the rows' listing, so only the listing
+    // shows the row in a state the two sides did not agree on.
     harness.server.beforeAnswer = (request) => {
       if (request.method === "GET" && request.path === "/items") {
         harness.server.transition(row.id, "archived");

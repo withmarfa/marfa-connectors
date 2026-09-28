@@ -149,7 +149,7 @@ function commandId(item: Item, type: string): string {
 /**
  * Carries one change made in Marfa to Todoist. Resolving means the change
  * landed or was abandoned with a condition naming the row; a throw fails
- * the run and holds the cursor, so the change is offered again.
+ * the run, and the change waits for the next.
  */
 export async function carry(
   change: Change,
