@@ -49,6 +49,14 @@ export class Hold {
         return;
       }
       this.failures = 0;
+      if (!answer.renewed) {
+        // Another process may have run and written meanwhile, so what this
+        // run read is stale; the next run reads it again.
+        this.logger.warn(
+          "the hold lapsed before it was renewed, so this run stops",
+        );
+        this.fence.abort();
+      }
     } catch (error) {
       this.failures += 1;
       this.logger.warn(`the hold could not be renewed: ${describe(error)}`);

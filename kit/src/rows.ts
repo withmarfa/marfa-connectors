@@ -8,7 +8,7 @@ import {
   type Agreement,
   type Merged,
 } from "./agreement.js";
-import type { Entry, Item } from "./define.js";
+import type { Entry, Item, Target } from "./define.js";
 import {
   Refusal,
   type BulkResult,
@@ -54,14 +54,13 @@ export interface Spec {
   readonly twoWay: boolean;
   /** A trashed row comes back on the vendor's change. */
   readonly revive: boolean;
+  /** The connection types a row of it is the source of. */
+  readonly connections: ReadonlySet<string>;
 }
 
 /** In the bin because another row's trash took it there. */
 export function cascaded(item: Item): boolean {
-  return (
-    (item as Item & { trashed_by_cascade?: boolean }).trashed_by_cascade ===
-    true
-  );
+  return item.trashed_by_cascade === true;
 }
 
 /** A state change waiting to be carried, beside the fields. */
@@ -159,6 +158,11 @@ export class Rows {
   readonly marked = new Set<string>();
   /** Rows the vendor's word reached this run: an entry, or an archive. */
   readonly reached = new Set<string>();
+  /** The connections each entry this run wrote named, by row id. */
+  readonly connecting = new Map<
+    string,
+    Readonly<Record<string, readonly Target[]>>
+  >();
   /**
    * On a run for what deliveries named, the keys it may archive: the rest
    * of the vendor was not read, so its silence says nothing.
@@ -187,6 +191,20 @@ export class Rows {
     if (item.type === this.kind.type) this.index(item);
   }
 
+  /** The rows the vendor's ids name, by link, or by natural key where the type names none. */
+  async named(ids: readonly string[]): Promise<Map<string, Item>> {
+    const byLink = this.kind.link !== undefined;
+    await this.know(byLink ? { links: ids } : { keys: ids });
+    const found = new Map<string, Item>();
+    for (const id of ids) {
+      const row = this.byId.get(
+        (byLink ? this.byLink.get(id) : this.byKey.get(id)) ?? "",
+      );
+      if (row !== undefined) found.set(id, row);
+    }
+    return found;
+  }
+
   async upsert(entries: readonly Entry[]): Promise<void> {
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
@@ -203,14 +221,19 @@ export class Rows {
     const creates: [Entry, NewRow][] = [];
     for (const entry of latest.values()) {
       const properties = cleaned(entry.properties);
-      const stray = Object.keys(properties).filter(
-        (field) => !this.kind.fields.includes(field),
-      );
+      const stray = [
+        ...Object.keys(properties).filter(
+          (field) => !this.kind.fields.includes(field),
+        ),
+        ...Object.keys(entry.connections ?? {}).filter(
+          (type) => !this.kind.connections.has(type),
+        ),
+      ];
       if (stray.length > 0) {
         this.counts.skipped += 1;
         this.hooks.condition(
           `undeclared:${entry.source_id}`,
-          `the entry ${entry.source_id} carries ${stray.join(", ")}, which the connector does not declare among its fields, so it is not written`,
+          `the entry ${entry.source_id} carries ${stray.join(", ")}, which the connector does not declare among its fields or its type's connections, so it is not written`,
         );
         continue;
       }
@@ -244,7 +267,7 @@ export class Rows {
         this.buried.get(`key:${entry.source_id}`);
       if (
         buried !== undefined &&
-        !laterThan(entry.changed_at, buried.remembered_until)
+        !laterThan(entry.changed_at, buried.settled_at)
       ) {
         // A person purged the row: it comes back only once the vendor
         // changes it after that.
@@ -445,14 +468,24 @@ export class Rows {
     }
   }
 
-  /** Records what the two sides now agree on, and the link the row is known by. */
+  /**
+   * Records what the two sides now agree on, the link the row is known by,
+   * and the connections the entry names, which are written once the run's
+   * rows are.
+   */
   private agree(id: string, agreement: Agreement, entry: Entry): void {
     const value = this.linkOf(cleaned(entry.properties));
+    const was = this.store.get(id);
     this.store.set(id, {
       ...agreement,
       ...(value !== undefined && { link: value }),
+      ...(was?.connections !== undefined && { connections: was.connections }),
+      ...(was?.pending !== undefined && { pending: was.pending }),
     });
     if (agreement.waiting !== undefined) this.marked.add(id);
+    if (entry.connections !== undefined) {
+      this.connecting.set(id, entry.connections);
+    }
   }
 
   /**

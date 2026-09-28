@@ -1,4 +1,5 @@
-import type { TypeDefinition } from "./define.js";
+import type { ConnectionDefinition, TypeDefinition } from "./define.js";
+import type { EdgeType } from "./marfa.js";
 
 /** What makes a field what it is; its description and label do not. */
 const shape = [
@@ -132,4 +133,39 @@ export function typeDifferences(
     );
   }
   return differences;
+}
+
+/** How the server's edge type differs from the connection a connector declares. */
+export function edgeTypeDifferences(
+  carried: ConnectionDefinition,
+  served: EdgeType,
+): string[] {
+  const sorted = (values: readonly string[] | undefined) =>
+    [...(values ?? [])].sort();
+  const pairs: [string, unknown, unknown][] = [
+    ["cardinality", carried.cardinality, served.cardinality],
+    [
+      "cascade_on_delete",
+      carried.cascade_on_delete ?? "orphan",
+      served.cascade_on_delete,
+    ],
+    [
+      "source_type_constraints",
+      sorted(carried.source_type_constraints),
+      sorted(served.source_type_constraints),
+    ],
+    [
+      "target_type_constraints",
+      sorted(carried.target_type_constraints),
+      sorted(served.target_type_constraints),
+    ],
+    ["reverse_name", carried.reverse_name, served.reverse_name],
+    ["written_at", carried.written_at ?? "source", served.written_at],
+  ];
+  return pairs
+    .filter(([, here, there]) => JSON.stringify(here) !== JSON.stringify(there))
+    .map(
+      ([name, here, there]) =>
+        `${name} is ${show(here)} here and ${show(there)} on the server`,
+    );
 }

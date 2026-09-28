@@ -31,6 +31,10 @@ export interface Agreement {
   waiting?: Record<string, string>;
   /** When a create was sent to the vendor and no link came back. */
   attempted?: string;
+  /** Each connection type's targets both sides last agreed on, by row id. */
+  connections?: Record<string, string[]>;
+  /** Targets the vendor named that Marfa holds no row for yet, as `<type> <id>`. */
+  pending?: Record<string, string[]>;
 }
 
 /** A short name for a value; the empty string for one the side does not hold. */

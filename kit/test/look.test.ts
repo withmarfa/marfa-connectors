@@ -85,6 +85,84 @@ describe("the look between runs, for a connector that carries changes back", () 
   });
 });
 
+describe("the look, for connections", () => {
+  const blocks = {
+    id: "test.blocks",
+    cardinality: "many-to-many" as const,
+    source_type_constraints: ["test.entry"],
+    target_type_constraints: ["test.entry"],
+  };
+
+  function blocking(): ReturnType<typeof vendor> {
+    const held = vendor([
+      {
+        source_id: "a:1",
+        properties: { title: "One", vendor_id: "v1" },
+        connections: { "test.blocks": [{ type: "test.entry", id: "v2" }] },
+      },
+      { source_id: "a:2", properties: { title: "Two", vendor_id: "v2" } },
+    ]);
+    held.connections = [blocks];
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+    };
+    return held;
+  }
+
+  it("starts no run for its own edge frame whose target was purged since", async () => {
+    const held = blocking();
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    // A cascade's trash and purge start no run of their own.
+    const two = harness.server.row("a:2");
+    harness.server.cascadeTrash(two.id, "root-1");
+    harness.server.purgeById(two.id);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    // The witness: a person's connection starts one.
+    harness.server.insert(
+      "a:3",
+      { title: "Three", vendor_id: "v3" },
+      "test.entry",
+    );
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
+    await harness.clock.sleeping(10_000);
+    harness.server.drawEdge(
+      harness.server.row("a:1").id,
+      harness.server.row("a:3").id,
+      "test.blocks",
+    );
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 3);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("reads nothing for connections a purge took", async () => {
+    const held = blocking();
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    // Past the run's own edge frame first.
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    const two = harness.server.row("a:2");
+    harness.server.cascadeTrash(two.id, "root-1");
+    harness.server.purgeById(two.id);
+    const reads = harness.server.requestsTo("POST", "/items/lookup").length;
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    expect(harness.server.requestsTo("POST", "/items/lookup").length).toBe(
+      reads,
+    );
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});
+
 describe("--look-every", () => {
   it("is refused for a connector that neither receives webhooks nor carries changes back", async () => {
     expect(

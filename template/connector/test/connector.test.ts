@@ -46,7 +46,9 @@ let writes: VendorWrite[];
 let refuseNextWrite: number | undefined;
 
 beforeEach(async () => {
-  marfa = await new ScriptedServer("example").start();
+  marfa = await new ScriptedServer("example", {
+    types: ["example.item"],
+  }).start();
   items = [];
   writes = [];
   refuseNextWrite = undefined;

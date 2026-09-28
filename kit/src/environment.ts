@@ -127,6 +127,38 @@ export function checkDefinition<E extends EnvDeclaration>(
       );
     }
   }
+  const types = new Set(ids);
+  const connections = (connector.connections ?? []).map((kind) => kind.id);
+  if (new Set(connections).size !== connections.length) {
+    problems.push("each connection type once");
+  }
+  for (const kind of connector.connections ?? []) {
+    const ends = [
+      ...(kind.source_type_constraints ?? []),
+      ...(kind.target_type_constraints ?? []),
+    ];
+    if (
+      (kind.source_type_constraints ?? []).length === 0 ||
+      (kind.target_type_constraints ?? []).length === 0 ||
+      ends.some((end) => !types.has(end))
+    ) {
+      problems.push(`${kind.id}'s both ends constrained to its own types`);
+    }
+    if ((kind.cascade_on_delete ?? "orphan") !== "orphan") {
+      problems.push(
+        `${kind.id} to orphan on delete, so a trash in Marfa takes no vendor's row with it`,
+      );
+    }
+    if (
+      Object.values(kind.property_schema ?? {}).some(
+        (property) => property.required === true,
+      )
+    ) {
+      problems.push(
+        `${kind.id} to require no property, since the kit writes none`,
+      );
+    }
+  }
   if (problems.length > 0) {
     throw new ConfigurationError(`the connector needs ${problems.join("; ")}`);
   }

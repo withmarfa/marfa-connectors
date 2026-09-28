@@ -545,7 +545,7 @@ describe("the connector, run as a process", () => {
   let asked: { path: string; headers: IncomingHttpHeaders; answered: number }[];
 
   beforeEach(async () => {
-    marfa = await new ScriptedServer("rss").start();
+    marfa = await new ScriptedServer("rss", { types: ["rss.entry"] }).start();
     served = {
       "/atom.xml": { body: fixture("atom.xml"), etag: '"atom-1"' },
       "/rss.xml": {

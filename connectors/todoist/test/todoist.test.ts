@@ -78,7 +78,9 @@ let answer: (syncToken: string) => SyncAnswer | number;
 let received: { syncToken: string; resources: string; authorized: boolean }[];
 
 beforeEach(async () => {
-  marfa = await new ScriptedServer("todoist").start();
+  marfa = await new ScriptedServer("todoist", {
+    types: ["todoist.task"],
+  }).start();
   marfa.types.set("todoist.task", served);
   received = [];
   answer = () => ({

@@ -86,10 +86,10 @@ describe("a purge", () => {
     expect(
       harness.server.requestsTo("POST", "/items/tombstones").map((r) => r.body),
     ).toEqual([
-      { type: "test.entry", remembered_until: closedAt, links: ["v1"] },
+      { type: "test.entry", settled_at: closedAt, links: ["v1"] },
       {
         type: "test.entry",
-        remembered_until: closedAt,
+        settled_at: closedAt,
         source: "test",
         source_ids: ["a:1"],
       },

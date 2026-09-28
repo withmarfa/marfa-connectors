@@ -34,7 +34,9 @@ let marfa: ScriptedServer;
 let todoist: TodoistStub;
 
 beforeEach(async () => {
-  marfa = await new ScriptedServer("todoist").start();
+  marfa = await new ScriptedServer("todoist", {
+    types: ["todoist.task"],
+  }).start();
   marfa.types.set("todoist.task", served);
   todoist = await new TodoistStub(token).start();
 });

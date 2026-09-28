@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createClient } from "@withmarfa/client";
 import type {
+  ConnectionDefinition,
   Connector,
   EnvDeclaration,
   EnvValues,
@@ -31,7 +32,7 @@ import {
   readSchedule,
   type Schedule,
 } from "./schedule.js";
-import { typeDifferences } from "./type-check.js";
+import { edgeTypeDifferences, typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
@@ -91,10 +92,14 @@ async function checkType(
 
 /**
  * What the key holds beyond read and write on the connector's own types and
- * their registration, each named: nothing, for a key minted as the
- * template's README says.
+ * connections and their registration, each named: nothing, for a key minted
+ * as the template's README says.
  */
-function keyWiderThanTypes(key: Key, types: ReadonlySet<string>): string[] {
+function keyWiderThanTypes(
+  key: Key,
+  types: ReadonlySet<string>,
+  connections: ReadonlySet<string>,
+): string[] {
   const wider: string[] = [];
   if (key.is_operator) wider.push("it is the operator key");
   for (const permission of key.permissions ?? []) wider.push(permission);
@@ -109,11 +114,66 @@ function keyWiderThanTypes(key: Key, types: ReadonlySet<string>): string[] {
     }
   };
   held("type", key.type_permissions, (name) => types.has(name));
-  held("metadata", key.metadata_permissions, (name) => name === "types");
-  held("edge", key.edge_permissions, () => false);
+  held(
+    "metadata",
+    key.metadata_permissions,
+    (name) =>
+      name === "types" || (name === "edge_types" && connections.size > 0),
+  );
+  held("edge", key.edge_permissions, (name) => connections.has(name));
   held("extension", key.extension_permissions, () => false);
   held("profile", key.profile_permissions, () => false);
   return wider;
+}
+
+/** The connector's types and connections the key may not write, each named. */
+function keyNarrowerThanTypes(
+  key: Key,
+  types: ReadonlySet<string>,
+  connections: ReadonlySet<string>,
+): string[] {
+  return [
+    ...[...types]
+      .filter((name) => key.type_permissions[name] !== "write")
+      .map((name) => `type ${name}`),
+    ...[...connections]
+      .filter((name) => key.edge_permissions?.[name] !== "write")
+      .map((name) => `edge ${name}`),
+  ];
+}
+
+/** Registers each connection the server lacks, or checks the one it holds. */
+async function ensureConnections(
+  connections: readonly ConnectionDefinition[],
+  marfa: Marfa,
+): Promise<string | undefined> {
+  if (connections.length === 0) return undefined;
+  let served = await marfa.edgeTypes();
+  for (const connection of connections) {
+    let held = served.find((type) => type.id === connection.id);
+    if (held === undefined) {
+      try {
+        await marfa.registerEdgeType(connection);
+        continue;
+      } catch (error) {
+        if (transient(error)) throw error;
+        // Another process under the key registered it first.
+        if (!(error instanceof Refusal) || error.status !== 409) {
+          return `the connection type ${connection.id} could not be registered: ${describe(error)}`;
+        }
+        served = await marfa.edgeTypes();
+        held = served.find((type) => type.id === connection.id);
+        if (held === undefined) {
+          return `the connection type ${connection.id} could not be registered: ${describe(error)}`;
+        }
+      }
+    }
+    const differences = edgeTypeDifferences(connection, held);
+    if (differences.length > 0) {
+      return `the connection type ${connection.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
+    }
+  }
+  return undefined;
 }
 
 /** Registers a type the server lacks, or checks the one it holds. */
@@ -156,19 +216,34 @@ async function registerAndCheck<E extends EnvDeclaration>(
     };
   }
   const types = connector.types.map((kind) => kind.type.id);
-  const wider = keyWiderThanTypes(key, new Set(types));
+  const connections = (connector.connections ?? []).map((kind) => kind.id);
+  const named = [...types, ...connections].join(", ");
+  const wider = keyWiderThanTypes(key, new Set(types), new Set(connections));
   if (wider.length > 0) {
     return {
       id,
       source,
-      problem: `the key ${key.id} holds more than read and write on ${types.join(", ")}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+      problem: `the key ${key.id} holds more than read and write on ${named}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+    };
+  }
+  const narrower = keyNarrowerThanTypes(
+    key,
+    new Set(types),
+    new Set(connections),
+  );
+  if (narrower.length > 0) {
+    return {
+      id,
+      source,
+      problem: `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
     };
   }
   for (const kind of connector.types) {
     const problem = await ensureType(kind.type, marfa);
     if (problem !== undefined) return { id, source, problem };
   }
-  return { id, source, problem: undefined };
+  const problem = await ensureConnections(connector.connections ?? [], marfa);
+  return { id, source, problem };
 }
 
 /** Whether the connector carries any of its types back. */

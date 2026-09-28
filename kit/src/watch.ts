@@ -1,5 +1,5 @@
 import type { Item } from "./define.js";
-import type { Marfa } from "./marfa.js";
+import type { Edge, Marfa } from "./marfa.js";
 import { frames } from "./sse.js";
 
 /** One frame the log holds for a row: the row as it then stood. */
@@ -19,6 +19,11 @@ export interface Seen {
 export interface LogRead {
   /** By row id, in the order of each row's latest frame. */
   readonly rows: Map<string, Seen>;
+  /**
+   * Rows whose connections of the connector's types changed, by source row
+   * id, with the time first seen; what a purge took is left out.
+   */
+  readonly connected: Map<string, string>;
   /** Where the read reached, to resume from; unchanged where nothing was read. */
   readonly cursor: string | undefined;
   /** The cursor was older than the log keeps, so every row was listed instead. */
@@ -37,6 +42,8 @@ function parse(data: string): Record<string, unknown> {
     return {};
   }
 }
+
+const edgeEvents = new Set(["edge.created", "edge.deleted"]);
 
 const itemEvents = new Set([
   "item.created",
@@ -77,12 +84,14 @@ export class Watch {
     types: readonly string[],
     private readonly cursor: string | undefined,
     private readonly signal: AbortSignal,
+    private readonly connections: ReadonlySet<string> = new Set(),
   ) {
     this.types = new Set(types);
   }
 
   async read(): Promise<LogRead> {
     const rows = new Map<string, Seen>();
+    const connected = new Map<string, string>();
     let last: string | undefined;
     let live: string | undefined;
     let resync = false;
@@ -97,6 +106,7 @@ export class Watch {
         [...this.types],
         this.cursor ?? "0",
         signal,
+        this.connections.size > 0,
       );
       for await (const frame of frames(body)) {
         if (frame.event === "stream_cursor") continue;
@@ -115,6 +125,19 @@ export class Watch {
           break;
         }
         if (frame.id !== undefined) last = frame.id;
+        if (edgeEvents.has(frame.event)) {
+          const data = parse(frame.data);
+          const edge = data["edge"] as Edge | undefined;
+          if (
+            edge !== undefined &&
+            this.connections.has(edge.edge_type) &&
+            data["purged_with"] === undefined &&
+            !connected.has(edge.source_id)
+          ) {
+            connected.set(edge.source_id, edge.updated_at);
+          }
+          continue;
+        }
         if (!itemEvents.has(frame.event)) continue;
         const item = parse(frame.data)["item"] as Item | undefined;
         // The filter admits each type's subtree; a row of a subtype is not
@@ -143,19 +166,28 @@ export class Watch {
       // then past the cursor rather than behind it.
       const cursor = await this.head();
       const listed = new Map<string, Seen>();
+      const every = new Map<string, string>();
       for (const type of this.types) {
         for (const item of await this.marfa.ownRows(type)) {
           if (item.type !== type) continue;
           listed.set(item.id, { frames: [{ item }], purged: false });
+          if (this.connections.size > 0) every.set(item.id, item.updated_at);
         }
       }
-      return { rows: listed, cursor, resync: true, incomplete };
+      return {
+        rows: listed,
+        connected: every,
+        cursor,
+        resync: true,
+        incomplete,
+      };
     }
     // The furthest of the position the marker names, the last frame read
     // and where the read began: a marker behind the cursor, from a server
     // whose log was reset, would otherwise hand back what was already read.
     return {
       rows,
+      connected,
       cursor: furthest(live, last, this.cursor),
       resync: false,
       incomplete,
@@ -167,7 +199,12 @@ export class Watch {
     const closing = new AbortController();
     const signal = AbortSignal.any([this.signal, closing.signal]);
     try {
-      const body = await this.marfa.events([...this.types], undefined, signal);
+      const body = await this.marfa.events(
+        [...this.types],
+        undefined,
+        signal,
+        false,
+      );
       for await (const frame of frames(body)) {
         if (frame.event !== "stream_cursor") continue;
         const cursor = parse(frame.data)["cursor"];

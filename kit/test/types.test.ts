@@ -11,6 +11,9 @@ import { Harness, linkedType, testFields, testType } from "./harness.js";
 let harness: Harness;
 beforeEach(async () => {
   harness = await Harness.create();
+  harness.server.grants = {
+    type_permissions: { "test.entry": "write", "test.note": "write" },
+  };
 });
 afterEach(async () => {
   await harness.close();
@@ -150,6 +153,18 @@ describe("a connector of several types", () => {
     expect(harness.lastRun().error).toContain(
       "the connector declares no type test.other",
     );
+  });
+
+  it("refuses a key that may not write every type it declares", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write", "test.note": "read" },
+    };
+    const held: Held = { entries: [], notes: [], archived: [], changes: [] };
+    expect(await once(held)).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      "may not write type test.note, which the connector writes",
+    );
+    expect(harness.server.types.size).toBe(0);
   });
 
   it("takes a key reaching every type it declares, and refuses one reaching another", async () => {

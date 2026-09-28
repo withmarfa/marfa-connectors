@@ -43,7 +43,9 @@ async function copiedConnector(place: string): Promise<string> {
 
 it("builds and runs once copied to a connector's place", async () => {
   const place = await mkdtemp(join(tmpdir(), "template-copy-"));
-  const marfa = await new ScriptedServer("example").start();
+  const marfa = await new ScriptedServer("example", {
+    types: ["example.item"],
+  }).start();
   const vendor = createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(

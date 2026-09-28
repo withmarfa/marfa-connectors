@@ -12,6 +12,25 @@ export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 export type Item = components["schemas"]["Item"];
 
 /**
+ * A kind of connection between the connector's own rows, as `POST
+ * /edge-types` takes it: both ends constrained to the connector's types, and
+ * nothing cascading, so a trash in Marfa never takes a vendor's row with it.
+ */
+export type ConnectionDefinition = components["schemas"]["EdgeTypeRequest"];
+
+/** A row a connection points at: its type, and its link, or its natural key where the type names none. */
+export interface Target {
+  readonly type: string;
+  readonly id: string;
+}
+
+/** A connection type's changes in Marfa, as the rows at the other end. */
+export interface Connected {
+  readonly added: readonly Item[];
+  readonly removed: readonly Item[];
+}
+
+/**
  * How the kit treats an environment variable a connector names: `secret`
  * and `required` fail the start when absent, and a secret's value is
  * redacted from every log line and report.
@@ -45,6 +64,12 @@ export interface Entry {
    * takes the entry's link.
    */
   movedFrom?: string | undefined;
+  /**
+   * Every connection of each type named, from this row, as the vendor holds
+   * them; a type left out is left as it is. A target Marfa does not hold yet
+   * is connected once it arrives.
+   */
+  connections?: Readonly<Record<string, readonly Target[]>> | undefined;
 }
 
 export interface State {
@@ -110,6 +135,12 @@ export interface Change {
    * vendor may hold what it made; look for it there before making another.
    */
   readonly attempted?: string;
+  /**
+   * The connections made or removed in Marfa since the vendor last had them,
+   * by connection type; a target the vendor has not been told about waits
+   * until it has, and one purged is never carried.
+   */
+  readonly connections?: Readonly<Record<string, Connected>>;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {
@@ -205,6 +236,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly source: string;
   /** The kinds of item the connector writes, at most ten. */
   readonly types: readonly Kind[];
+  /** The kinds of connection it writes between its rows, from the rows at their source. */
+  readonly connections?: readonly ConnectionDefinition[];
   /**
    * The types whose changes go back to the vendor, from the environment, so
    * any kind can run read only; every type where the connector has

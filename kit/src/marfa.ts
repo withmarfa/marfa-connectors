@@ -4,7 +4,7 @@ import {
   type MarfaClient,
   type operations,
 } from "@withmarfa/client";
-import type { Item, TypeDefinition } from "./define.js";
+import type { ConnectionDefinition, Item, TypeDefinition } from "./define.js";
 
 export type BulkResult = components["schemas"]["BulkResultEntry"];
 /** A delivery as a listing answers it: the client reads each `[name, value]`
@@ -18,6 +18,11 @@ export type InboundOutcome = NonNullable<InboundDeliveryRow["outcome"]>;
 type Version = components["schemas"]["Version"];
 export type Key = components["schemas"]["ApiKey"];
 export type Tombstone = components["schemas"]["Tombstone"];
+export type Edge = components["schemas"]["Edge"];
+export type EdgeType = components["schemas"]["EdgeType"];
+
+/** Edges one bulk request carries, well inside the door's 5000. */
+const edgePage = 1000;
 
 /** Keys one lookup names at most. */
 const lookupCap = 500;
@@ -131,18 +136,127 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /**
-   * Every row whose type is this one or inherits from it, in every state:
-   * under one source, or under every source when none is named.
-   */
-  async ownRows(type: string, source?: string): Promise<Item[]> {
+  /** Every edge type the instance holds, which the door answers in one page. */
+  async edgeTypes(): Promise<EdgeType[]> {
+    const { data, error, response } = await this.client.GET("/edge-types");
+    if (data === undefined) throw refusal(response, error);
+    return data.data;
+  }
+
+  async registerEdgeType(type: ConnectionDefinition): Promise<void> {
+    const { data, error, response } = await this.client.POST("/edge-types", {
+      body: type,
+    });
+    if (data === undefined) throw refusal(response, error);
+  }
+
+  /** Each row, in any state, with its outbound edges of the named types, every page of them. */
+  async edgesFrom(
+    type: string,
+    ids: readonly string[],
+    edgeTypes: ReadonlySet<string>,
+  ): Promise<Map<string, { item: Item; edges: Edge[] }>> {
+    const found = new Map<string, { item: Item; edges: Edge[] }>();
+    for (let at = 0; at < ids.length; at += lookupCap) {
+      const { data, error, response } = await this.client.POST(
+        "/items/lookup",
+        {
+          body: {
+            type,
+            ids: ids.slice(at, at + lookupCap),
+            include: ["edges"],
+          },
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      for (const item of data.data) {
+        const edges: Edge[] = [];
+        for (const [edgeType, page] of Object.entries(item.edges ?? {})) {
+          if (!edgeTypes.has(edgeType)) continue;
+          edges.push(...page.data);
+          if (page.next_cursor !== null) {
+            edges.push(
+              ...(await this.moreEdges(item.id, edgeType, page.next_cursor)),
+            );
+          }
+        }
+        const row: Item = { ...item };
+        Reflect.deleteProperty(row, "edges");
+        found.set(item.id, { item: row, edges });
+      }
+    }
+    return found;
+  }
+
+  private async moreEdges(
+    id: string,
+    edgeType: string,
+    from: string,
+  ): Promise<Edge[]> {
+    const edges: Edge[] = [];
+    let cursor: string | null = from;
+    while (cursor !== null) {
+      const answer: {
+        data?: { data: Edge[]; next_cursor: string | null };
+        error?: unknown;
+        response: Response;
+      } = await this.client.GET("/items/{id}/edges", {
+        params: {
+          path: { id },
+          query: { edge_type: edgeType, limit: 200, cursor },
+        },
+      });
+      if (answer.data === undefined) {
+        throw refusal(answer.response, answer.error);
+      }
+      edges.push(...answer.data.data);
+      cursor = answer.data.next_cursor;
+    }
+    return edges;
+  }
+
+  /** Upserts edges on their ends and type, each answered on its own. */
+  async connect(
+    edges: readonly {
+      source_id: string;
+      target_id: string;
+      edge_type: string;
+    }[],
+  ): Promise<BulkResult[]> {
+    const results: BulkResult[] = [];
+    for (let at = 0; at < edges.length; at += edgePage) {
+      const page = edges.slice(at, at + edgePage);
+      const { data, error, response } = await this.client.POST("/edges/bulk", {
+        body: { edges: [...page], atomic: false },
+      });
+      if (data === undefined) throw refusal(response, error);
+      results.push(
+        ...data.results.map((result) => ({
+          ...result,
+          index: result.index + at,
+        })),
+      );
+    }
+    return results;
+  }
+
+  /** Removes an edge; one already gone is as good. */
+  async disconnect(id: string): Promise<void> {
+    const { error, response } = await this.client.DELETE("/edges/{id}", {
+      params: { path: { id } },
+    });
+    if (response.ok || response.status === 404) return;
+    throw refusal(response, error);
+  }
+
+  /** Every row whose type is this one or inherits from it, in every state. */
+  async ownRows(type: string): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
       const { data, error, response } = await this.client.GET("/items", {
         params: {
           query: {
             type,
-            ...(source !== undefined && { source }),
             state: "any",
             limit: 200,
             ...(cursor !== undefined && { cursor }),
@@ -196,20 +310,20 @@ export class Marfa {
     return found;
   }
 
-  /** Keeps the named tombstones remembered until at least `until`. */
-  async remember(
+  /** Moves the named tombstones' `settled_at` to `at`, where that is later. */
+  async settleTombstones(
     type: string,
     by:
       | { links: readonly string[] }
       | { source: string; source_ids: readonly string[] },
-    until: string,
+    at: string,
   ): Promise<void> {
     const { data, error, response } = await this.client.POST(
       "/items/tombstones",
       {
         body: {
           type,
-          remembered_until: until,
+          settled_at: at,
           ...("links" in by
             ? { links: [...by.links] }
             : { source: by.source, source_ids: [...by.source_ids] }),
@@ -277,10 +391,11 @@ export class Marfa {
     types: readonly string[],
     cursor: string | undefined,
     signal: AbortSignal,
+    edges: boolean,
   ): Promise<ReadableStream<Uint8Array>> {
     const { data, error, response } = await this.client.GET("/events", {
       params: {
-        query: { type: types.join(","), edges: "none" },
+        query: { type: types.join(","), edges: edges ? "all" : "none" },
         ...(cursor !== undefined && { header: { "Last-Event-ID": cursor } }),
       },
       parseAs: "stream",
@@ -420,24 +535,32 @@ export class Marfa {
   }
 
   /**
-   * Takes or renews the registration's hold for this process: when it lasts
-   * until, or `elsewhere` when another process holds it until then.
+   * Takes or renews the registration's hold for this process: when it
+   * expires, whether this process held it without a lapse, or `elsewhere`
+   * when another process holds it until then.
    */
   async hold(
     id: string,
     process: string,
-  ): Promise<{ until: string; elsewhere: boolean }> {
+  ): Promise<
+    | { elsewhere: false; until: string; renewed: boolean }
+    | { elsewhere: true; until: string }
+  > {
     const { data, error, response } = await this.client.POST(
       "/connectors/{id}/hold",
       { params: { path: { id } }, body: { process } },
     );
-    if (data !== undefined) return { until: data.held_until, elsewhere: false };
+    if (data !== undefined) {
+      return {
+        elsewhere: false,
+        until: data.expires_at,
+        renewed: data.renewed,
+      };
+    }
     const refused = refusal(response, error);
-    const until = (
-      error as { error?: { details?: { held_until?: unknown } } } | undefined
-    )?.error?.details?.held_until;
+    const until = refused.details["expires_at"];
     if (refused.code === "connector_held" && typeof until === "string") {
-      return { until, elsewhere: true };
+      return { elsewhere: true, until };
     }
     throw refused;
   }

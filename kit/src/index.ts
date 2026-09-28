@@ -2,6 +2,8 @@ export {
   defineConnector,
   type Change,
   type ChangeKind,
+  type Connected,
+  type ConnectionDefinition,
   type Connector,
   type Delivery,
   type Entry,
@@ -15,6 +17,7 @@ export {
   type Log,
   type RunContext,
   type State,
+  type Target,
   type TypeDefinition,
   type WatchContext,
 } from "./define.js";

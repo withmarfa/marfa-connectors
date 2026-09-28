@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import {
   defineConnector,
   type Change,
+  type ConnectionDefinition,
   type Entry,
   type Inbound,
   type TypeDefinition,
@@ -137,6 +138,8 @@ export interface Vendor {
   hints?: (ReadonlySet<string> | undefined)[];
   /** The two-way connector's kind brings a trashed row back on the vendor's change. */
   revive?: boolean;
+  /** The connection types the connector declares. */
+  connections?: ConnectionDefinition[];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -149,6 +152,7 @@ export function testConnector(held: Vendor) {
     description: "A connector the kit's tests drive.",
     source: "test",
     types: [{ type: testType, fields: testFields }],
+    ...(held.connections !== undefined && { connections: held.connections }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -182,6 +186,7 @@ function twoWayConnector(held: Vendor) {
     types: [
       { type: linkedType, fields: testFields, revive: held.revive === true },
     ],
+    ...(held.connections !== undefined && { connections: held.connections }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -334,7 +339,9 @@ export class Harness {
   constructor(readonly server: ScriptedServer) {}
 
   static async create(): Promise<Harness> {
-    return new Harness(await new ScriptedServer("test").start());
+    return new Harness(
+      await new ScriptedServer("test", { types: ["test.entry"] }).start(),
+    );
   }
 
   async close(): Promise<void> {
