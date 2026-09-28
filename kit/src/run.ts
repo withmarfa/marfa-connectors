@@ -23,7 +23,7 @@ import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, reportCap, type Logger } from "./log.js";
 import type { Marfa } from "./marfa.js";
-import { Rows, stateKey, Stopped, type Counts, type Kind } from "./rows.js";
+import { Rows, stateKey, Stopped, type Counts, type Spec } from "./rows.js";
 import type { Clock } from "./runtime.js";
 import { Store } from "./store.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
@@ -126,23 +126,35 @@ function summarize(
   return { summary, carried };
 }
 
-/** The kind of type the connector writes, as the rows and the agreements read it. */
-export function kindOf<E extends EnvDeclaration>(
+/** Each of the connector's types as the rows and the agreements read it. */
+export function specsOf<E extends EnvDeclaration>(
   connector: Connector<E>,
-): Kind {
-  const twoWay = connector.onChange !== undefined;
-  const readOnly = new Set(
-    twoWay ? (connector.readOnly ?? []) : connector.fields,
+  env: EnvValues<E>,
+): Map<string, Spec> {
+  const carried = new Set(
+    connector.onChange === undefined
+      ? []
+      : (connector.carries?.(env) ??
+          connector.types.map((kind) => kind.type.id)),
   );
-  if (connector.link !== undefined) readOnly.add(connector.link);
-  return {
-    type: connector.type.id,
-    source: connector.source,
-    link: connector.link,
-    fields: connector.fields,
-    readOnly,
-    twoWay,
-  };
+  return new Map(
+    connector.types.map((kind) => {
+      const twoWay = carried.has(kind.type.id);
+      const readOnly = new Set(twoWay ? (kind.readOnly ?? []) : kind.fields);
+      if (kind.link !== undefined) readOnly.add(kind.link);
+      return [
+        kind.type.id,
+        {
+          type: kind.type.id,
+          source: connector.source,
+          link: kind.link,
+          fields: kind.fields,
+          readOnly,
+          twoWay,
+        },
+      ];
+    }),
+  );
 }
 
 /**
@@ -150,8 +162,7 @@ export function kindOf<E extends EnvDeclaration>(
  * it first differed; `own` counts frames showing the row as the kit left it.
  */
 function observe(
-  kind: Kind,
-  twoWay: boolean,
+  kind: Spec,
   seen: Seen,
   agreement: Agreement,
 ): { next: Agreement; own: number } {
@@ -178,7 +189,7 @@ function observe(
     }
     waiting = { ...waiting, ...fields };
     stateSince =
-      twoWay && item.state !== agreement.state
+      kind.twoWay && item.state !== agreement.state
         ? (stateSince ?? item.updated_at)
         : undefined;
   }
@@ -187,6 +198,24 @@ function observe(
   Reflect.deleteProperty(next, "waiting");
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
   return { next, own };
+}
+
+/** The counts of every type's rows, added. */
+function sumOf(counts: readonly Counts[]): Counts {
+  const total: Counts = {
+    created: 0,
+    updated: 0,
+    archived: 0,
+    unchanged: 0,
+    skipped: 0,
+    conflicts: 0,
+  };
+  for (const each of counts) {
+    for (const key of Object.keys(total) as (keyof Counts)[]) {
+      total[key] += each[key];
+    }
+  }
+  return total;
 }
 
 /** A row's state as the two sides agree on it; a revoked row counts as trashed. */
@@ -203,9 +232,10 @@ export async function runOnce<E extends EnvDeclaration>(
   trigger: Trigger,
 ): Promise<RunResult> {
   const { connector, logger, clock } = setup;
+  const env = setup.environment.values as EnvValues<E>;
   const store = new Store(setup.marfa, setup.connectorId, setup.process);
-  const kind = kindOf(connector);
-  const twoWay = connector.onChange !== undefined;
+  const specs = specsOf(connector, env);
+  const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
   const startedAt = clock.now();
   let failure: unknown;
@@ -218,14 +248,40 @@ export async function runOnce<E extends EnvDeclaration>(
   }
   const stored = loaded ?? { state: {}, conditions: {} };
   const draft = structuredClone(stored.state);
-  const rows = new Rows(setup.marfa, kind, store, setup.signal, {
-    refused: (sourceId, reason) =>
+  const hooks = {
+    refused: (sourceId: string, reason: string) =>
       raised.set(
         `refused:${sourceId}`,
         `the server refused ${sourceId}: ${reason}`,
       ),
-    condition: (key, message) => raised.set(key, message),
-  });
+    condition: (key: string, message: string) => raised.set(key, message),
+  };
+  const lanes = new Map(
+    [...specs.values()].map((spec) => [
+      spec.type,
+      {
+        spec,
+        rows: new Rows(setup.marfa, spec, store, setup.signal, hooks),
+      },
+    ]),
+  );
+  const lane = (type: string): { spec: Spec; rows: Rows } => {
+    const found = lanes.get(type);
+    if (found === undefined) {
+      throw new Error(`the connector declares no type ${type}`);
+    }
+    return found;
+  };
+  /** The row with its type's lane, whichever of the connector's types it is. */
+  const find = async (
+    id: string,
+  ): Promise<{ item: Item; spec: Spec; rows: Rows } | undefined> => {
+    for (const { spec, rows } of lanes.values()) {
+      const item = await rows.row(id);
+      if (item !== undefined) return { item, spec, rows };
+    }
+    return undefined;
+  };
   const state: State = {
     get: (key) => draft[key],
     set: (key, value) => {
@@ -241,8 +297,7 @@ export async function runOnce<E extends EnvDeclaration>(
     },
     condition: (key, message) => raised.set(key, message),
   };
-  const env = setup.environment.values as EnvValues<E>;
-  let hints: ReadonlySet<string> | undefined;
+  let hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   const context: RunContext<E> = {
     env,
     signal: setup.signal,
@@ -251,15 +306,15 @@ export async function runOnce<E extends EnvDeclaration>(
     get hints() {
       return hints;
     },
-    upsert: (entries) => rows.upsert(entries),
-    archive: (keys) => rows.archive(keys),
+    upsert: (type, entries) => lane(type).rows.upsert(entries),
+    archive: (type, keys) => lane(type).rows.archive(keys),
   };
   const watchContext: WatchContext<E> = {
     env,
     signal: setup.signal,
     state,
     log,
-    setLink: (item, value) => rows.setLink(item, value),
+    setLink: (item, value) => lane(item.type).rows.setLink(item, value),
   };
 
   let read: LogRead | undefined;
@@ -288,7 +343,6 @@ export async function runOnce<E extends EnvDeclaration>(
   /** Rows the log showed that nothing was agreed for, not carried. */
   let unagreed = 0;
 
-  const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
   const withoutWaiting = (agreement: Agreement): Agreement => {
     const next = { ...agreement };
     Reflect.deleteProperty(next, "waiting");
@@ -297,15 +351,16 @@ export async function runOnce<E extends EnvDeclaration>(
   /** Links and read-only fields a person changed, put back before the vendor is read. */
   const putBack = async (id: string): Promise<void> => {
     const agreement = store.get(id);
-    const item = await rows.row(id);
+    const found = await find(id);
     if (
       agreement?.waiting === undefined ||
-      item === undefined ||
-      item.state === "trashed"
+      found === undefined ||
+      found.item.state === "trashed"
     ) {
       return;
     }
-    let current = item;
+    const { spec: kind, rows } = found;
+    let current = found.item;
     if (
       agreement.link !== undefined &&
       rows.linkOf(current.properties) !== agreement.link
@@ -340,7 +395,9 @@ export async function runOnce<E extends EnvDeclaration>(
   };
   const carry = async (item: Item, agreement: Agreement): Promise<void> => {
     if (setup.signal.aborted) throw new Stopped();
-    if (connector.onChange === undefined) return;
+    const { spec: kind, rows } = lane(item.type);
+    if (connector.onChange === undefined || !kind.twoWay) return;
+    const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
@@ -398,9 +455,10 @@ export async function runOnce<E extends EnvDeclaration>(
       },
       watchContext,
     );
-    settle(current, changed, answered);
+    settle(kind, current, changed, answered);
   };
   const settle = (
+    kind: Spec,
     item: Item,
     changed: readonly string[],
     answered: Entry | undefined,
@@ -496,14 +554,14 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     read = await new Watch(
       setup.marfa,
-      connector.type.id,
+      [...specs.keys()],
       stored.cursor,
       setup.signal,
     ).read();
     if (read.resync) {
       raised.set(
         "resync",
-        "the log no longer holds the cursor, so every row of the type was compared with what was last agreed",
+        "the log no longer holds the cursor, so every row of the connector's types was compared with what was last agreed",
       );
     }
     if (read.incomplete !== undefined) {
@@ -515,6 +573,7 @@ export async function runOnce<E extends EnvDeclaration>(
     for (const [id, seen] of read.rows) {
       const last = seen.frames.at(-1)?.item;
       if (last === undefined) continue;
+      const { spec: kind, rows } = lane(last.type);
       const agreement = store.get(id);
       if (seen.purged) {
         // The instance drops a purged row's agreement with it, so the row
@@ -525,13 +584,13 @@ export async function runOnce<E extends EnvDeclaration>(
           rows.purged.add(`key:${last.source_id}`);
         }
         store.clear(id);
-        if (twoWay && link !== undefined) purged.set(id, last);
+        if (kind.twoWay && link !== undefined) purged.set(id, last);
         continue;
       }
       if (agreement === undefined) {
         const unlinked =
           kind.link !== undefined && rows.linkOf(last.properties) === undefined;
-        if (twoWay && unlinked && last.state === "active") {
+        if (kind.twoWay && unlinked && last.state === "active") {
           store.set(id, {
             vendor: {},
             marfa: {},
@@ -541,12 +600,12 @@ export async function runOnce<E extends EnvDeclaration>(
             },
           });
           order.add(id);
-        } else if (twoWay && !unlinked) {
+        } else if (kind.twoWay && !unlinked) {
           unagreed += 1;
         }
         continue;
       }
-      const observed = observe(kind, twoWay, seen, agreement);
+      const observed = observe(kind, seen, agreement);
       own += observed.own;
       const next = observed.next;
       store.set(id, next);
@@ -574,8 +633,10 @@ export async function runOnce<E extends EnvDeclaration>(
       // otherwise read the vendor's copy first and create the row's twin.
       for (const id of order) {
         const agreement = store.get(id);
-        const item = await rows.row(id);
-        if (agreement === undefined || item === undefined) continue;
+        const found = await find(id);
+        if (agreement === undefined || found === undefined) continue;
+        const { item, spec: kind } = found;
+        if (!kind.twoWay) continue;
         if (agreement.waiting?.[createKey] !== undefined) {
           await carry(item, agreement);
           done.add(id);
@@ -589,7 +650,11 @@ export async function runOnce<E extends EnvDeclaration>(
             kind: "restored",
             item,
             changed: new Set(
-              changedInMarfa(agreement, carriable, item.properties),
+              changedInMarfa(
+                agreement,
+                kind.fields.filter((field) => !kind.readOnly.has(field)),
+                item.properties,
+              ),
             ),
           };
           if (await connector.remake(change, watchContext)) {
@@ -615,13 +680,15 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     await connector.run(context);
     if (twoWay) {
-      for (const id of rows.marked) order.add(id);
+      for (const { rows } of lanes.values()) {
+        for (const id of rows.marked) order.add(id);
+      }
       for (const id of order) {
         if (done.has(id)) continue;
         const agreement = store.get(id);
-        const item = await rows.row(id);
-        if (agreement?.waiting === undefined || item === undefined) continue;
-        await carry(item, agreement);
+        const found = await find(id);
+        if (agreement?.waiting === undefined || found === undefined) continue;
+        await carry(found.item, agreement);
       }
       for (const item of purged.values()) {
         if (setup.signal.aborted) throw new Stopped();
@@ -647,13 +714,16 @@ export async function runOnce<E extends EnvDeclaration>(
   }
   const finishedAt = clock.now();
 
-  if (rows.seeded > 0) {
+  const all = [...lanes.values()].map(({ rows }) => rows);
+  const seeded = all.reduce((sum, rows) => sum + rows.seeded, 0);
+  const held = all.reduce((sum, rows) => sum + rows.held, 0);
+  if (seeded > 0) {
     raised.set(
       "seeded",
-      `${String(rows.seeded)} ${rows.seeded === 1 ? "row" : "rows"} with nothing agreed took the vendor's values where they differed, and nothing was carried back for ${rows.seeded === 1 ? "it" : "them"}`,
+      `${String(seeded)} ${seeded === 1 ? "row" : "rows"} with nothing agreed took the vendor's values where they differed, and nothing was carried back for ${seeded === 1 ? "it" : "them"}`,
     );
   }
-  if (failure === undefined && rows.held > 0) {
+  if (failure === undefined && held > 0) {
     raised.set(
       "held",
       "the state is held, so the next run reads the vendor again: a write did not land",
@@ -672,7 +742,7 @@ export async function runOnce<E extends EnvDeclaration>(
   const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
   for (const [, message] of fresh) logger.warn(message);
 
-  const landed = failure === undefined && rows.held === 0;
+  const landed = failure === undefined && held === 0;
   // A delivery is processed once the run that took it ends without error.
   // A write it held is read again by the next scheduled run, which reads
   // the vendor whole, so the delivery need not wait for it.
@@ -696,7 +766,7 @@ export async function runOnce<E extends EnvDeclaration>(
     (collected?.unfetched ?? 0) === 0 &&
     (collected?.unverified ?? 0) === 0;
   const counts = tally(
-    rows.counts,
+    sumOf(all.map((rows) => rows.counts)),
     twoWay ? { pushed, own } : undefined,
     connector.inbound === undefined
       ? undefined

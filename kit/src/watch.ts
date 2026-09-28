@@ -66,16 +66,20 @@ function furthest(...cursors: (string | undefined)[]): string | undefined {
 }
 
 /**
- * The log for the connector's type from the cursor to the stream's live
+ * The log for the connector's types from the cursor to the stream's live
  * marker, whose position covers frames this reader was never sent.
  */
 export class Watch {
+  private readonly types: ReadonlySet<string>;
+
   constructor(
     private readonly marfa: Marfa,
-    private readonly type: string,
+    types: readonly string[],
     private readonly cursor: string | undefined,
     private readonly signal: AbortSignal,
-  ) {}
+  ) {
+    this.types = new Set(types);
+  }
 
   async read(): Promise<LogRead> {
     const rows = new Map<string, Seen>();
@@ -90,7 +94,7 @@ export class Watch {
     const signal = AbortSignal.any([this.signal, closing.signal]);
     try {
       const body = await this.marfa.events(
-        this.type,
+        [...this.types],
         this.cursor ?? "0",
         signal,
       );
@@ -113,9 +117,9 @@ export class Watch {
         if (frame.id !== undefined) last = frame.id;
         if (!itemEvents.has(frame.event)) continue;
         const item = parse(frame.data)["item"] as Item | undefined;
-        // The filter admits the type's subtree; a row of a subtype is not
+        // The filter admits each type's subtree; a row of a subtype is not
         // this connector's.
-        if (item?.type !== this.type) continue;
+        if (item === undefined || !this.types.has(item.type)) continue;
         const seen = rows.get(item.id) ?? { frames: [], purged: false };
         seen.frames.push({ item });
         // In the order of each row's latest frame.
@@ -139,12 +143,11 @@ export class Watch {
       // then past the cursor rather than behind it.
       const cursor = await this.head();
       const listed = new Map<string, Seen>();
-      for (const item of await this.marfa.ownRows(this.type)) {
-        if (item.type !== this.type) continue;
-        listed.set(item.id, {
-          frames: [{ item }],
-          purged: false,
-        });
+      for (const type of this.types) {
+        for (const item of await this.marfa.ownRows(type)) {
+          if (item.type !== type) continue;
+          listed.set(item.id, { frames: [{ item }], purged: false });
+        }
       }
       return { rows: listed, cursor, resync: true, incomplete };
     }
@@ -164,7 +167,7 @@ export class Watch {
     const closing = new AbortController();
     const signal = AbortSignal.any([this.signal, closing.signal]);
     try {
-      const body = await this.marfa.events(this.type, undefined, signal);
+      const body = await this.marfa.events([...this.types], undefined, signal);
       for await (const frame of frames(body)) {
         if (frame.event !== "stream_cursor") continue;
         const cursor = parse(frame.data)["cursor"];

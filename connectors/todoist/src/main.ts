@@ -16,26 +16,32 @@ import {
 } from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
 
+const taskType = todoistTask.id;
+
 const connector = defineConnector({
   name: "todoist",
   description:
     "Tasks from a Todoist account, read through the Sync API, and every todoist.task in Marfa carried back to it.",
   source: "todoist",
-  // Imported JSON widens every string, so its field types read as `string`
-  // here; the check on start holds the file to the server's type.
-  type: todoistTask as TypeDefinition,
-  fields: taskFields,
-  // Only what `item_add` and `item_update` take, and completion, travel.
-  readOnly: [
-    "url",
-    "project_id",
-    "section_id",
-    "parent_id",
-    "labels",
-    "child_order",
-    "comment_count",
+  types: [
+    {
+      // Imported JSON widens every string, so its field types read as
+      // `string` here; the check on start holds the file to the server's.
+      type: todoistTask as TypeDefinition,
+      fields: taskFields,
+      // Only what `item_add` and `item_update` take, and completion, travel.
+      readOnly: [
+        "url",
+        "project_id",
+        "section_id",
+        "parent_id",
+        "labels",
+        "child_order",
+        "comment_count",
+      ],
+      link: linkField,
+    },
   ],
-  link: linkField,
   env: outboundEnv,
   async run({ env, signal, state, log, upsert, archive }) {
     const base = env.TODOIST_API_URL ?? defaultBase;
@@ -90,12 +96,14 @@ const connector = defineConnector({
     // status and completion set. A full sync lists only active tasks, so a
     // task it leaves out is left as it is.
     await upsert(
+      taskType,
       answer.items
         .filter((item) => item.is_deleted !== true)
         .map((item) => entryOf(account, timeZone, item)),
     );
     // By the link: a row is archived by the task it is, whoever created it.
     await archive(
+      taskType,
       answer.items
         .filter((item) => item.is_deleted === true)
         .map((item) => item.id),

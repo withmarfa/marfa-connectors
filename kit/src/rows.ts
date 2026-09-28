@@ -34,8 +34,8 @@ export class LinkTaken extends Error {
   override name = "LinkTaken";
 }
 
-/** What the kit knows of the connector's type. */
-export interface Kind {
+/** What the kit knows of one of the connector's types. */
+export interface Spec {
   readonly type: string;
   readonly source: string;
   /** The property holding the vendor's own id, where the connector declares one. */
@@ -137,7 +137,7 @@ export class Rows {
 
   constructor(
     private readonly marfa: Marfa,
-    private readonly kind: Kind,
+    private readonly kind: Spec,
     private readonly store: Store,
     private readonly signal: AbortSignal,
     private readonly hooks: Hooks,

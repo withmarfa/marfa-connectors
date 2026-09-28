@@ -1,4 +1,10 @@
-import type { Delivery, EnvDeclaration, EnvValues, Inbound } from "./define.js";
+import type {
+  Delivery,
+  EnvDeclaration,
+  EnvValues,
+  Hint,
+  Inbound,
+} from "./define.js";
 import type { InboundDeliveryRow, Marfa } from "./marfa.js";
 import { Stopped } from "./rows.js";
 import type { Clock } from "./runtime.js";
@@ -16,8 +22,8 @@ export const verifyLimitMs = 10_000;
 export interface Collected {
   /** Verified, and not a repeat of one handled: marked processed once the run succeeds. */
   readonly fresh: readonly string[];
-  /** What the fresh deliveries named, or `undefined` where one asked for everything. */
-  readonly hints: ReadonlySet<string> | undefined;
+  /** What the fresh deliveries named, by type, or `undefined` where one asked for everything. */
+  readonly hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly rejected: number;
   readonly duplicate: number;
   /** Verified deliveries whose hints could not be read, so everything is read for them. */
@@ -109,7 +115,7 @@ export async function collect<E extends EnvDeclaration>(
   const rejected: string[] = [];
   const duplicate: string[] = [];
   const verified = new Set<string>();
-  const hints = new Set<string>();
+  const hints = new Map<string, Set<string>>();
   let everything = false;
   let unreadable = 0;
   let unfetched = 0;
@@ -152,7 +158,7 @@ export async function collect<E extends EnvDeclaration>(
       continue;
     }
     fresh.push(row.id);
-    let named: readonly string[] | "everything";
+    let named: readonly Hint[] | "everything";
     try {
       named = inbound.hints(arrived);
     } catch {
@@ -160,7 +166,13 @@ export async function collect<E extends EnvDeclaration>(
       named = "everything";
     }
     if (named === "everything") everything = true;
-    else for (const hint of named) hints.add(hint);
+    else {
+      for (const { type, id } of named) {
+        const ids = hints.get(type) ?? new Set<string>();
+        ids.add(id);
+        hints.set(type, ids);
+      }
+    }
   }
   await marfa.handled(connectorId, rejected, "rejected");
   await marfa.handled(connectorId, duplicate, "duplicate");

@@ -4,6 +4,7 @@ import {
   Harness,
   secretToken,
   testConnector,
+  testFields,
   testType,
   vendor,
 } from "./harness.js";
@@ -378,15 +379,21 @@ describe("the type check on start", () => {
     const connector = testConnector(vendor([entry]));
     const carried = {
       ...connector,
-      type: {
-        ...testType,
-        fields: {
-          title: { type: "string" as const, required: true },
-          note: { type: "string" as const },
-          link: { type: "string" as const, format: "url" as const },
-          vendor_id: { type: "string" as const },
+      types: [
+        {
+          ...connector.types[0],
+          fields: testFields,
+          type: {
+            ...testType,
+            fields: {
+              title: { type: "string" as const, required: true },
+              note: { type: "string" as const },
+              link: { type: "string" as const, format: "url" as const },
+              vendor_id: { type: "string" as const },
+            },
+          },
         },
-      },
+      ],
     };
     harness.server.types.set("test.entry", testType);
     expect(await start(carried, harness.runtime(["--once"]))).toBe(0);
@@ -407,7 +414,15 @@ describe("the type check on start", () => {
       },
     });
     const connector = testConnector(vendor([entry]));
-    const child = { ...connector, type: { ...testType, parent: "test.base" } };
+    const child = {
+      ...connector,
+      types: [
+        {
+          fields: testFields,
+          type: { ...testType, parent: "test.base" },
+        },
+      ],
+    };
     expect(await start(child, harness.runtime(["--once"]))).toBe(0);
     expect(harness.server.rows).toHaveLength(1);
   });

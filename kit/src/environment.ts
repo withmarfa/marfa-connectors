@@ -111,6 +111,22 @@ export function checkDefinition<E extends EnvDeclaration>(
       `a source outside the reserved ${reservedSourcePrefixes.join(" and ")} prefixes`,
     );
   }
+  const ids = connector.types.map((kind) => kind.type.id);
+  if (ids.length < 1 || ids.length > 10) {
+    problems.push("one to ten types, as far as the log's type filter reaches");
+  }
+  if (new Set(ids).size !== ids.length) problems.push("each type once");
+  for (const kind of connector.types) {
+    const outside = [
+      ...(kind.readOnly ?? []),
+      ...(kind.link === undefined ? [] : [kind.link]),
+    ].filter((field) => !kind.fields.includes(field));
+    if (outside.length > 0) {
+      problems.push(
+        `${kind.type.id}'s link and read-only fields among its fields, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,
+      );
+    }
+  }
   if (problems.length > 0) {
     throw new ConfigurationError(`the connector needs ${problems.join("; ")}`);
   }

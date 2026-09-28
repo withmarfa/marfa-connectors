@@ -68,14 +68,18 @@ const connector = defineConnector({
   description:
     "Items from the example vendor's list, and changes to them carried back.",
   source: "example",
-  // Imported JSON widens every string, so its field types read as `string`
-  // here; the check on start holds the file to the server's type.
-  type: exampleItem as TypeDefinition,
-  // What the vendor holds; the rest of a row's properties are Marfa's own.
-  fields: ["example_id", "title", "url", "note"],
-  // The property holding the vendor's own id. With it, every row of the
-  // type is the connector's, whoever created it.
-  link: "example_id",
+  types: [
+    {
+      // Imported JSON widens every string, so its field types read as
+      // `string` here; the check on start holds the file to the server's.
+      type: exampleItem as TypeDefinition,
+      // What the vendor holds; the rest of a row's properties are Marfa's.
+      fields: ["example_id", "title", "url", "note"],
+      // The vendor's own id. With it, every row of the type is the
+      // connector's, whoever created it.
+      link: "example_id",
+    },
+  ],
   env: {
     EXAMPLE_URL: "required",
     EXAMPLE_TOKEN: "secret",
@@ -116,9 +120,10 @@ const connector = defineConnector({
         // When the vendor last changed it, for the conflict rule.
         changed_at: item.updated,
       }));
-    await upsert(entries);
+    await upsert(exampleItem.id, entries);
     // By the link: a row is archived by the vendor's id it carries.
     await archive(
+      exampleItem.id,
       items.filter((item) => item.deleted === true).map((item) => item.id),
     );
   },

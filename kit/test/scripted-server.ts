@@ -987,12 +987,13 @@ export class ScriptedServer {
       type: "stream_cursor",
       cursor: String(this.head),
     });
-    const type = query.get("type");
+    // Up to ten types, comma-separated, as the real stream takes them.
+    const types = query.get("type")?.split(",") ?? [null];
     let sent = 0;
     let lastSent: number | undefined;
     for (const event of this.log) {
       if (cursor === undefined || event.id <= cursor) continue;
-      if (!this.ofType(event.item, type)) continue;
+      if (!types.some((type) => this.ofType(event.item, type))) continue;
       if (this.stallAfter !== undefined && sent === this.stallAfter) return;
       if (this.incompleteAfter !== undefined && sent === this.incompleteAfter) {
         frame("stream_incomplete", {

@@ -188,17 +188,17 @@ export class Marfa {
    * The log from a cursor, as frames: the first names the head, then
    * every retained event after the cursor and whatever was written while
    * they were replayed, then the marker naming where the stream has
-   * reached, then whatever is written after. Narrowed to the type and its
-   * subtree, without edges, and ended by the signal.
+   * reached, then whatever is written after. Narrowed to the types and their
+   * subtrees, without edges, and ended by the signal.
    */
   async events(
-    type: string,
+    types: readonly string[],
     cursor: string | undefined,
     signal: AbortSignal,
   ): Promise<ReadableStream<Uint8Array>> {
     const { data, error, response } = await this.client.GET("/events", {
       params: {
-        query: { type, edges: "none" },
+        query: { type: types.join(","), edges: "none" },
         ...(cursor !== undefined && { header: { "Last-Event-ID": cursor } }),
       },
       parseAs: "stream",

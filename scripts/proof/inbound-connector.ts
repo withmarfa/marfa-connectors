@@ -14,13 +14,17 @@ const connector = defineConnector({
   name: "proof-inbound",
   description: "Things from the proof's stub vendor, and its webhooks.",
   source: "proof-inbound",
-  type: {
-    id: "proof.thing",
-    label: "Thing",
-    description: "A thing from the proof's stub vendor.",
-    fields: { title: { type: "string", required: true } },
-  },
-  fields: ["title"],
+  types: [
+    {
+      type: {
+        id: "proof.thing",
+        label: "Thing",
+        description: "A thing from the proof's stub vendor.",
+        fields: { title: { type: "string", required: true } },
+      },
+      fields: ["title"],
+    },
+  ],
   env: { PROOF_VENDOR_URL: "required", PROOF_WEBHOOK_SECRET: "secret" },
   async run({ env, signal, hints, upsert }) {
     const fetched = async (path: string): Promise<unknown> => {
@@ -36,12 +40,13 @@ const connector = defineConnector({
       hints === undefined
         ? ((await fetched("things")) as Thing[])
         : await Promise.all(
-            [...hints].map(
+            [...(hints.get("proof.thing") ?? [])].map(
               async (id) =>
                 (await fetched(`things/${encodeURIComponent(id)}`)) as Thing,
             ),
           );
     await upsert(
+      "proof.thing",
       things.map((thing) => ({
         source_id: thing.id,
         properties: { title: thing.title },
@@ -60,7 +65,7 @@ const connector = defineConnector({
       const said = JSON.parse(new TextDecoder().decode(delivery.body)) as {
         id: string;
       };
-      return [said.id];
+      return [{ type: "proof.thing", id: said.id }];
     },
   },
 });

@@ -71,22 +71,20 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly state: State;
   readonly log: Log;
   /**
-   * What the vendor said changed, as the ids its deliveries named: fetch
-   * these and write them, and leave alone any cursor into the vendor, such
-   * as a sync token, since the rest was not read. `undefined` asks for
-   * everything, as a run on the schedule does, and as one does whose
-   * deliveries asked for it. An empty set, from deliveries that named
-   * nothing, asks for nothing.
+   * What to fetch, by type: the ids the deliveries named, beside the links
+   * of rows with a change waiting. Leave alone any cursor into the vendor,
+   * such as a sync token, since the rest was not read. `undefined` asks for
+   * everything, as a run on the schedule does.
    */
-  readonly hints: ReadonlySet<string> | undefined;
-  /** Writes what differs from the connector's own rows, and nothing else. */
-  readonly upsert: (entries: readonly Entry[]) => Promise<void>;
+  readonly hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+  /** Writes what differs from the connector's own rows of the type, and nothing else. */
+  readonly upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
   /**
-   * Archives the named rows that are active: by link value where the
-   * connector declares a link, by source id where it does not. A trashed
-   * row is left alone.
+   * Archives the named rows of the type that are active: by link value where
+   * the type declares a link, by source id where it does not. A trashed row
+   * is left alone.
    */
-  readonly archive: (keys: readonly string[]) => Promise<void>;
+  readonly archive: (type: string, keys: readonly string[]) => Promise<void>;
 }
 
 /**
@@ -141,6 +139,12 @@ export interface Delivery {
   readonly body: Uint8Array;
 }
 
+/** One thing a delivery names: its type, and the id `run` fetches it by. */
+export interface Hint {
+  readonly type: string;
+  readonly id: string;
+}
+
 /** How a connector reads what its vendor posts to it. */
 export interface Inbound<E extends EnvDeclaration> {
   /**
@@ -157,11 +161,34 @@ export interface Inbound<E extends EnvDeclaration> {
     signal: AbortSignal,
   ): boolean | Promise<boolean>;
   /**
-   * What the delivery says changed, as ids the run can fetch, or
-   * `"everything"`, which a throw also means. A delivery is a hint, never
-   * the vendor's state.
+   * What the delivery says changed, as the type and id of each thing the
+   * run can fetch, or `"everything"`, which a throw also means. A delivery
+   * is a hint, never the vendor's state.
    */
-  hints(delivery: Delivery): readonly string[] | "everything";
+  hints(delivery: Delivery): readonly Hint[] | "everything";
+}
+
+/** One kind of item a connector writes. */
+export interface Kind {
+  readonly type: TypeDefinition;
+  /**
+   * The properties the vendor holds for a row: every entry's are among
+   * them, and the rest of a row's are Marfa's own, never touched.
+   */
+  readonly fields: readonly string[];
+  /**
+   * Fields the vendor holds that are never carried back: Marfa mirrors
+   * them, putting back a change made in Marfa. Every field of a kind not
+   * carried back is read-only, and so is the link.
+   */
+  readonly readOnly?: readonly string[];
+  /**
+   * The property holding the vendor's own id for a row. With a link, every
+   * row of the type is the connector's, whoever created it, found by the
+   * link first and by its natural key second; a row without a value is one
+   * the vendor has not been told about.
+   */
+  readonly link?: string;
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
@@ -170,27 +197,14 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly description?: string;
   /** Named on every create and on every read of the connector's own rows. */
   readonly source: string;
-  readonly type: TypeDefinition;
+  /** The kinds of item the connector writes, at most ten. */
+  readonly types: readonly Kind[];
   /**
-   * The properties the vendor holds for a row: every entry's are among them,
-   * and the rest of a row's are Marfa's own, which the kit never touches.
+   * The types whose changes go back to the vendor, from the environment, so
+   * any kind can run read only; every type where the connector has
+   * `onChange` and says nothing.
    */
-  readonly fields: readonly string[];
-  /**
-   * Fields the vendor holds that are never carried back: Marfa mirrors them,
-   * and a change made to one in Marfa is put back from the vendor. Every
-   * field is read-only for a connector without `onChange`, and the link is
-   * for every connector.
-   */
-  readonly readOnly?: readonly string[];
-  /**
-   * The property on the type that holds the vendor's own id for a row. With a
-   * link, every row of the type is the connector's to read and write,
-   * whoever created it: an entry finds its row by this property first and by
-   * its natural key under the connector's source second, and a row that
-   * carries no value is one the vendor has not been told about.
-   */
-  readonly link?: string;
+  readonly carries?: (env: EnvValues<E>) => readonly string[];
   readonly env?: E;
   /**
    * Refuses, by throwing, an environment the connector can tell on sight it

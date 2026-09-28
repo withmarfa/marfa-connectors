@@ -127,7 +127,7 @@ export interface Vendor {
   gone?: Map<string, string>;
   /** What `remake` was asked, and how many runs had read the vendor then. */
   remakes?: { change: Change; runsBefore: number }[];
-  /** The hints each run was handed, in order. */
+  /** The ids each run was handed as hints, in order. */
   hints?: (ReadonlySet<string> | undefined)[];
 }
 
@@ -140,8 +140,7 @@ export function testConnector(held: Vendor) {
     name: "test",
     description: "A connector the kit's tests drive.",
     source: "test",
-    type: testType,
-    fields: testFields,
+    types: [{ type: testType, fields: testFields }],
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -153,8 +152,10 @@ export function testConnector(held: Vendor) {
       }
       if (held.fail !== undefined) throw held.fail;
       if (held.token !== undefined) context.state.set("token", held.token);
-      await context.upsert(held.entries);
-      if (held.archived.length > 0) await context.archive(held.archived);
+      await context.upsert(testType.id, held.entries);
+      if (held.archived.length > 0) {
+        await context.archive(testType.id, held.archived);
+      }
     },
   });
 }
@@ -170,9 +171,7 @@ function twoWayConnector(held: Vendor) {
     name: "test",
     description: "A two-way connector the kit's tests drive.",
     source: "test",
-    type: testType,
-    fields: testFields,
-    link: "vendor_id",
+    types: [{ type: testType, fields: testFields, link: "vendor_id" }],
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -182,8 +181,10 @@ function twoWayConnector(held: Vendor) {
       }
       if (held.fail !== undefined) throw held.fail;
       if (held.token !== undefined) context.state.set("token", held.token);
-      await context.upsert(held.entries);
-      if (held.archived.length > 0) await context.archive(held.archived);
+      await context.upsert(testType.id, held.entries);
+      if (held.archived.length > 0) {
+        await context.archive(testType.id, held.archived);
+      }
       if (held.failAfter !== undefined) throw held.failAfter;
     },
     async onChange(change, context) {
@@ -244,7 +245,9 @@ const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
       ids?: string[];
       everything?: boolean;
     };
-    return said.everything === true ? "everything" : (said.ids ?? []);
+    return said.everything === true
+      ? "everything"
+      : (said.ids ?? []).map((id) => ({ type: testType.id, id }));
   },
 };
 
@@ -254,7 +257,11 @@ export function inboundConnector(held: Vendor) {
   return defineConnector({
     ...base,
     async run(context) {
-      (held.hints ??= []).push(context.hints);
+      (held.hints ??= []).push(
+        context.hints === undefined
+          ? undefined
+          : (context.hints.get(testType.id) ?? new Set()),
+      );
       await base.run(context);
     },
     inbound: testInbound,
@@ -267,7 +274,11 @@ function inboundTwoWayConnector(held: Vendor) {
   return defineConnector({
     ...base,
     async run(context) {
-      (held.hints ??= []).push(context.hints);
+      (held.hints ??= []).push(
+        context.hints === undefined
+          ? undefined
+          : (context.hints.get(testType.id) ?? new Set()),
+      );
       await base.run(context);
     },
     inbound: testInbound,

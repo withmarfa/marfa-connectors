@@ -229,7 +229,7 @@ describe("what is carried back", () => {
       [["updated", row.id]],
     );
     expect(harness.lastRun().summary).toContain(
-      "every row of the type was compared with what was last agreed",
+      "every row of the connector's types was compared with what was last agreed",
     );
     expect(watchState().cursor).toBe(String(harness.server.head));
 
