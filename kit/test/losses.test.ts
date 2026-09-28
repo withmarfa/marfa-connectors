@@ -418,3 +418,26 @@ describe("a purge kept for a type no longer declared", () => {
     expect(kinds(held)).toEqual([]);
   });
 });
+
+describe("a create that may have reached the vendor", () => {
+  it("still says so after the row is trashed and restored before it was linked", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const row = harness.server.insert(
+      undefined,
+      { title: "Made in Marfa" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: row.id, error: new Error("socket hang up") };
+    expect(await harness.twoWay(held)).toBe(1);
+    harness.server.trash(row.id);
+    expect(await harness.twoWay(held)).toBe(0);
+    harness.server.restore(row.id);
+    held.changes.length = 0;
+    held.vendorIdFor = () => "v-made";
+    expect(await harness.twoWay(held)).toBe(0);
+    const created = held.changes.find((change) => change.kind === "created");
+    expect(created?.attempted).toBeDefined();
+  });
+});

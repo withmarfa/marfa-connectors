@@ -683,6 +683,10 @@ export async function runOnce<E extends EnvDeclaration>(
       changed,
       answered,
     });
+    // Until the row is linked, the vendor may still hold what a create made.
+    if (base?.attempted !== undefined && next.link === undefined) {
+      next.attempted = base.attempted;
+    }
     if (base?.stateBy !== undefined && next.state === base.state) {
       next.stateBy = base.stateBy;
       if (base.stateAt !== undefined) next.stateAt = base.stateAt;
