@@ -26,7 +26,7 @@ export interface Counts {
   archived: number;
   unchanged: number;
   skipped: number;
-  /** Rows where both sides changed one field, each decided by the later change. */
+  /** Rows where both sides changed one field, decided by the later change. */
   conflicts: number;
 }
 
@@ -45,7 +45,8 @@ export class LinkTaken extends Error {
 export interface Spec {
   readonly type: string;
   readonly source: string;
-  /** The property holding the vendor's own id, where the connector declares one. */
+  /** The property holding the vendor's own id, where the connector
+   *  declares one. */
   readonly link: string | undefined;
   /** The properties the vendor holds. */
   readonly fields: readonly string[];
@@ -88,10 +89,8 @@ const raced = new Set([
   "invalid_transition",
 ]);
 
-/**
- * Codes about the row itself: its contents, size, or a natural key another
- * type already holds. Other update codes mean the kit's request was wrong, so they end the run.
- */
+/** Codes about the row itself: its contents, size, or a natural key
+ *  another type holds. Other codes are the kit's own fault, and end the run. */
 const refusedUpdate = new Set([
   "invalid_properties",
   "request_too_large",
@@ -105,14 +104,11 @@ const refusedCreate = new Set([
   "link_taken",
 ]);
 
-/**
- * A bulk request's bounds, well inside the door's 5000 entries and 16 MiB,
- * so a page is rarely refused for its size; one that is is split in two.
- */
+/** A bulk request's bounds, well inside the door's 5000 entries and
+ *  16 MiB; a page refused for its size is split in two. */
 const pageEntries = 500;
 const pageBytes = 4 * 1024 * 1024;
 
-/** Creates in pages bounded by count and by bytes, in the order given. */
 function paged(creates: readonly NewRow[]): NewRow[][] {
   const pages: NewRow[][] = [];
   let page: NewRow[] = [];
@@ -142,10 +138,8 @@ export interface Hooks {
   fenced(): boolean;
 }
 
-/**
- * The connector's rows of one type, read as entries name them, each merged
- * field by field against the agreement; a trashed row writes only where its kind revives.
- */
+/** The connector's rows of one type, read as entries name them, each
+ *  merged against the agreement; a trashed row writes only if revived. */
 export class Rows {
   readonly counts: Counts = {
     created: 0,
@@ -181,10 +175,8 @@ export class Rows {
     string,
     Readonly<Record<string, readonly Target[]>>
   >();
-  /**
-   * On a run for what deliveries named, the keys it may archive: the rest
-   * of the vendor was not read, so its silence says nothing.
-   */
+  /** On a run for what deliveries named, the keys it may archive: the
+   *  rest of the vendor was not read, so its silence says nothing. */
   archivable: ReadonlySet<string> | undefined;
   private readonly byId = new Map<string, Item>();
   private readonly byLink = new Map<string, string>();
@@ -199,17 +191,16 @@ export class Rows {
     private readonly hooks: Hooks,
   ) {}
 
-  /** The row as the run last knew it, in any state. */
   known(id: string): Item | undefined {
     return this.byId.get(id);
   }
 
-  /** Takes a row read elsewhere in the run, where it is of this type. */
   adopt(item: Item): void {
     if (item.type === this.kind.type) this.index(item);
   }
 
-  /** The rows the vendor's ids name, by link, or by natural key where the type names none. */
+  /** The rows the vendor's ids name, by link, or by natural key where
+   *  the type names none. */
   async named(ids: readonly string[]): Promise<Map<string, Item>> {
     const byLink = this.kind.link !== undefined;
     await this.know(byLink ? { links: ids } : { keys: ids });
@@ -332,10 +323,8 @@ export class Rows {
     }
   }
 
-  /**
-   * The entry with its row's bytes as last uploaded where the vendor's key
-   * for them is unchanged; `fresh` where they must be loaded again.
-   */
+  /** The entry with its row's bytes as last uploaded where the vendor's
+   *  key for them is unchanged; `fresh` where they must load again. */
   private agreedFile(
     entry: Entry,
     agreement: Agreement | undefined,
@@ -355,10 +344,8 @@ export class Rows {
     return { entry: withFile, fresh: false };
   }
 
-  /**
-   * The entry with its bytes loaded and uploaded within the run that writes
-   * the row, since an unnamed blob is swept; one the vendor won't give is a condition, and the row waits.
-   */
+  /** The entry with its bytes loaded and uploaded within the run that
+   *  writes it, since an unnamed blob is swept; unfetchable, it waits. */
   private async uploaded(entry: Entry): Promise<Entry | undefined> {
     const source = entry.file;
     if (source === undefined) return entry;
@@ -522,10 +509,8 @@ export class Rows {
     }
   }
 
-  /**
-   * Whether the vendor's change brings a row back from the bin: only for a
-   * reviving kind, once trash is settled, never on an entry the vendor already held.
-   */
+  /** Whether the vendor's change brings a row back from the bin: only
+   *  for a reviving kind, once trash settles, never on an entry it held. */
   private revives(entry: Entry, agreement: Agreement | undefined): boolean {
     return (
       this.kind.revive &&
@@ -582,10 +567,8 @@ export class Rows {
     }
   }
 
-  /**
-   * Records what the two sides now agree on, the link the row is known by,
-   * and the entry's connections, held back until the run's rows are all written.
-   */
+  /** Records what the two sides now agree on, the link the row is
+   *  known by, and its connections, held back until all rows are written. */
   private agree(id: string, agreement: Agreement, entry: Entry): void {
     const value = this.linkOf(cleaned(entry.properties));
     const was = this.store.get(id);
@@ -603,10 +586,8 @@ export class Rows {
     }
   }
 
-  /**
-   * The row an entry names: by its link, by the link it moved from, then by
-   * natural key, which matches only an unlinked or same-item row; one linked elsewhere is `elsewhere`.
-   */
+  /** The row an entry names: by its link, by the link it moved from,
+   *  then by natural key if unlinked or the same item; else `elsewhere`. */
   private find(
     value: string | undefined,
     movedFrom: string | undefined,
@@ -666,10 +647,8 @@ export class Rows {
     }
   }
 
-  /**
-   * Archives the rows the keys name that are active: link values with a
-   * link, natural keys without.
-   */
+  /** Archives the rows the keys name that are active: link values with
+   *  a link, natural keys without. */
   async archive(keys: readonly string[]): Promise<void> {
     await this.know(this.kind.link === undefined ? { keys } : { links: keys });
     const rows = [...new Set(keys)].flatMap((key) => {
@@ -696,8 +675,8 @@ export class Rows {
         continue;
       }
       const agreement = this.store.get(row.id);
-      // A row restored since the two sides last agreed isn't put away again
-      // on the vendor's word: the restore carries and reinstates the vendor's copy.
+      // A row restored since agreed isn't put away again on the
+      // vendor's word: the restore carries and reinstates its copy.
       if (
         row.state === "active" &&
         agreement !== undefined &&
@@ -730,10 +709,8 @@ export class Rows {
     }
   }
 
-  /**
-   * Puts read-only fields a person changed back to what the kit last wrote,
-   * found in the row's versions; one no version holds waits for the vendor to resend.
-   */
+  /** Puts read-only fields a person changed back to what the kit last
+   *  wrote, found in the row's versions; unfound, it waits for a resend. */
   async putBack(id: string, fields: readonly string[]): Promise<string[]> {
     const row = this.byId.get(id);
     const agreement = this.store.get(id);
@@ -771,10 +748,8 @@ export class Rows {
     return found;
   }
 
-  /**
-   * Writes the vendor's id onto the row's link at the version the change
-   * showed, retried at the current version if it moved; a value another row carries is refused, naming both.
-   */
+  /** Writes the vendor's id onto the row's link at the version the
+   *  change showed, retried once at the current; a taken value refuses. */
   async setLink(item: Item, value: string): Promise<void> {
     const link = this.kind.link;
     if (link === undefined) {
@@ -832,10 +807,8 @@ export class Rows {
     this.store.set(item.id, next);
   }
 
-  /**
-   * Looks up the rows the links and natural keys name that this run has
-   * neither read nor asked for, in any state, with the tombstones among them.
-   */
+  /** Looks up the rows the links and natural keys name that this run
+   *  has not read or asked for, in any state, with their tombstones. */
   private async know(named: {
     links?: readonly string[];
     keys?: readonly string[];
@@ -941,10 +914,8 @@ export class Rows {
     );
   }
 
-  /**
-   * A refusal that concerns one row is counted and holds the state; any
-   * other ends the run, since it would refuse every row after it too.
-   */
+  /** A refusal that concerns one row is counted and holds the state;
+   *  any other ends the run, since it refuses every row after it too. */
   private absorb(
     error: unknown,
     sourceId: string,

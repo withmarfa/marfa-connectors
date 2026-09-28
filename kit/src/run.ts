@@ -51,14 +51,13 @@ export interface RunSetup<E extends EnvDeclaration> {
   logger: Logger;
   clock: Clock;
   signal: AbortSignal;
-  /** Whether the hold is lost, after which the run carries and keeps nothing more. */
+  /** Whether the hold is lost; after it, the run carries and keeps
+   *  nothing more. */
   fenced?: () => boolean;
 }
 
-/**
- * Why a run starts: its schedule, reading the vendor whole, or a look
- * between runs that found something waiting, reading only what it names, or the whole vendor if a delivery asked.
- */
+/** Why a run starts: its schedule reading the vendor whole, or a look
+ *  between runs, reading only what it names, or whole if a delivery asked. */
 export type Trigger = "schedule" | "look";
 
 export interface RunResult {
@@ -66,10 +65,8 @@ export interface RunResult {
   readonly succeeded: boolean;
   /** Where the log was kept at once the run ended. */
   readonly cursor: string | undefined;
-  /**
-   * Every delivery the run took is marked and none was left unfetched or
-   * unverified, so none waits on its account.
-   */
+  /** Every delivery the run took is marked, none left unfetched or
+   *  unverified, so none waits on its account. */
   readonly settled: boolean;
 }
 
@@ -91,10 +88,8 @@ export function describe(error: unknown): string {
   return `${error.message} (${code ?? cause.message})`;
 }
 
-/**
- * The counts as a run's summary opens: the two-way ones for a two-way
- * connector, and the deliveries for one that reads them.
- */
+/** The counts as a run's summary opens: the two-way ones for a
+ *  two-way connector, and the deliveries for one that reads them. */
 function tally(
   counts: Counts,
   outbound: { pushed: number; own: number } | undefined,
@@ -117,10 +112,8 @@ const moreNote = 80;
 /** The longest a single condition may be, so one never crowds out the rest. */
 const conditionCap = 500;
 
-/**
- * The counts, then as many new conditions as the server's summary cap
- * takes, in raised order; the rest wait for a later run's report.
- */
+/** The counts, then as many new conditions as the server's summary
+ *  cap takes, in raised order; the rest wait for a later report. */
 function summarize(
   counts: string,
   fresh: [string, string][],
@@ -183,10 +176,8 @@ export function specsOf<E extends EnvDeclaration>(
   );
 }
 
-/**
- * What waits once the log's frames of a row are read, each field from when
- * it first differed; `own` counts the kit's own echoes, and a cascaded trash or restore waits for nothing.
- */
+/** What waits once a row's log frames are read, each field from when
+ *  first differed; `own` counts echoes; a cascade waits for nothing. */
 export function observe(
   kind: Spec,
   seen: Seen,
@@ -249,14 +240,12 @@ export function observe(
   return { next, own };
 }
 
-/** The connection types the connector declares. */
 function connectionTypes<E extends EnvDeclaration>(
   connector: Connector<E>,
 ): Set<string> {
   return new Set((connector.connections ?? []).map((kind) => kind.id));
 }
 
-/** The counts of every type's rows, added. */
 function sumOf(counts: readonly Counts[]): Counts {
   const total: Counts = {
     created: 0,
@@ -274,10 +263,8 @@ function sumOf(counts: readonly Counts[]): Counts {
   return total;
 }
 
-/**
- * One run: deliveries collected, the log recorded as what waits, creates
- * and remakes carried, the vendor read, the rest carried, then reported.
- */
+/** One run: deliveries collected, the log recorded, creates and
+ *  remakes carried, the vendor read, the rest carried, then reported. */
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   trigger: Trigger,
@@ -342,7 +329,6 @@ export async function runOnce<E extends EnvDeclaration>(
     return undefined;
   };
   const asked = new Set<string>();
-  /** Reads the rows named that no lane knows yet, in one lookup, each to its type's lane. */
   const fetchRows = async (ids: Iterable<string>): Promise<void> => {
     const fresh = [...new Set(ids)].filter(
       (id) => !asked.has(id) && inLane(id) === undefined,
@@ -354,7 +340,6 @@ export async function runOnce<E extends EnvDeclaration>(
     for (const id of fresh) asked.add(id);
     for (const item of found.data) lanes.get(item.type)?.rows.adopt(item);
   };
-  /** The row with its type's lane, whichever of the connector's types it is. */
   const find = async (
     id: string,
   ): Promise<{ item: Item; spec: Spec; rows: Rows } | undefined> => {
@@ -442,11 +427,13 @@ export async function runOnce<E extends EnvDeclaration>(
       return undefined;
     }
   };
-  /** Purges to carry, with the row as the log last showed it, kept until carried. */
+  /** Purges to carry, with the row as the log last showed it, kept
+   *  until carried. */
   const purged = new Map<string, Item>(
     (stored.purges ?? []).map((item) => [item.id, item]),
   );
-  /** The log's rows are recorded on the instance, so the cursor may pass them. */
+  /** The log's rows are recorded on the instance, so the cursor may
+   *  pass them. */
   let recorded = false;
   /** Rows the log showed that nothing was agreed for, not carried. */
   let unagreed = 0;
@@ -456,7 +443,8 @@ export async function runOnce<E extends EnvDeclaration>(
     Reflect.deleteProperty(next, "waiting");
     return next;
   };
-  /** Links and read-only fields a person changed, put back before the vendor is read. */
+  /** Links and read-only fields a person changed, put back before
+   *  the vendor is read. */
   const putBack = async (id: string): Promise<void> => {
     const agreement = store.get(id);
     const found = await find(id);
@@ -518,10 +506,8 @@ export async function runOnce<E extends EnvDeclaration>(
       ...(Object.keys(waiting).length > 0 && { waiting }),
     });
   };
-  /**
-   * A run for deliveries also fetches rows waiting to be carried, so their
-   * fields go over what the vendor now holds; past a few hundred it reads the vendor whole.
-   */
+  /** A run for deliveries also fetches waiting rows, so their fields
+   *  go over what the vendor holds; past a few hundred it reads whole. */
   const withWaiting = async (
     named: ReadonlyMap<string, ReadonlySet<string>>,
     ids: ReadonlySet<string>,
@@ -661,7 +647,8 @@ export async function runOnce<E extends EnvDeclaration>(
     );
     settle(kind, current, changeKind, changed, answered, moved);
   };
-  /** The connections as carried, and a change to a target not yet at the vendor still waiting. */
+  /** The connections as carried, and a change to a target not yet
+   *  at the vendor still waiting. */
   const settledConnections = (
     agreement: Agreement,
     moved: Carried | undefined,
@@ -700,7 +687,8 @@ export async function runOnce<E extends EnvDeclaration>(
       next.stateBy = base.stateBy;
       if (base.stateAt !== undefined) next.stateAt = base.stateAt;
     }
-    // Only a read-only field not yet put back, and a target Marfa lacks, still wait.
+    // Only a read-only field not yet put back, and a target Marfa
+    // lacks, still wait.
     const waiting: Record<string, string> = {};
     if (later) waiting[stateKey] = item.updated_at;
     const pending = base?.waiting?.[connectKey];
@@ -842,8 +830,8 @@ export async function runOnce<E extends EnvDeclaration>(
       const { spec: kind, rows } = lane(last.type);
       const agreement = store.get(id);
       if (seen.purged) {
-        // The instance drops a purged row's agreement and keeps its keys as
-        // tombstones; the row as the log last showed names what the vendor knows it by.
+        // The instance drops a purged row's agreement and keeps its
+        // keys as tombstones, named as the log last showed the row.
         store.clear(id);
         if (
           kind.twoWay &&
@@ -909,8 +897,8 @@ export async function runOnce<E extends EnvDeclaration>(
 
     const done = new Set<string>();
     if (twoWay) {
-      // An untold or restored-but-vendor-lost row is created there before the
-      // vendor is read, so a run that failed after creating but before linking doesn't make a twin.
+      // An untold or restored-but-vendor-lost row is made there before
+      // the vendor is read, so failing before it links makes no twin.
       for (const id of order) {
         const agreement = store.get(id);
         const found = await find(id);
@@ -1164,10 +1152,8 @@ export async function runOnce<E extends EnvDeclaration>(
   };
 }
 
-/**
- * Whether the log past the cursor holds a change the vendor hasn't had; the
- * connector's own echoes don't count. Answers where it read to, so echoes aren't re-read.
- */
+/** Whether the log past the cursor holds a change the vendor hasn't
+ *  had, ignoring the connector's own echoes; answers where it read to. */
 export async function waitingInMarfa<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   cursor: string | undefined,

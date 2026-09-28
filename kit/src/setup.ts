@@ -16,10 +16,8 @@ import { describe } from "./run.js";
 const done =
   "<!doctype html><title>Done</title><p>Done: go back to the terminal.</p>";
 
-/**
- * Runs the connector's setup once and writes the secrets it answers to a
- * new file its owner alone may read, made before setup runs since a vendor may hand a secret over only once.
- */
+/** Runs the connector's setup once and writes what it answers to a
+ *  new, owner-only file, made first since a vendor may hand a secret once. */
 export async function setUp<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
@@ -96,7 +94,8 @@ export async function setUp<E extends EnvDeclaration>(
   return 0;
 }
 
-/** Serves the page on a local address until the vendor's redirect arrives there. */
+/** Serves the page on a local address until the vendor's redirect
+ *  arrives there. */
 function serve(
   page: string | undefined,
   servers: Server[],

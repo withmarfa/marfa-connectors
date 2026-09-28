@@ -692,9 +692,8 @@ describe("what was agreed", () => {
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
 
-    // A read from the start of the log shows the person's edit before the
-    // connector's write over it: the edit waits, then the write, which is
-    // what was agreed, lets it go, and nothing is carried.
+    // A read from the start shows the edit before the write: it waits,
+    // the write is what was agreed, and nothing is carried.
     const kept = harness.server.states.get("test");
     delete kept?.["cursor"];
     held.entries = [];

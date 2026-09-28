@@ -28,7 +28,7 @@ function targetOf(key: string): Target {
   return { type: key.slice(0, at), id: key.slice(at + 1) };
 }
 
-/** A connection type's changes in Marfa, and the agreement once they are carried. */
+/** A connection type's changes in Marfa, and agreement once carried. */
 export interface Carried {
   readonly connections: Record<string, Connected>;
   readonly agreed: Record<string, string[]>;
@@ -36,10 +36,8 @@ export interface Carried {
   readonly deferred: boolean;
 }
 
-/**
- * The connections from the connector's rows, compared against what was agreed
- * by target id, so the kit's own writes are never mistaken for a change.
- */
+/** The connections from the connector's rows, against what was agreed by
+ *  target id, so the kit's own writes are never mistaken for a change. */
 export class Connections {
   constructor(
     private readonly marfa: Marfa,
@@ -50,14 +48,12 @@ export class Connections {
     private readonly signal: AbortSignal,
   ) {}
 
-  /** The connection types a row of the type is the source of. */
   typesFrom(type: string): string[] {
     return [...this.kinds.values()]
       .filter((kind) => kind.source_type_constraints?.includes(type) === true)
       .map((kind) => kind.id);
   }
 
-  /** Each row with its outbound edges of the connector's connection types. */
   async edgesOf(
     ids: readonly string[],
   ): Promise<Map<string, { item: Item; edges: Edge[] }>> {
@@ -66,10 +62,8 @@ export class Connections {
     return this.marfa.edgesFrom(type, ids, new Set(this.kinds.keys()));
   }
 
-  /**
-   * Writes the connections the vendor named, plus targets earlier runs missed.
-   * Removals go first so a target with one source is moved, not refused.
-   */
+  /** Writes the connections named, plus targets earlier runs missed.
+   *  Removals go first, so a target with one source moves, not refused. */
   async connect(
     named: ReadonlyMap<string, Readonly<Record<string, readonly Target[]>>>,
     retry: readonly string[],
@@ -143,10 +137,8 @@ export class Connections {
     }
   }
 
-  /**
-   * What one row's connections of one type need, against what was agreed:
-   * nothing agreed or read-only takes the vendor's; two-way keeps Marfa's changes.
-   */
+  /** What one row's connections of one type need, against what was agreed:
+   *  nothing agreed or read-only takes the vendor's; two-way keeps Marfa's. */
   private async plan(
     found: { item: Item; spec: Spec },
     agreement: Agreement,
@@ -208,10 +200,8 @@ export class Connections {
     };
   }
 
-  /**
-   * The row's edges of the type to the connector's own rows of the target
-   * types: another's connection, e.g. a note's attached file, isn't the connector's.
-   */
+  /** The row's edges of the type to the connector's own rows of the target
+   *  types: another's, e.g. a note's attached file, isn't the connector's. */
   private async own(
     edges: readonly Edge[],
     kind: ConnectionDefinition,
@@ -236,10 +226,8 @@ export class Connections {
     );
   }
 
-  /**
-   * A read-only row's connections a person changed in Marfa, put back to
-   * what the vendor last said.
-   */
+  /** A read-only row's connections a person changed in Marfa, put back to
+   *  what the vendor last said. */
   async putBack(item: Item, agreement: Agreement, edges: readonly Edge[]) {
     let next = agreement;
     for (const type of this.typesFrom(item.type)) {
@@ -270,10 +258,8 @@ export class Connections {
     return next;
   }
 
-  /**
-   * What changed in Marfa against what was agreed, by connection type: nothing
-   * agreed carries nothing unless created; a purged target drops, an untold one waits.
-   */
+  /** What changed in Marfa against what was agreed: nothing agreed carries
+   *  nothing unless created; a purged target drops, an untold one waits. */
   async changes(
     item: Item,
     agreement: Agreement,
@@ -426,7 +412,6 @@ export class Connections {
     }
   }
 
-  /** Writes the edges in one request, and answers the ones the server refused. */
   private async link(
     adds: readonly { item: Item; type: string; target: string }[],
   ): Promise<{ id: string; type: string; target: string }[]> {

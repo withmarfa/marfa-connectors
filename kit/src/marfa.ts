@@ -30,10 +30,8 @@ export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
 
-/**
- * The server said no, in its own envelope. `status` is absent on one entry
- * of a bulk answer, which the page's own status does not describe.
- */
+/** The server said no, in its own envelope. `status` is absent on one
+ *  entry of a bulk answer, which the page's own status does not describe. */
 export class Refusal extends Error {
   override name = "Refusal";
 
@@ -73,7 +71,7 @@ export interface NewRow {
   occurred_at?: string;
 }
 
-/** The doors a connector uses, with every refusal thrown as a {@link Refusal}. */
+/** The doors a connector uses; every refusal thrown as a {@link Refusal}. */
 export class Marfa {
   constructor(private readonly client: MarfaClient) {}
 
@@ -108,10 +106,8 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /**
-   * The key this client bears, as the server holds it, or `undefined` from
-   * a server with no door for a key to read itself.
-   */
+  /** The key this client bears, as the server holds it, or `undefined`
+   *  from a server with no door for a key to read itself. */
   async currentKey(): Promise<Key | undefined> {
     const { data, error, response } = await this.client.GET("/keys/current");
     if (response.status === 404) return undefined;
@@ -150,7 +146,8 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** Each row, in any state, with its outbound edges of the named types, every page of them. */
+  /** Each row, in any state, with its outbound edges of the named
+   *  types, every page of them. */
   async edgesFrom(
     type: string,
     ids: readonly string[],
@@ -215,7 +212,6 @@ export class Marfa {
     return edges;
   }
 
-  /** Upserts edges on their ends and type, each answered on its own. */
   async connect(
     edges: readonly {
       source_id: string;
@@ -261,7 +257,8 @@ export class Marfa {
     return data;
   }
 
-  /** Stores bytes by their content, answering their `sha256:` hash; bytes already held answer theirs. */
+  /** Stores bytes by their content, answering their `sha256:` hash;
+   *  bytes already held answer theirs. */
   async upload(
     bytes: Uint8Array,
     mimeType: string,
@@ -306,10 +303,8 @@ export class Marfa {
     return rows;
   }
 
-  /**
-   * Rows in any state by link, natural key or id, with the tombstones the
-   * type keeps for the keys named, asked in pages the door's cap allows.
-   */
+  /** Rows in any state by link, natural key or id, with the tombstones
+   *  the type keeps for the keys named, in pages the door's cap allows. */
   async lookup(
     type: string,
     by:
@@ -377,7 +372,8 @@ export class Marfa {
     return data.item;
   }
 
-  /** One row as it now stands, or `undefined` once it is purged or in the bin, which no read but its restore reaches. */
+  /** One row as it stands, or `undefined` once purged or in the bin,
+   *  which no read but its restore reaches. */
   async item(id: string): Promise<Item | undefined> {
     const { data, error, response } = await this.client.GET("/items/{id}", {
       params: { path: { id } },
@@ -397,10 +393,8 @@ export class Marfa {
     return data.data;
   }
 
-  /**
-   * Lays properties over a row's at the version it was read at, leaving the
-   * rest as-is; the link is written this way too, since it's just another property.
-   */
+  /** Lays properties over a row's at the version it was read at, leaving
+   *  the rest as-is; the link is written this way too, as just another. */
   async merge(
     id: string,
     version: number,
@@ -414,10 +408,8 @@ export class Marfa {
     return data.item;
   }
 
-  /**
-   * The log from a cursor, as frames: head, retained events plus anything
-   * written meanwhile, a marker, then new events; items narrowed to `types`, edges only where asked.
-   */
+  /** The log from a cursor, as frames: head, retained events plus
+   *  anything written meanwhile, a marker, then new events. */
   async events(
     types: readonly string[],
     cursor: string | undefined,
@@ -436,10 +428,8 @@ export class Marfa {
     return data;
   }
 
-  /**
-   * Creates rows through the bulk door, each claiming at version 0 that no
-   * row holds its natural key, and each answered on its own.
-   */
+  /** Creates rows through the bulk door, each claiming at version 0 that
+   *  no row holds its natural key, and each answered on its own. */
   async create(
     type: string,
     source: string,
@@ -465,10 +455,8 @@ export class Marfa {
     return data.results;
   }
 
-  /**
-   * Replaces a row's properties at the version it was read at; on a moved
-   * version the server merges this write over what landed, shown by a jump of more than one in the answered version.
-   */
+  /** Replaces a row's properties at the version read; on a moved version
+   *  the server merges over what landed, shown by a jump past one. */
   async update(
     id: string,
     version: number,
@@ -563,10 +551,8 @@ export class Marfa {
     }
   }
 
-  /**
-   * Takes or renews the registration's hold for this process: when it expires,
-   * and whether it held without a lapse, or `elsewhere` if another process holds it.
-   */
+  /** Takes or renews the registration's hold for this process: when it
+   *  expires, whether it held without a lapse, or `elsewhere` if held. */
   async hold(
     id: string,
     process: string,

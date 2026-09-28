@@ -97,13 +97,15 @@ export const testType: TypeDefinition = {
   },
 };
 
-/** The test type with the vendor's id as its link, as the two-way connector declares it. */
+/** The test type with the vendor's id as its link, as the two-way
+ *  connector declares it. */
 export const linkedType: TypeDefinition = {
   ...testType,
   link_field: "vendor_id",
 };
 
-/** Every property the test vendor holds; `toString` is a name every object answers. */
+/** Every property the test vendor holds; `toString` is a name
+ *  every object answers. */
 export const testFields = ["title", "note", "link", "vendor_id", "toString"];
 
 /** What the test vendor holds, which a test changes between runs. */
@@ -136,7 +138,8 @@ export interface Vendor {
   remakes?: { change: Change; runsBefore: number }[];
   /** The ids each run was handed as hints, in order. */
   hints?: (ReadonlySet<string> | undefined)[];
-  /** The two-way connector's kind brings a trashed row back on the vendor's change. */
+  /** The two-way connector's kind brings a trashed row back on
+   *  the vendor's change. */
   revive?: boolean;
   /** The connection types the connector declares. */
   connections?: ConnectionDefinition[];
@@ -228,14 +231,8 @@ function twoWayConnector(held: Vendor) {
 /** The signals handed to each `verify` that hung, in the order they hung. */
 export const hung: AbortSignal[] = [];
 
-/**
- * How the test connectors read deliveries: a delivery is the vendor's when
- * `X-Signature` is the HMAC of its body under the token, and its body names
- * what changed as `{"ids": [...]}`, or `{"everything": true}`. One carrying
- * `X-Throw` makes `verify` throw, quoting the body, one carrying `X-Hang`
- * makes it wait until its signal aborts, and one whose body is not JSON
- * makes `hints` throw, as `JSON.parse` does.
- */
+/** How the test connectors read deliveries: signed by `X-Signature`,
+ *  `X-Throw` throws, `X-Hang` waits, and a non-JSON body throws in hints. */
 const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
   verify: (delivery, env, signal) => {
     if (delivery.header("x-hang") !== undefined) {

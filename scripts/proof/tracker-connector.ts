@@ -31,11 +31,8 @@ function issueEntry(issue: Issue): Entry {
   };
 }
 
-/**
- * The connector the tracker proof runs as a process: GitHub's shape on a
- * stub, issues with sub-issues and attachments, a trash in Marfa closing
- * the issue, which the vendor's later activity reopens.
- */
+/** The connector the tracker proof runs: GitHub's shape on a stub,
+ *  sub-issues and attachments; a Marfa trash closes it, reopened later. */
 const connector = defineConnector({
   name: "proof-tracker",
   description: "Issues and attachments from the proof's stub tracker.",

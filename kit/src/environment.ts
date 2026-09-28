@@ -15,10 +15,8 @@ export interface Environment {
 
 const reservedSourcePrefixes = ["oauth:", "connector:"];
 
-/**
- * Shorter than this, a secret cannot be redacted without the redaction
- * showing where each of its characters falls in ordinary text.
- */
+/** Shorter than this, a secret cannot be redacted without the redaction
+ *  showing where each character falls in ordinary text. */
 export const shortestSecret = 8;
 
 /** An address a request can be sent to: no credentials, query or fragment. */
@@ -91,10 +89,8 @@ export function readEnvironment<E extends EnvDeclaration>(
   return { url, key, values, secrets: [...secrets.values()] };
 }
 
-/**
- * The kit's own rules for a connector's definition: the server's bounds on
- * a registration and a source.
- */
+/** The kit's own rules for a connector's definition: the server's bounds
+ *  on a registration and a source. */
 export function checkDefinition<E extends EnvDeclaration>(
   connector: Connector<E>,
 ): void {

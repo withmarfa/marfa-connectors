@@ -30,18 +30,17 @@ export const pixel = Buffer.from(
   "base64",
 );
 
-/**
- * The tracker the proof's connector reads and writes, shaped as GitHub's
- * issues are: sub-issues, attachments by an etag, closing where a delete
- * would be. Every request is kept, so a statement can say what reached it.
- */
+/** The tracker the proof's connector reads and writes, shaped as
+ *  GitHub's: sub-issues, etag attachments, closing instead of deleting. */
 export class Tracker {
   readonly issues = new Map<string, Issue>();
   readonly attachments = new Map<string, Attachment>();
   readonly asked: Asked[] = [];
-  /** Issues the tracker does not show yet, as one in a repository not yet read. */
+  /** Issues the tracker does not show yet, as one in a repository
+   *  not yet read. */
   readonly hidden = new Set<string>();
-  /** Held before answering the listing, so a run stays open while a second starts. */
+  /** Held before answering the listing, so a run stays open while
+   *  a second starts. */
   slowList = 0;
   url = "";
   private next = 100;

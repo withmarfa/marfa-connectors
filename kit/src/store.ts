@@ -2,7 +2,8 @@ import type { Agreement } from "./agreement.js";
 import type { Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
-/** What the kit keeps for the connector on the instance, beside the agreements. */
+/** What the kit keeps for the connector on the instance, beside
+ *  the agreements. */
 export interface Kept {
   /** The connector's own, such as a sync token. */
   state: Record<string, unknown>;
@@ -10,7 +11,8 @@ export interface Kept {
   conditions: Record<string, string>;
   /** Where the read of the log reached. */
   cursor?: string;
-  /** Purges read from the log and not yet carried, as the log last showed each row. */
+  /** Purges read from the log and not yet carried, as the log
+   *  last showed each row. */
   purges?: Item[];
 }
 
@@ -56,7 +58,8 @@ function agreementOf(value: unknown): Agreement | undefined {
   return value as unknown as Agreement;
 }
 
-/** The connector's state and each row's agreement, kept on the instance under the key's own source. */
+/** The connector's state and each row's agreement, kept on the
+ *  instance under the key's own source. */
 export class Store {
   /** Read this run; `null` where the instance holds none. */
   private readonly read = new Map<string, Agreement | null>();
@@ -84,7 +87,6 @@ export class Store {
     });
   }
 
-  /** Reads the agreements of the rows named that this run has not read. */
   async fetch(ids: Iterable<string>): Promise<void> {
     const wanted = [...new Set(ids)].filter((id) => !this.read.has(id));
     for (let at = 0; at < wanted.length; at += perRequest) {
@@ -97,12 +99,10 @@ export class Store {
     }
   }
 
-  /** The rows with a change still to carry, as the instance records them. */
   waiting(signal: AbortSignal): Promise<string[]> {
     return this.marfa.waitingAgreements(this.connectorId, signal);
   }
 
-  /** The row's agreement as this run holds it; fetch it first. */
   get(id: string): Agreement | undefined {
     const pending = this.pending.get(id);
     if (pending !== undefined) return pending ?? undefined;
@@ -117,7 +117,6 @@ export class Store {
     this.pending.set(id, null);
   }
 
-  /** Sends what this run wrote, or only the rows named. */
   async flush(only?: readonly string[]): Promise<void> {
     const ids = only ?? [...this.pending.keys()];
     const set: { item_id: string; waiting: boolean; record: Agreement }[] = [];

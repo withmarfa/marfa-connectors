@@ -41,7 +41,8 @@ export interface Row {
   updated_at: string;
   /** The row whose trash took this one through a cascade, while in the bin. */
   trashed_with?: string;
-  /** Told to every key that reads the row; `trashed_with` only to one reading the root. */
+  /** Told to every key that reads the row; `trashed_with` only to
+   *  one reading the root. */
   trashed_by_cascade?: true;
 }
 
@@ -141,10 +142,8 @@ export class ScriptedServer {
   readonly source: string;
   /** The calling key's own source, the connector's unless a test says not. */
   keySource: string;
-  /**
-   * What the calling key holds beside its source, over the write on the
-   * types and connections it was minted for: a test widens or narrows it.
-   */
+  /** What the calling key holds beside its source, over the write
+   *  on its minted types and connections: a test widens or narrows it. */
   grants: {
     sources?: string[];
     permissions?: string[];
@@ -160,7 +159,8 @@ export class ScriptedServer {
   rows: Row[] = [];
   /** Every edge, in the order made. */
   edges: EdgeRow[] = [];
-  /** Edge types the instance holds, by id: the shipped `attached-to`, and what is registered. */
+  /** Edge types the instance holds, by id: the shipped `attached-to`,
+   *  and what is registered. */
   readonly edgeTypes = new Map<string, Record<string, unknown>>([
     [
       "attached-to",
@@ -180,7 +180,8 @@ export class ScriptedServer {
   readonly blobs = new Map<string, { bytes: Buffer; mime_type: string }>();
   /** Every upload, repeats included. */
   uploads = 0;
-  /** Edges a lookup answers per type before its cursor, as the real cap of 50. */
+  /** Edges a lookup answers per type before its cursor, as the real
+   *  cap of 50. */
   edgePageCap = 50;
   types = new Map<string, Record<string, unknown>>();
   runs: Run[] = [];
@@ -191,7 +192,8 @@ export class ScriptedServer {
   readonly log: Event[] = [];
   /** Bulk entries refused by `source_id`, as the server refuses one entry. */
   readonly entryRefusals = new Map<string, Refusal>();
-  /** Called after a read of rows is answered, a listing or a lookup, before the next request. */
+  /** Called after a read of rows is answered, a listing or a
+   *  lookup, before the next request. */
   afterRead: ((request: Request) => void) | undefined;
   /** Awaited before a request is answered, with the request as it arrived. */
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
@@ -221,7 +223,8 @@ export class ScriptedServer {
   holdMs = 180_000;
   /** Every hold taken or renewed, and every release, in order. */
   readonly holds: { process: string; released: boolean }[] = [];
-  /** Tombstones by `type`, then `link:<value>` or `key:<source>:<source_id>`. */
+  /** Tombstones by `type`, then `link:<value>` or
+   *  `key:<source>:<source_id>`. */
   readonly tombstones = new Map<
     string,
     { purged_at: string; settled_at: string }
@@ -466,7 +469,8 @@ export class ScriptedServer {
     return typeof value === "string" && value !== "" ? value : undefined;
   }
 
-  /** Another row of the type already holding the link these properties would. */
+  /** Another row of the type already holding the link these
+   *  properties would. */
   private linkHolder(
     type: string,
     properties: Record<string, unknown>,
@@ -640,7 +644,8 @@ export class ScriptedServer {
     this.announceEdge("edge.deleted", edge);
   }
 
-  /** The row's outbound edges of the type, as `<target id>` in the order made. */
+  /** The row's outbound edges of the type, as `<target id>` in
+   *  the order made. */
   targetsOf(sourceId: string, edgeType: string): string[] {
     return this.edges
       .filter(
@@ -1466,8 +1471,7 @@ export class ScriptedServer {
     });
   }
 
-  /** Rows in any state by link, natural key or id, with the tombstones among them. */
-  /** One bulk edge entry, upserted on its ends and type as the real door does. */
+  /** One bulk edge entry, upserted on its ends and type as the door does. */
   private upsertEdge(
     entry: Record<string, string>,
     index: number,
@@ -1519,9 +1523,8 @@ export class ScriptedServer {
         edge.edge_type === entry["edge_type"],
     );
     if (held !== undefined) return { index, outcome: "updated", id: held.id };
-    // As the server counts them: a target of one-to-many or one-to-one takes
-    // one inbound edge of the type, a source of many-to-one or one-to-one one
-    // outbound.
+    // As the server counts them: one-to-many or one-to-one caps a
+    // target at one inbound edge, many-to-one or one-to-one a source.
     const cardinality = String(kind["cardinality"]);
     const ofType = this.edges.filter(
       (edge) => edge.edge_type === entry["edge_type"],
@@ -1567,6 +1570,7 @@ export class ScriptedServer {
     );
   }
 
+  /** Rows in any state by link, natural key or id, with their tombstones. */
   private lookup(input: Record<string, unknown>): unknown {
     const type = String(input["type"]);
     const links = input["links"] as string[] | undefined;

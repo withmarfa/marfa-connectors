@@ -41,10 +41,8 @@ const heartbeatMs = 60_000;
 /** How long a heartbeat may take before it counts as failed. */
 const beatTimeoutMs = 15_000;
 
-/**
- * Worth another attempt: the server was unreachable, overloaded, failing or
- * too slow; any TypeError besides `fetch failed` is a bug no retry mends.
- */
+/** Worth another attempt: the server was unreachable, overloaded, failing
+ *  or slow; any TypeError besides `fetch failed` is a bug no retry mends. */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
     return (
@@ -70,10 +68,8 @@ function timedFetch(ms: number): typeof fetch {
   };
 }
 
-/**
- * The wait before another start attempt: a minute or the interval, whichever
- * is shorter, doubled each attempt, so a long interval doesn't delay the first run.
- */
+/** The wait before another start attempt: a minute or the interval,
+ *  whichever is shorter, doubled each time so it never delays the first run. */
 function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
 }
@@ -93,10 +89,8 @@ async function checkType(
   return `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
 }
 
-/**
- * What the key holds beyond read/write on the connector's own types,
- * connections and their registration: nothing, for a key minted per the README.
- */
+/** What the key holds beyond read/write on the connector's own types,
+ *  connections and their registration: nothing, for a key per the README. */
 function keyWiderThanTypes(
   key: Key,
   types: ReadonlySet<string>,
@@ -148,13 +142,10 @@ function keyNarrowerThanTypes(
   ];
 }
 
-/**
- * Shipped connection types a connector may write between its own rows,
- * narrowed itself and never registered, e.g. a file attaching to its item.
- */
+/** Shipped connection types a connector may write between its own rows,
+ *  narrowed itself and never registered, e.g. a file attaching to its item. */
 const shippedConnections = new Set(["attached-to"]);
 
-/** Registers each connection the server lacks, or checks the one it holds. */
 async function ensureConnections(
   connections: readonly ConnectionDefinition[],
   marfa: Marfa,
@@ -209,7 +200,6 @@ async function ensureConnections(
   return undefined;
 }
 
-/** Registers a type the server lacks, or checks the one it holds. */
 async function ensureType(
   type: TypeDefinition,
   marfa: Marfa,
@@ -279,7 +269,6 @@ async function registerAndCheck<E extends EnvDeclaration>(
   return { id, source, problem };
 }
 
-/** Whether the connector carries any of its types back. */
 function carriesBack<E extends EnvDeclaration>(
   connector: Connector<E>,
   environment: Environment,
@@ -289,7 +278,8 @@ function carriesBack<E extends EnvDeclaration>(
   ].some((spec) => spec.twoWay);
 }
 
-/** Whether the connector looks between runs: for deliveries, or for changes to carry back. */
+/** Whether the connector looks between runs: for deliveries, or changes
+ *  to carry back. */
 function looks<E extends EnvDeclaration>(
   connector: Connector<E>,
   environment: Environment,
@@ -297,10 +287,8 @@ function looks<E extends EnvDeclaration>(
   return connector.inbound !== undefined || carriesBack(connector, environment);
 }
 
-/**
- * Until the next scheduled run, looks every `everyMs` for a waiting delivery
- * or Marfa change to carry; on failure it waits for that run rather than retrying every look.
- */
+/** Until the next scheduled run, looks every `everyMs` for a waiting
+ *  delivery or change to carry; on failure it waits, rather than retrying. */
 async function awaitChanges<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   held: (trigger: Trigger) => Promise<RunResult | undefined>,

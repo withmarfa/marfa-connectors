@@ -32,10 +32,8 @@ function names(value: unknown): string[] {
     : [];
 }
 
-/**
- * A field as the server stores it: a format that is a field type of its own
- * replaces the declared type, whatever that was, and is dropped.
- */
+/** A field as the server stores it: a format that is a field type
+ *  of its own replaces the declared type and is itself dropped. */
 function normalized(field: unknown): Record<string, unknown> {
   const out = { ...record(field) };
   const format = out["format"];
@@ -59,10 +57,8 @@ function show(value: unknown): string {
   return value === undefined ? "nothing" : JSON.stringify(value);
 }
 
-/**
- * How the server's type differs from the one a connector carries, in shape.
- * `inherited` is the parent's fields as the server merges them in; an empty list means they agree.
- */
+/** How the server's type differs from a connector's, in shape.
+ *  `inherited` is the parent's merged-in fields; empty means they agree. */
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,
@@ -132,7 +128,8 @@ export function typeDifferences(
   return differences;
 }
 
-/** How the server's edge type differs from the connection a connector declares. */
+/** How the server's edge type differs from the connection a
+ *  connector declares. */
 export function edgeTypeDifferences(
   carried: ConnectionDefinition,
   served: EdgeType,

@@ -11,7 +11,8 @@ export function cleaned(
   );
 }
 
-/** A short name for a value's content: keys in one order, nulls and absent keys alike. */
+/** A short name for a value's content: keys in one order, nulls
+ *  and absent keys alike. */
 export function fingerprint(value: unknown): string {
   return createHash("sha1").update(canonical(value)).digest("hex");
 }
@@ -28,10 +29,8 @@ function canonical(value: unknown): string {
   return value === undefined || value === null ? "null" : JSON.stringify(value);
 }
 
-/**
- * A time in the one form every row's own time is written in when it parses;
- * one that doesn't, such as a vendor's own spelling, is passed on for the server to judge.
- */
+/** A time in the one form every row's own time is written in when
+ *  it parses; one that doesn't is passed on for the server to judge. */
 export function instant(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const parsed = Date.parse(value);

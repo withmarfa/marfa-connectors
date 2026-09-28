@@ -19,14 +19,14 @@ export interface Seen {
 export interface LogRead {
   /** By row id, in the order of each row's latest frame. */
   readonly rows: Map<string, Seen>;
-  /**
-   * Rows whose connections of the connector's types changed, by source row
-   * id, with the time first seen; what a purge took is left out.
-   */
+  /** Rows whose connections of the connector's types changed, by
+   *  source row id, with when first seen; a purge's take is left out. */
   readonly connected: Map<string, string>;
-  /** Where the read reached, to resume from; unchanged where nothing was read. */
+  /** Where the read reached, to resume from; unchanged where
+   *  nothing was read. */
   readonly cursor: string | undefined;
-  /** The cursor was older than the log keeps, so every row was listed instead. */
+  /** The cursor was older than the log keeps, so every row was
+   *  listed instead. */
   readonly resync: boolean;
   /** Why the read ended before the head, where it did. */
   readonly incomplete: string | undefined;
@@ -72,10 +72,8 @@ function furthest(...cursors: (string | undefined)[]): string | undefined {
   return best;
 }
 
-/**
- * The log for the connector's types from the cursor to the stream's live
- * marker, whose position covers frames this reader was never sent.
- */
+/** The log for the connector's types from the cursor to the
+ *  stream's live marker, whose position covers frames never sent. */
 export class Watch {
   private readonly types: ReadonlySet<string>;
 
@@ -187,8 +185,8 @@ export class Watch {
         incomplete,
       };
     }
-    // The furthest of the marker's position, the last frame read and where
-    // the read began: a marker behind the cursor, from a reset log, would otherwise repeat what was read.
+    // The furthest of the marker's position, the last frame read and
+    // where the read began, so a reset log's marker repeats nothing.
     return {
       rows,
       connected,
