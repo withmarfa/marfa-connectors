@@ -257,6 +257,8 @@ export class ScriptedServer {
   });
   private sequence = 0;
   private clock = Date.parse("2026-09-25T00:00:00.000Z");
+  /** Moves only with `advance`: a hold lapses with time, not with writes. */
+  private wall = this.clock;
 
   /** The key a connector's README mints: write on its types and connections. */
   private readonly minted: {
@@ -568,6 +570,7 @@ export class ScriptedServer {
   /** Moves the server's clock on, so a later write is later by that much. */
   advance(ms: number): void {
     this.clock += ms;
+    this.wall += ms;
   }
 
   private announce(event: string, row: Row): void {
@@ -592,7 +595,16 @@ export class ScriptedServer {
     return (
       this.holder !== undefined &&
       this.holder.process !== process &&
-      this.holder.until > this.clock
+      this.holder.until > this.wall
+    );
+  }
+
+  /** State and agreement writes are taken only from the live holder. */
+  private heldBy(process: unknown): boolean {
+    return (
+      this.holder !== undefined &&
+      this.holder.process === process &&
+      this.holder.until > this.wall
     );
   }
 
@@ -606,12 +618,11 @@ export class ScriptedServer {
         error: {
           code: "connector_held",
           status: 409,
-          message: "another process holds this connector",
-          details: {
-            expires_at: new Date(
-              this.holder?.until ?? this.clock,
-            ).toISOString(),
-          },
+          message: "this process does not hold this connector",
+          details:
+            this.holder !== undefined && this.holder.until > this.wall
+              ? { expires_at: new Date(this.holder.until).toISOString() }
+              : {},
         },
       }),
     );
@@ -950,7 +961,7 @@ export class ScriptedServer {
         method === "DELETE"
           ? (url.searchParams.get("process") ?? "")
           : String(input["process"]);
-      const now = Date.parse(this.now());
+      const now = this.wall;
       if (method === "DELETE") {
         if (this.holder?.process === process) this.holder = undefined;
         this.holds.push({ process, released: true });
@@ -984,7 +995,7 @@ export class ScriptedServer {
           refuse(400, "validation_error");
           return;
         }
-        if (this.heldElsewhere(input["process"])) {
+        if (!this.heldBy(input["process"])) {
           this.refuseHeld(res);
           return;
         }
@@ -1039,7 +1050,7 @@ export class ScriptedServer {
         refuse(400, "validation_error");
         return;
       }
-      if (this.heldElsewhere(input["process"])) {
+      if (!this.heldBy(input["process"])) {
         this.refuseHeld(res);
         return;
       }

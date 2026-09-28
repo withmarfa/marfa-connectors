@@ -120,6 +120,20 @@ describe("the hold", () => {
     expect(harness.kept()["cursor"]).toBe(cursor);
   });
 
+  it("keeps nothing where another process took the hold and let it go between renewals", async () => {
+    const held = vendor([one]);
+    await harness.once(held);
+    const cursor = harness.kept()["cursor"];
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 2);
+    harness.server.holder = undefined;
+    release();
+    expect(await exit).toBe(1);
+    expect(harness.lastRun().error).toContain("connector_held");
+    expect(harness.kept()["cursor"]).toBe(cursor);
+  });
+
   it("goes on after one renewal fails", async () => {
     const held = vendor([one]);
     const release = gate(held);
