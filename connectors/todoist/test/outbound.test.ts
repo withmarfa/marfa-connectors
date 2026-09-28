@@ -18,6 +18,7 @@ const served = {
   id: "todoist.task",
   label: "Todoist Task",
   parent: "core.task",
+  link_field: "todoist_id",
   fields: {
     todoist_id: { type: "string" },
     project_id: { type: "string" },
