@@ -39,6 +39,7 @@ function isServerUrl(value: string): boolean {
 export function readEnvironment<E extends EnvDeclaration>(
   connector: Connector<E>,
   env: Readonly<Record<string, string | undefined>>,
+  setup = false,
 ): Environment {
   const missing: string[] = [];
   const present = (name: string): string | undefined => {
@@ -56,8 +57,11 @@ export function readEnvironment<E extends EnvDeclaration>(
   const values: Record<string, string | undefined> = {};
   const secrets = new Map([["MARFA_KEY", key]]);
   for (const [name, kind] of Object.entries(connector.env ?? {})) {
-    if (kind === "optional") {
+    // Setup makes what the connector needs later, so it needs none of it.
+    if (kind === "optional" || setup) {
       values[name] = present(name);
+      const value = values[name];
+      if (kind === "secret" && value !== undefined) secrets.set(name, value);
       continue;
     }
     const value = need(name);

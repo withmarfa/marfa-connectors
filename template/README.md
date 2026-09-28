@@ -30,6 +30,7 @@ What a run has to hand:
 - **`log.condition(key, message)`**: something that lasts across runs but lets the run go on, such as a feed that stopped answering among several. It is reported on the first run it appears. What stops the run, such as a vendor refusing the token, is thrown instead, and fails the run.
 - **`signal`**: hand it to `fetch`, so a stop is prompt.
 - **`env`**: the values the connector declared. A `secret` or `required` value that is missing stops the start, and a secret never reaches a log line or a report. A secret that holds a list, such as several addresses, is also kept out part by part, where each part is set apart by whitespace or commas and is at least eight characters long. A value the connector can tell is wrong on sight, such as a malformed address, is refused by throwing from `checkEnv`, which stops the start the same way.
+- **`secret(value)`**, in `run`, `onChange` and `setup`: keeps a value made at run time, such as an installation token, out of every log line, condition and report from then on.
 
 A connector writes only its own type at the feed tier. Promoting a row into the library is a person's or an app's act. A connector reads from its vendor; one that is asked to also carries changes made in Marfa back to it, as the next section describes, and never anything else.
 
@@ -123,10 +124,12 @@ marfa keys create --label <name>-<account> --source <name>-<account> --claim <na
 
 ## Run it
 
-The environment is `MARFA_URL`, `MARFA_KEY` and whatever `env` declares. The connector keeps no file: its state is on the instance.
+The environment is `MARFA_URL`, `MARFA_KEY` and whatever `env` declares. The connector keeps no file: its state is on the instance, and `--setup` writes one only for the person to move.
 
 - **`node dist/main.js --once`**: one run, then exit, for launchd, cron or a scheduled container. Exit codes: `0` for a run that succeeded or a clean stop, `1` for a failed run or a start that could not complete, `2` for a missing or malformed setting.
 - **`node dist/main.js --every 15m`**: a long-lived process. Runs never overlap, and the heartbeat has its own one-minute timer. A failed run is reported, and the next waits twice as long, up to eight intervals. SIGTERM stops it cleanly. A connector that receives webhooks or carries changes back also looks between runs, every ten seconds unless `--every 15m --look-every 30s` says otherwise.
+
+- **`node dist/main.js --setup <file>`**: once, by hand, for a connector with `setup`, which registers it with its vendor. It is handed `listen(page)`, which serves the page at a local address the log names, for the person to open in a browser, and waits for the vendor's redirect to its `callback`; `endpoint()`, which makes the connector's own webhook endpoint and answers its address this once; and `secret`. The secrets it answers, each by the environment variable the connector declares for it, are written as JSON to `<file>`, which must not exist and which its owner alone may read; move them into the secret store and delete the file. Their values reach no log line. The environment needs only `MARFA_URL` and `MARFA_KEY`.
 
 One process runs a connector at a time. Each run is made under a hold on the connector's registration, renewed with every heartbeat and let go when the process ends; a second process under the same key waits under `--every` and exits without running under `--once`, saying who holds it until when. A run whose hold can no longer be trusted, because another process took it or two renewals in a row failed, stops before its next write.
 

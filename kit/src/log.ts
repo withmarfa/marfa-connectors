@@ -14,13 +14,18 @@ function spelledAs(secret: string): string[] {
 }
 
 export class Logger {
-  private readonly secrets: string[];
+  private secrets: string[] = [];
 
   constructor(
     private readonly write: (line: string) => void,
     private readonly clock: Clock,
     secrets: readonly string[] = [],
   ) {
+    this.keep(secrets);
+  }
+
+  /** Keeps these out of every line and report from now on. */
+  keep(secrets: readonly string[]): void {
     // One variable may hold several secrets, as a list of private feed
     // addresses does, and each can appear without the others. Longest first,
     // so a secret that contains another is replaced whole.
@@ -31,8 +36,11 @@ export class Logger {
           .split(/[\s,]+/)
           .filter((part) => part.length >= shortestSecret),
       ])
-      .flatMap(spelledAs);
-    this.secrets = [...new Set(spellings)].sort((a, b) => b.length - a.length);
+      .flatMap(spelledAs)
+      .filter((spelling) => spelling !== "");
+    this.secrets = [...new Set([...this.secrets, ...spellings])].sort(
+      (a, b) => b.length - a.length,
+    );
   }
 
   redact(text: string): string {

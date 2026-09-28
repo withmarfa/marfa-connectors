@@ -394,11 +394,15 @@ export async function runOnce<E extends EnvDeclaration>(
     condition: (key, message) => raised.set(key, message),
   };
   let hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+  const secret = (value: string): void => {
+    logger.keep([value]);
+  };
   const context: RunContext<E> = {
     env,
     signal: setup.signal,
     state,
     log,
+    secret,
     get hints() {
       return hints;
     },
@@ -410,6 +414,7 @@ export async function runOnce<E extends EnvDeclaration>(
     signal: setup.signal,
     state,
     log,
+    secret,
     setLink: (item, value) => lane(item.type).rows.setLink(item, value),
   };
 

@@ -240,6 +240,27 @@ export class Marfa {
     return results;
   }
 
+  /** Makes a webhook endpoint, answering its path in full this once. */
+  async createEndpoint(
+    id: string,
+    options: { label?: string; duplicateHeader?: string },
+  ): Promise<InboundEndpoint> {
+    const { data, error, response } = await this.client.POST(
+      "/connectors/{id}/endpoints",
+      {
+        params: { path: { id } },
+        body: {
+          ...(options.label !== undefined && { label: options.label }),
+          ...(options.duplicateHeader !== undefined && {
+            duplicate_header: options.duplicateHeader,
+          }),
+        },
+      },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data;
+  }
+
   /** Stores bytes by their content, answering their `sha256:` hash; bytes already held answer theirs. */
   async upload(
     bytes: Uint8Array,

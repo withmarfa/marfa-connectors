@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createClient } from "@withmarfa/client";
 import type {
   ConnectionDefinition,
@@ -26,6 +27,7 @@ import {
   type Trigger,
 } from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
+import { setUp } from "./setup.js";
 import {
   backoff,
   describeDuration,
@@ -360,7 +362,23 @@ export async function start<E extends EnvDeclaration>(
   try {
     checkDefinition(connector);
     schedule = readSchedule(runtime.argv);
-    environment = readEnvironment(connector, runtime.env);
+    if (schedule.mode === "setup") {
+      if (connector.setup === undefined) {
+        throw new ConfigurationError(
+          "--setup is for a connector with a setup, which this one has not",
+        );
+      }
+      if (existsSync(schedule.file)) {
+        throw new ConfigurationError(
+          `${schedule.file} exists already, and setup writes its secrets only to a new file`,
+        );
+      }
+    }
+    environment = readEnvironment(
+      connector,
+      runtime.env,
+      schedule.mode === "setup",
+    );
     if (
       schedule.mode === "every" &&
       schedule.lookGiven &&
@@ -377,7 +395,9 @@ export async function start<E extends EnvDeclaration>(
   }
   const logger = new Logger(write, clock, environment.secrets);
   try {
-    await connector.checkEnv?.(environment.values as EnvValues<E>);
+    if (schedule.mode !== "setup") {
+      await connector.checkEnv?.(environment.values as EnvValues<E>);
+    }
   } catch (error) {
     logger.error(`cannot start: ${describe(error)}`);
     return 2;
@@ -435,6 +455,17 @@ export async function start<E extends EnvDeclaration>(
     return 1;
   }
   if (stopped()) return 0;
+  if (schedule.mode === "setup") {
+    return setUp(
+      connector,
+      marfa,
+      connectorId,
+      environment,
+      logger,
+      stop.signal,
+      schedule.file,
+    );
+  }
 
   const hold = new Hold(marfa, connectorId, randomUUID(), logger);
   const beating = new AbortController();

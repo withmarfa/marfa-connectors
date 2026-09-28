@@ -2,6 +2,8 @@ import { ConfigurationError } from "./environment.js";
 
 export type Schedule =
   | { mode: "once" }
+  /** Runs the connector's setup once, writing what it answers to `file`. */
+  | { mode: "setup"; file: string }
   | {
       mode: "every";
       intervalMs: number;
@@ -17,7 +19,7 @@ export type Schedule =
 const units = { s: 1000, m: 60_000, h: 3_600_000 } as const;
 
 const usage =
-  "run with --once, or with --every <interval> such as 30s, 15m or 1h, and --look-every <interval> after it to change how often the connector looks between runs";
+  "run with --once, or with --every <interval> such as 30s, 15m or 1h, and --look-every <interval> after it to change how often the connector looks between runs, or with --setup <file> to set the connector up with its vendor";
 
 /** Often enough that a delivery or an edit is acted on in seconds, and cheap. */
 export const defaultLookMs = 10_000;
@@ -30,6 +32,9 @@ function interval(text: string | undefined): number | undefined {
 
 export function readSchedule(argv: readonly string[]): Schedule {
   if (argv.length === 1 && argv[0] === "--once") return { mode: "once" };
+  if (argv.length === 2 && argv[0] === "--setup" && argv[1] !== "") {
+    return { mode: "setup", file: argv[1] ?? "" };
+  }
   if (argv[0] === "--every" && (argv.length === 2 || argv.length === 4)) {
     const intervalMs = interval(argv[1]);
     const lookGiven = argv.length === 4;

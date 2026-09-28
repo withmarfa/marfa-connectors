@@ -793,6 +793,30 @@ export class ScriptedServer {
       return;
     }
     if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "endpoints"
+    ) {
+      this.sequence += 1;
+      const endpoint = {
+        id: `endpoint-${String(this.sequence)}`,
+        retired_at: null,
+      };
+      this.endpoints.push(endpoint);
+      send(201, {
+        ...endpoint,
+        connector_id: parts[1],
+        label: input["label"] ?? null,
+        duplicate_header:
+          typeof input["duplicate_header"] === "string"
+            ? input["duplicate_header"].toLowerCase()
+            : null,
+        path: `/inbound/in_${String(this.sequence).padStart(24, "0")}`,
+        created_at: this.now(),
+      });
+      return;
+    }
+    if (
       method === "GET" &&
       parts[0] === "connectors" &&
       parts[2] === "endpoints"

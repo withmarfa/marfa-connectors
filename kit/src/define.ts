@@ -104,12 +104,16 @@ export interface Log {
   condition(key: string, message: string): void;
 }
 
+/** Keeps a value made at run time, such as a token, out of every log line and report. */
+export type Secret = (value: string) => void;
+
 export interface RunContext<E extends EnvDeclaration> {
   readonly env: EnvValues<E>;
   /** Aborted when the process is asked to stop. */
   readonly signal: AbortSignal;
   readonly state: State;
   readonly log: Log;
+  readonly secret: Secret;
   /**
    * What to fetch, by type: the ids the deliveries named, beside the links
    * of rows with a change waiting. Leave alone any cursor into the vendor,
@@ -163,6 +167,7 @@ export interface WatchContext<E extends EnvDeclaration> {
   readonly signal: AbortSignal;
   readonly state: State;
   readonly log: Log;
+  readonly secret: Secret;
   /**
    * Writes the vendor's own id for the row onto its link property, at the
    * version the change showed, retrying once if the row moved since. A
@@ -170,6 +175,35 @@ export interface WatchContext<E extends EnvDeclaration> {
    * refusal names both rows.
    */
   readonly setLink: (item: Item, value: string) => Promise<void>;
+}
+
+/** A local address a browser opens, and the vendor sends it back to. */
+export interface LocalCallback {
+  /** Where the browser opens, which serves the page given. */
+  readonly url: string;
+  /** Where the vendor redirects the browser, such as a manifest's `redirect_url`. */
+  readonly callback: string;
+  /** The query the redirect carried, once the browser arrives. */
+  readonly redirected: Promise<URLSearchParams>;
+}
+
+export interface SetupContext<E extends EnvDeclaration> {
+  /** What the environment holds already; what setup makes is missing. */
+  readonly env: { readonly [K in keyof E]?: string | undefined };
+  readonly signal: AbortSignal;
+  readonly log: Pick<Log, "info" | "warn">;
+  readonly secret: Secret;
+  /** Serves `page` at a local address, and waits for the vendor's redirect. */
+  readonly listen: (page?: string) => Promise<LocalCallback>;
+  /**
+   * Makes a webhook endpoint for the connector: its path in full this once,
+   * and the address as the kit reaches the instance, which a vendor may
+   * need replaced with the instance's public one.
+   */
+  readonly endpoint: (options?: {
+    label?: string;
+    duplicateHeader?: string;
+  }) => Promise<{ path: string; url: string }>;
 }
 
 /** A request a sender made to one of the connector's webhook endpoints. */
@@ -266,6 +300,15 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * does for a missing value, before anything reaches the server.
    */
   readonly checkEnv?: (env: EnvValues<E>) => void | Promise<void>;
+  /**
+   * Run once, by hand, with `--setup <file>`: registers the connector with
+   * its vendor and answers the secrets that made, by the environment
+   * variable each is read from. They are written to the file, which must
+   * not exist, readable by its owner alone, and moved into the secret store.
+   */
+  readonly setup?: (
+    context: SetupContext<E>,
+  ) => Promise<Readonly<Record<string, string>>>;
   run(context: RunContext<E>): Promise<void>;
   /**
    * Carries a change made in Marfa to the vendor, once per row: a `created`
