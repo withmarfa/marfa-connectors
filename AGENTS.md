@@ -19,6 +19,8 @@ Moving the pin: write the commit into `scripts/monorepo.commit`, run both script
 
 A connector reads its secrets from the environment, and nothing here holds a value. `.infisical.json` maps this repository to its Infisical project, environment and path, so a run by hand that needs a secret takes it from there with `aic-infisical-run -- <command>` from the checkout, which puts the values into the command's environment without printing them.
 
+- Independent pull requests and hosted jobs may run concurrently. Do not delay pushes or verification to ration a personal runner pool. Keep dependency order for stacked changes and cancel superseded PR runs.
+
 ## Versions
 
 - Every version is the previous one plus 0.0.1, whatever the size of the change. Numbering starts from 0: the first version is 0.0.1.
@@ -28,7 +30,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 
 - American English in code, comments and commits. Scoped Conventional Commits (`feat(kit):`, `fix(rss):`).
 - Feature branches and pull requests; never push `main`. A session merges its own pull request once every required check is green and its reviewers have run: squash, branch deleted.
-- This repository is being made public while development continues. Public visibility is not a release milestone.
+- This repository is public while development continues. Public visibility is not a release milestone.
 - Every Actions workflow uses standard GitHub-hosted runners, never personal self-hosted runners or paid third-party runners.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
