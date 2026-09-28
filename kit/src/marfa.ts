@@ -337,6 +337,37 @@ export class Marfa {
     }
   }
 
+  /**
+   * Takes or renews the registration's hold for this process: when it lasts
+   * until, or `elsewhere` when another process holds it until then.
+   */
+  async hold(
+    id: string,
+    process: string,
+  ): Promise<{ until: string; elsewhere: boolean }> {
+    const { data, error, response } = await this.client.POST(
+      "/connectors/{id}/hold",
+      { params: { path: { id } }, body: { process } },
+    );
+    if (data !== undefined) return { until: data.held_until, elsewhere: false };
+    const refused = refusal(response, error);
+    const until = (
+      error as { error?: { details?: { held_until?: unknown } } } | undefined
+    )?.error?.details?.held_until;
+    if (refused.code === "connector_held" && typeof until === "string") {
+      return { until, elsewhere: true };
+    }
+    throw refused;
+  }
+
+  async release(id: string, process: string): Promise<void> {
+    const { data, error, response } = await this.client.DELETE(
+      "/connectors/{id}/hold",
+      { params: { path: { id }, query: { process } } },
+    );
+    if (data === undefined) throw refusal(response, error);
+  }
+
   /** The state document kept for the key's own source, `{}` where none is. */
   async connectorState(id: string): Promise<unknown> {
     const { data, error, response } = await this.client.GET(

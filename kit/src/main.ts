@@ -13,7 +13,14 @@ import {
 } from "./environment.js";
 import { cap, Logger } from "./log.js";
 import { Marfa, Refusal, type Key } from "./marfa.js";
-import { describe, runOnce, type RunSetup } from "./run.js";
+import { Hold } from "./hold.js";
+import {
+  describe,
+  runOnce,
+  type RunResult,
+  type RunSetup,
+  type Trigger,
+} from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
 import {
   backoff,
@@ -169,6 +176,7 @@ async function registerAndCheck<E extends EnvDeclaration>(
  */
 async function awaitDeliveries<E extends EnvDeclaration>(
   setup: RunSetup<E>,
+  held: (trigger: Trigger) => Promise<RunResult | undefined>,
   everyMs: number,
   next: number,
 ): Promise<void> {
@@ -196,8 +204,8 @@ async function awaitDeliveries<E extends EnvDeclaration>(
       continue;
     }
     if (!waiting || stopped()) continue;
-    const run = await runOnce(setup, "deliveries");
-    if (!run.succeeded || !run.settled) {
+    const run = await held("deliveries");
+    if (run === undefined || !run.succeeded || !run.settled) {
       await clock.sleep(Math.max(0, next - clock.now().getTime()), signal);
       return;
     }
@@ -285,6 +293,7 @@ export async function start<E extends EnvDeclaration>(
   }
   if (stopped()) return 0;
 
+  const hold = new Hold(marfa, connectorId, randomUUID(), logger);
   const beating = new AbortController();
   const beat = AbortSignal.any([beating.signal, stop.signal]);
   const beatingEnded = (): boolean => beat.aborted;
@@ -302,6 +311,7 @@ export async function start<E extends EnvDeclaration>(
           failing = true;
         }
       }
+      await hold.renew();
       await clock.sleep(heartbeatMs, beat);
     }
   })();
@@ -311,20 +321,45 @@ export async function start<E extends EnvDeclaration>(
     environment,
     marfa,
     connectorId,
-    process: randomUUID(),
+    process: hold.process,
     logger,
     clock,
     signal: stop.signal,
   };
+  /** A run under the hold; none where another process holds the connector. */
+  const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
+    let taken;
+    try {
+      taken = await hold.take();
+    } catch (error) {
+      if (stopped()) return undefined;
+      logger.error(`the hold could not be taken: ${describe(error)}`);
+      return { succeeded: false, settled: false };
+    }
+    if (!taken.held) {
+      logger.warn(
+        `another process holds this connector until ${taken.until}, so this one does not run`,
+      );
+      return undefined;
+    }
+    return runOnce(
+      { ...setup, signal: AbortSignal.any([stop.signal, hold.signal]) },
+      trigger,
+    );
+  };
   let code = 0;
   try {
     if (schedule.mode === "once") {
-      const { succeeded } = await runOnce(setup, "schedule");
-      code = succeeded || stopped() ? 0 : 1;
+      const run = await held("schedule");
+      code = run === undefined || run.succeeded || stopped() ? 0 : 1;
     } else {
       let failures = 0;
       while (!stopped()) {
-        const run = await runOnce(setup, "schedule");
+        const run = await held("schedule");
+        if (run === undefined) {
+          await clock.sleep(schedule.intervalMs, stop.signal);
+          continue;
+        }
         failures = run.succeeded ? 0 : failures + 1;
         if (stopped()) break;
         const wait = backoff(schedule.intervalMs, failures);
@@ -336,12 +371,13 @@ export async function start<E extends EnvDeclaration>(
           await clock.sleep(wait, stop.signal);
           continue;
         }
-        await awaitDeliveries(setup, schedule.deliveriesMs, next);
+        await awaitDeliveries(setup, held, schedule.deliveriesMs, next);
       }
     }
   } finally {
     beating.abort();
     await heartbeat;
+    await hold.release();
   }
   return code;
 }

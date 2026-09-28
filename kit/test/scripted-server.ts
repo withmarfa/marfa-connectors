@@ -172,6 +172,12 @@ export class ScriptedServer {
   ];
   /** What arrived at them, oldest first. */
   readonly deliveries: Delivery[] = [];
+  /** Who holds the registration, and until when, by the server's clock. */
+  holder: { process: string; until: number } | undefined;
+  /** How long a hold lasts past its last renewal. */
+  holdMs = 180_000;
+  /** Every hold taken or renewed, and every release, in order. */
+  readonly holds: { process: string; released: boolean }[] = [];
   /** The state document kept for each key's own source. */
   readonly states = new Map<string, Record<string, unknown>>();
   /** Each row's agreement, by source and then by item id. */
@@ -677,6 +683,46 @@ export class ScriptedServer {
           delivery === undefined ? null : this.deliveryView(delivery),
         ),
       });
+      return;
+    }
+    if (parts[0] === "connectors" && parts[2] === "hold") {
+      const process =
+        method === "DELETE"
+          ? (url.searchParams.get("process") ?? "")
+          : String(input["process"]);
+      const now = Date.parse(this.now());
+      if (method === "DELETE") {
+        if (this.holder?.process === process) this.holder = undefined;
+        this.holds.push({ process, released: true });
+        send(200, { ok: true });
+        return;
+      }
+      if (
+        this.holder !== undefined &&
+        this.holder.process !== process &&
+        this.holder.until > now
+      ) {
+        res.writeHead(409, {
+          "Content-Type": "application/json",
+          "X-Marfa-Contract": String(CONTRACT_VERSION),
+        });
+        res.end(
+          JSON.stringify({
+            error: {
+              code: "connector_held",
+              status: 409,
+              message: "another process holds this connector",
+              details: {
+                held_until: new Date(this.holder.until).toISOString(),
+              },
+            },
+          }),
+        );
+        return;
+      }
+      this.holder = { process, until: now + this.holdMs };
+      this.holds.push({ process, released: false });
+      send(200, { held_until: new Date(this.holder.until).toISOString() });
       return;
     }
     if (
