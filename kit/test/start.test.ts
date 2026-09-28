@@ -221,12 +221,16 @@ describe("the key check on start", () => {
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
   });
 
-  it("refuses a pattern over every type, the operator key, and any extension or profile reach, naming each", async () => {
+  it("refuses a pattern over every type, the operator key, any extension or profile reach, and an enforcement override, naming each", async () => {
     for (const [grants, named] of [
       [{ type_permissions: { "*": "write" } }, "type *=write"],
       [{ is_operator: true }, "it is the operator key"],
       [{ extension_permissions: { "app.x": "read" } }, "extension app.x=read"],
       [{ profile_permissions: { email: "read" } }, "profile email=read"],
+      [
+        { enforcement_override: { strict_mode: { types: ["test.entry"] } } },
+        "an enforcement override of strict_mode",
+      ],
     ] as const) {
       harness.server.grants = grants;
       expect(await harness.once(vendor([entry]))).toBe(1);

@@ -1,9 +1,9 @@
 import {
+  agreedState,
   carried,
   changedInMarfa,
   noteWaiting,
   sideOf,
-  type AgreedState,
   type Agreement,
 } from "./agreement.js";
 import type {
@@ -19,18 +19,16 @@ import type {
   State,
   WatchContext,
 } from "./define.js";
-import {
-  connectKey,
-  Connections,
-  connectionsKey,
-  type Carried,
-} from "./connections.js";
+import { Connections, connectionsKey, type Carried } from "./connections.js";
 import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
-import { cap, reportCap, type Logger } from "./log.js";
+import { cap, keepSecret, reportCap, type Logger } from "./log.js";
 import type { Edge, Marfa } from "./marfa.js";
 import {
+  carriable,
   cascaded,
+  connectKey,
+  LinkTaken,
   Rows,
   stateKey,
   Stopped,
@@ -52,6 +50,8 @@ export interface RunSetup<E extends EnvDeclaration> {
   logger: Logger;
   clock: Clock;
   signal: AbortSignal;
+  /** Whether the hold is lost, after which the run carries and keeps nothing more. */
+  fenced?: () => boolean;
 }
 
 /**
@@ -228,6 +228,8 @@ export function observe(
       state = agreedState(item.state);
       stateBy = undefined;
     }
+    // A person moved it: whatever state follows is theirs.
+    if (stateBy === "vendor" && item.state !== state) stateBy = undefined;
     stateSince =
       kind.twoWay && item.state !== state
         ? (stateSince ?? item.updated_at)
@@ -265,11 +267,6 @@ function sumOf(counts: readonly Counts[]): Counts {
     }
   }
   return total;
-}
-
-/** A row's state as the two sides agree on it; a revoked row counts as trashed. */
-function agreedState(state: string): AgreedState {
-  return state === "active" || state === "archived" ? state : "trashed";
 }
 
 /**
@@ -395,7 +392,7 @@ export async function runOnce<E extends EnvDeclaration>(
   };
   let hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   const secret = (value: string): void => {
-    logger.keep([value]);
+    keepSecret(logger, value);
   };
   const context: RunContext<E> = {
     env,
@@ -439,8 +436,12 @@ export async function runOnce<E extends EnvDeclaration>(
       return undefined;
     }
   };
-  /** Rows purged since the last run, with the row as the log last showed it. */
-  const purged = new Map<string, Item>();
+  /** Purges to carry, with the row as the log last showed it, kept until carried. */
+  const purged = new Map<string, Item>(
+    (stored.purges ?? []).map((item) => [item.id, item]),
+  );
+  /** The log's rows are recorded on the instance, so the cursor may pass them. */
+  let recorded = false;
   /** Rows the log showed that nothing was agreed for, not carried. */
   let unagreed = 0;
 
@@ -469,7 +470,16 @@ export async function runOnce<E extends EnvDeclaration>(
       agreement.link !== undefined &&
       rows.linkOf(current.properties) !== agreement.link
     ) {
-      await rows.setLink(current, agreement.link);
+      try {
+        await rows.setLink(current, agreement.link);
+      } catch (error) {
+        if (!(error instanceof LinkTaken)) throw error;
+        raised.set(
+          `link-taken:${id}`,
+          `the ${kind.link ?? "link"} of ${id} was changed in Marfa and cannot be put back: ${error.message}`,
+        );
+        return;
+      }
       current = rows.known(id) ?? current;
       raised.set(
         `link-put-back:${id}`,
@@ -535,7 +545,7 @@ export async function runOnce<E extends EnvDeclaration>(
     return merged;
   };
   const carry = async (item: Item, agreement: Agreement): Promise<void> => {
-    if (setup.signal.aborted) throw new Stopped();
+    if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec: kind, rows } = lane(item.type);
     if (connector.onChange === undefined || !kind.twoWay) return;
     // What changed before another row's trash took it waits for its restore.
@@ -584,14 +594,20 @@ export async function runOnce<E extends EnvDeclaration>(
             agreement,
             (await connections.edgesOf([current.id])).get(current.id)?.edges ??
               [],
+            changeKind === "created",
           )
         : undefined;
     const connected = Object.keys(moved?.connections ?? {}).length > 0;
     if (changeKind === "updated" && changed.length === 0 && !connected) {
-      store.set(
-        current.id,
-        settledConnections(withoutWaiting(agreement), moved),
+      // A read-only field no version could put back still waits.
+      const left = Object.fromEntries(
+        Object.entries(agreement.waiting ?? {}).filter(
+          ([key]) => key === connectKey || kind.readOnly.has(key),
+        ),
       );
+      const next = withoutWaiting(agreement);
+      if (Object.keys(left).length > 0) next.waiting = left;
+      store.set(current.id, settledConnections(next, moved));
       return;
     }
     // Changes go only over a vendor state this run read; they wait otherwise.
@@ -663,6 +679,11 @@ export async function runOnce<E extends EnvDeclaration>(
     const waiting: Record<string, string> = {};
     const pending = base?.waiting?.[connectKey];
     if (pending !== undefined) waiting[connectKey] = pending;
+    // Connections this carry did not take, as with a trash, wait for the next.
+    const connecting = base?.waiting?.[connectionsKey];
+    if (moved === undefined && connecting !== undefined) {
+      waiting[connectionsKey] = connecting;
+    }
     if (item.state !== "trashed") {
       for (const field of changedInMarfa(next, kind.fields, item.properties)) {
         const since = base?.waiting?.[field];
@@ -680,6 +701,7 @@ export async function runOnce<E extends EnvDeclaration>(
             connections: base.connections,
           }),
           ...(base?.pending !== undefined && { pending: base.pending }),
+          ...(base?.file !== undefined && { file: base.file }),
           ...(Object.keys(waiting).length > 0 && { waiting }),
         },
         moved,
@@ -704,7 +726,16 @@ export async function runOnce<E extends EnvDeclaration>(
             clock,
           ),
       );
-      if (!whole) hints = collected?.hints;
+      if (!whole && collected?.hints !== undefined) {
+        const named = [...collected.hints];
+        for (const [type] of named.filter(([type]) => !specs.has(type))) {
+          raised.set(
+            `undeclared-hint:${type}`,
+            `a delivery named ${type}, which the connector does not declare, so it was not fetched`,
+          );
+        }
+        hints = new Map(named.filter(([type]) => specs.has(type)));
+      }
       const rejected = collected?.rejected ?? 0;
       if (rejected > 0) {
         raised.set(
@@ -820,7 +851,7 @@ export async function runOnce<E extends EnvDeclaration>(
       own += observed.own;
       const next = observed.next;
       store.set(id, next);
-      if (next.waiting !== undefined) order.add(id);
+      if (carriable(next.waiting)) order.add(id);
     }
     // A connection of the connector's types changed in Marfa; a row
     // nothing was agreed for is not the connector's to carry.
@@ -837,7 +868,7 @@ export async function runOnce<E extends EnvDeclaration>(
       order.add(id);
     }
     for (const id of waitingIds) {
-      if (store.get(id)?.waiting !== undefined) order.add(id);
+      if (carriable(store.get(id)?.waiting)) order.add(id);
     }
     if (unagreed > 0) {
       raised.set(
@@ -848,6 +879,7 @@ export async function runOnce<E extends EnvDeclaration>(
     // Everything the log named is recorded, so the cursor may move past it
     // however the rest of the run goes.
     await store.flush();
+    recorded = true;
     for (const id of order) await putBack(id);
     if (hints !== undefined) hints = await withWaiting(hints, order);
 
@@ -899,8 +931,11 @@ export async function runOnce<E extends EnvDeclaration>(
               marfa: side,
               state: "active",
               ...(linked !== undefined && { link: linked }),
+              ...(agreement.file !== undefined && { file: agreement.file }),
               ...(kind.connections.size > 0 && {
-                connections: {},
+                connections: Object.fromEntries(
+                  [...kind.connections].map((type) => [type, []]),
+                ),
                 waiting: { [connectionsKey]: clock.now().toISOString() },
               }),
             });
@@ -932,20 +967,26 @@ export async function runOnce<E extends EnvDeclaration>(
         await carry(found.item, agreement);
       }
       for (const item of purged.values()) {
-        if (setup.signal.aborted) throw new Stopped();
+        if (setup.fenced?.() === true || setup.signal.aborted) {
+          throw new Stopped();
+        }
         const answered = await connector.onChange?.(
           { kind: "purged", item, changed: new Set() },
           watchContext,
         );
         pushed += 1;
         await settlePurge(lane(item.type).spec, item, answered);
+        purged.delete(item.id);
       }
     }
   } catch (error) {
     failure = error;
   }
   let flushed = true;
+  const fenced = setup.fenced?.() === true;
   try {
+    // Another process may hold what this run read; the next run reads it again.
+    if (fenced) throw new Error("the hold was lost, so nothing more is kept");
     await store.flush();
   } catch (error) {
     flushed = false;
@@ -955,10 +996,17 @@ export async function runOnce<E extends EnvDeclaration>(
     );
   }
   const finishedAt = clock.now();
+  const pastLog = recorded && flushed && read?.cursor !== undefined;
 
   const all = [...lanes.values()].map(({ rows }) => rows);
   const seeded = all.reduce((sum, rows) => sum + rows.seeded, 0);
   const held = all.reduce((sum, rows) => sum + rows.held, 0);
+  for (const id of store.oversized) {
+    raised.set(
+      `oversized:${id}`,
+      `what was agreed for ${id} outgrew the instance's cap and was dropped, so the row takes the vendor's values when next sent`,
+    );
+  }
   const remembered = all.reduce((sum, rows) => sum + rows.remembered, 0);
   if (remembered > 0) {
     raised.set(
@@ -1065,15 +1113,16 @@ export async function runOnce<E extends EnvDeclaration>(
     conditions = { ...stored.conditions, ...Object.fromEntries(known) };
   }
   // A state that could not be read is not written over with nothing.
-  if (loaded !== undefined) {
+  if (loaded !== undefined && !fenced) {
     try {
       await store.save({
         state: landed ? draft : stored.state,
         conditions,
         // Past the log only once what it named is kept on the instance.
-        ...(flushed && read?.cursor !== undefined
+        ...(pastLog && read?.cursor !== undefined
           ? { cursor: read.cursor }
           : stored.cursor !== undefined && { cursor: stored.cursor }),
+        ...(purged.size > 0 && { purges: [...purged.values()] }),
       });
     } catch (error) {
       logger.warn(
@@ -1084,7 +1133,7 @@ export async function runOnce<E extends EnvDeclaration>(
   return {
     succeeded: failure === undefined,
     settled,
-    cursor: flushed && read?.cursor !== undefined ? read.cursor : stored.cursor,
+    cursor: pastLog ? read?.cursor : stored.cursor,
   };
 }
 
@@ -1123,7 +1172,7 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
     if (agreement === undefined) return last.state === "active";
     // A read-only field is put back by the next scheduled run.
     return Object.keys(observe(spec, seen, agreement).next.waiting ?? {}).some(
-      (key) => !spec.readOnly.has(key),
+      (key) => key !== connectKey && !spec.readOnly.has(key),
     );
   });
   if (waiting || read.connected.size === 0) {

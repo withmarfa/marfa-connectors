@@ -141,6 +141,30 @@ describe("the look, for connections", () => {
     expect(await exit).toBe(0);
   });
 
+  it("starts no run for its own writes to a row waiting on a target Marfa lacks", async () => {
+    const held = vendor([
+      {
+        source_id: "a:1",
+        properties: { title: "One", vendor_id: "v1" },
+        connections: { "test.blocks": [{ type: "test.entry", id: "v3" }] },
+      },
+    ]);
+    held.connections = [blocks];
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+    };
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    for (let look = 0; look < 3; look += 1) {
+      await harness.clock.wake(10_000);
+      await harness.clock.sleeping(10_000);
+    }
+    expect(held.runs).toBe(1);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("reads nothing for connections a purge took", async () => {
     const held = blocking();
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);

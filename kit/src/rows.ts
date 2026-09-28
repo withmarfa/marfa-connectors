@@ -1,4 +1,5 @@
 import {
+  agreedState,
   held,
   laterThan,
   mark,
@@ -65,6 +66,16 @@ export function cascaded(item: Item): boolean {
 
 /** The fields a file's bytes are written to. */
 const fileFields = ["blob_ref", "mime_type"];
+
+/** A target the vendor named and Marfa lacks: waiting, but nothing to carry. */
+export const connectKey = "@connect";
+
+/** Whether anything waiting is Marfa's to carry. */
+export function carriable(
+  waiting: Readonly<Record<string, string>> | undefined,
+): boolean {
+  return Object.keys(waiting ?? {}).some((key) => key !== connectKey);
+}
 
 /** A state change waiting to be carried, beside the fields. */
 export const stateKey = "@state";
@@ -215,7 +226,12 @@ export class Rows {
 
   async upsert(entries: readonly Entry[]): Promise<void> {
     // The last of a repeated key wins, as the vendor's latest word on it.
-    const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
+    const latest = new Map(
+      entries.map((entry) => [
+        entry.source_id,
+        entry.movedFrom === "" ? { ...entry, movedFrom: undefined } : entry,
+      ]),
+    );
     await this.know({
       links: [...latest.values()].flatMap((entry) => [
         ...[this.linkOf(cleaned(entry.properties))].filter(
@@ -432,21 +448,24 @@ export class Rows {
       agreement !== undefined &&
       agreement.state !== "active" &&
       row.state === "active" &&
+      !this.kind.revive &&
+      laterThan(
+        entry.changed_at,
+        agreement.waiting?.[stateKey] ?? row.updated_at,
+      ) &&
       !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
     ) {
-      // A restore waits to be carried. A vendor change from before it can
-      // be the vendor's echo of the trash, and is left; a later one means
-      // the vendor has the row, so the restore needs nothing more.
-      const since = agreement.waiting?.[stateKey] ?? row.updated_at;
-      if (!laterThan(entry.changed_at, since)) {
-        this.counts.skipped += 1;
-        return;
-      }
+      // Where a trash deletes at the vendor, a change there after the restore
+      // means it has the row again; where it only closes, the restore reopens.
       const waiting = { ...agreement.waiting };
       Reflect.deleteProperty(waiting, stateKey);
       agreement = { ...agreement, state: "active" };
       Reflect.deleteProperty(agreement, "waiting");
       if (Object.keys(waiting).length > 0) agreement.waiting = waiting;
+    } else if (agreement?.stateBy === "cascade" && row.state !== "trashed") {
+      // Out of another row's trash, which carried nothing either way.
+      agreement = { ...agreement, state: agreedState(row.state) };
+      Reflect.deleteProperty(agreement, "stateBy");
     } else if (
       this.kind.twoWay &&
       agreement !== undefined &&
@@ -529,6 +548,7 @@ export class Rows {
         properties: row.properties,
         occurred_at: row.occurred_at,
         updated_at: row.updated_at,
+        state: row.state,
       },
       entry,
     });
@@ -576,7 +596,7 @@ export class Rows {
       ...(was?.pending !== undefined && { pending: was.pending }),
       ...(file !== undefined && { file }),
     });
-    if (agreement.waiting !== undefined) this.marked.add(id);
+    if (carriable(agreement.waiting)) this.marked.add(id);
     if (entry.connections !== undefined) {
       this.connecting.set(id, entry.connections);
     }
@@ -799,15 +819,18 @@ export class Rows {
     this.index(written);
     // Only the value sent: what the server merged in beside it is a
     // person's change, still to carry.
+    await this.store.fetch([item.id]);
     const agreement = this.store.get(item.id);
     const marked = mark(value);
-    this.store.set(item.id, {
+    const next: Agreement = {
+      ...agreement,
       vendor: { ...agreement?.vendor, [link]: marked },
       marfa: { ...agreement?.marfa, [link]: marked },
       state: agreement?.state ?? "active",
-      ...(agreement?.waiting !== undefined && { waiting: agreement.waiting }),
       link: value,
-    });
+    };
+    Reflect.deleteProperty(next, "attempted");
+    this.store.set(item.id, next);
   }
 
   /**

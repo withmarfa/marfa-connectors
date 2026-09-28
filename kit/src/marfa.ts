@@ -419,8 +419,9 @@ export class Marfa {
    * The log from a cursor, as frames: the first names the head, then
    * every retained event after the cursor and whatever was written while
    * they were replayed, then the marker naming where the stream has
-   * reached, then whatever is written after. Narrowed to the types and their
-   * subtrees, without edges, and ended by the signal.
+   * reached, then whatever is written after. Item frames narrowed to the
+   * types and their subtrees, edge frames sent only where `edges` asks, and
+   * ended by the signal.
    */
   async events(
     types: readonly string[],
@@ -577,13 +578,14 @@ export class Marfa {
   async hold(
     id: string,
     process: string,
+    signal: AbortSignal,
   ): Promise<
     | { elsewhere: false; until: string; renewed: boolean }
     | { elsewhere: true; until: string }
   > {
     const { data, error, response } = await this.client.POST(
       "/connectors/{id}/hold",
-      { params: { path: { id } }, body: { process } },
+      { params: { path: { id } }, body: { process }, signal },
     );
     if (data !== undefined) {
       return {

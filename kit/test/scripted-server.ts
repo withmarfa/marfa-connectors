@@ -154,6 +154,7 @@ export class ScriptedServer {
     edge_permissions?: Record<string, string>;
     extension_permissions?: Record<string, string>;
     profile_permissions?: Record<string, string>;
+    enforcement_override?: Record<string, unknown>;
   } = {};
   url = "";
   rows: Row[] = [];
@@ -575,6 +576,36 @@ export class ScriptedServer {
     });
   }
 
+  /** Whether a live hold belongs to a process other than this one. */
+  private heldElsewhere(process: unknown): boolean {
+    return (
+      this.holder !== undefined &&
+      this.holder.process !== process &&
+      this.holder.until > this.clock
+    );
+  }
+
+  private refuseHeld(res: ServerResponse): void {
+    res.writeHead(409, {
+      "Content-Type": "application/json",
+      "X-Marfa-Contract": String(CONTRACT_VERSION),
+    });
+    res.end(
+      JSON.stringify({
+        error: {
+          code: "connector_held",
+          status: 409,
+          message: "another process holds this connector",
+          details: {
+            expires_at: new Date(
+              this.holder?.until ?? this.clock,
+            ).toISOString(),
+          },
+        },
+      }),
+    );
+  }
+
   /** A person connects two rows, as the edge door does. */
   drawEdge(sourceId: string, targetId: string, edgeType: string): EdgeRow {
     const at = this.now();
@@ -914,27 +945,8 @@ export class ScriptedServer {
         send(200, { ok: true });
         return;
       }
-      if (
-        this.holder !== undefined &&
-        this.holder.process !== process &&
-        this.holder.until > now
-      ) {
-        res.writeHead(409, {
-          "Content-Type": "application/json",
-          "X-Marfa-Contract": String(CONTRACT_VERSION),
-        });
-        res.end(
-          JSON.stringify({
-            error: {
-              code: "connector_held",
-              status: 409,
-              message: "another process holds this connector",
-              details: {
-                expires_at: new Date(this.holder.until).toISOString(),
-              },
-            },
-          }),
-        );
+      if (this.heldElsewhere(process)) {
+        this.refuseHeld(res);
         return;
       }
       const renewed =
@@ -956,6 +968,14 @@ export class ScriptedServer {
         const state = input["state"];
         if (typeof state !== "object" || state === null) {
           refuse(400, "validation_error");
+          return;
+        }
+        if (this.heldElsewhere(input["process"])) {
+          this.refuseHeld(res);
+          return;
+        }
+        if (Buffer.byteLength(JSON.stringify(state)) > 512 * 1024) {
+          refuse(400, "validation_error", "a state is at most 512 KiB");
           return;
         }
         this.states.set(
@@ -1005,6 +1025,19 @@ export class ScriptedServer {
         refuse(400, "validation_error");
         return;
       }
+      if (this.heldElsewhere(input["process"])) {
+        this.refuseHeld(res);
+        return;
+      }
+      if (
+        set.some(
+          (entry) =>
+            Buffer.byteLength(JSON.stringify(entry.record)) > 16 * 1024,
+        )
+      ) {
+        refuse(400, "validation_error", "a record is at most 16 KiB");
+        return;
+      }
       const skipped: string[] = [];
       for (const entry of set) {
         if (!this.rows.some((row) => row.id === entry.item_id)) {
@@ -1019,7 +1052,7 @@ export class ScriptedServer {
       }
       for (const id of clear) this.agreements.delete(id);
       send(200, {
-        set: set.length - skipped.length,
+        written: set.length - skipped.length,
         cleared: clear.length,
         skipped,
       });
@@ -1463,6 +1496,13 @@ export class ScriptedServer {
         },
       };
     }
+    if (source.state === "trashed" || target.state === "trashed") {
+      return {
+        index,
+        outcome: "errored",
+        error: { code: "item_not_found", message: "an end is in the bin" },
+      };
+    }
     const held = this.edges.find(
       (edge) =>
         edge.source_id === source.id &&
@@ -1470,6 +1510,28 @@ export class ScriptedServer {
         edge.edge_type === entry["edge_type"],
     );
     if (held !== undefined) return { index, outcome: "updated", id: held.id };
+    // As the server counts them: a target of one-to-many or one-to-one takes
+    // one inbound edge of the type, a source of many-to-one or one-to-one one
+    // outbound.
+    const cardinality = String(kind["cardinality"]);
+    const ofType = this.edges.filter(
+      (edge) => edge.edge_type === entry["edge_type"],
+    );
+    if (
+      (["one-to-many", "one-to-one"].includes(cardinality) &&
+        ofType.some((edge) => edge.target_id === target.id)) ||
+      (["many-to-one", "one-to-one"].includes(cardinality) &&
+        ofType.some((edge) => edge.source_id === source.id))
+    ) {
+      return {
+        index,
+        outcome: "errored",
+        error: {
+          code: "edge_constraint_violation",
+          message: `the edge type is ${cardinality}`,
+        },
+      };
+    }
     const made = this.drawEdge(
       source.id,
       target.id,

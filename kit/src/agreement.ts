@@ -127,6 +127,13 @@ export interface Row {
   readonly properties: Readonly<Record<string, unknown>>;
   readonly occurred_at: string | undefined;
   readonly updated_at: string | undefined;
+  /** Where nothing is agreed, the state it is taken in. */
+  readonly state?: string | undefined;
+}
+
+/** A row's state as the two sides agree on it; a revoked row counts as trashed. */
+export function agreedState(state: string): AgreedState {
+  return state === "active" || state === "archived" ? state : "trashed";
 }
 
 export interface MergeInput {
@@ -258,7 +265,8 @@ export function merge(input: MergeInput): Merged {
   const next: Agreement = {
     vendor,
     marfa,
-    state: agreement?.state ?? "active",
+    state: agreement?.state ?? agreedState(row.state ?? "active"),
+    ...(agreement?.stateBy !== undefined && { stateBy: agreement.stateBy }),
     ...(agreement?.link !== undefined && { link: agreement.link }),
     ...(changedAt !== undefined && { changedAt }),
     ...(Object.keys(waiting).length > 0 && { waiting }),

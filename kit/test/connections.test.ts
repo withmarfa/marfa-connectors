@@ -117,6 +117,45 @@ describe("connections from the vendor", () => {
     expect(targets(1)).toEqual(["a:2", "a:3"]);
   });
 
+  it("wait for a target in the bin, and connect it once it is back", async () => {
+    const held = connected([entry(1), entry(2)]);
+    await harness.twoWay(held);
+    const two = harness.server.row("a:2");
+    two.state = "trashed";
+    held.entries = [entry(1, [2])];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual([]);
+    expect(harness.lastRun().summary).not.toContain("refused");
+    harness.server.restore(two.id);
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual(["a:2"]);
+  });
+
+  it("take the vendor's set where nothing was agreed, and carry none of Marfa's", async () => {
+    const held = connected([entry(1, [2]), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    const one = harness.server.row("a:1");
+    harness.server.drawEdge(
+      one.id,
+      harness.server.row("a:3").id,
+      "test.blocks",
+    );
+    // The agreements are lost, and the vendor dropped a:2 meanwhile.
+    harness.server.agreements.clear();
+    held.entries = [entry(1, []), entry(2), entry(3)];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual([]);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toContain(
+      `the test.blocks connections of ${one.id} had nothing agreed, so they took the vendor's`,
+    );
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
   it("connect a target Marfa does not hold yet once it arrives, though the vendor does not name it again", async () => {
     const held = connected([entry(1, [3])]);
     await harness.twoWay(held);
@@ -143,6 +182,54 @@ describe("connections from the vendor", () => {
     held.entries = [{ ...entry(1), connections: {} }];
     expect(await harness.twoWay(held)).toBe(0);
     expect(targets(1)).toEqual(["a:2"]);
+  });
+});
+
+describe("connections, whatever order the rows come in", () => {
+  const parentOf: ConnectionDefinition = {
+    id: "test.parent-of",
+    cardinality: "one-to-many",
+    source_type_constraints: ["test.entry"],
+    target_type_constraints: ["test.entry"],
+  };
+
+  function parenting(entries: Entry[]): Vendor {
+    const held = vendor(entries);
+    held.connections = [parentOf];
+    return held;
+  }
+
+  function child(parent: number, children: number[]): Entry {
+    return {
+      ...entry(parent),
+      connections: {
+        "test.parent-of": children.map((c) => ({
+          type: "test.entry",
+          id: `v${String(c)}`,
+        })),
+      },
+    };
+  }
+
+  it("move a child to its new parent, the old one's connection removed first", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.parent-of": "write" },
+    };
+    const held = parenting([child(1, [3]), child(2, []), child(3, [])]);
+    await harness.twoWay(held);
+    // The new parent comes first, as a vendor may send it.
+    held.entries = [child(2, [3]), child(1, [])];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      harness.server
+        .targetsOf(harness.server.row("a:2").id, "test.parent-of")
+        .map((id) => harness.server.byId(id).source_id),
+    ).toEqual(["a:3"]);
+    expect(
+      harness.server.targetsOf(harness.server.row("a:1").id, "test.parent-of"),
+    ).toEqual([]);
+    expect(harness.lastRun().summary).not.toContain("refused");
   });
 });
 
@@ -314,5 +401,29 @@ describe("a connection type", () => {
     expect(harness.lastRun().error).toContain(
       'cardinality is "many-to-many" here and "one-to-many" on the server',
     );
+  });
+});
+
+describe("a row made again at the vendor", () => {
+  it("carries every connection it holds, the vendor's new copy holding none", async () => {
+    const held = connected([entry(1, [2]), entry(2)]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    const two = harness.server.row("a:2");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    held.gone = new Map([[row.id, "v1-again"]]);
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.remakes).toHaveLength(1);
+    await harness.twoWay(held);
+    expect(
+      held.changes.map((change) => [
+        change.kind,
+        change.connections?.["test.blocks"]?.added.map((item) => item.id),
+      ]),
+    ).toEqual([["updated", [two.id]]]);
   });
 });

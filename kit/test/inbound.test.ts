@@ -705,6 +705,59 @@ describe("a two-way connector's run for deliveries", () => {
     await harness.clock.sleeping(10_000);
   }
 
+  it("fetches no row that waits only on a target Marfa lacks", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+    };
+    const two = {
+      source_id: "a:2",
+      properties: { title: "Two", vendor_id: "v2" },
+    };
+    const held = vendor([
+      {
+        ...linked,
+        connections: { "test.blocks": [{ type: "test.entry", id: "v3" }] },
+      },
+      two,
+    ]);
+    held.connections = [
+      {
+        id: "test.blocks",
+        cardinality: "many-to-many",
+        source_type_constraints: ["test.entry"],
+        target_type_constraints: ["test.entry"],
+      },
+    ];
+    const { exit } = await settledTwoWay(held);
+    // A write the connector does not track puts the row in the log.
+    harness.server.edit(harness.server.row("a:1").id, { untracked: "x" });
+    const said = signed({ ids: ["v2"] });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 3);
+    await harness.clock.sleeping(10_000);
+    expect(held.hints?.at(-1)).toEqual(new Set(["v2"]));
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("drops what a delivery names of a type the connector does not declare, and says so", async () => {
+    const held = vendor([linked]);
+    const { exit } = await settledTwoWay(held);
+    const said = signed({ ids: ["v1"], type: "other.type" });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 3);
+    await harness.clock.sleeping(10_000);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    expect(harness.lastRun().summary).toContain(
+      "a delivery named other.type, which the connector does not declare, so it was not fetched",
+    );
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("fetches what the deliveries named and the rows waiting in Marfa, carries what changed, and moves the cursor", async () => {
     const held = vendor([linked]);
     const { exit } = await settledTwoWay(held);

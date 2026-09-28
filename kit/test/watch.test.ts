@@ -944,16 +944,15 @@ describe("a purge and a transition met by what was agreed", () => {
     expect(harness.lastRun().summary).toMatch(/created 0, .*skipped 1/);
   });
 
-  it("decides a restore by the times, so the vendor's echo of a carried trash does not land on the restored row", async () => {
+  it("merges a vendor change from before a restore, and still carries the restore", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
     const row = harness.server.row("a:1");
     harness.server.trash(row.id);
     await quietRun(held);
     expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
-    // The vendor answered the trash with a change of its own, stamped
-    // before the person's restore: what it sends now is the echo of what
-    // the trash did there, and the restore is the later change.
+    // The vendor changed the item after the trash reached it and before the
+    // person's restore, which is the later change.
     const echoedAt = harness.server.row("a:1").updated_at;
     const restored = harness.server.restore(row.id);
     expect(Date.parse(restored.updated_at) > Date.parse(echoedAt)).toBe(true);
@@ -966,9 +965,10 @@ describe("a purge and a transition met by what was agreed", () => {
     ];
     held.changes.length = 0;
     await harness.twoWay(held);
-    // Left unwritten and not a conflict: the restore, carried, moves the
-    // vendor's copy, and a change of the vendor's own comes again with it.
-    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    // A field only the vendor changed is taken, and the restore still goes.
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, closed at the vendor",
+    );
     expect(harness.server.row("a:1").state).toBe("active");
     expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
     expect(harness.lastRun().summary).toMatch(/conflicts 0/);
@@ -1128,12 +1128,12 @@ describe("the link", () => {
 describe("an entry", () => {
   it("is refused where it carries a property the connector does not declare", async () => {
     const held = vendor([
-      { ...one, properties: { ...one.properties, colour: "red" } },
+      { ...one, properties: { ...one.properties, color: "red" } },
     ]);
     expect(await harness.twoWay(held)).toBe(0);
     expect(harness.server.rows).toHaveLength(0);
     expect(harness.lastRun().summary).toContain(
-      "carries colour, which the connector does not declare among its fields",
+      "carries color, which the connector does not declare among its fields",
     );
   });
 

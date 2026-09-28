@@ -102,10 +102,10 @@ describe("a row a person purged", () => {
     await harness.once(held);
     harness.server.row("a:1").state = "trashed";
     await harness.once(held);
-    expect(harness.kept()).toMatchObject({
-      state: { token: "t1" },
-      conditions: {},
-    });
+    const kept = harness.kept();
+    expect(kept["state"]).toEqual({ token: "t1" });
+    expect(kept["conditions"]).toEqual({});
+    expect(Object.keys(kept).sort()).toEqual(["conditions", "cursor", "state"]);
   });
 });
 

@@ -549,3 +549,27 @@ describe("a row the vendor moved, relinked by its entry", () => {
     expect(harness.lastRun().summary).toMatch(/updated 1, archived 0/);
   });
 });
+
+describe("a link put back", () => {
+  it("that another row took meanwhile waits with a condition, and the run goes on", async () => {
+    const two = {
+      source_id: "a:2",
+      properties: { title: "Two", vendor_id: "v2" },
+    };
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1");
+    const second = harness.server.row("a:2");
+    harness.server.edit(first.id, { vendor_id: "v9" });
+    harness.server.edit(second.id, { vendor_id: "v1" });
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      `the vendor_id of ${first.id} was changed in Marfa and cannot be put back`,
+    );
+    expect(harness.server.byId(second.id).properties["vendor_id"]).toBe("v2");
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.byId(first.id).properties["vendor_id"]).toBe("v1");
+  });
+});

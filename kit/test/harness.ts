@@ -258,11 +258,12 @@ const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
   hints: (delivery) => {
     const said = JSON.parse(new TextDecoder().decode(delivery.body)) as {
       ids?: string[];
+      type?: string;
       everything?: boolean;
     };
     return said.everything === true
       ? "everything"
-      : (said.ids ?? []).map((id) => ({ type: testType.id, id }));
+      : (said.ids ?? []).map((id) => ({ type: said.type ?? testType.id, id }));
   },
 };
 
@@ -316,7 +317,7 @@ function inboundTwoWayConnector(held: Vendor) {
 
 /** A body as the test vendor posts it, with the header that signs it. */
 export function signed(
-  said: { ids?: string[]; everything?: boolean },
+  said: { ids?: string[]; type?: string; everything?: boolean },
   secret = secretToken,
 ): { body: string; headers: [string, string][] } {
   const body = JSON.stringify(said);

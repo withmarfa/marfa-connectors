@@ -6,14 +6,17 @@ import type {
   Target,
 } from "./define.js";
 import { Refusal, type Edge, type Marfa } from "./marfa.js";
-import { Stopped, type Hooks, type Rows, type Spec } from "./rows.js";
+import {
+  connectKey,
+  Stopped,
+  type Hooks,
+  type Rows,
+  type Spec,
+} from "./rows.js";
 import type { Store } from "./store.js";
 
 /** Marfa's connections of a row changed since the vendor last had them. */
 export const connectionsKey = "@connections";
-
-/** The vendor named a target Marfa holds no row for yet. */
-export const connectKey = "@connect";
 
 /** A target as the agreement keeps one the vendor named and Marfa lacks. */
 function keyOf(target: Target): string {
@@ -68,8 +71,8 @@ export class Connections {
 
   /**
    * Writes the connections the vendor named for each row, and the targets
-   * earlier runs could not find, removals first so a type that allows one
-   * target is re-pointed.
+   * earlier runs could not find: every removal first, across the rows, so a
+   * target that may have one source is moved rather than refused.
    */
   async connect(
     named: ReadonlyMap<string, Readonly<Record<string, readonly Target[]>>>,
@@ -79,40 +82,85 @@ export class Connections {
       (id) => this.rowOf(id)?.item.state !== "trashed",
     );
     const edges = await this.edgesOf(ids);
+    const plans: Plan[] = [];
     for (const id of ids) {
       const found = this.rowOf(id);
       const agreement = this.store.get(id);
       if (found === undefined || agreement === undefined) continue;
       const said = named.get(id) ?? {};
-      const types = new Set([
+      for (const type of new Set([
         ...Object.keys(said),
         ...Object.keys(agreement.pending ?? {}),
-      ]);
-      let next = agreement;
-      for (const type of types) {
-        next = await this.connectType(
+      ])) {
+        const plan = await this.plan(
           found,
-          next,
+          agreement,
           type,
           said[type],
           edges.get(id)?.edges ?? [],
         );
+        if (plan !== undefined) plans.push(plan);
       }
-      this.store.set(id, next);
+    }
+    for (const plan of plans) {
+      for (const [target, edge] of plan.remove) {
+        if (!(await this.disconnect(edge, plan.item, plan.type, target))) {
+          plan.kept.add(target);
+        }
+      }
+    }
+    const adds = plans.flatMap((plan) =>
+      plan.add.map((target) => ({ plan, target })),
+    );
+    for (const refused of await this.link(
+      adds.map(({ plan, target }) => ({
+        item: plan.item,
+        type: plan.type,
+        target,
+      })),
+    )) {
+      plans
+        .find(
+          (plan) => plan.item.id === refused.id && plan.type === refused.type,
+        )
+        ?.kept.delete(refused.target);
+    }
+    for (const plan of plans) {
+      const agreement = this.store.get(plan.item.id);
+      if (agreement === undefined) continue;
+      const next = this.agreeOn(
+        agreement,
+        plan.type,
+        plan.kept,
+        plan.unresolved,
+      );
+      if (JSON.stringify(next) !== JSON.stringify(agreement)) {
+        this.store.set(plan.item.id, next);
+      }
+      if (plan.putBack) this.putBackCondition(plan.item.id, plan.type);
+      if (plan.seeded) {
+        this.hooks.condition(
+          `connections-seeded:${plan.item.id}:${plan.type}`,
+          `the ${plan.type} connections of ${plan.item.id} had nothing agreed, so they took the vendor's and nothing was carried back`,
+        );
+      }
     }
   }
 
-  private async connectType(
+  /**
+   * What one row's connections of one type need, against what was agreed:
+   * a type with nothing agreed, or a kind that only reads, takes the
+   * vendor's set; a two-way kind keeps Marfa's own changes to carry.
+   */
+  private async plan(
     found: { item: Item; spec: Spec },
     agreement: Agreement,
     type: string,
     said: readonly Target[] | undefined,
     edges: readonly Edge[],
-  ): Promise<Agreement> {
+  ): Promise<Plan | undefined> {
     const { item, spec } = found;
     const kind = this.kinds.get(type);
-    const agreed = new Set(agreement.connections?.[type] ?? []);
-    const waiting = agreement.pending?.[type] ?? [];
     const outside = (said ?? []).filter(
       (target) => kind?.target_type_constraints?.includes(target.type) !== true,
     );
@@ -121,44 +169,77 @@ export class Connections {
         `connection-refused:${item.id}:${type}`,
         `the vendor names ${type} connections from ${item.id} that the connector does not declare for their ends, so they are not written`,
       );
-      return agreement;
+      return undefined;
     }
-    const resolved = await this.resolve(
-      said ?? waiting.map((key) => targetOf(key)),
-    );
-    const wanted = new Set(
-      said === undefined
-        ? [...agreed, ...[...resolved.values()].map((row) => row.id)]
-        : [...resolved.values()].map((row) => row.id),
-    );
-    const unresolved = (said ?? waiting.map((key) => targetOf(key)))
+    const agreedList = agreement.connections?.[type];
+    const agreed = new Set(agreedList ?? []);
+    const seeding = said !== undefined && agreedList === undefined;
+    const named = said ?? (agreement.pending?.[type] ?? []).map(targetOf);
+    const resolved = await this.resolve(named);
+    const wanted = new Set([
+      ...(said === undefined ? agreed : []),
+      ...[...resolved.values()].map((row) => row.id),
+    ]);
+    const unresolved = named
       .map((target) => keyOf(target))
       .filter((key) => !resolved.has(key));
-    const current = new Map(
-      edges
-        .filter((edge) => edge.edge_type === type)
-        .map((edge) => [edge.target_id, edge.id]),
+    const current = await this.own(
+      edges,
+      kind,
+      new Set([...agreed, ...wanted]),
     );
+    const mirror = !spec.twoWay || seeding;
     const add = [...wanted].filter(
-      (target) => !current.has(target) && (!spec.twoWay || !agreed.has(target)),
+      (target) => !current.has(target) && (mirror || !agreed.has(target)),
     );
     const remove = [...current].filter(
-      ([target]) => !wanted.has(target) && (!spec.twoWay || agreed.has(target)),
+      ([target]) => !wanted.has(target) && (mirror || agreed.has(target)),
     );
-    if (
-      !spec.twoWay &&
+    const diverged =
       [...current.keys()].some(
         (target) => !agreed.has(target) && !wanted.has(target),
-      )
-    ) {
-      this.putBackCondition(item.id, type);
-    }
-    const kept = new Set(wanted);
-    for (const [target, edge] of remove) {
-      if (!(await this.disconnect(edge, item))) kept.add(target);
-    }
-    for (const target of await this.link(item, type, add)) kept.delete(target);
-    return this.agreeOn(agreement, type, kept, unresolved);
+      ) ||
+      [...agreed].some((target) => wanted.has(target) && !current.has(target));
+    return {
+      item,
+      type,
+      add,
+      remove,
+      kept: new Set(wanted),
+      unresolved,
+      putBack: !spec.twoWay && !seeding && diverged,
+      // A new row has nothing agreed either; only what Marfa held differs.
+      seeded: seeding && remove.length > 0,
+    };
+  }
+
+  /**
+   * The row's edges of the type to the connector's own rows of the
+   * connection's target types, by target: another's connection, such as a
+   * person attaching a file to their own note, is never the connector's.
+   */
+  private async own(
+    edges: readonly Edge[],
+    kind: ConnectionDefinition,
+    known: ReadonlySet<string>,
+  ): Promise<Map<string, string>> {
+    const ofType = edges.filter((edge) => edge.edge_type === kind.id);
+    const unknown = ofType
+      .map((edge) => edge.target_id)
+      .filter((target) => !known.has(target));
+    const rows = await this.rows(unknown);
+    return new Map(
+      ofType
+        .filter((edge) => {
+          if (known.has(edge.target_id)) return true;
+          const row = rows.get(edge.target_id);
+          return (
+            row !== undefined &&
+            kind.target_type_constraints?.includes(row.type) === true
+          );
+        })
+        .map((edge) => [edge.target_id, edge.id]),
+    );
   }
 
   /**
@@ -168,24 +249,23 @@ export class Connections {
   async putBack(item: Item, agreement: Agreement, edges: readonly Edge[]) {
     let next = agreement;
     for (const type of this.typesFrom(item.type)) {
+      const kind = this.kinds.get(type);
+      if (kind === undefined) continue;
       const agreed = new Set(agreement.connections?.[type] ?? []);
-      const current = new Map(
-        edges
-          .filter((edge) => edge.edge_type === type)
-          .map((edge) => [edge.target_id, edge.id]),
-      );
+      const current = await this.own(edges, kind, agreed);
       const add = [...agreed].filter((target) => !current.has(target));
       const remove = [...current].filter(([target]) => !agreed.has(target));
       if (add.length === 0 && remove.length === 0) continue;
       const kept = new Set(agreed);
       for (const [target, edge] of remove) {
-        if (!(await this.disconnect(edge, item))) kept.add(target);
+        if (!(await this.disconnect(edge, item, type, target)))
+          kept.add(target);
       }
-      const gone = await this.present(add);
-      for (const target of await this.link(
-        item,
-        type,
-        add.filter((target) => !gone.has(target)),
+      const gone = await this.absent(add);
+      for (const { target } of await this.link(
+        add
+          .filter((target) => !gone.has(target))
+          .map((target) => ({ item, type, target })),
       )) {
         kept.delete(target);
       }
@@ -198,24 +278,27 @@ export class Connections {
 
   /**
    * What changed in Marfa against what was agreed, by connection type, as
-   * the rows at the other end: a target purged since is dropped, and one
-   * the vendor has not been told about waits.
+   * the rows at the other end: a type with nothing agreed carries nothing
+   * but on a create, a target purged since is dropped, and one the vendor
+   * has not been told about waits.
    */
   async changes(
     item: Item,
     agreement: Agreement,
     edges: readonly Edge[],
+    created: boolean,
   ): Promise<Carried> {
     const connections: Record<string, Connected> = {};
     const agreed: Record<string, string[]> = { ...agreement.connections };
     let deferred = false;
     for (const type of this.typesFrom(item.type)) {
-      const was = new Set(agreement.connections?.[type] ?? []);
-      const now = new Set(
-        edges
-          .filter((edge) => edge.edge_type === type)
-          .map((edge) => edge.target_id),
-      );
+      const kind = this.kinds.get(type);
+      const agreedList = agreement.connections?.[type];
+      if (kind === undefined || (agreedList === undefined && !created)) {
+        continue;
+      }
+      const was = new Set(agreedList ?? []);
+      const now = new Set((await this.own(edges, kind, was)).keys());
       const added = [...now].filter((target) => !was.has(target));
       const removed = [...was].filter((target) => !now.has(target));
       if (added.length === 0 && removed.length === 0) continue;
@@ -232,12 +315,8 @@ export class Connections {
       deferred ||= added.some((target) => told(target) === undefined);
       const next = new Set(was);
       for (const row of carried.added) next.add(row.id);
-      // Removed: carried, or gone with a target purged or never told.
-      for (const target of removed) {
-        if (rows.get(target) === undefined || told(target) !== undefined) {
-          next.delete(target);
-        }
-      }
+      // Removed and carried, or gone, or never at the vendor: agreed no more.
+      for (const target of removed) next.delete(target);
       agreed[type] = [...next].sort();
       if (carried.added.length > 0 || carried.removed.length > 0) {
         connections[type] = carried;
@@ -293,7 +372,10 @@ export class Connections {
       const held = await rows.named(named.map((target) => target.id));
       for (const target of named) {
         const row = held.get(target.id);
-        if (row !== undefined) found.set(keyOf(target), row);
+        // The server refuses an edge to a row in the bin: it waits instead.
+        if (row !== undefined && row.state !== "trashed") {
+          found.set(keyOf(target), row);
+        }
       }
     }
     return found;
@@ -308,7 +390,8 @@ export class Connections {
     return new Map(found.data.map((item) => [item.id, item]));
   }
 
-  private async present(ids: readonly string[]): Promise<Set<string>> {
+  /** The ids no row answers for any more. */
+  private async absent(ids: readonly string[]): Promise<Set<string>> {
     const rows = await this.rows(ids);
     return new Set(ids.filter((id) => !rows.has(id)));
   }
@@ -331,7 +414,12 @@ export class Connections {
     return undefined;
   }
 
-  private async disconnect(edge: string, item: Item): Promise<boolean> {
+  private async disconnect(
+    edge: string,
+    item: Item,
+    type: string,
+    target: string,
+  ): Promise<boolean> {
     if (this.signal.aborted) throw new Stopped();
     try {
       await this.marfa.disconnect(edge);
@@ -341,40 +429,56 @@ export class Connections {
         throw error;
       }
       if (error.status >= 500 || error.status === 401) throw error;
-      this.hooks.refused(
-        item.source_id ?? item.id,
-        `${error.code}, ${error.detail}`,
-      );
+      this.refused(item, type, target, `${error.code}, ${error.detail}`);
       return false;
     }
   }
 
-  /** Writes the edges, and answers the targets the server refused. */
+  /** Writes the edges in one request, and answers the ones the server refused. */
   private async link(
-    item: Item,
-    type: string,
-    targets: readonly string[],
-  ): Promise<string[]> {
-    if (targets.length === 0) return [];
+    adds: readonly { item: Item; type: string; target: string }[],
+  ): Promise<{ id: string; type: string; target: string }[]> {
+    if (adds.length === 0) return [];
     if (this.signal.aborted) throw new Stopped();
     const results = await this.marfa.connect(
-      targets.map((target) => ({
+      adds.map(({ item, type, target }) => ({
         source_id: item.id,
         target_id: target,
         edge_type: type,
       })),
     );
-    const refused: string[] = [];
+    const refused: { id: string; type: string; target: string }[] = [];
     for (const result of results) {
-      if (result.outcome !== "errored") continue;
-      const target = targets[result.index];
-      if (target === undefined) continue;
-      refused.push(target);
-      this.hooks.refused(
-        item.source_id ?? item.id,
-        `${type} to ${target}: ${result.error?.code ?? "unknown"}, ${result.error?.message ?? ""}`,
+      const add = adds[result.index];
+      if (result.outcome !== "errored" || add === undefined) continue;
+      refused.push({ id: add.item.id, type: add.type, target: add.target });
+      this.refused(
+        add.item,
+        add.type,
+        add.target,
+        `${result.error?.code ?? "unknown"}, ${result.error?.message ?? ""}`,
       );
     }
     return refused;
   }
+
+  private refused(item: Item, type: string, target: string, why: string) {
+    this.hooks.condition(
+      `connection-refused:${item.id}:${type}:${target}`,
+      `the server refused the ${type} connection from ${item.id} to ${target}: ${why}`,
+    );
+  }
+}
+
+/** One row's connections of one type, as the run will change them. */
+interface Plan {
+  readonly item: Item;
+  readonly type: string;
+  readonly add: readonly string[];
+  readonly remove: readonly [string, string][];
+  /** The targets agreed once the writes land. */
+  readonly kept: Set<string>;
+  readonly unresolved: readonly string[];
+  readonly putBack: boolean;
+  readonly seeded: boolean;
 }

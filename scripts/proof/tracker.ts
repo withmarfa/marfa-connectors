@@ -362,6 +362,71 @@ export async function proveTracker(
     );
 
     await check(
+      "tracker: a sub-issue removed in Marfa is removed at the tracker, and one the tracker removed is removed in Marfa",
+      async () => {
+        const top = await row(parent.id);
+        const edges = await marfa.GET("/items/{id}/edges", {
+          params: {
+            path: { id: top.id },
+            query: { edge_type: "proof.sub-issue" },
+          },
+        });
+        const reborn = await row(loose.id);
+        const edge = edges.data?.data.find(
+          (candidate) => candidate.target_id === reborn.id,
+        );
+        if (edge === undefined) {
+          throw new Error(`${parent.id} holds no edge to ${loose.id}`);
+        }
+        const removed = await marfa.DELETE("/edges/{id}", {
+          params: { path: { id: edge.id } },
+        });
+        if (!removed.response.ok) throw new Error("the removal was refused");
+        const written = tracker.writes().length;
+        await runOnce();
+        const sent = writesSince(written);
+        parent.sub_issues = parent.sub_issues.filter((id) => id !== child.id);
+        parent.updated_at = tracker.touch();
+        await runOnce();
+        const left = await targets(marfa, top, "proof.sub-issue");
+        if (
+          sent.join() !==
+            `DELETE /issues/${parent.id}/sub_issues/${loose.id}` ||
+          parent.sub_issues.includes(loose.id) ||
+          left.length > 0
+        ) {
+          throw new Error(
+            `the tracker took ${sent.join()} and holds ${parent.sub_issues.join()}; Marfa keeps ${left.join()}`,
+          );
+        }
+        return `the tracker took ${sent.join()}, and Marfa let go of ${child.id} once the tracker did`;
+      },
+    );
+
+    await check(
+      "tracker: a sub-issue whose issue the tracker does not show yet is connected once it does",
+      async () => {
+        const late = tracker.add("Late");
+        tracker.hidden.add(late.id);
+        parent.sub_issues.push(late.id);
+        parent.updated_at = tracker.touch();
+        await runOnce();
+        const top = await row(parent.id);
+        const before = await targets(marfa, top, "proof.sub-issue");
+        tracker.hidden.delete(late.id);
+        await runOnce();
+        const after = await targets(marfa, top, "proof.sub-issue");
+        const made = await row(late.id);
+        if (before.length > 0 || after.join() !== made.id) {
+          throw new Error(
+            `before ${before.join()}, after ${after.join()}, the row ${made.id}`,
+          );
+        }
+        return `no connection while ${late.id} was hidden, and ${parent.id} → ${late.id} once it was read`;
+      },
+    );
+
+    await check(
       "tracker: a key that may not write its connection types is refused at start",
       async () => {
         const narrow = await mintWithConnections(

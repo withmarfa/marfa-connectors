@@ -60,8 +60,8 @@ async function call(
  * A connector reading a vendor's JSON list of items and carrying changes
  * made in Marfa back to it. Replace the type file, the environment, the
  * body of `run` and, for a connector that writes back, `onChange` with
- * your vendor's; the kit does the rest. Leave `link` and `onChange` out
- * for a connector that only reads.
+ * your vendor's; the kit does the rest. Leave the type's `link_field` and
+ * `onChange` out for a connector that only reads.
  */
 const connector = defineConnector({
   name: "example",

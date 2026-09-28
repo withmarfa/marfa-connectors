@@ -105,6 +105,21 @@ describe("the hold", () => {
     expect(harness.lastRun().error).toContain("stopped");
   });
 
+  it("keeps nothing where the instance refuses its writes to another process's hold", async () => {
+    const held = vendor([one]);
+    await harness.once(held);
+    const cursor = harness.kept()["cursor"];
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 2);
+    // Taken between renewals: only the instance's own fence stops it.
+    heldElsewhere();
+    release();
+    expect(await exit).toBe(1);
+    expect(harness.lastRun().error).toContain("connector_held");
+    expect(harness.kept()["cursor"]).toBe(cursor);
+  });
+
   it("goes on after one renewal fails", async () => {
     const held = vendor([one]);
     const release = gate(held);
@@ -120,26 +135,62 @@ describe("the hold", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
-  it("stops a run after two renewals in a row fail", async () => {
+  it("stops a run once its hold has gone unrenewed past two minutes, and keeps nothing it read", async () => {
     const held = vendor([one]);
     const release = gate(held);
     const exit = harness.once(held);
     await until(() => held.runs === 1);
-    harness.server.refuseNext("POST /connectors/connector-1/hold", 503, "down");
+    const saves = harness.server.requestsTo(
+      "PUT",
+      "/connectors/connector-1/state",
+    ).length;
+    for (let beat = 1; beat <= 3; beat += 1) {
+      harness.server.refuseNext(
+        "POST /connectors/connector-1/hold",
+        503,
+        "down",
+      );
+      await harness.clock.wake(minute);
+      await until(
+        () =>
+          harness.lines.filter((line) => line.includes("could not be renewed"))
+            .length === beat,
+      );
+      // Two minutes after the last renewal, and not before.
+      expect(
+        harness.lines.some((line) => line.includes("went unrenewed too long")),
+      ).toBe(beat === 3);
+    }
+    release();
+    expect(await exit).toBe(1);
+    expect(harness.server.rows).toEqual([]);
+    expect(
+      harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
+    ).toHaveLength(saves);
+  });
+
+  it("stops a run whose hold lapsed and was taken again, since another process may have written", async () => {
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    const saves = harness.server.requestsTo(
+      "PUT",
+      "/connectors/connector-1/state",
+    ).length;
+    // The hold lapsed with nobody else taking it: the renewal takes it anew.
+    harness.server.holder = undefined;
     await harness.clock.wake(minute);
     await until(() =>
-      harness.lines.some((line) => line.includes("could not be renewed")),
-    );
-    harness.server.refuseNext("POST /connectors/connector-1/hold", 503, "down");
-    harness.server.refuseNext("POST /connectors/connector-1/hold", 503, "down");
-    await harness.clock.wake(minute);
-    await until(
-      () =>
-        harness.lines.filter((line) => line.includes("could not be renewed"))
-          .length === 2,
+      harness.lines.some((line) =>
+        line.includes("the hold lapsed before it was renewed"),
+      ),
     );
     release();
     expect(await exit).toBe(1);
     expect(harness.server.rows).toEqual([]);
+    expect(
+      harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
+    ).toHaveLength(saves);
   });
 });

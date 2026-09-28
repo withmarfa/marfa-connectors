@@ -152,28 +152,34 @@ const connector = defineConnector({
     };
     const linkOf = (item: Item): string => String(item.properties["issue_id"]);
     const { item } = change;
+    let issue: Issue;
     if (change.kind === "created") {
-      const made = await send("POST", "issues", {
+      issue = await send("POST", "issues", {
         title: item.properties["title"],
         body: item.properties["body"] ?? "",
       });
-      await context.setLink(item, made.id);
-      return issueEntry(made);
-    }
-    const id = encodeURIComponent(linkOf(item));
-    if (change.kind === "trashed" || change.kind === "purged") {
+      await context.setLink(item, issue.id);
+    } else if (change.kind === "trashed" || change.kind === "purged") {
+      const closing = encodeURIComponent(linkOf(item));
       return issueEntry(
-        await send("PATCH", `issues/${id}`, { state: "closed" }),
+        await send("PATCH", `issues/${closing}`, { state: "closed" }),
+      );
+    } else if (change.kind === "archived") {
+      return undefined;
+    } else {
+      const fields = Object.fromEntries(
+        [...change.changed].map((field) => [
+          field,
+          item.properties[field] ?? "",
+        ]),
+      );
+      issue = await send(
+        "PATCH",
+        `issues/${encodeURIComponent(linkOf(item))}`,
+        { ...fields, ...(change.kind === "restored" && { state: "open" }) },
       );
     }
-    if (change.kind === "archived") return undefined;
-    const fields = Object.fromEntries(
-      [...change.changed].map((field) => [field, item.properties[field] ?? ""]),
-    );
-    let issue = await send("PATCH", `issues/${id}`, {
-      ...fields,
-      ...(change.kind === "restored" && { state: "open" }),
-    });
+    const id = encodeURIComponent(issue.id);
     const subs = change.connections?.["proof.sub-issue"];
     for (const target of subs?.added ?? []) {
       issue = await send("POST", `issues/${id}/sub_issues`, {

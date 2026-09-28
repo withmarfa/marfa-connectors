@@ -31,7 +31,7 @@ const connector = defineConnector({
       // `string` here; the check on start holds the file to the server's.
       type: todoistTask as TypeDefinition,
       fields: taskFields,
-      // Only what `item_add` and `item_update` take, and completion, travel.
+      // What the connector never sends to Todoist.
       readOnly: [
         "url",
         "project_id",

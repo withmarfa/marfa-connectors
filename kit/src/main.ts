@@ -38,6 +38,9 @@ import { edgeTypeDifferences, typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
+/** How long a heartbeat may take before it counts as failed. */
+const beatTimeoutMs = 15_000;
+
 /**
  * Worth another attempt: the server was unreachable, overloaded, failing or
  * too slow. `fetch failed` is the network's own refusal; any other
@@ -125,6 +128,10 @@ function keyWiderThanTypes(
   held("edge", key.edge_permissions, (name) => connections.has(name));
   held("extension", key.extension_permissions, () => false);
   held("profile", key.profile_permissions, () => false);
+  // An exemption from the instance's own rules is never a connector's.
+  for (const lever of Object.keys(key.enforcement_override ?? {})) {
+    wider.push(`an enforcement override of ${lever}`);
+  }
   return wider;
 }
 
@@ -467,25 +474,32 @@ export async function start<E extends EnvDeclaration>(
     );
   }
 
-  const hold = new Hold(marfa, connectorId, randomUUID(), logger);
+  const hold = new Hold(marfa, connectorId, randomUUID(), logger, clock);
   const beating = new AbortController();
   const beat = AbortSignal.any([beating.signal, stop.signal]);
   const beatingEnded = (): boolean => beat.aborted;
   const heartbeat = (async () => {
     let failing = false;
     while (!beatingEnded()) {
-      try {
-        await marfa.heartbeat(connectorId, beat);
-        if (failing) logger.info("the heartbeat is answered again");
-        failing = false;
-      } catch (error) {
-        // A heartbeat cut short because beating ended is not a failure.
-        if (!beatingEnded() && !failing) {
-          logger.warn(`the heartbeat failed: ${describe(error)}`);
-          failing = true;
+      // Side by side, and neither waiting long, so a slow heartbeat never
+      // leaves the hold unrenewed.
+      const beating = async (): Promise<void> => {
+        try {
+          await marfa.heartbeat(
+            connectorId,
+            AbortSignal.any([beat, AbortSignal.timeout(beatTimeoutMs)]),
+          );
+          if (failing) logger.info("the heartbeat is answered again");
+          failing = false;
+        } catch (error) {
+          // A heartbeat cut short because beating ended is not a failure.
+          if (!beatingEnded() && !failing) {
+            logger.warn(`the heartbeat failed: ${describe(error)}`);
+            failing = true;
+          }
         }
-      }
-      await hold.renew();
+      };
+      await Promise.all([beating(), hold.renew()]);
       await clock.sleep(heartbeatMs, beat);
     }
   })();
@@ -517,7 +531,11 @@ export async function start<E extends EnvDeclaration>(
       return undefined;
     }
     return runOnce(
-      { ...setup, signal: AbortSignal.any([stop.signal, hold.signal]) },
+      {
+        ...setup,
+        signal: AbortSignal.any([stop.signal, hold.signal]),
+        fenced: () => hold.check(),
+      },
       trigger,
     );
   };

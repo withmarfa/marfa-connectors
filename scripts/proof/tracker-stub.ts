@@ -39,6 +39,8 @@ export class Tracker {
   readonly issues = new Map<string, Issue>();
   readonly attachments = new Map<string, Attachment>();
   readonly asked: Asked[] = [];
+  /** Issues the tracker does not show yet, as one in a repository not yet read. */
+  readonly hidden = new Set<string>();
   /** Held before answering the listing, so a run stays open while a second starts. */
   slowList = 0;
   url = "";
@@ -140,7 +142,10 @@ export class Tracker {
       if (this.slowList > 0) {
         await new Promise((done) => setTimeout(done, this.slowList));
       }
-      return [200, [...this.issues.values()]];
+      return [
+        200,
+        [...this.issues.values()].filter((issue) => !this.hidden.has(issue.id)),
+      ];
     }
     if (parts[0] === "attachments" && parts[1] !== undefined) {
       const attachment = this.attachments.get(parts[1]);
@@ -154,7 +159,9 @@ export class Tracker {
       return [201, issue];
     }
     const issue =
-      parts[1] === undefined ? undefined : this.issues.get(parts[1]);
+      parts[1] === undefined || this.hidden.has(parts[1])
+        ? undefined
+        : this.issues.get(parts[1]);
     if (parts[0] !== "issues" || issue === undefined) return [404, {}];
     if (method === "GET" && parts.length === 2) return [200, issue];
     if (method === "PATCH" && parts.length === 2) {

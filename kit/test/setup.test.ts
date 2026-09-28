@@ -80,6 +80,10 @@ describe("--setup", () => {
       "<form>the manifest</form>",
     );
     expect(local.callback).toBe(`${local.url}/callback`);
+    // Only the unguessable path answers.
+    const root = new URL("/", local.url).toString();
+    expect((await fetch(root)).status).toBe(404);
+    expect((await fetch(`${root}callback?code=forged`)).status).toBe(404);
     expect((await fetch(`${local.callback}?code=abc`)).status).toBe(200);
     expect(await exit).toBe(0);
 
@@ -122,28 +126,36 @@ describe("--setup", () => {
       "--setup is for a connector with a setup",
     );
     expect(harness.server.requests).toEqual([]);
-    // Made while setup ran: still written over by nothing.
-    const racing = join(dir, "racing.json");
-    const raced = withSetup({}, async () => {
-      await writeFile(racing, "kept");
-      return { TEST_APP_KEY: made };
-    });
-    expect(await start(raced, harness.runtime(["--setup", racing]))).toBe(1);
-    expect(await readFile(racing, "utf8")).toBe("kept");
   });
 
-  it("writes nothing where setup answers a name the connector does not declare", async () => {
+  it("makes the file before setup runs, and removes it where setup fails", async () => {
+    const file = join(dir, "secrets.json");
+    let during: number | undefined;
+    const failing = withSetup({}, async () => {
+      during = (await stat(file)).mode & 0o777;
+      throw new Error("the vendor refused the manifest");
+    });
+    expect(await start(failing, harness.runtime(["--setup", file]))).toBe(1);
+    expect(during).toBe(0o600);
+    await expect(stat(file)).rejects.toThrow();
+    expect(harness.lines.join("\n")).toContain(
+      `setup failed, and ${file} was removed: the vendor refused the manifest`,
+    );
+  });
+
+  it("keeps a name the connector does not declare in the file, and says so", async () => {
     const file = join(dir, "secrets.json");
     const exit = start(
       withSetup({}, () => Promise.resolve({ OTHER_KEY: made })),
       harness.runtime(["--setup", file]),
     );
     expect(await exit).toBe(1);
-    await expect(stat(file)).rejects.toThrow();
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+      OTHER_KEY: made,
+    });
     expect(harness.lines.join("\n")).toContain(
       "setup answered OTHER_KEY, which the connector does not declare",
     );
-    expect(harness.lines.join("\n")).not.toContain(made);
   });
 });
 

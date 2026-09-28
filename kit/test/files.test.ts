@@ -155,6 +155,34 @@ describe("a file", () => {
 });
 
 describe("attached-to", () => {
+  it("leaves a person's attachment of the connector's file to a row of their own, and puts back one to the connector's rows", async () => {
+    const held: Held = { entries: [issue], files: [], loads: 0 };
+    held.files = [file(held, "etag-1", "hello")];
+    await once(held);
+    const attached = harness.server.row("f:1");
+    const note = harness.server.insert(
+      undefined,
+      { body: "mine" },
+      "core.note",
+      "person",
+    );
+    const other = harness.server.insert(
+      "a:2",
+      { title: "Two", vendor_id: "v2" },
+      "test.entry",
+    );
+    harness.server.drawEdge(attached.id, note.id, "attached-to");
+    harness.server.drawEdge(attached.id, other.id, "attached-to");
+    expect(await once(held)).toBe(0);
+    expect(harness.server.targetsOf(attached.id, "attached-to")).toEqual([
+      harness.server.row("a:1").id,
+      note.id,
+    ]);
+    expect(harness.lastRun().summary).toContain(
+      `the attached-to connections of ${attached.id} were changed in Marfa and put back`,
+    );
+  });
+
   it("is the instance's own, never registered, and refused to a key that may not write it", async () => {
     const held: Held = { entries: [issue], files: [], loads: 0 };
     held.files = [file(held, "etag-1", "hello")];
@@ -166,5 +194,27 @@ describe("attached-to", () => {
     };
     expect(await once(held)).toBe(1);
     expect(harness.lastRun().error).toContain("may not write edge attached-to");
+  });
+});
+
+describe("a file row carried back", () => {
+  it("keeps what its bytes were uploaded as, so a carried edit loads nothing again", async () => {
+    const held: Held = { entries: [issue], files: [], loads: 0 };
+    held.files = [file(held, "etag-1", "hello")];
+    const changes: string[] = [];
+    const carrying = defineConnector({
+      ...withFiles(held),
+      async onChange(change) {
+        changes.push(change.kind);
+        return Promise.resolve(undefined);
+      },
+    });
+    const run = () => start(carrying, harness.runtime(["--once"]));
+    expect(await run()).toBe(0);
+    harness.server.edit(harness.server.row("f:1").id, { title: "renamed.txt" });
+    expect(await run()).toBe(0);
+    expect(changes).toContain("updated");
+    expect(await run()).toBe(0);
+    expect(held.loads).toBe(1);
   });
 });

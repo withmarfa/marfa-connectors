@@ -1,4 +1,5 @@
 import type { Agreement } from "./agreement.js";
+import type { Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
 /** What the kit keeps for the connector on the instance, beside the agreements. */
@@ -9,10 +10,15 @@ export interface Kept {
   conditions: Record<string, string>;
   /** Where the read of the log reached. */
   cursor?: string;
+  /** Purges read from the log and not yet carried, as the log last showed each row. */
+  purges?: Item[];
 }
 
 /** How many agreements one request reads or writes. */
 const perRequest = 500;
+
+/** The instance's cap on one agreement, serialized. */
+const recordBytes = 16 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,10 +35,14 @@ function keptOf(value: unknown): Kept {
       )
     : {};
   const cursor = kept["cursor"];
+  const purges = Array.isArray(kept["purges"])
+    ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Item)
+    : [];
   return {
     state,
     conditions,
     ...(typeof cursor === "string" && { cursor }),
+    ...(purges.length > 0 && { purges }),
   };
 }
 
@@ -52,6 +62,8 @@ export class Store {
   private readonly read = new Map<string, Agreement | null>();
   /** Written this run and not yet sent; `null` clears. */
   private readonly pending = new Map<string, Agreement | null>();
+  /** Rows whose agreement outgrew the instance's cap and was dropped. */
+  readonly oversized = new Set<string>();
 
   constructor(
     private readonly marfa: Marfa,
@@ -68,6 +80,7 @@ export class Store {
       state: kept.state,
       conditions: kept.conditions,
       ...(kept.cursor !== undefined && { cursor: kept.cursor }),
+      ...(kept.purges !== undefined && { purges: kept.purges }),
     });
   }
 
@@ -113,7 +126,12 @@ export class Store {
       const agreement = this.pending.get(id);
       if (agreement === undefined) continue;
       if (agreement === null) clear.push(id);
-      else {
+      // One the instance would refuse would stop every flush after it; the
+      // row is taken as the vendor has it next time.
+      else if (Buffer.byteLength(JSON.stringify(agreement)) > recordBytes) {
+        this.oversized.add(id);
+        clear.push(id);
+      } else {
         set.push({
           item_id: id,
           waiting: agreement.waiting !== undefined,
