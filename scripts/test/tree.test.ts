@@ -77,15 +77,15 @@ function buildOutput(path: string): boolean {
   return path.split("/").includes("dist") || path.endsWith(".tsbuildinfo");
 }
 
-/** Every job that runs anywhere but the pool, or hands its work to another workflow. */
-function offPool(workflow: string): string[] {
+/** Every job that runs anywhere but standard hosted Linux, or hands its work to another workflow. */
+function offHosted(workflow: string): string[] {
   const document = parse(workflow) as {
     jobs?: Record<string, Record<string, unknown>>;
   };
   return Object.entries(document.jobs ?? {}).flatMap(([name, job]) => {
     if ("uses" in job) return [`${name}: uses ${String(job["uses"])}`];
     const runsOn = job["runs-on"];
-    return runsOn === "self-hosted"
+    return runsOn === "ubuntu-latest"
       ? []
       : [`${name}: ${JSON.stringify(runsOn)}`];
   });
@@ -172,9 +172,9 @@ describe("the tree", () => {
     ).toEqual([]);
   });
 
-  it("runs every workflow job on the self-hosted pool", () => {
+  it("runs every workflow job on standard hosted Linux", () => {
     expect(
-      offPool(
+      offHosted(
         [
           "jobs:",
           "  a: { runs-on: ubuntu-latest }",
@@ -188,10 +188,10 @@ describe("the tree", () => {
         ].join("\n"),
       ),
     ).toEqual([
-      'a: "ubuntu-latest"',
       'b: "macos-latest"',
       "c: uses someone/else/.github/workflows/ci.yml@main",
       'd: ["self-hosted","linux"]',
+      'e: "self-hosted"',
     ]);
     const workflows = tree().filter((file) =>
       /^\.github\/workflows\/.+\.ya?ml$/.test(file.path),
@@ -199,7 +199,7 @@ describe("the tree", () => {
     expect(workflows.length).toBeGreaterThan(0);
     expect(
       workflows.flatMap((file) =>
-        offPool(file.text).map((job) => `${file.path} ${job}`),
+        offHosted(file.text).map((job) => `${file.path} ${job}`),
       ),
     ).toEqual([]);
   });

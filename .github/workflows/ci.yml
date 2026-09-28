@@ -14,12 +14,11 @@ permissions:
   contents: read
 
 # Both jobs fetch and build the pinned monorepo on every run: the client is
-# packed from it and the proof boots its server. Only the fetch step is
-# handed the deploy key.
+# packed from it and the proof boots its server.
 jobs:
   checks:
     name: Checks
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -30,8 +29,6 @@ jobs:
         with:
           node-version: 22
       - run: scripts/monorepo.sh
-        env:
-          MONOREPO_DEPLOY_KEY: ${{ secrets.MONOREPO_DEPLOY_KEY }}
       - run: scripts/vendor-client.sh
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -42,7 +39,7 @@ jobs:
 
   proof:
     name: Proof
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -53,8 +50,6 @@ jobs:
         with:
           node-version: 22
       - run: scripts/monorepo.sh
-        env:
-          MONOREPO_DEPLOY_KEY: ${{ secrets.MONOREPO_DEPLOY_KEY }}
       - run: scripts/vendor-client.sh
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
