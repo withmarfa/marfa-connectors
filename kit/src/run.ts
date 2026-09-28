@@ -55,9 +55,8 @@ export interface RunSetup<E extends EnvDeclaration> {
 }
 
 /**
- * Why a run starts: its schedule, which reads the vendor whole, or a look
- * between runs that found a delivery or a change in Marfa waiting, which
- * reads only what they name, or the whole vendor where a delivery asked.
+ * Why a run starts: its schedule, reading the vendor whole, or a look
+ * between runs that found something waiting, reading only what it names, or the whole vendor if a delivery asked.
  */
 export type Trigger = "schedule" | "look";
 
@@ -118,9 +117,8 @@ const moreNote = 80;
 const conditionCap = 500;
 
 /**
- * The counts, then as many of the new conditions as the server's cap on a
- * summary takes, in the order they were raised. The rest wait for a later
- * run's report.
+ * The counts, then as many new conditions as the server's summary cap
+ * takes, in raised order; the rest wait for a later run's report.
  */
 function summarize(
   counts: string,
@@ -186,8 +184,7 @@ export function specsOf<E extends EnvDeclaration>(
 
 /**
  * What waits once the log's frames of a row are read, each field from when
- * it first differed; `own` counts frames showing the row as the kit left it.
- * A trash another row's took, and the restore out of it, wait for nothing.
+ * it first differed; `own` counts the kit's own echoes, and a cascaded trash or restore waits for nothing.
  */
 export function observe(
   kind: Spec,
@@ -516,9 +513,8 @@ export async function runOnce<E extends EnvDeclaration>(
     });
   };
   /**
-   * A run for deliveries also fetches the rows waiting to be carried, so
-   * their fields go over what the vendor now holds; past a few hundred, it
-   * reads the vendor whole.
+   * A run for deliveries also fetches rows waiting to be carried, so their
+   * fields go over what the vendor now holds; past a few hundred it reads the vendor whole.
    */
   const withWaiting = async (
     named: ReadonlyMap<string, ReadonlySet<string>>,
@@ -816,9 +812,8 @@ export async function runOnce<E extends EnvDeclaration>(
       const { spec: kind, rows } = lane(last.type);
       const agreement = store.get(id);
       if (seen.purged) {
-        // The instance drops a purged row's agreement with it and keeps its
-        // keys as tombstones; the row as the log last showed it names what
-        // the vendor knows it by.
+        // The instance drops a purged row's agreement and keeps its keys as
+        // tombstones; the row as the log last showed names what the vendor knows it by.
         store.clear(id);
         if (
           kind.twoWay &&
@@ -885,10 +880,8 @@ export async function runOnce<E extends EnvDeclaration>(
 
     const done = new Set<string>();
     if (twoWay) {
-      // A row the vendor has not been told about, and a restored row the
-      // vendor no longer has, are made there before the vendor is read. A
-      // run that failed between the vendor's answer and the link would
-      // otherwise read the vendor's copy first and create the row's twin.
+      // An untold or restored-but-vendor-lost row is created there before the
+      // vendor is read, so a run that failed after creating but before linking doesn't make a twin.
       for (const id of order) {
         const agreement = store.get(id);
         const found = await find(id);
@@ -1040,9 +1033,8 @@ export async function runOnce<E extends EnvDeclaration>(
   for (const [, message] of fresh) logger.warn(message);
 
   const landed = failure === undefined && held === 0;
-  // A delivery is processed once the run that took it ends without error.
-  // A write it held is read again by the next scheduled run, which reads
-  // the vendor whole, so the delivery need not wait for it.
+  // A delivery is processed once its run ends without error; a write it
+  // held is re-read by the next scheduled run's full read, so it need not wait.
   const taken = collected?.fresh ?? [];
   let processed = 0;
   if (failure === undefined && !setup.signal.aborted) {
@@ -1097,9 +1089,7 @@ export async function runOnce<E extends EnvDeclaration>(
   }
 
   // A condition counts as reported only once a report carrying it landed.
-  // A run that failed, or read only what deliveries named, may not have
-  // reached what raises one, so nothing it did not raise is taken to have
-  // cleared.
+  // A run that didn't reach what raises one can't be taken to have cleared it.
   const known = [...raised].filter(
     ([key]) => key in stored.conditions || sent.has(key),
   );
@@ -1138,9 +1128,8 @@ export async function runOnce<E extends EnvDeclaration>(
 }
 
 /**
- * Whether the log past the cursor holds a change the vendor has not had,
- * for the look between runs; the connector's own echoes are not one.
- * Answers where the look read to, so echoes are not read again.
+ * Whether the log past the cursor holds a change the vendor hasn't had; the
+ * connector's own echoes don't count. Answers where it read to, so echoes aren't re-read.
  */
 export async function waitingInMarfa<E extends EnvDeclaration>(
   setup: RunSetup<E>,

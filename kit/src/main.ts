@@ -43,8 +43,7 @@ const beatTimeoutMs = 15_000;
 
 /**
  * Worth another attempt: the server was unreachable, overloaded, failing or
- * too slow. `fetch failed` is the network's own refusal; any other
- * TypeError is a request the kit built wrong, which no retry mends.
+ * too slow; any TypeError besides `fetch failed` is a bug no retry mends.
  */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
@@ -72,9 +71,8 @@ function timedFetch(ms: number): typeof fetch {
 }
 
 /**
- * The wait before another attempt at a start that could not reach the
- * server: a minute or the interval, whichever is shorter, doubled on each
- * attempt, so a long interval does not delay the first run by as much.
+ * The wait before another start attempt: a minute or the interval, whichever
+ * is shorter, doubled each attempt, so a long interval doesn't delay the first run.
  */
 function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
@@ -96,9 +94,8 @@ async function checkType(
 }
 
 /**
- * What the key holds beyond read and write on the connector's own types and
- * connections and their registration, each named: nothing, for a key minted
- * as the template's README says.
+ * What the key holds beyond read/write on the connector's own types,
+ * connections and their registration: nothing, for a key minted per the README.
  */
 function keyWiderThanTypes(
   key: Key,
@@ -153,8 +150,7 @@ function keyNarrowerThanTypes(
 
 /**
  * Shipped connection types a connector may write between its own rows,
- * narrowing their ends itself, and never registers: files attach to their
- * item as apps and folders know attachments.
+ * narrowed itself and never registered, e.g. a file attaching to its item.
  */
 const shippedConnections = new Set(["attached-to"]);
 
@@ -302,10 +298,8 @@ function looks<E extends EnvDeclaration>(
 }
 
 /**
- * Until the next scheduled run, looks every `everyMs` for a waiting
- * delivery or a change in Marfa to carry back, and runs for it at once. A
- * run that fails, or leaves what it took unmarked, leaves the rest for the
- * scheduled run rather than trying again at every look.
+ * Until the next scheduled run, looks every `everyMs` for a waiting delivery
+ * or Marfa change to carry; on failure it waits for that run rather than retrying every look.
  */
 async function awaitChanges<E extends EnvDeclaration>(
   setup: RunSetup<E>,

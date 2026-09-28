@@ -8,9 +8,8 @@ export const occurredKey = "@occurred_at";
 export type AgreedState = "active" | "archived" | "trashed";
 
 /**
- * What the two sides last held for one row. Each side is kept on its own,
- * since they may rightly differ: a read-only field a person edited, or a
- * value the vendor normalizes.
+ * What the two sides last held for one row, kept apart since they can rightly
+ * differ: a read-only field a person edited, or a value the vendor normalizes.
  */
 export interface Agreement {
   /** The vendor's last values, field by field, by {@link mark}. */
@@ -303,8 +302,7 @@ export interface CarriedInput {
 
 /**
  * The agreement once a change reached the vendor, without waiting marks:
- * Marfa's side takes what was carried, the vendor's its answer or else the
- * carried values.
+ * Marfa's side takes what was carried, the vendor's its answer or else that.
  */
 export function carried(input: CarriedInput): Agreement {
   const { fields, agreement, properties, state, changed, answered } = input;

@@ -29,9 +29,8 @@ function canonical(value: unknown): string {
 }
 
 /**
- * A time in the one form every row's own time is written in. A vendor's
- * spelling, RFC 822 or a microsecond timestamp, is otherwise stored as
- * sent. One that does not parse is passed on for the server to judge.
+ * A time in the one form every row's own time is written in when it parses;
+ * one that doesn't, such as a vendor's own spelling, is passed on for the server to judge.
  */
 export function instant(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;

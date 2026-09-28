@@ -15,8 +15,7 @@ export interface HmacCheck {
 
 /**
  * Whether a body carries its sender's HMAC signature, compared in constant
- * time. Anything malformed, a missing header or an empty secret included,
- * is `false`. Hex is read in either case; base64 must match exactly.
+ * time. Malformed input, a missing header or empty secret included, is `false`; hex ignores case, base64 must match exactly.
  */
 export function verifyHmac(check: HmacCheck): boolean {
   const { signature, prefix = "", encoding = "hex" } = check;

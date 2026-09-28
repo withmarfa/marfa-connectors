@@ -399,8 +399,7 @@ export class Marfa {
 
   /**
    * Lays properties over a row's at the version it was read at, leaving the
-   * rest as they are: what the link is written with, since the row is the
-   * vendor's to fill and the link is one property of it.
+   * rest as-is; the link is written this way too, since it's just another property.
    */
   async merge(
     id: string,
@@ -416,12 +415,8 @@ export class Marfa {
   }
 
   /**
-   * The log from a cursor, as frames: the first names the head, then
-   * every retained event after the cursor and whatever was written while
-   * they were replayed, then the marker naming where the stream has
-   * reached, then whatever is written after. Item frames narrowed to the
-   * types and their subtrees, edge frames sent only where `edges` asks, and
-   * ended by the signal.
+   * The log from a cursor, as frames: head, retained events plus anything
+   * written meanwhile, a marker, then new events; items narrowed to `types`, edges only where asked.
    */
   async events(
     types: readonly string[],
@@ -471,10 +466,8 @@ export class Marfa {
   }
 
   /**
-   * Replaces a row's properties on the version it was read at. On a version
-   * another write has since moved, the server merges this write's changes,
-   * a cleared field included, over what landed since, and the version it
-   * answers, more than one step on, shows that it did.
+   * Replaces a row's properties at the version it was read at; on a moved
+   * version the server merges this write over what landed, shown by a jump of more than one in the answered version.
    */
   async update(
     id: string,
@@ -571,9 +564,8 @@ export class Marfa {
   }
 
   /**
-   * Takes or renews the registration's hold for this process: when it
-   * expires, whether this process held it without a lapse, or `elsewhere`
-   * when another process holds it until then.
+   * Takes or renews the registration's hold for this process: when it expires,
+   * and whether it held without a lapse, or `elsewhere` if another process holds it.
    */
   async hold(
     id: string,

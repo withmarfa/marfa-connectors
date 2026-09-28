@@ -182,9 +182,8 @@ export class Watch {
         incomplete,
       };
     }
-    // The furthest of the position the marker names, the last frame read
-    // and where the read began: a marker behind the cursor, from a server
-    // whose log was reset, would otherwise hand back what was already read.
+    // The furthest of the marker's position, the last frame read and where
+    // the read began: a marker behind the cursor, from a reset log, would otherwise repeat what was read.
     return {
       rows,
       connected,

@@ -26,9 +26,8 @@ export class Logger {
 
   /** Keeps these out of every line and report from now on. */
   keep(secrets: readonly string[]): void {
-    // One variable may hold several secrets, as a list of private feed
-    // addresses does, and each can appear without the others. Longest first,
-    // so a secret that contains another is replaced whole.
+    // One variable may hold several secrets, each able to appear alone.
+    // Longest first, so a secret that contains another is replaced whole.
     const spellings = secrets
       .flatMap((secret) => [
         secret,

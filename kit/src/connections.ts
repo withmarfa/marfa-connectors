@@ -37,11 +37,8 @@ export interface Carried {
 }
 
 /**
- * The connections from the connector's rows: what the vendor names is
- * written once the vendor's rows are, a target not yet in Marfa is retried
- * each run, and what changed in Marfa is carried back, or put back where the
- * row's kind is read only. Each side is compared with what was agreed, by
- * target id, so the kit's own writes are never a change.
+ * The connections from the connector's rows, compared against what was agreed
+ * by target id, so the kit's own writes are never mistaken for a change.
  */
 export class Connections {
   constructor(
@@ -70,9 +67,8 @@ export class Connections {
   }
 
   /**
-   * Writes the connections the vendor named for each row, and the targets
-   * earlier runs could not find: every removal first, across the rows, so a
-   * target that may have one source is moved rather than refused.
+   * Writes the connections the vendor named, plus targets earlier runs missed.
+   * Removals go first so a target with one source is moved, not refused.
    */
   async connect(
     named: ReadonlyMap<string, Readonly<Record<string, readonly Target[]>>>,
@@ -149,8 +145,7 @@ export class Connections {
 
   /**
    * What one row's connections of one type need, against what was agreed:
-   * a type with nothing agreed, or a kind that only reads, takes the
-   * vendor's set; a two-way kind keeps Marfa's own changes to carry.
+   * nothing agreed or read-only takes the vendor's; two-way keeps Marfa's changes.
    */
   private async plan(
     found: { item: Item; spec: Spec },
@@ -214,9 +209,8 @@ export class Connections {
   }
 
   /**
-   * The row's edges of the type to the connector's own rows of the
-   * connection's target types, by target: another's connection, such as a
-   * person attaching a file to their own note, is never the connector's.
+   * The row's edges of the type to the connector's own rows of the target
+   * types: another's connection, e.g. a note's attached file, isn't the connector's.
    */
   private async own(
     edges: readonly Edge[],
@@ -277,10 +271,8 @@ export class Connections {
   }
 
   /**
-   * What changed in Marfa against what was agreed, by connection type, as
-   * the rows at the other end: a type with nothing agreed carries nothing
-   * but on a create, a target purged since is dropped, and one the vendor
-   * has not been told about waits.
+   * What changed in Marfa against what was agreed, by connection type: nothing
+   * agreed carries nothing unless created; a purged target drops, an untold one waits.
    */
   async changes(
     item: Item,

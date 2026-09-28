@@ -89,10 +89,8 @@ const raced = new Set([
 ]);
 
 /**
- * What the server answers about one row: its contents, its size, or a
- * natural key that a row of another type already holds. On an update the
- * other validation codes describe the request rather than the row, so they
- * end the run instead of hiding a request the kit got wrong.
+ * Codes about the row itself: its contents, size, or a natural key another
+ * type already holds. Other update codes mean the kit's request was wrong, so they end the run.
  */
 const refusedUpdate = new Set([
   "invalid_properties",
@@ -143,9 +141,8 @@ export interface Hooks {
 }
 
 /**
- * The connector's rows of one type, read as entries name them: each entry is
- * merged with its row field by field against the agreement, and a trashed
- * row is written only where its kind revives.
+ * The connector's rows of one type, read as entries name them, each merged
+ * field by field against the agreement; a trashed row writes only where its kind revives.
  */
 export class Rows {
   readonly counts: Counts = {
@@ -357,9 +354,8 @@ export class Rows {
   }
 
   /**
-   * The entry with its bytes loaded from the vendor and uploaded, in the
-   * run that writes the row, since a blob nothing names is swept. One the
-   * vendor would not give is a condition, and the row waits.
+   * The entry with its bytes loaded and uploaded within the run that writes
+   * the row, since an unnamed blob is swept; one the vendor won't give is a condition, and the row waits.
    */
   private async uploaded(entry: Entry): Promise<Entry | undefined> {
     const source = entry.file;
@@ -523,8 +519,7 @@ export class Rows {
 
   /**
    * Whether the vendor's change brings a row back from the bin: only for a
-   * kind that revives, once the trash is settled, and never on an entry the
-   * vendor already held.
+   * reviving kind, once trash is settled, never on an entry the vendor already held.
    */
   private revives(entry: Entry, agreement: Agreement | undefined): boolean {
     return (
@@ -582,8 +577,7 @@ export class Rows {
 
   /**
    * Records what the two sides now agree on, the link the row is known by,
-   * and the connections the entry names, which are written once the run's
-   * rows are.
+   * and the entry's connections, held back until the run's rows are all written.
    */
   private agree(id: string, agreement: Agreement, entry: Entry): void {
     const value = this.linkOf(cleaned(entry.properties));
@@ -604,8 +598,7 @@ export class Rows {
 
   /**
    * The row an entry names: by its link, by the link it moved from, then by
-   * its natural key, which finds only a row linked to nothing or to the same
-   * item; one linked to another is `elsewhere`.
+   * natural key, which matches only an unlinked or same-item row; one linked elsewhere is `elsewhere`.
    */
   private find(
     value: string | undefined,
@@ -696,9 +689,8 @@ export class Rows {
         continue;
       }
       const agreement = this.store.get(row.id);
-      // A row a person restored since the two sides last agreed is not
-      // put away again on the vendor's word: the restore is carried, and
-      // reinstates the vendor's copy.
+      // A row restored since the two sides last agreed isn't put away again
+      // on the vendor's word: the restore carries and reinstates the vendor's copy.
       if (
         row.state === "active" &&
         agreement !== undefined &&
@@ -731,8 +723,7 @@ export class Rows {
 
   /**
    * Puts read-only fields a person changed back to what the kit last wrote,
-   * found in the row's versions; one no version still holds waits for the
-   * vendor to send it again. Answers the fields put back.
+   * found in the row's versions; one no version holds waits for the vendor to resend.
    */
   async putBack(id: string, fields: readonly string[]): Promise<string[]> {
     const row = this.byId.get(id);
@@ -772,9 +763,8 @@ export class Rows {
   }
 
   /**
-   * Writes the vendor's id onto a row's link property at the version the
-   * change showed, once more at the current version if the row moved
-   * since. A value another row carries is refused, naming both.
+   * Writes the vendor's id onto the row's link at the version the change
+   * showed, retried at the current version if it moved; a value another row carries is refused, naming both.
    */
   async setLink(item: Item, value: string): Promise<void> {
     const link = this.kind.link;

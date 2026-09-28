@@ -60,11 +60,8 @@ function show(value: unknown): string {
 }
 
 /**
- * How the server's type differs from the one a connector carries, in shape:
- * fields, what each field is, which are required, its parent, what it
- * declares itself compatible with, and its link. The server answers a type with its
- * parent's fields merged in, named by `inherited`. An empty list means the
- * two agree.
+ * How the server's type differs from the one a connector carries, in shape.
+ * `inherited` is the parent's fields as the server merges them in; an empty list means they agree.
  */
 export function typeDifferences(
   carried: TypeDefinition,

@@ -18,8 +18,7 @@ const done =
 
 /**
  * Runs the connector's setup once and writes the secrets it answers to a
- * new file its owner alone may read, made before setup runs, since a
- * vendor may hand a secret over only once. Answers the exit code.
+ * new file its owner alone may read, made before setup runs since a vendor may hand a secret over only once.
  */
 export async function setUp<E extends EnvDeclaration>(
   connector: Connector<E>,

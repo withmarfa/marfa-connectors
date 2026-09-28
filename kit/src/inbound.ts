@@ -10,9 +10,8 @@ import { Stopped } from "./rows.js";
 import type { Clock } from "./runtime.js";
 
 /**
- * The most deliveries one run takes. What waits past them is taken by the
- * next run; under `--every`, the kit's next look for waiting deliveries
- * starts one.
+ * The most deliveries one run takes; what waits past them goes to the next
+ * run, or under `--every`, starts one as soon as the next look finds it waiting.
  */
 export const deliveriesPerRun = 500;
 
@@ -85,18 +84,8 @@ function delivery(row: InboundDeliveryRow, body: Uint8Array): Delivery {
 }
 
 /**
- * Takes what waits at the connector's endpoints and sorts it. A delivery
- * that fails its signature is marked rejected, and one that repeats a
- * verified delivery is marked a duplicate, both at once, since nothing the
- * run does changes them. A repeat counts only where its original was
- * processed or verified earlier in the same collection, so a forged
- * delivery sent first cannot hide the real one. The rest are the run's to
- * process. A `verify` that throws rejects its delivery and a `hints` that
- * throws reads everything for it, and a body that cannot be fetched, or a
- * `verify` that runs past its limit, leaves its delivery waiting, so one
- * delivery the connector cannot read never
- * holds up the rest; neither error's text is kept, since it can quote the
- * body.
+ * Takes what waits at the connector's endpoints and sorts it; a delivery
+ * that can't be fetched, verified in time, or read for hints never blocks the rest.
  */
 export async function collect<E extends EnvDeclaration>(
   marfa: Marfa,
@@ -137,6 +126,7 @@ export async function collect<E extends EnvDeclaration>(
     try {
       genuine = await bounded(inbound, arrived, env, signal, clock);
     } catch {
+      // Not logged: a verify error can quote the delivery body.
       genuine = false;
     }
     if (stopped()) throw new Stopped();
@@ -150,6 +140,8 @@ export async function collect<E extends EnvDeclaration>(
     }
     verified.add(row.id);
     const original = row.duplicate_of;
+    // Only an already-landed original counts, so a forged delivery sent
+    // first can't hide behind a later, genuine one.
     if (
       original !== null &&
       (original.outcome === "processed" || verified.has(original.id))

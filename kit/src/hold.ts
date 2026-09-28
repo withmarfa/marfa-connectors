@@ -11,8 +11,7 @@ const renewalMs = 15_000;
 
 /**
  * This process's hold on the registration, so two processes under one key
- * never run at once. Its signal fences a run once the hold can no longer be
- * trusted: another process took it, it lapsed, or it went unrenewed too long.
+ * never run at once; its signal fences a run once the hold can't be trusted.
  */
 export class Hold {
   private fence = new AbortController();
