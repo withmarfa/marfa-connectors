@@ -45,7 +45,6 @@ export async function proveTodoist(
 ): Promise<void> {
   const todoist = await new TodoistStub("todoist-proof-token").start();
   const account = todoist.account;
-  let connector: ConnectorUnderProof | undefined;
   try {
     const key = await mintAsReadmeSays(marfa, {
       label: "todoist",
@@ -56,7 +55,6 @@ export async function proveTodoist(
       TODOIST_API_TOKEN: "todoist-proof-token",
       TODOIST_API_URL: todoist.url,
     });
-    connector = runner;
     const runOnce = async (): Promise<void> => {
       const { code, output } = await runner.once();
       if (code !== 0)

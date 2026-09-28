@@ -1027,3 +1027,118 @@ describe("a purge and a transition met by what was agreed", () => {
     expect(harness.lastRun().summary).toMatch(/conflicts 0/);
   });
 });
+
+describe("what a failed run leaves", () => {
+  it("carries an archive made beside the vendor's change on the next run, though the run failed after writing it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.transition(row.id, "archived");
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, title: "One, by the vendor" },
+      },
+    ];
+    held.failAfter = new Error("the vendor went away");
+    expect(await quietRun(held)).toBe(1);
+    expect(harness.server.row("a:1").properties["title"]).toBe(
+      "One, by the vendor",
+    );
+    expect(held.changes).toEqual([]);
+
+    held.failAfter = undefined;
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["archived"]);
+  });
+});
+
+describe("a create", () => {
+  it("carries an edit a person made while the vendor made the row", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.vendorIdFor = (change) => {
+      harness.server.edit(theirs.id, { note: "added meanwhile" });
+      return change.item.id === theirs.id ? "v-theirs" : undefined;
+    };
+    await quietRun(held);
+    // The link merged beside the edit, which the next run carries.
+    expect(harness.server.byId(theirs.id).properties).toMatchObject({
+      note: "added meanwhile",
+      vendor_id: "v-theirs",
+    });
+    held.vendorIdFor = undefined;
+    await quietRun(held);
+    expect(
+      held.changes.map((change) => [change.kind, [...change.changed]]),
+    ).toEqual([["updated", ["note"]]]);
+  });
+
+  it("says when one was sent before and no link came back", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: theirs.id, error: new Error("lost the answer") };
+    expect(await quietRun(held)).toBe(1);
+    expect(held.changes[0]?.attempted).toBeUndefined();
+
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["created"]);
+    expect(held.changes[0]?.attempted).toEqual(expect.any(String));
+  });
+});
+
+describe("the link", () => {
+  it("is put back where a person changed it, before anything is carried by it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { vendor_id: "v-mistaken", note: "edited" });
+    held.entries = [];
+    await quietRun(held);
+    expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1");
+    expect(
+      held.changes.map((change) => [
+        change.item.properties["vendor_id"],
+        [...change.changed],
+      ]),
+    ).toEqual([["v1", ["note"]]]);
+    expect(harness.lastRun().summary).toContain(
+      "was changed in Marfa and put back",
+    );
+  });
+});
+
+describe("an entry", () => {
+  it("is refused where it carries a property the connector does not declare", async () => {
+    const held = vendor([
+      { ...one, properties: { ...one.properties, colour: "red" } },
+    ]);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.rows).toHaveLength(0);
+    expect(harness.lastRun().summary).toContain(
+      "carries colour, which the connector does not declare among its fields",
+    );
+  });
+
+  it("is refused where it names no link, for a connector that declares one", async () => {
+    const held = vendor([{ source_id: "a:1", properties: { title: "One" } }]);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.rows).toHaveLength(0);
+    expect(harness.lastRun().summary).toContain("names no vendor_id");
+  });
+});

@@ -113,6 +113,8 @@ export interface Vendor {
   runs: number;
   /** What the two-way connector was handed to carry back, in order. */
   changes: Change[];
+  /** Thrown once the run has written what the vendor sent. */
+  failAfter?: Error | undefined;
   /** A push that throws, the first time the named row is offered. */
   pushFail?: { id: string; error: Error } | undefined;
   /** The vendor's id for a row the vendor has not been told about. */
@@ -178,6 +180,7 @@ function twoWayConnector(held: Vendor) {
       if (held.token !== undefined) context.state.set("token", held.token);
       await context.upsert(held.entries);
       if (held.archived.length > 0) await context.archive(held.archived);
+      if (held.failAfter !== undefined) throw held.failAfter;
     },
     async onChange(change, context) {
       held.changes.push(change);

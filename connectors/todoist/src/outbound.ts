@@ -155,7 +155,7 @@ export async function carry(
   change: Change,
   context: WatchContext<OutboundEnv>,
   base: string,
-): Promise<void> {
+): Promise<undefined> {
   const { item, kind } = change;
   const { env, signal } = context;
   const todoist = new Door(base, env.TODOIST_API_TOKEN, signal);

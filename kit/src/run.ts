@@ -10,6 +10,7 @@ import type {
   Change,
   ChangeKind,
   Connector,
+  Entry,
   EnvDeclaration,
   EnvValues,
   Item,
@@ -141,14 +142,6 @@ export function kindOf<E extends EnvDeclaration>(
     fields: connector.fields,
     readOnly,
   };
-}
-
-function waitingOf(
-  base: Agreement | undefined,
-  keep: Readonly<Record<string, string>>,
-): Record<string, string> | undefined {
-  const waiting = { ...base?.waiting, ...keep };
-  return Object.keys(waiting).length === 0 ? undefined : waiting;
 }
 
 /**
@@ -305,8 +298,7 @@ export async function runOnce<E extends EnvDeclaration>(
 
   const carry = async (item: Item, agreement: Agreement): Promise<void> => {
     if (setup.signal.aborted) throw new Stopped();
-    const onChange = connector.onChange;
-    if (onChange === undefined) return;
+    if (connector.onChange === undefined) return;
     let current = item;
     // The link is the connector's: a row whose link a person changed is
     // linked back before anything is carried by it.
@@ -357,15 +349,14 @@ export async function runOnce<E extends EnvDeclaration>(
         changed: new Set(changed),
         ...(attempted !== undefined && { attempted }),
       };
-      const answered = await onChange(change, watchContext);
-      settle(current, changed, answered ?? undefined);
+      settle(current, changed, await connector.onChange(change, watchContext));
       return;
     }
-    const answered = await onChange(
+    const answered = await connector.onChange(
       { kind: changeKind, item: current, changed: new Set(changed) },
       watchContext,
     );
-    settle(current, changed, answered ?? undefined);
+    settle(current, changed, answered);
   };
   const withoutWaiting = (agreement: Agreement): Agreement => {
     const next = { ...agreement };
@@ -375,7 +366,7 @@ export async function runOnce<E extends EnvDeclaration>(
   const settle = (
     item: Item,
     changed: readonly string[],
-    answered: import("./define.js").Entry | undefined,
+    answered: Entry | undefined,
   ): void => {
     pushed += 1;
     const base = store.get(item.id);
@@ -594,14 +585,13 @@ export async function runOnce<E extends EnvDeclaration>(
         if (agreement?.waiting === undefined || item === undefined) continue;
         await carry(item, agreement);
       }
-      for (const [id, item] of purged) {
+      for (const item of purged.values()) {
         if (setup.signal.aborted) throw new Stopped();
         await connector.onChange?.(
           { kind: "purged", item, changed: new Set() },
           watchContext,
         );
         pushed += 1;
-        void id;
       }
     }
   } catch (error) {

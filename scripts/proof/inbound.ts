@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
@@ -121,7 +121,6 @@ export async function proveInbound(
   url: string,
 ): Promise<void> {
   const vendor = await serveThings();
-  let connector: ConnectorUnderProof | undefined;
   try {
     const key = await mintAsReadmeSays(marfa, {
       label: "proof-inbound",
@@ -139,7 +138,6 @@ export async function proveInbound(
       env,
       entry,
     );
-    connector = runner;
     const runOnce = async (): Promise<void> => {
       const { code, output } = await runner.once();
       if (code !== 0)

@@ -210,7 +210,7 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   onChange?(
     change: Change,
     context: WatchContext<E>,
-  ): Promise<Entry | undefined | void>;
+  ): Promise<Entry | undefined>;
   /**
    * Makes a restored row again at a vendor that no longer has it, and links
    * the row to what it made. Asked before `run` reads the vendor, so a run
