@@ -509,6 +509,15 @@ export class GitHubStub {
       return;
     }
     if (
+      (match = /^\/repos\/([^/]+)\/([^/]+)$/.exec(path)) &&
+      method === "GET"
+    ) {
+      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      if (repository === undefined) send(404, { message: "Not Found" });
+      else send(200, this.restRepository(repository));
+      return;
+    }
+    if (
       (match = /^\/repos\/([^/]+)\/([^/]+)\/issues\/comments$/.exec(path)) &&
       method === "GET"
     ) {

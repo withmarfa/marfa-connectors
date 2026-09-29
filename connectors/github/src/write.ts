@@ -2,6 +2,7 @@ import { GraphqlResponseError } from "@octokit/graphql";
 import { RequestError } from "@octokit/request-error";
 import {
   LinkTaken,
+  Unreachable,
   type Change,
   type EnvDeclaration,
   type Entry,
@@ -16,12 +17,19 @@ import {
   inThread,
   inRepository,
   issueEntry,
+  issueOfRest,
   issueType,
   subIssueOf,
   type RestComment,
   type RestIssue,
 } from "./entries.js";
-import { asApp, asInstallation, type App, type Client } from "./github.js";
+import {
+  asApp,
+  asInstallation,
+  status,
+  type App,
+  type Client,
+} from "./github.js";
 import {
   commentsByNode,
   deleteComment,
@@ -82,6 +90,59 @@ function refusal(error: unknown): string | undefined {
     return error.errors.map((one) => one.message).join("; ");
   }
   return undefined;
+}
+
+/**
+ * Why GitHub cannot take a change now, where it is for want of access or a
+ * passing limit rather than a refusal of the change itself.
+ */
+function unreachable(error: unknown): string | undefined {
+  if (!(error instanceof RequestError)) return undefined;
+  if (error.request.url.endsWith("/access_tokens") || error.status === 401) {
+    return `the App's installation refused it (${String(error.status)})`;
+  }
+  const remaining = error.response?.headers["x-ratelimit-remaining"];
+  if (
+    (error.status === 403 || error.status === 429) &&
+    (remaining === "0" || /rate limit/i.test(error.message))
+  ) {
+    return "GitHub's rate limit ran out";
+  }
+  return undefined;
+}
+
+/** Whether the App still reads the repository, which tells a refusal of
+ *  the change from a repository out of the App's reach. */
+async function reads(
+  octokit: Client,
+  owner: string,
+  repo: string,
+): Promise<boolean> {
+  try {
+    await octokit.request("GET /repos/{owner}/{repo}", { owner, repo });
+    return true;
+  } catch (error) {
+    if ([401, 403, 404].includes(status(error) ?? 0)) return false;
+    throw error;
+  }
+}
+
+/** A refusal of the change, or a throw that leaves it waiting where the
+ *  repository is out of the App's reach. */
+async function refusedOrWaits(
+  error: unknown,
+  octokit: Client,
+  owner: string,
+  repo: string,
+): Promise<string> {
+  const why = refusal(error);
+  if (why === undefined) throw error;
+  if (!(await reads(octokit, owner, repo))) {
+    throw new Unreachable(
+      `${owner}/${repo} is out of the App's reach, so the change waits`,
+    );
+  }
+  return why;
 }
 
 /** The repositories the last run read, by node. */
@@ -217,8 +278,10 @@ async function relations(
   item: Item,
   node: string,
   change: Change,
+  where: { owner: string; repo: string },
 ): Promise<Related> {
   const related = none();
+  let reached: boolean | undefined;
   const took = (
     side: Map<string, Set<string>>,
     type: string,
@@ -252,8 +315,17 @@ async function relations(
       const why = ours
         ? await relate(octokit, mutation, node, other)
         : await relate(octokit, mutation, other, node);
-      if (why === undefined) took(related[side], type, other);
-      else refused(what, why);
+      if (why === undefined) {
+        took(related[side], type, other);
+        continue;
+      }
+      reached ??= await reads(octokit, where.owner, where.repo);
+      if (!reached) {
+        throw new Unreachable(
+          `${where.owner}/${where.repo} is out of the App's reach, so the change waits`,
+        );
+      }
+      refused(what, why);
     }
   }
   return related;
@@ -285,11 +357,109 @@ export async function carry(
   context: Context,
   app: App,
 ): Promise<Entry | undefined> {
-  if (change.item.type === issueType) return carryIssue(change, context, app);
-  if (change.item.type === commentType) {
-    return carryComment(change, context, app);
+  return waiting(change, async () => {
+    if (change.item.type === issueType) {
+      return carryIssue(change, context, app);
+    }
+    if (change.item.type === commentType) {
+      return carryComment(change, context, app);
+    }
+    return undefined;
+  });
+}
+
+/** Runs a carry, leaving its change waiting where GitHub cannot be asked. */
+async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
+  try {
+    return await act();
+  } catch (error) {
+    const why = unreachable(error);
+    if (why === undefined) throw error;
+    throw new Unreachable(`the change to ${change.item.id} waits: ${why}`);
+  }
+}
+
+/**
+ * What a first try may have made: the App's own since it, the ones `same`
+ * picks first, linked to the row; one another row holds is passed over.
+ */
+async function linkMade<T extends { node_id: string }>(
+  context: Context,
+  item: Item,
+  candidates: readonly T[],
+  same: (one: T) => boolean,
+): Promise<T | undefined> {
+  const ordered = [
+    ...candidates.filter(same),
+    ...candidates.filter((one) => !same(one)),
+  ];
+  for (const one of ordered) {
+    try {
+      await context.setLink(item, one.node_id);
+      return one;
+    } catch (error) {
+      if (!(error instanceof LinkTaken)) throw error;
+    }
   }
   return undefined;
+}
+
+/** The App's own issues in the repository since a first try. */
+async function issuesMadeSince(
+  octokit: Client,
+  app: App,
+  signal: AbortSignal,
+  where: { owner: string; repo: string },
+  attempted: string,
+): Promise<RestIssue[]> {
+  // GitHub takes no idempotency key: find what the first try made.
+  const since = new Date(Date.parse(attempted) - margin).toISOString();
+  const bot = await botOf(app, signal);
+  const listed = (await octokit.paginate("GET /repos/{owner}/{repo}/issues", {
+    ...where,
+    state: "all",
+    since,
+    sort: "created",
+    direction: "asc",
+    per_page: 100,
+  })) as RestIssue[];
+  return listed.filter(
+    (issue) =>
+      issue.pull_request === undefined &&
+      issue.user?.login === bot &&
+      issue.created_at >= since,
+  );
+}
+
+/** The App's own comments on the issue since a first try. */
+async function commentsMadeSince(
+  octokit: Client,
+  app: App,
+  signal: AbortSignal,
+  where: { owner: string; repo: string; issue_number: number },
+  attempted: string,
+): Promise<RestComment[]> {
+  const since = new Date(Date.parse(attempted) - margin).toISOString();
+  const bot = await botOf(app, signal);
+  const listed = (await octokit.paginate(
+    "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    { ...where, since, per_page: 100 },
+  )) as RestComment[];
+  return listed.filter(
+    (comment) => comment.user?.login === bot && comment.created_at >= since,
+  );
+}
+
+/**
+ * The trash of a row whose create got no answer: a row in the bin cannot
+ * take a link, so what GitHub may have made is left to come in as its own
+ * row, which a trash then closes or deletes.
+ */
+function binnedUnanswered(context: Context, item: Item): void {
+  context.log.condition(
+    `unanswered-create-trashed:${item.id}`,
+    `${item.id} was trashed before GitHub answered its create; anything GitHub made of it comes in as its own row, which a trash closes or deletes`,
+  );
 }
 
 async function carryIssue(
@@ -301,6 +471,10 @@ async function carryIssue(
   if (change.kind === "created") return createIssue(change, context, app);
   const number = item.properties["number"];
   const node = text(item, "github_id");
+  if (node === undefined && change.attempted !== undefined) {
+    binnedUnanswered(context, item);
+    return undefined;
+  }
   const where = await clientOfIssue(context, app, item);
   if (where === undefined || typeof number !== "number" || node === undefined) {
     context.log.condition(
@@ -319,19 +493,24 @@ async function carryIssue(
   }
   // A state is sent only where it moves: an open issue stays open for a
   // status GitHub has no word for, such as in progress.
-  if (change.changed.has("status")) {
+  const binned = change.kind === "trashed" || change.kind === "purged";
+  // Out of the bin, the status is set again over whatever the trash did.
+  const fromBin = change.kind === "restored" && change.was === "trashed";
+  if (change.changed.has("status") || fromBin) {
     const state = wanted(item.properties["status"]);
+    const held = fromBin
+      ? (await issuesByNode(octokit, [node]))[0]?.issue
+      : undefined;
+    const closed = held === undefined ? closedAt(item) : !held.open;
+    const reason =
+      held === undefined ? item.properties["state_reason"] : held.reason;
     const moving =
-      (state.state === "closed") !== closedAt(item) ||
-      (state.state === "closed" &&
-        item.properties["state_reason"] !== state.state_reason);
+      (state.state === "closed") !== closed ||
+      (state.state === "closed" && reason !== state.state_reason);
     if (moving) Object.assign(patch, state);
-  } else if (change.kind === "restored" && change.was === "trashed") {
-    // Out of the bin reopens what the trash closed; out of archive, nothing.
-    Object.assign(patch, { state: "open", state_reason: "reopened" });
   }
-  // A trash only closes, as not planned: GitHub keeps the issue.
-  if (change.kind === "trashed" || change.kind === "purged") {
+  // A trash only closes an open issue, as not planned: GitHub keeps it.
+  if (binned && !closedAt(item)) {
     Object.assign(patch, { state: "closed", state_reason: "not_planned" });
   }
   if (patch["title"] === "") {
@@ -341,6 +520,7 @@ async function carryIssue(
     );
     Reflect.deleteProperty(patch, "title");
   }
+  let refused = false;
   if (Object.keys(patch).length > 0) {
     try {
       await octokit.request(
@@ -348,21 +528,21 @@ async function carryIssue(
         { owner, repo, issue_number: number, ...patch },
       );
     } catch (error) {
-      const why = refusal(error);
-      if (why === undefined) throw error;
+      const why = await refusedOrWaits(error, octokit, owner, repo);
+      refused = true;
       context.log.condition(
         `issue-refused:${item.id}`,
         `GitHub refused the change to ${owner}/${repo}#${String(number)} (${why}), so it is not sent`,
       );
-      return answerIssue(context, octokit, node, none());
     }
   }
-  const related =
-    change.kind === "trashed" || change.kind === "purged"
-      ? none()
-      : await relations(context, octokit, item, node, change);
+  const related = binned
+    ? none()
+    : await relations(context, octokit, item, node, change, { owner, repo });
   const answer = await answerIssue(context, octokit, node, related);
-  dropped(context, item, patch["assignees"] as string[] | undefined, answer);
+  if (!refused) {
+    dropped(context, item, patch["assignees"] as string[] | undefined, answer);
+  }
   return answer;
 }
 
@@ -392,69 +572,102 @@ async function createIssue(
   }
   const { octokit } = where;
   const [owner = "", repo = ""] = name.split("/");
-  let made: RestIssue | undefined;
-  if (change.attempted !== undefined) {
-    // GitHub takes no idempotency key: find what the first try made.
-    const since = new Date(Date.parse(change.attempted) - margin).toISOString();
-    const bot = await botOf(app, context.signal);
-    const listed = (await octokit.paginate("GET /repos/{owner}/{repo}/issues", {
-      owner,
-      repo,
-      state: "all",
-      since,
-      sort: "created",
-      direction: "asc",
-      per_page: 100,
-    })) as RestIssue[];
-    made = listed.find(
-      (issue) =>
-        issue.pull_request === undefined &&
-        issue.title === title &&
-        issue.user?.login === bot &&
-        issue.created_at >= since,
+  const made =
+    change.attempted === undefined
+      ? undefined
+      : await linkMade(
+          context,
+          item,
+          await issuesMadeSince(
+            octokit,
+            app,
+            context.signal,
+            { owner, repo },
+            change.attempted,
+          ),
+          (one) => one.title === title,
+        );
+  if (made !== undefined) {
+    return placeIssue(change, context, octokit, { owner, repo }, made, true);
+  }
+  let posted: RestIssue;
+  try {
+    posted = (
+      await octokit.request("POST /repos/{owner}/{repo}/issues", {
+        // Never retried blind: a create that landed would be made twice.
+        request: { retries: 0 },
+        owner,
+        repo,
+        title,
+        body: text(item, "body") ?? "",
+        labels: list(item, "labels"),
+        assignees: list(item, "assignees"),
+      })
+    ).data as RestIssue;
+  } catch (error) {
+    const why = await refusedOrWaits(error, octokit, owner, repo);
+    context.log.condition(
+      `issue-refused:${item.id}`,
+      `GitHub refused ${item.id} in ${name} (${why}), so it is not sent`,
     );
-  }
-  if (made === undefined) {
-    try {
-      made = (
-        await octokit.request("POST /repos/{owner}/{repo}/issues", {
-          // Never retried blind: a create that landed would be made twice.
-          request: { retries: 0 },
-          owner,
-          repo,
-          title,
-          body: text(item, "body") ?? "",
-          labels: list(item, "labels"),
-          assignees: list(item, "assignees"),
-        })
-      ).data as RestIssue;
-    } catch (error) {
-      const why = refusal(error);
-      if (why === undefined) throw error;
-      context.log.condition(
-        `issue-refused:${item.id}`,
-        `GitHub refused ${item.id} in ${name} (${why}), so it is not sent`,
-      );
-      return undefined;
-    }
-  }
-  const state = wanted(item.properties["status"]);
-  if (state.state === "closed") {
-    await octokit.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
-      owner,
-      repo,
-      issue_number: made.number,
-      ...state,
-    });
+    return undefined;
   }
   try {
-    await context.setLink(item, made.node_id);
+    await context.setLink(item, posted.node_id);
   } catch (error) {
     if (!(error instanceof LinkTaken)) throw error;
     context.log.condition(`link-taken:${item.id}`, error.message);
     return undefined;
   }
-  const related = await relations(context, octokit, item, made.node_id, change);
+  return placeIssue(change, context, octokit, { owner, repo }, posted, false);
+}
+
+/** A linked issue the row made: brought to what the row now says where a
+ *  first try made it, its state set, and its relations drawn. */
+async function placeIssue(
+  change: Change,
+  context: Context,
+  octokit: Client,
+  where: { owner: string; repo: string },
+  made: RestIssue,
+  found: boolean,
+): Promise<Entry | undefined> {
+  const { item } = change;
+  const patch: Record<string, unknown> = {};
+  if (found) {
+    const held = issueOfRest(made, { node: "", name: "" });
+    const same = (a: readonly string[], b: readonly string[]): boolean =>
+      [...a].sort().join("\n") === [...b].sort().join("\n");
+    const title = text(item, "title") ?? "";
+    const body = text(item, "body") ?? "";
+    if (title !== held.title) patch["title"] = title;
+    if (body !== (held.body ?? "")) patch["body"] = body;
+    if (!same(list(item, "labels"), held.labels)) {
+      patch["labels"] = list(item, "labels");
+    }
+    if (!same(list(item, "assignees"), held.assignees)) {
+      patch["assignees"] = list(item, "assignees");
+    }
+  }
+  const state = wanted(item.properties["status"]);
+  if (state.state === "closed" || (found && made.state !== "open")) {
+    Object.assign(patch, state);
+  }
+  if (Object.keys(patch).length > 0) {
+    await octokit.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
+      ...where,
+      issue_number: made.number,
+      ...patch,
+    });
+  }
+  const related = await relations(
+    context,
+    octokit,
+    item,
+    made.node_id,
+    change,
+    where,
+  );
   const answer = await answerIssue(context, octokit, made.node_id, related);
   dropped(context, item, list(item, "assignees"), answer);
   return answer;
@@ -468,7 +681,12 @@ async function carryComment(
   const { item } = change;
   if (change.kind === "created") return createComment(change, context, app);
   const node = text(item, "github_id");
-  const where = clientFor(context, app, text(item, "repository"));
+  if (node === undefined && change.attempted !== undefined) {
+    binnedUnanswered(context, item);
+    return undefined;
+  }
+  const name = text(item, "repository");
+  const where = clientFor(context, app, name);
   if (where === undefined || node === undefined) {
     context.log.condition(
       `comment-unreachable:${item.id}`,
@@ -487,8 +705,8 @@ async function carryComment(
       await updateComment(where.octokit, node, text(item, "body") ?? ""),
     );
   } catch (error) {
-    const why = refusal(error);
-    if (why === undefined) throw error;
+    const [owner = "", repo = ""] = (name ?? "").split("/");
+    const why = await refusedOrWaits(error, where.octokit, owner, repo);
     context.log.condition(
       `comment-refused:${item.id}`,
       `GitHub refused the change to ${item.id} (${why}), so it is not sent`,
@@ -523,21 +741,21 @@ async function createComment(
   const { octokit } = where;
   const [owner = "", repo = ""] = name.split("/");
   const body = text(item, "body") ?? "";
-  let made: RestComment | undefined;
-  if (change.attempted !== undefined) {
-    const since = new Date(Date.parse(change.attempted) - margin).toISOString();
-    const bot = await botOf(app, context.signal);
-    const listed = (await octokit.paginate(
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
-      { owner, repo, issue_number: number, since, per_page: 100 },
-    )) as RestComment[];
-    made = listed.find(
-      (comment) =>
-        comment.body === body &&
-        comment.user?.login === bot &&
-        comment.created_at >= since,
-    );
-  }
+  let made =
+    change.attempted === undefined
+      ? undefined
+      : await linkMade(
+          context,
+          item,
+          await commentsMadeSince(
+            octokit,
+            app,
+            context.signal,
+            { owner, repo, issue_number: number },
+            change.attempted,
+          ),
+          (one) => one.body === body,
+        );
   if (made === undefined) {
     try {
       made = (
@@ -553,21 +771,24 @@ async function createComment(
         )
       ).data as RestComment;
     } catch (error) {
-      const why = refusal(error);
-      if (why === undefined) throw error;
+      const why = await refusedOrWaits(error, octokit, owner, repo);
       context.log.condition(
         `comment-refused:${item.id}`,
         `GitHub refused ${item.id} on ${name}#${String(number)} (${why}), so it is not sent`,
       );
       return undefined;
     }
+    try {
+      await context.setLink(item, made.node_id);
+    } catch (error) {
+      if (!(error instanceof LinkTaken)) throw error;
+      context.log.condition(`link-taken:${item.id}`, error.message);
+      return undefined;
+    }
   }
-  try {
-    await context.setLink(item, made.node_id);
-  } catch (error) {
-    if (!(error instanceof LinkTaken)) throw error;
-    context.log.condition(`link-taken:${item.id}`, error.message);
-    return undefined;
+  // Found from a first try, it takes what the row says now.
+  if ((made.body ?? "") !== body) {
+    return commentEntry(await updateComment(octokit, made.node_id, body));
   }
   // GitHub's own answer, which a read straight after may not show yet.
   return commentEntry({
@@ -596,11 +817,13 @@ export async function remake(
   const node = text(change.item, "github_id");
   const where = clientFor(context, app, text(change.item, "repository"));
   if (where === undefined || node === undefined) return false;
-  if ((await commentsByNode(where.octokit, [node])).length > 0) return false;
-  const made = await createComment(
-    { ...change, kind: "created" },
-    context,
-    app,
-  );
-  return made !== undefined;
+  return waiting(change, async () => {
+    if ((await commentsByNode(where.octokit, [node])).length > 0) return false;
+    const made = await createComment(
+      { ...change, kind: "created" },
+      context,
+      app,
+    );
+    return made !== undefined;
+  });
 }

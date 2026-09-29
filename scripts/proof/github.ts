@@ -278,7 +278,7 @@ export async function proveGitHub(
     );
 
     await check(
-      "github: a trash in Marfa closes the issue as not planned, a comment on GitHub brings it back as GitHub has it, and a restore reopens it",
+      "github: a trash in Marfa closes the issue as not planned, a comment on GitHub brings it back as GitHub has it, a trash of it closed changes nothing on GitHub, and a restore reopens what a trash closed",
       async () => {
         await trash(marfa, (await row(child.node)).id);
         await runOnce();
@@ -287,6 +287,14 @@ export async function proveGitHub(
         github.addComment(child, "Still wanted");
         await runOnce();
         const back = await row(child.node);
+        await trash(marfa, back.id);
+        const writes = github.writes().length;
+        await runOnce();
+        const untouched = github.writes().length === writes;
+        await restore(marfa, back.id);
+        await runOnce();
+        await edit(marfa, await row(child.node), { status: "pending" });
+        await runOnce();
         await trash(marfa, back.id);
         await runOnce();
         await restore(marfa, back.id);
@@ -298,14 +306,15 @@ export async function proveGitHub(
           binned !== "trashed" ||
           back.state !== "active" ||
           back.properties["status"] !== "canceled" ||
+          !untouched ||
           reopened !== "open reopened" ||
           after.properties["status"] !== "pending"
         ) {
           throw new Error(
-            `closed ${closed}, then ${binned}, back ${back.state} ${String(back.properties["status"])}, reopened ${reopened}, row ${String(after.properties["status"])}`,
+            `closed ${closed}, then ${binned}, back ${back.state} ${String(back.properties["status"])}, ${untouched ? "untouched" : "written"} by the second trash, reopened ${reopened}, row ${String(after.properties["status"])}`,
           );
         }
-        return "closed as not planned; back, canceled, on GitHub's comment; reopened on the restore, the row pending";
+        return "closed as not planned; back, canceled, on GitHub's comment; a trash of it closed wrote nothing; reopened on the restore after it was reopened and trashed, the row pending";
       },
     );
 
