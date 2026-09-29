@@ -200,7 +200,8 @@ async function clientOfIssue(
       context.signal,
     );
     const [found] = await issuesByNode(octokit, [node]);
-    if (found !== undefined) {
+    // Only a repository in the sync, found by the node it keeps.
+    if (found !== undefined && found.issue.repository.node in keptOf(context)) {
       const [owner = "", repo = ""] = found.issue.repository.name.split("/");
       return { octokit, owner, repo };
     }

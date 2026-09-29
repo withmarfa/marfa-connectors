@@ -41,8 +41,11 @@ afterEach(async () => {
   await github.stop();
 });
 
-function env(): Record<string, string | undefined> {
+function env(
+  extra: Record<string, string> = {},
+): Record<string, string | undefined> {
   return {
+    ...extra,
     PATH: process.env["PATH"],
     MARFA_URL: marfa.url,
     MARFA_KEY: marfa.key,
@@ -91,9 +94,12 @@ async function until(holds: () => boolean, what: string): Promise<void> {
 
 /** Runs the connector on its schedule, taking deliveries every second,
  *  while `body` acts, from the end of its first run. */
-async function watching(body: () => Promise<void>): Promise<void> {
+async function watching(
+  body: () => Promise<void>,
+  extra: Record<string, string> = {},
+): Promise<void> {
   const child = spawn("node", [built, "--every", "1h", "--look-every", "1s"], {
-    env: env(),
+    env: env(extra),
     stdio: "ignore",
   });
   const exited = new Promise<void>((done) =>
@@ -435,5 +441,24 @@ describe("what the webhooks review found", () => {
         "stranger/public/issues/",
       );
     });
+  });
+});
+
+describe("a delivery for a repository GITHUB_REPOSITORIES leaves out", () => {
+  it("writes nothing", async () => {
+    github.addRepository("someone/tracker");
+    const outside = github.addRepository("someone/elsewhere");
+    await watching(
+      async () => {
+        const runs = marfa.runs.length;
+        const issue = github.addIssue(outside, { title: "Left out" });
+        deliver("issues", { action: "opened", issue: { node_id: issue.node } });
+        await until(() => marfa.runs.length > runs, "the run for it");
+        expect(
+          marfa.rows.some((one) => one.properties["github_id"] === issue.node),
+        ).toBe(false);
+      },
+      { GITHUB_REPOSITORIES: "someone/tracker" },
+    );
   });
 });

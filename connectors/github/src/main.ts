@@ -16,6 +16,7 @@ import {
 import { defaultBase, type App } from "./github.js";
 import { hints } from "./hooks.js";
 import { read } from "./read.js";
+import { scopeOf } from "./scope.js";
 import { readOnly, setUp } from "./setup.js";
 import { carry, remake } from "./write.js";
 import comment from "./github.comment.json" with { type: "json" };
@@ -31,6 +32,7 @@ const env = {
   GITHUB_PUBLIC_URL: "optional",
   GITHUB_ORGANIZATION: "optional",
   GITHUB_APP_NAME: "optional",
+  GITHUB_REPOSITORIES: "optional",
 } as const;
 
 function appOf(values: {
@@ -140,11 +142,18 @@ const connector = defineConnector({
   // Read only as a whole: nothing goes back, and setup asks only to read.
   carries: (values) =>
     readOnly(values.GITHUB_READ_ONLY) ? [] : [issueType, commentType],
+  checkEnv(values) {
+    scopeOf(values.GITHUB_REPOSITORIES);
+  },
   setup(context) {
     return setUp(context, context.env);
   },
   run(context) {
-    return read(context, appOf(context.env));
+    return read(
+      context,
+      appOf(context.env),
+      scopeOf(context.env.GITHUB_REPOSITORIES),
+    );
   },
   onChange(change, context) {
     return carry(change, context, appOf(context.env));

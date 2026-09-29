@@ -36,6 +36,7 @@ import {
   nodesOfNumbers,
   relationsOf,
 } from "./graph.js";
+import type { Scope } from "./scope.js";
 
 /** How far back a first sync reaches for closed issues. */
 export const windowDays = 90;
@@ -110,7 +111,11 @@ function linkOf(row: Item): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export async function read(context: Context, app: App): Promise<void> {
+export async function read(
+  context: Context,
+  app: App,
+  scope: Scope | undefined,
+): Promise<void> {
   const { state, log, secret, signal, upsert } = context;
   const kept = keptOf(state.get("repositories"));
   const installations = (await asApp(app, signal).paginate(
@@ -122,6 +127,9 @@ export async function read(context: Context, app: App): Promise<void> {
     { repository: RestRepository; installation: number }
   >();
   const answered = new Set<number>();
+  // Seen through the App but left out by GITHUB_REPOSITORIES.
+  const outside = new Set<string>();
+  const seen: string[] = [];
   for (const installation of installations) {
     const who = installation.account?.login ?? String(installation.id);
     if (installation.suspended_at) {
@@ -139,6 +147,11 @@ export async function read(context: Context, app: App): Promise<void> {
       clients.set(installation.id, octokit);
       answered.add(installation.id);
       for (const repository of repositories) {
+        seen.push(repository.full_name);
+        if (scope !== undefined && !scope.admits(repository.full_name)) {
+          outside.add(repository.node_id);
+          continue;
+        }
         listed.set(repository.node_id, {
           repository,
           installation: installation.id,
@@ -149,6 +162,14 @@ export async function read(context: Context, app: App): Promise<void> {
       log.condition(
         `installation-lost:${String(installation.id)}`,
         `the App's installation on ${who} refused it (${String(status(error))}), so its repositories are left as they are`,
+      );
+    }
+  }
+  if (scope !== undefined && answered.size === installations.length) {
+    for (const one of scope.unmatched(seen)) {
+      log.condition(
+        `repositories-unmatched:${one}`,
+        `GITHUB_REPOSITORIES names ${one}, which no installation of the App shows`,
       );
     }
   }
@@ -165,7 +186,13 @@ export async function read(context: Context, app: App): Promise<void> {
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node)) continue;
     if (answered.has(repository.installation)) {
-      await takeOut(context, node, repository.name);
+      await takeOut(
+        context,
+        node,
+        outside.has(node)
+          ? `${repository.name} is no longer among GITHUB_REPOSITORIES`
+          : `${repository.name} was taken out of the App's installation`,
+      );
       continue;
     }
     next[node] = repository;
@@ -234,7 +261,7 @@ export async function read(context: Context, app: App): Promise<void> {
 
 /** A repository taken out of the App's installation: its rows archived,
  *  back again if it is added again. */
-async function takeOut(context: Context, node: string, name: string) {
+async function takeOut(context: Context, node: string, why: string) {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
   const links = (rows: Item[]): string[] =>
@@ -245,9 +272,7 @@ async function takeOut(context: Context, node: string, name: string) {
   );
   await archive(issueType, links(await linked(issueType, inRepository, under)));
   await archive(repositoryType, [node]);
-  log.info(
-    `${name} was taken out of the App's installation, and its rows archived`,
-  );
+  log.info(`${why}, so its rows are archived`);
 }
 
 /**
