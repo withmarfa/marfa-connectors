@@ -72,18 +72,35 @@ function escaped(text: string): string {
 
 /** A page that posts the manifest to GitHub, as its manifest flow asks. */
 export function page(target: string, body: Record<string, unknown>): string {
+  const name = typeof body["name"] === "string" ? body["name"] : "the App";
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<title>Register the GitHub App</title>
-<body style="font-family: system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem">
-<h1>Register the GitHub App</h1>
-<p>GitHub opens with the App filled in. Rename it if you like, create it, then install it on the repositories to sync.</p>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect GitHub to Marfa</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1f2328; --muted: #59636e; --bg: #f6f8fa; --card: #fff; --line: #d1d9e0; --accent: #1f883d; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --muted: #9198a1; --bg: #0d1117; --card: #151b23; --line: #3d444d; --accent: #238636; } }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 30rem; margin: 1rem; padding: 2rem; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+  ol { padding-left: 1.25rem; color: var(--muted); }
+  li { margin: 0.35rem 0; }
+  strong { color: var(--fg); }
+  button { margin-top: 1rem; width: 100%; padding: 0.75rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+</style>
+<main>
+<h1>Connect GitHub to Marfa</h1>
+<ol>
+  <li>GitHub opens with <strong>${escaped(name)}</strong> filled in. Create it.</li>
+  <li>GitHub sends you on to install it: choose the repositories to sync.</li>
+  <li>Come back to the terminal, which has the App's secrets.</li>
+</ol>
 <form method="post" action="${escaped(target)}">
 <input type="hidden" name="manifest" value="${escaped(JSON.stringify(body))}">
 <button type="submit">Continue to GitHub</button>
 </form>
-</body>
+</main>
 </html>
 `;
 }
@@ -171,8 +188,10 @@ export async function setUp<E extends EnvDeclaration>(
   } else {
     secret(webhookSecret);
   }
+  const install = `${conversion.html_url}/installations/new`;
+  local.onward(install);
   log.info(
-    `GitHub made the App ${conversion.slug}; install it on the repositories to sync at ${conversion.html_url}/installations/new`,
+    `GitHub made the App ${conversion.slug}; install it on the repositories to sync at ${install}`,
   );
   if (hook === undefined) {
     log.info(

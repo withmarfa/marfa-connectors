@@ -76,8 +76,11 @@ describe("setup", () => {
   it("registers the App from a manifest, with its webhook at the instance's public address, and writes its secrets", async () => {
     const file = join(dir, "secrets.json");
     let visited: Promise<void> | undefined;
-    const seenPage: { action?: string; manifest?: Record<string, unknown> } =
-      {};
+    const seenPage: {
+      action?: string;
+      manifest?: Record<string, unknown>;
+      onward?: string;
+    } = {};
     const finished = await setup(
       file,
       { GITHUB_PUBLIC_URL: "https://marfa.example" },
@@ -92,9 +95,11 @@ describe("setup", () => {
           ) as Record<string, unknown>;
           const state = new URL(seenPage.action).searchParams.get("state");
           // GitHub sends the browser back with its code and the state.
-          await fetch(
+          const back = await fetch(
             `${String(seenPage.manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
+            { redirect: "manual" },
           );
+          seenPage.onward = back.headers.get("location") ?? undefined;
         })();
       },
     );
@@ -132,6 +137,10 @@ describe("setup", () => {
     expect((await stat(file)).mode & 0o777).toBe(0o600);
     expect(finished.output).toContain(
       "install it on the repositories to sync at https://github.com/apps/marfa-sync-test/installations/new",
+    );
+    // The browser goes straight on to installing it.
+    expect(seenPage.onward).toBe(
+      "https://github.com/apps/marfa-sync-test/installations/new",
     );
     expect(finished.output).not.toContain("BEGIN RSA PRIVATE KEY");
     expect(finished.output).not.toContain("stub-webhook-secret-from-github");
