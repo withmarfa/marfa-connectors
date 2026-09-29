@@ -4,6 +4,7 @@ import {
   laterThan,
   mark,
   merge,
+  occurredKey,
   sideOf,
   unchangedAtVendor,
   type Agreement,
@@ -424,7 +425,15 @@ export class Rows {
         agreement = { ...agreement, state: "active" };
         // Back from the bin, it takes the vendor's fields as they now are,
         // its close among them, where Marfa has not changed them since.
-        if (found.state === "trashed") agreement = { ...agreement, vendor: {} };
+        if (found.state === "trashed") {
+          agreement = {
+            ...agreement,
+            vendor: {
+              ...agreement.marfa,
+              [occurredKey]: agreement.vendor[occurredKey] ?? "",
+            },
+          };
+        }
         Reflect.deleteProperty(agreement, "stateBy");
         Reflect.deleteProperty(agreement, "stateAt");
       }
@@ -751,8 +760,6 @@ export class Rows {
     return found;
   }
 
-  /** Writes the vendor's id onto the row's link at the version the
-   *  change showed, retried once at the current; a taken value refuses. */
   /** Writes onto a live row what the vendor answered for the fields the
    *  carry did not send and Marfa has not changed since they were agreed,
    *  such as a number the vendor gave it, or its reopening on a restore. */
@@ -763,11 +770,12 @@ export class Rows {
   ): Promise<void> {
     const said = cleaned(answered.properties);
     const agreed = this.store.get(id)?.marfa ?? {};
+    // A null the answer states is a clear; a field it leaves out, nothing.
     const fields = this.kind.fields.filter(
       (field) =>
         field !== this.kind.link &&
         !sent.has(field) &&
-        Object.hasOwn(said, field),
+        Object.hasOwn(answered.properties, field),
     );
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const row = attempt === 0 ? this.known(id) : await this.marfa.item(id);
@@ -775,8 +783,10 @@ export class Rows {
       const differing = fields.filter(
         (field) =>
           mark(held(said, field)) !== mark(held(row.properties, field)) &&
-          // A change a person made since is theirs, still to carry.
-          mark(held(row.properties, field)) === (agreed[field] ?? ""),
+          // A change a person made since is theirs, still to carry, but a
+          // read-only field mirrors the vendor whatever a person wrote.
+          (this.kind.readOnly.has(field) ||
+            mark(held(row.properties, field)) === (agreed[field] ?? "")),
       );
       if (differing.length === 0) return;
       const properties: Record<string, unknown> = { ...row.properties };
@@ -794,6 +804,7 @@ export class Rows {
           undefined,
         );
         this.index(written);
+        this.counts.updated += 1;
       } catch (error) {
         if (
           attempt === 0 &&
@@ -803,7 +814,25 @@ export class Rows {
           continue;
         }
         this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+        // Not written: agreed as the row's, so the next listing writes it.
+        const agreement = this.store.get(id);
+        if (agreement !== undefined) {
+          const vendor = { ...agreement.vendor };
+          for (const field of differing) {
+            vendor[field] = mark(held(row.properties, field));
+          }
+          this.store.set(id, { ...agreement, vendor });
+        }
         return;
+      }
+      const back = differing.filter(
+        (field) => mark(held(row.properties, field)) !== (agreed[field] ?? ""),
+      );
+      if (back.length > 0) {
+        this.hooks.condition(
+          `put-back:${id}`,
+          `${back.join(", ")} on ${id} ${back.length === 1 ? "was" : "were"} changed in Marfa and put back from the vendor, which Marfa mirrors`,
+        );
       }
       const agreement = this.store.get(id);
       if (agreement !== undefined) {
@@ -815,6 +844,8 @@ export class Rows {
     }
   }
 
+  /** Writes the vendor's id onto the row's link at the version the
+   *  change showed, retried once at the current; a taken value refuses. */
   async setLink(item: Item, value: string): Promise<void> {
     const link = this.kind.link;
     if (link === undefined) {
