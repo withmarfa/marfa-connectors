@@ -26,7 +26,7 @@ export interface Agreement {
   changedAt?: string;
   /** Changes in Marfa not yet carried, each with when it was first seen. */
   waiting?: Record<string, string>;
-  /** When a create was sent to the vendor and no link came back. */
+  /** When a create was first sent to the vendor and no link came back. */
   attempted?: string;
   /** Each connection type's targets both sides last agreed on, by row id. */
   connections?: Record<string, string[]>;

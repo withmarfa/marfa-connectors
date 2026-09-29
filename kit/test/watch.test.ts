@@ -1122,6 +1122,7 @@ describe("a create sent more than once", () => {
     held.pushFail = { id: theirs.id, error: new Error("lost again") };
     expect(await quietRun(held)).toBe(1);
     const first = held.changes[0]?.attempted;
+    expect(first).toEqual(expect.any(String));
     held.changes.length = 0;
     harness.clock.advance(60_000);
     await quietRun(held);
@@ -1130,6 +1131,40 @@ describe("a create sent more than once", () => {
 });
 
 describe("a restore", () => {
+  it("tells remake too that the row came from the bin", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    held.gone = new Map([[row.id, "v1-again"]]);
+    await harness.twoWay(held);
+    expect(held.remakes?.map((one) => one.change.was)).toEqual(["trashed"]);
+  });
+
+  it("of a row never linked is its create, not a remake", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: theirs.id, error: new Error("lost the answer") };
+    expect(await quietRun(held)).toBe(1);
+    harness.server.trash(theirs.id);
+    await quietRun(held);
+    harness.server.restore(theirs.id);
+    held.changes.length = 0;
+    await quietRun(held);
+    expect(held.remakes ?? []).toEqual([]);
+    expect(held.changes.map((change) => change.kind)).toEqual(["created"]);
+    expect(held.changes[0]?.attempted).toEqual(expect.any(String));
+  });
+
   it("says whether the row came back from the bin or from archive", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);

@@ -1025,8 +1025,11 @@ export async function runOnce<E extends EnvDeclaration>(
           done.add(id);
           continue;
         }
+        // A row never linked has nothing at the vendor to make again: its
+        // restore is carried as the create it still is.
+        const told = kind.link === undefined || agreement.link !== undefined;
         const restored =
-          item.state === "active" && agreement.state !== "active";
+          told && item.state === "active" && agreement.state !== "active";
         if (connector.remake !== undefined && restored) {
           if (setup.signal.aborted) throw new Stopped();
           // Its mirrored connections say where it is made again.
@@ -1061,6 +1064,7 @@ export async function runOnce<E extends EnvDeclaration>(
               ),
             ),
             ...(Object.keys(handed).length > 0 && { connections: handed }),
+            ...(agreement.state !== "active" && { was: agreement.state }),
           };
           // Placed by a row the vendor lacks: made again once it has it.
           if (placed?.unplaced === true) {
