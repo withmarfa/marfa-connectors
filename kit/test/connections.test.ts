@@ -811,6 +811,64 @@ describe("a read-only connection type on a two-way kind", () => {
   });
 });
 
+describe("in-thread", () => {
+  const thread: ConnectionDefinition = {
+    id: "in-thread",
+    cardinality: "many-to-one",
+    source_type_constraints: ["test.entry"],
+    target_type_constraints: ["test.entry"],
+  };
+
+  function threaded(entries: Entry[]): Vendor {
+    const held = vendor(entries);
+    held.connections = [thread];
+    return held;
+  }
+
+  function reply(n: number, to?: number): Entry {
+    return {
+      ...entry(n),
+      connections: {
+        "in-thread":
+          to === undefined
+            ? []
+            : [{ type: "test.entry", id: `v${String(to)}` }],
+      },
+    };
+  }
+
+  it("is the instance's own, never registered, written between the connector's rows", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "in-thread": "write" },
+    };
+    const held = threaded([reply(1), reply(2, 1)]);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.requestsTo("POST", "/edge-types")).toEqual([]);
+    expect(
+      harness.server
+        .targetsOf(harness.server.row("a:2").id, "in-thread")
+        .map((id) => harness.server.byId(id).source_id),
+    ).toEqual(["a:1"]);
+  });
+
+  it("is refused where the key may not write it, or it differs from the instance's", async () => {
+    harness.server.grants = { type_permissions: { "test.entry": "write" } };
+    expect(await harness.twoWay(threaded([]))).toBe(1);
+    expect(harness.lastRun().error).toContain("may not write edge in-thread");
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "in-thread": "write" },
+    };
+    const held = threaded([]);
+    held.connections = [{ ...thread, cardinality: "many-to-many" }];
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      "the connection type in-thread differs from the instance's own",
+    );
+  });
+});
+
 describe("a connection type", () => {
   it("that cascades, or reaches past the connector's types, is refused at start", async () => {
     const cascading = connected([]);

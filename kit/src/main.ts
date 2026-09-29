@@ -143,8 +143,9 @@ function keyNarrowerThanTypes(
 }
 
 /** Shipped connection types a connector may write between its own rows,
- *  narrowed itself and never registered, e.g. a file attaching to its item. */
-const shippedConnections = new Set(["attached-to"]);
+ *  narrowed itself and never registered: a file attaching to its item, a
+ *  message in its thread. */
+const shippedConnections = new Set(["attached-to", "in-thread"]);
 
 async function ensureConnections(
   connections: readonly ConnectionDefinition[],
