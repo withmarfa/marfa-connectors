@@ -114,6 +114,48 @@ describe("a vendor's answer for a read-only field", () => {
   });
 });
 
+describe("a vendor's answer for a field the change did not carry", () => {
+  it("is written onto the row, as its reopening on a restore", async () => {
+    const held = vendor([
+      { ...one, properties: { ...one.properties, note: "closed" } },
+    ]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    held.answer = (change) => ({
+      source_id: "a:1",
+      properties: { ...change.item.properties, note: "reopened" },
+    });
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["note"]).toBe("reopened");
+    held.changes.length = 0;
+    held.answer = undefined;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("leaves a change a person made meanwhile, still to carry", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "Edited" });
+    held.entries = [];
+    held.answer = (change) => {
+      // A person writes the note while the change is carried.
+      harness.server.edit(row.id, { note: "the person's" });
+      return {
+        source_id: "a:1",
+        properties: { ...change.item.properties, note: "the vendor's" },
+      };
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["note"]).toBe("the person's");
+  });
+});
+
 describe("a run for deliveries", () => {
   it("reads the vendor whole where more than two hundred rows wait", async () => {
     const many: Entry[] = Array.from({ length: 201 }, (_, n) => ({

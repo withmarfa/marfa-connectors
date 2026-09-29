@@ -723,10 +723,10 @@ export async function runOnce<E extends EnvDeclaration>(
       watchContext,
     );
     settle(kind, current, changeKind, changed, answered, moved);
-    // A read-only field mirrors the vendor, so its answer is the row's, such
-    // as the number it gave a row it made; a carried field keeps its value.
+    // What the vendor answered for a field the change did not carry is the
+    // row's, such as a number it gave; a carried field keeps its value.
     if (answered !== undefined && current.state !== "trashed") {
-      await rows.adoptAnswer(current.id, answered);
+      await rows.adoptAnswer(current.id, answered, new Set(changed));
     }
   };
   /** The connections as carried, and a change to a target not yet

@@ -753,19 +753,30 @@ export class Rows {
 
   /** Writes the vendor's id onto the row's link at the version the
    *  change showed, retried once at the current; a taken value refuses. */
-  /** Writes onto a live row what the vendor answered for its read-only
-   *  fields, which Marfa mirrors, such as a number the vendor gave it. */
-  async adoptAnswer(id: string, answered: Entry): Promise<void> {
+  /** Writes onto a live row what the vendor answered for the fields the
+   *  carry did not send and Marfa has not changed since they were agreed,
+   *  such as a number the vendor gave it, or its reopening on a restore. */
+  async adoptAnswer(
+    id: string,
+    answered: Entry,
+    sent: ReadonlySet<string>,
+  ): Promise<void> {
     const said = cleaned(answered.properties);
+    const agreed = this.store.get(id)?.marfa ?? {};
     const fields = this.kind.fields.filter(
-      (field) => this.kind.readOnly.has(field) && field !== this.kind.link,
+      (field) =>
+        field !== this.kind.link &&
+        !sent.has(field) &&
+        Object.hasOwn(said, field),
     );
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const row = attempt === 0 ? this.known(id) : await this.marfa.item(id);
       if (row === undefined || row.state === "trashed") return;
       const differing = fields.filter(
         (field) =>
-          mark(held(said, field)) !== mark(held(row.properties, field)),
+          mark(held(said, field)) !== mark(held(row.properties, field)) &&
+          // A change a person made since is theirs, still to carry.
+          mark(held(row.properties, field)) === (agreed[field] ?? ""),
       );
       if (differing.length === 0) return;
       const properties: Record<string, unknown> = { ...row.properties };
