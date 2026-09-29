@@ -136,6 +136,14 @@ export function checkDefinition<E extends EnvDeclaration>(
   }
   const types = new Set(ids);
   const connections = (connector.connections ?? []).map((kind) => kind.id);
+  const clashing = connections.filter((id) =>
+    connector.types.some((kind) => kind.fields.includes(id)),
+  );
+  if (clashing.length > 0) {
+    problems.push(
+      `connection types named apart from every field, where ${clashing.join(", ")} ${clashing.length === 1 ? "is" : "are"} both`,
+    );
+  }
   if (new Set(connections).size !== connections.length) {
     problems.push("each connection type once");
   }

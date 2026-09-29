@@ -243,10 +243,14 @@ export class Connections {
   ) {
     let next = agreement;
     for (const type of this.typesFrom(item.type)) {
+      const agreedList = agreement.connections?.[type];
+      // Nothing agreed on a two-way kind: the vendor's set is taken when it
+      // next names one.
       if (!this.mirrored(spec, type)) continue;
+      if (spec.twoWay && agreedList === undefined) continue;
       const kind = this.kinds.get(type);
       if (kind === undefined) continue;
-      const agreed = new Set(agreement.connections?.[type] ?? []);
+      const agreed = new Set(agreedList ?? []);
       const current = await this.own(edges, kind, agreed);
       const add = [...agreed].filter((target) => !current.has(target));
       const remove = [...current].filter(([target]) => !agreed.has(target));
@@ -295,8 +299,11 @@ export class Connections {
       ) {
         continue;
       }
-      const was = new Set(agreedList ?? []);
-      const now = new Set((await this.own(edges, kind, was)).keys());
+      // The vendor holds none of a create's, whatever an earlier try agreed.
+      const was = new Set(created ? [] : (agreedList ?? []));
+      const now = new Set(
+        (await this.own(edges, kind, new Set(agreedList ?? []))).keys(),
+      );
       const added = [...now].filter((target) => !was.has(target));
       const removed = [...was].filter((target) => !now.has(target));
       if (added.length === 0 && removed.length === 0) continue;
