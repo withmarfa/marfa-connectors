@@ -359,6 +359,43 @@ describe("connections made in Marfa", () => {
   });
 });
 
+describe("what a run finds linked", () => {
+  it("is the active rows holding the connection to the target, by link", async () => {
+    const held = connected([entry(1, [2]), entry(2), entry(3, [2]), entry(4)]);
+    await harness.twoWay(held);
+    harness.server.transition(harness.server.row("a:3").id, "archived");
+    held.entries = [];
+    held.ask = {
+      connection: "test.blocks",
+      target: { type: "test.entry", id: "v2" },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.answers).toEqual([["v1"]]);
+  });
+
+  it("is nothing where Marfa lacks the target", async () => {
+    const held = connected([entry(1)]);
+    held.ask = {
+      connection: "test.blocks",
+      target: { type: "test.entry", id: "v9" },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.answers).toEqual([[]]);
+  });
+
+  it("refuses a connection the type does not hold", async () => {
+    const held = connected([entry(1)]);
+    held.ask = {
+      connection: "test.other",
+      target: { type: "test.entry", id: "v1" },
+    };
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      "test.entry declares no connection test.other",
+    );
+  });
+});
+
 describe("connections the vendor answers after a carry", () => {
   it("are what it holds: one it would not take is taken back in Marfa, and nothing more is carried", async () => {
     const held = connected([entry(1), entry(2), entry(3)]);

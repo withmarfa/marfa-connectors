@@ -130,6 +130,18 @@ export interface RunContext<E extends EnvDeclaration> {
    * sends it again.
    */
   readonly archive: (type: string, keys: readonly string[]) => Promise<void>;
+  /**
+   * The active rows of the type that hold a connection of the kind to the
+   * target: what Marfa has under something, such as a repository's issues,
+   * to find what the vendor no longer lists. Empty where Marfa lacks the
+   * target. Connections a run names are written once it ends, so a row
+   * connected by this run's own entries shows from the next.
+   */
+  readonly linked: (
+    type: string,
+    connection: string,
+    target: Target,
+  ) => Promise<Item[]>;
 }
 
 /**

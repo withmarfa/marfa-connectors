@@ -303,6 +303,31 @@ export class Marfa {
     return rows;
   }
 
+  /** The active rows of the type holding an edge of the kind to the target. */
+  async connectedTo(
+    type: string,
+    edgeType: string,
+    targetId: string,
+  ): Promise<Item[]> {
+    const rows: Item[] = [];
+    const walk = pages(async (cursor) => {
+      const { data, error, response } = await this.client.GET("/items", {
+        params: {
+          query: {
+            type,
+            filter: `edge[${edgeType}] eq ${JSON.stringify(targetId)}`,
+            limit: 200,
+            ...(cursor !== undefined && { cursor }),
+          },
+        },
+      });
+      if (data === undefined) throw refusal(response, error);
+      return data;
+    });
+    for await (const row of walk) rows.push("item" in row ? row.item : row);
+    return rows;
+  }
+
   /** Rows in any state by link, natural key or id, with the tombstones
    *  the type keeps for the keys named, in pages the door's cap allows. */
   async lookup(

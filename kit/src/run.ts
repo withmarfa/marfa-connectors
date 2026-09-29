@@ -397,6 +397,19 @@ export async function runOnce<E extends EnvDeclaration>(
     },
     upsert: (type, entries) => lane(type).rows.upsert(entries),
     archive: (type, keys) => lane(type).rows.archive(keys),
+    linked: async (type, connection, target) => {
+      const { rows } = lane(type);
+      if (!specs.get(type)?.connections.has(connection)) {
+        throw new Error(`${type} declares no connection ${connection}`);
+      }
+      const held = (await lane(target.type).rows.named([target.id])).get(
+        target.id,
+      );
+      if (held === undefined) return [];
+      const found = await setup.marfa.connectedTo(type, connection, held.id);
+      for (const row of found) rows.adopt(row);
+      return found;
+    },
   };
   const watchContext: WatchContext<E> = {
     env,

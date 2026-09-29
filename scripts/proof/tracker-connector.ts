@@ -85,7 +85,7 @@ const connector = defineConnector({
   ],
   carries: () => ["proof.issue"],
   env,
-  async run({ env: values, signal, hints, upsert }) {
+  async run({ env: values, signal, hints, upsert, linked, log }) {
     const call = async (path: string): Promise<Response> =>
       fetch(new URL(path, values.PROOF_VENDOR_URL), { signal });
     const named = hints?.get("proof.issue");
@@ -99,6 +99,17 @@ const connector = defineConnector({
       }
     }
     await upsert("proof.issue", issues.map(issueEntry));
+    for (const issue of issues) {
+      const parents = await linked("proof.issue", "proof.sub-issue", {
+        type: "proof.issue",
+        id: issue.id,
+      });
+      if (parents.length > 0) {
+        log.info(
+          `the parents of ${issue.id} are ${parents.map((row) => String(row.properties["issue_id"])).join(", ")}`,
+        );
+      }
+    }
     await upsert(
       "proof.attachment",
       issues.flatMap((issue) =>
