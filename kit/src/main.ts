@@ -89,6 +89,11 @@ async function checkType(
   return `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
 }
 
+/** Shipped connection types a connector may write between its own rows,
+ *  narrowed itself and never registered: a file attaching to its item, a
+ *  message in its thread. */
+const shippedConnections = new Set(["attached-to", "in-thread"]);
+
 /** What the key holds beyond read/write on the connector's own types,
  *  connections and their registration: nothing, for a key per the README. */
 function keyWiderThanTypes(
@@ -114,7 +119,9 @@ function keyWiderThanTypes(
     "metadata",
     key.metadata_permissions,
     (name) =>
-      name === "types" || (name === "edge_types" && connections.size > 0),
+      name === "types" ||
+      (name === "edge_types" &&
+        [...connections].some((id) => !shippedConnections.has(id))),
   );
   held("edge", key.edge_permissions, (name) => connections.has(name));
   held("extension", key.extension_permissions, () => false);
@@ -141,11 +148,6 @@ function keyNarrowerThanTypes(
       .map((name) => `edge ${name}`),
   ];
 }
-
-/** Shipped connection types a connector may write between its own rows,
- *  narrowed itself and never registered: a file attaching to its item, a
- *  message in its thread. */
-const shippedConnections = new Set(["attached-to", "in-thread"]);
 
 async function ensureConnections(
   connections: readonly ConnectionDefinition[],
