@@ -34,6 +34,8 @@ export interface Carried {
   readonly agreed: Record<string, string[]>;
   /** A target the vendor has not been told about kept a change back. */
   readonly deferred: boolean;
+  /** A create's mirrored connection names a row the vendor lacks. */
+  readonly unplaced: boolean;
 }
 
 /** The connections from the connector's rows, against what was agreed by
@@ -47,6 +49,11 @@ export class Connections {
     private readonly hooks: Hooks,
     private readonly signal: AbortSignal,
   ) {}
+
+  /** Whether Marfa mirrors the kind's connections of the type. */
+  mirrored(spec: Spec, type: string): boolean {
+    return !spec.twoWay || spec.readOnly.has(type);
+  }
 
   typesFrom(type: string): string[] {
     return [...this.kinds.values()]
@@ -175,7 +182,7 @@ export class Connections {
       kind,
       new Set([...agreed, ...wanted]),
     );
-    const mirror = !spec.twoWay || seeding;
+    const mirror = this.mirrored(spec, type) || seeding;
     const add = [...wanted].filter(
       (target) => !current.has(target) && (mirror || !agreed.has(target)),
     );
@@ -194,7 +201,7 @@ export class Connections {
       remove,
       kept: new Set(wanted),
       unresolved,
-      putBack: !spec.twoWay && !seeding && diverged,
+      putBack: this.mirrored(spec, type) && !seeding && diverged,
       // A new row has nothing agreed either; only what Marfa held differs.
       seeded: seeding && remove.length > 0,
     };
@@ -226,14 +233,24 @@ export class Connections {
     );
   }
 
-  /** A read-only row's connections a person changed in Marfa, put back to
-   *  what the vendor last said. */
-  async putBack(item: Item, agreement: Agreement, edges: readonly Edge[]) {
+  /** Mirrored connections a person changed in Marfa, put back to what the
+   *  vendor last said. */
+  async putBack(
+    item: Item,
+    spec: Spec,
+    agreement: Agreement,
+    edges: readonly Edge[],
+  ) {
     let next = agreement;
     for (const type of this.typesFrom(item.type)) {
+      const agreedList = agreement.connections?.[type];
+      // Nothing agreed on a two-way kind: the vendor's set is taken when it
+      // next names one.
+      if (!this.mirrored(spec, type)) continue;
+      if (spec.twoWay && agreedList === undefined) continue;
       const kind = this.kinds.get(type);
       if (kind === undefined) continue;
-      const agreed = new Set(agreement.connections?.[type] ?? []);
+      const agreed = new Set(agreedList ?? []);
       const current = await this.own(edges, kind, agreed);
       const add = [...agreed].filter((target) => !current.has(target));
       const remove = [...current].filter(([target]) => !agreed.has(target));
@@ -252,16 +269,21 @@ export class Connections {
         kept.delete(target);
       }
       for (const target of gone) kept.delete(target);
-      this.putBackCondition(item.id, type);
+      // A target purged meanwhile is let go, which no person changed.
+      if (remove.length > 0 || add.length > gone.size) {
+        this.putBackCondition(item.id, type);
+      }
       next = this.agreeOn(next, type, kept, next.pending?.[type] ?? []);
     }
     return next;
   }
 
   /** What changed in Marfa against what was agreed: nothing agreed carries
-   *  nothing unless created; a purged target drops, an untold one waits. */
+   *  nothing unless created, nor does a mirrored type; a purged target
+   *  drops, an untold one waits. */
   async changes(
     item: Item,
+    spec: Spec,
     agreement: Agreement,
     edges: readonly Edge[],
     created: boolean,
@@ -269,14 +291,22 @@ export class Connections {
     const connections: Record<string, Connected> = {};
     const agreed: Record<string, string[]> = { ...agreement.connections };
     let deferred = false;
+    let unplaced = false;
     for (const type of this.typesFrom(item.type)) {
       const kind = this.kinds.get(type);
       const agreedList = agreement.connections?.[type];
-      if (kind === undefined || (agreedList === undefined && !created)) {
+      if (
+        kind === undefined ||
+        (agreedList === undefined && !created) ||
+        (this.mirrored(spec, type) && !created)
+      ) {
         continue;
       }
-      const was = new Set(agreedList ?? []);
-      const now = new Set((await this.own(edges, kind, was)).keys());
+      // The vendor holds none of a create's, whatever an earlier try agreed.
+      const was = new Set(created ? [] : (agreedList ?? []));
+      const now = new Set(
+        (await this.own(edges, kind, new Set(agreedList ?? []))).keys(),
+      );
       const added = [...now].filter((target) => !was.has(target));
       const removed = [...was].filter((target) => !now.has(target));
       if (added.length === 0 && removed.length === 0) continue;
@@ -289,8 +319,11 @@ export class Connections {
         added: added.flatMap((target) => told(target) ?? []),
         removed: removed.flatMap((target) => told(target) ?? []),
       };
-      // Added to a target not yet at the vendor: carried once it is.
-      deferred ||= added.some((target) => told(target) === undefined);
+      // Added to a target not yet at the vendor: carried once it is, and
+      // a create a mirrored one places waits for it.
+      const untold = added.some((target) => told(target) === undefined);
+      deferred ||= untold;
+      unplaced ||= untold && this.mirrored(spec, type);
       const next = new Set(was);
       for (const row of carried.added) next.add(row.id);
       // Removed and carried, or gone, or never at the vendor: agreed no more.
@@ -300,7 +333,7 @@ export class Connections {
         connections[type] = carried;
       }
     }
-    return { connections, agreed, deferred };
+    return { connections, agreed, deferred, unplaced };
   }
 
   private putBackCondition(id: string, type: string): void {

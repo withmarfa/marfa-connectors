@@ -117,18 +117,33 @@ export function checkDefinition<E extends EnvDeclaration>(
   }
   if (new Set(ids).size !== ids.length) problems.push("each type once");
   for (const kind of connector.types) {
+    const from = new Set(
+      (connector.connections ?? [])
+        .filter((connection) =>
+          connection.source_type_constraints?.includes(kind.type.id),
+        )
+        .map((connection) => connection.id),
+    );
     const outside = [
-      ...(kind.readOnly ?? []),
+      ...(kind.readOnly ?? []).filter((name) => !from.has(name)),
       ...(kind.type.link_field === undefined ? [] : [kind.type.link_field]),
     ].filter((field) => !kind.fields.includes(field));
     if (outside.length > 0) {
       problems.push(
-        `${kind.type.id}'s link and read-only fields among its fields, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,
+        `${kind.type.id}'s link and read-only fields among its fields or the connection types from it, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,
       );
     }
   }
   const types = new Set(ids);
   const connections = (connector.connections ?? []).map((kind) => kind.id);
+  const clashing = connections.filter((id) =>
+    connector.types.some((kind) => kind.fields.includes(id)),
+  );
+  if (clashing.length > 0) {
+    problems.push(
+      `connection types named apart from every field, where ${clashing.join(", ")} ${clashing.length === 1 ? "is" : "are"} both`,
+    );
+  }
   if (new Set(connections).size !== connections.length) {
     problems.push("each connection type once");
   }

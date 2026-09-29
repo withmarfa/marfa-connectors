@@ -266,7 +266,11 @@ export interface Kind {
   /**
    * Fields the vendor holds that are never carried back: Marfa mirrors
    * them, putting back a change made in Marfa. Every field of a kind not
-   * carried back is read-only, and so is the link.
+   * carried back is read-only, and so is the link. It may also name
+   * connection types from the kind's rows, such as the project an issue
+   * sits in: mirrored the same way, but handed to a create and to
+   * `remake`, which they place, and a create waits until the vendor has
+   * been told about each of their targets.
    */
   readonly readOnly?: readonly string[];
   /**

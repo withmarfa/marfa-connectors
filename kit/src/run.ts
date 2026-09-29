@@ -485,18 +485,31 @@ export async function runOnce<E extends EnvDeclaration>(
       current.properties,
     );
     const back = stale.length === 0 ? [] : await rows.putBack(id, stale);
-    if (!kind.twoWay && agreement.waiting[connectionsKey] !== undefined) {
+    const types = connections.typesFrom(kind.type);
+    const mirrored = types.filter((type) => connections.mirrored(kind, type));
+    // A create's mirrored connections place it, so they are not put back.
+    const told = !kind.twoWay || agreement.link !== undefined;
+    if (
+      mirrored.length > 0 &&
+      told &&
+      agreement.waiting[connectionsKey] !== undefined
+    ) {
       const edges = (await connections.edgesOf([id])).get(id)?.edges ?? [];
       store.set(
         id,
-        await connections.putBack(current, store.get(id) ?? agreement, edges),
+        await connections.putBack(
+          current,
+          kind,
+          store.get(id) ?? agreement,
+          edges,
+        ),
       );
     }
     const waiting = { ...store.get(id)?.waiting };
     for (const field of [
       ...back,
       ...(kind.link === undefined ? [] : [kind.link]),
-      ...(kind.twoWay ? [] : [connectionsKey]),
+      ...(told && mirrored.length === types.length ? [connectionsKey] : []),
     ]) {
       Reflect.deleteProperty(waiting, field);
     }
@@ -532,7 +545,18 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return merged;
   };
-  const carry = async (item: Item, agreement: Agreement): Promise<void> => {
+  const heldBack = (id: string): void => {
+    raised.set(
+      `create-held:${id}`,
+      `${id} is not sent to the vendor until the vendor has each row its read-only connections name`,
+    );
+  };
+  /** Carries a row's change; answers `unplaced` for a create waiting on
+   *  the vendor to have a row its mirrored connections name. */
+  const carry = async (
+    item: Item,
+    agreement: Agreement,
+  ): Promise<"unplaced" | undefined> => {
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec: kind, rows } = lane(item.type);
     if (connector.onChange === undefined || !kind.twoWay) return;
@@ -596,18 +620,32 @@ export async function runOnce<E extends EnvDeclaration>(
         agreement.waiting?.[connectionsKey] !== undefined)
         ? await connections.changes(
             current,
+            kind,
             agreement,
             (await connections.edgesOf([current.id])).get(current.id)?.edges ??
               [],
             changeKind === "created",
           )
         : undefined;
+    // Placed by a row the vendor lacks: made once the vendor has that row.
+    if (changeKind === "created" && moved?.unplaced === true) {
+      return "unplaced";
+    }
     const connected = Object.keys(moved?.connections ?? {}).length > 0;
     if (changeKind === "updated" && changed.length === 0 && !connected) {
-      // A read-only field no version could put back still waits.
+      // A read-only field no version could put back still waits, and a
+      // mirrored connection changed in the bin waits for the restore.
+      const binned =
+        current.state === "trashed" &&
+        connections
+          .typesFrom(kind.type)
+          .some((type) => connections.mirrored(kind, type));
       const left = Object.fromEntries(
         Object.entries(agreement.waiting ?? {}).filter(
-          ([key]) => key === connectKey || kind.readOnly.has(key),
+          ([key]) =>
+            key === connectKey ||
+            kind.readOnly.has(key) ||
+            (binned && key === connectionsKey),
         ),
       );
       const next = withoutWaiting(agreement);
@@ -903,6 +941,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (twoWay) {
       // An untold or restored-but-vendor-lost row is made there before
       // the vendor is read, so failing before it links makes no twin.
+      const unplaced: string[] = [];
       for (const id of order) {
         const agreement = store.get(id);
         const found = await find(id);
@@ -910,7 +949,7 @@ export async function runOnce<E extends EnvDeclaration>(
         const { item, spec: kind } = found;
         if (!kind.twoWay) continue;
         if (agreement.waiting?.[createKey] !== undefined) {
-          await carry(item, agreement);
+          if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
           done.add(id);
           continue;
         }
@@ -918,6 +957,27 @@ export async function runOnce<E extends EnvDeclaration>(
           item.state === "active" && agreement.state !== "active";
         if (connector.remake !== undefined && restored) {
           if (setup.signal.aborted) throw new Stopped();
+          // Its mirrored connections say where it is made again.
+          const placing = new Set(
+            connections
+              .typesFrom(kind.type)
+              .filter((type) => connections.mirrored(kind, type)),
+          );
+          const placed =
+            placing.size === 0
+              ? undefined
+              : await connections.changes(
+                  item,
+                  kind,
+                  agreement,
+                  (await connections.edgesOf([id])).get(id)?.edges ?? [],
+                  true,
+                );
+          const handed = Object.fromEntries(
+            Object.entries(placed?.connections ?? {}).filter(([type]) =>
+              placing.has(type),
+            ),
+          );
           const change: Change = {
             kind: "restored",
             item,
@@ -928,7 +988,14 @@ export async function runOnce<E extends EnvDeclaration>(
                 item.properties,
               ),
             ),
+            ...(Object.keys(handed).length > 0 && { connections: handed }),
           };
+          // Placed by a row the vendor lacks: made again once it has it.
+          if (placed?.unplaced === true) {
+            heldBack(id);
+            done.add(id);
+            continue;
+          }
           if (await connector.remake(change, watchContext)) {
             pushed += 1;
             // What was sent, never the server's answer, which can hold a
@@ -939,7 +1006,8 @@ export async function runOnce<E extends EnvDeclaration>(
               ...(kind.link !== undefined &&
                 linked !== undefined && { [kind.link]: linked }),
             });
-            // The vendor's new copy holds no connection yet: each is carried.
+            // The vendor's new copy holds only what placed it: each other
+            // connection is carried.
             store.set(id, {
               vendor: side,
               marfa: side,
@@ -948,7 +1016,10 @@ export async function runOnce<E extends EnvDeclaration>(
               ...(agreement.file !== undefined && { file: agreement.file }),
               ...(kind.connections.size > 0 && {
                 connections: Object.fromEntries(
-                  [...kind.connections].map((type) => [type, []]),
+                  [...kind.connections].map((type) => [
+                    type,
+                    placing.has(type) ? (placed?.agreed[type] ?? []) : [],
+                  ]),
                 ),
                 waiting: { [connectionsKey]: clock.now().toISOString() },
               }),
@@ -957,6 +1028,22 @@ export async function runOnce<E extends EnvDeclaration>(
           }
         }
       }
+      // Again while any lands, for a create naming a row made after it.
+      let held = unplaced;
+      for (let progress = true; progress && held.length > 0;) {
+        const still: string[] = [];
+        for (const id of held) {
+          const agreement = store.get(id);
+          const found = await find(id);
+          if (agreement === undefined || found === undefined) continue;
+          if ((await carry(found.item, agreement)) === "unplaced") {
+            still.push(id);
+          }
+        }
+        progress = still.length < held.length;
+        held = still;
+      }
+      for (const id of held) heldBack(id);
     }
     await connector.run(context);
     // Once the vendor's rows are written, so a target made this run is found.
@@ -978,7 +1065,7 @@ export async function runOnce<E extends EnvDeclaration>(
         const agreement = store.get(id);
         const found = await find(id);
         if (agreement?.waiting === undefined || found === undefined) continue;
-        await carry(found.item, agreement);
+        if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
       }
       for (const item of purged.values()) {
         if (setup.fenced?.() === true || setup.signal.aborted) {
