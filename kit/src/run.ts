@@ -1071,11 +1071,14 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     await connector.run(context);
     // Once the vendor's rows are written, so a target made this run is found.
-    // An answer from before the run gives way to the vendor's entry since.
-    const named = new Map([
-      ...answeredConnections,
-      ...[...lanes.values()].flatMap(({ rows }) => [...rows.connecting]),
-    ]);
+    // An answer from before the run gives way, type by type, to the
+    // vendor's entry since.
+    const named = new Map(answeredConnections);
+    for (const { rows } of lanes.values()) {
+      for (const [id, said] of rows.connecting) {
+        named.set(id, { ...named.get(id), ...said });
+      }
+    }
     answeredConnections.clear();
     await connections.connect(
       named,

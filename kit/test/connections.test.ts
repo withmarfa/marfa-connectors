@@ -426,6 +426,80 @@ describe("connections the vendor answers after a carry", () => {
     ).toEqual(["a:1", "a:2"]);
   });
 
+  it("keep a type the vendor's later entry does not name", async () => {
+    const held = connected([entry(1), entry(2)]);
+    await harness.twoWay(held);
+    const made = harness.server.insert(
+      undefined,
+      { title: "Made" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(
+      made.id,
+      harness.server.row("a:1").id,
+      "test.blocks",
+    );
+    harness.server.drawEdge(
+      made.id,
+      harness.server.row("a:2").id,
+      "test.blocks",
+    );
+    held.vendorIdFor = () => "v9";
+    held.answer = (change) => ({
+      source_id: "a:9",
+      properties: { ...change.item.properties, vendor_id: "v9" },
+      connections: { "test.blocks": [{ type: "test.entry", id: "v1" }] },
+    });
+    held.entries = [
+      {
+        source_id: "a:9",
+        properties: { title: "Made", vendor_id: "v9" },
+        connections: {},
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      harness.server
+        .targetsOf(made.id, "test.blocks")
+        .map((id) => harness.server.byId(id).source_id),
+    ).toEqual(["a:1"]);
+  });
+
+  it("from before the run are applied where the vendor sends nothing after", async () => {
+    const held = connected([entry(1), entry(2)]);
+    await harness.twoWay(held);
+    const made = harness.server.insert(
+      undefined,
+      { title: "Made" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(
+      made.id,
+      harness.server.row("a:1").id,
+      "test.blocks",
+    );
+    harness.server.drawEdge(
+      made.id,
+      harness.server.row("a:2").id,
+      "test.blocks",
+    );
+    held.vendorIdFor = () => "v9";
+    held.answer = (change) => ({
+      source_id: "a:9",
+      properties: { ...change.item.properties, vendor_id: "v9" },
+      connections: { "test.blocks": [{ type: "test.entry", id: "v1" }] },
+    });
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      harness.server
+        .targetsOf(made.id, "test.blocks")
+        .map((id) => harness.server.byId(id).source_id),
+    ).toEqual(["a:1"]);
+  });
+
   it("are taken back though a later carry fails the run", async () => {
     const held = connected([entry(1), entry(2), entry(3)]);
     await harness.twoWay(held);
