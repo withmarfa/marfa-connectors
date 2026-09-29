@@ -207,6 +207,37 @@ describe("a kind that revives", () => {
     expect(held.changes).toEqual([]);
   });
 
+  it("brings a row back as the vendor has it, its close among the fields, and carries nothing", async () => {
+    const held = vendor([one]);
+    held.revive = true;
+    held.answer = (change) => {
+      if (change.kind !== "trashed") return undefined;
+      held.entries = [closed];
+      return closed;
+    };
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    // Activity at the vendor that leaves its close as it was.
+    held.entries = [
+      {
+        ...closed,
+        properties: { ...closed.properties, title: "Commented on" },
+        changed_at: "2026-10-02T00:00:00.000Z",
+      },
+    ];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(harness.server.row("a:1").properties).toMatchObject({
+      title: "Commented on",
+      note: "closed",
+    });
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
   it("leaves a row in the bin whose trash still waits to be carried", async () => {
     const held = vendor([one]);
     held.revive = true;

@@ -422,6 +422,9 @@ export class Rows {
       }
       if (agreement !== undefined) {
         agreement = { ...agreement, state: "active" };
+        // Back from the bin, it takes the vendor's fields as they now are,
+        // its close among them, where Marfa has not changed them since.
+        if (found.state === "trashed") agreement = { ...agreement, vendor: {} };
         Reflect.deleteProperty(agreement, "stateBy");
         Reflect.deleteProperty(agreement, "stateAt");
       }
@@ -750,6 +753,57 @@ export class Rows {
 
   /** Writes the vendor's id onto the row's link at the version the
    *  change showed, retried once at the current; a taken value refuses. */
+  /** Writes onto a live row what the vendor answered for its read-only
+   *  fields, which Marfa mirrors, such as a number the vendor gave it. */
+  async adoptAnswer(id: string, answered: Entry): Promise<void> {
+    const said = cleaned(answered.properties);
+    const fields = this.kind.fields.filter(
+      (field) => this.kind.readOnly.has(field) && field !== this.kind.link,
+    );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const row = attempt === 0 ? this.known(id) : await this.marfa.item(id);
+      if (row === undefined || row.state === "trashed") return;
+      const differing = fields.filter(
+        (field) =>
+          mark(held(said, field)) !== mark(held(row.properties, field)),
+      );
+      if (differing.length === 0) return;
+      const properties: Record<string, unknown> = { ...row.properties };
+      for (const field of differing) {
+        const value = held(said, field);
+        if (value === undefined) Reflect.deleteProperty(properties, field);
+        else properties[field] = value;
+      }
+      this.checkStopped();
+      try {
+        const written = await this.marfa.update(
+          row.id,
+          row.version,
+          properties,
+          undefined,
+        );
+        this.index(written);
+      } catch (error) {
+        if (
+          attempt === 0 &&
+          error instanceof Refusal &&
+          error.code === "version_conflict"
+        ) {
+          continue;
+        }
+        this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+        return;
+      }
+      const agreement = this.store.get(id);
+      if (agreement !== undefined) {
+        const marfa = { ...agreement.marfa };
+        for (const field of differing) marfa[field] = mark(held(said, field));
+        this.store.set(id, { ...agreement, marfa });
+      }
+      return;
+    }
+  }
+
   async setLink(item: Item, value: string): Promise<void> {
     const link = this.kind.link;
     if (link === undefined) {

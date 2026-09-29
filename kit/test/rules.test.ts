@@ -83,6 +83,37 @@ describe("a vendor's answer", () => {
   });
 });
 
+describe("a vendor's answer for a read-only field", () => {
+  it("is written onto the row, as for a row the vendor just made, and nothing is carried after", async () => {
+    const held = vendor([]);
+    held.readOnly = ["note"];
+    await harness.twoWay(held);
+    const made = harness.server.insert(
+      undefined,
+      { title: "Made in Marfa" },
+      "test.entry",
+      "person",
+    );
+    held.vendorIdFor = () => "v9";
+    held.answer = (change) => ({
+      source_id: "a:9",
+      properties: {
+        ...change.item.properties,
+        vendor_id: "v9",
+        note: "number 9 at the vendor",
+      },
+    });
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.byId(made.id).properties["note"]).toBe(
+      "number 9 at the vendor",
+    );
+    held.changes.length = 0;
+    held.answer = undefined;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+});
+
 describe("a run for deliveries", () => {
   it("reads the vendor whole where more than two hundred rows wait", async () => {
     const many: Entry[] = Array.from({ length: 201 }, (_, n) => ({
