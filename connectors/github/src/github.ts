@@ -25,10 +25,9 @@ export interface App {
 /** A client that waits out a short rate limit, and fails the run on a
  *  long one, which the next run picks up. */
 function client(base: string, signal: AbortSignal, auth?: object): Client {
-  return new Client({
+  const octokit = new Client({
     baseUrl: base,
     request: { signal },
-    headers: { "x-github-api-version": apiVersion },
     ...auth,
     throttle: {
       onRateLimit: (
@@ -45,6 +44,11 @@ function client(base: string, signal: AbortSignal, auth?: object): Client {
       ) => after <= 60 && count < 2,
     },
   });
+  // Octokit takes no default headers; unnamed, GitHub serves its oldest.
+  octokit.hook.before("request", (options) => {
+    options.headers["x-github-api-version"] = apiVersion;
+  });
+  return octokit;
 }
 
 /** What GitHub last said is left of each client's hourly limit. */
@@ -81,6 +85,11 @@ function appAuth(app: App): ReturnType<typeof createAppAuth> {
 }
 
 /** As the App itself, for its installations and its webhook. */
+/** A client with no credentials, for what GitHub proves otherwise. */
+export function anonymous(base: string, signal: AbortSignal): Client {
+  return client(base, signal);
+}
+
 export function asApp(app: App, signal: AbortSignal): Client {
   return client(app.base, signal, {
     authStrategy: createAppAuth,

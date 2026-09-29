@@ -82,6 +82,8 @@ interface Asked {
   query: string;
   body?: unknown;
   status: number;
+  /** The REST version the request named, where it named one. */
+  version: string | undefined;
 }
 
 /**
@@ -392,6 +394,7 @@ export class GitHubStub {
       query: url.search,
       body,
       status: 200,
+      version: req.headers["x-github-api-version"] as string | undefined,
     };
     this.asked.push(asked);
     const send = (

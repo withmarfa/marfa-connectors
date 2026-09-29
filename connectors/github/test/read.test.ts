@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
-import { numbersIn, runsOf } from "../src/github.js";
+import { apiVersion, numbersIn, runsOf } from "../src/github.js";
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
@@ -644,5 +644,18 @@ describe("a bot", () => {
     await ok();
     expect(row(old.node).properties["author"]).toBe("dependabot[bot]");
     expect(row(listed.node).properties["author"]).toBe("dependabot[bot]");
+  });
+});
+
+describe("every request to GitHub", () => {
+  it("names the REST version the connector is written against", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.addComment(issue, "Said");
+    await ok();
+    expect(github.asked.length).toBeGreaterThan(0);
+    expect(new Set(github.asked.map((one) => one.version))).toEqual(
+      new Set([apiVersion]),
+    );
   });
 });
