@@ -10,6 +10,9 @@ import {
   repositoryEntry,
   repositoryType,
   subIssueOf,
+  type Comment,
+  type Issue,
+  type Relations,
   type RestComment,
   type RestIssue,
   type RestRepository,
@@ -149,6 +152,11 @@ export async function read(context: Context, app: App): Promise<void> {
     }
   }
   const synced = new Set(listed.keys());
+  // A run for deliveries leaves every cursor as it was: the rest went unread.
+  if (context.hints !== undefined) {
+    await readNamed(context, listed, clients);
+    return;
+  }
   const next: Record<string, Kept> = {};
   for (const [node, { repository, installation }] of listed) {
     next[node] = { ...kept[node], installation, name: repository.full_name };
@@ -519,12 +527,6 @@ async function changedComments(
   return { comments, etag: first.etag, full };
 }
 
-/** What a run for deliveries may archive: only what they named. */
-function archivable(context: Context, type: string, links: string[]): string[] {
-  const named = context.hints?.get(type);
-  return named === undefined ? links : links.filter((link) => named.has(link));
-}
-
 /**
  * The issues Marfa holds under the repository that GitHub no longer lists,
  * each asked of GitHub and archived only where it says the issue was
@@ -542,20 +544,36 @@ async function checkIssues(
     windowStart: string;
   },
 ): Promise<void> {
-  const { linked, archive, log } = context;
   const under = { type: repositoryType, id: where.node };
-  const gone: string[] = [];
-  for (const row of await linked(issueType, inRepository, under)) {
+  const unlisted = (
+    await context.linked(issueType, inRepository, under)
+  ).filter((row) => {
     const number = row.properties["number"];
-    const link = linkOf(row);
-    if (typeof number !== "number" || link === undefined) continue;
-    if (where.scope.has(number)) continue;
+    if (typeof number !== "number" || where.scope.has(number)) return false;
     const updated = row.properties["github_updated_at"];
     const quiet = typeof updated === "string" ? updated : "";
     const closed = ["completed", "canceled"].includes(
       String(row.properties["status"]),
     );
-    if (closed && quiet < where.windowStart) continue;
+    return !closed || quiet >= where.windowStart;
+  });
+  await archiveGone(context, octokit, where, unlisted);
+}
+
+/** The issues of the rows GitHub says were deleted or moved away,
+ *  archived; one answering 404 while its repository reads is left. */
+async function archiveGone(
+  context: Context,
+  octokit: Client,
+  where: { owner: string; name: string },
+  rows: readonly Item[],
+): Promise<void> {
+  const { log } = context;
+  const gone: string[] = [];
+  for (const row of rows) {
+    const number = row.properties["number"];
+    const link = linkOf(row);
+    if (typeof number !== "number" || link === undefined) continue;
     const said = await askIssue(octokit, where.owner, where.name, number);
     if (said === "deleted") gone.push(link);
     else if (said === "moved") {
@@ -571,7 +589,7 @@ async function checkIssues(
       );
     }
   }
-  await archive(issueType, archivable(context, issueType, gone));
+  await context.archive(issueType, gone);
 }
 
 /** The comments Marfa holds under the repository that GitHub no longer
@@ -612,11 +630,7 @@ async function checkComments(
   );
   await archive(
     commentType,
-    archivable(
-      context,
-      commentType,
-      absent.filter((link) => !still.has(link)),
-    ),
+    absent.filter((link) => !still.has(link)),
   );
 }
 
@@ -640,5 +654,94 @@ async function askIssue(
     if (code === 301 || code === 302 || code === 307) return "moved";
     if (code === 404) return "missing";
     throw error;
+  }
+}
+
+/**
+ * A run for deliveries: what they named, and the rows with a change
+ * waiting, each asked of GitHub by its node id, with the issues at the
+ * other end of each relation so it lands. One GitHub no longer shows, in a
+ * repository the App still reads, is asked after as the check-up asks.
+ */
+async function readNamed(
+  context: Context,
+  listed: ReadonlyMap<
+    string,
+    { repository: RestRepository; installation: number }
+  >,
+  clients: ReadonlyMap<number, Client>,
+): Promise<void> {
+  const { hints, upsert } = context;
+  const synced = new Set(listed.keys());
+  const issues = new Map<string, { issue: Issue; relations: Relations }>();
+  const comments = new Map<string, Comment>();
+  const namedComments = [...(hints?.get(commentType) ?? [])];
+  const namedIssues = new Set(hints?.get(issueType) ?? []);
+  for (const octokit of clients.values()) {
+    const wanted = namedComments.filter((id) => !comments.has(id));
+    for (const comment of await commentsByNode(octokit, wanted)) {
+      if (!synced.has(comment.repository.node)) continue;
+      comments.set(comment.node, comment);
+      namedIssues.add(comment.issue);
+    }
+  }
+  const ask = async (ids: readonly string[]): Promise<void> => {
+    for (const octokit of clients.values()) {
+      const wanted = ids.filter((id) => !issues.has(id));
+      for (const found of await issuesByNode(octokit, wanted)) {
+        if (synced.has(found.issue.repository.node)) {
+          issues.set(found.issue.node, found);
+        }
+      }
+    }
+  };
+  await ask([...namedIssues]);
+  await ask(
+    [...issues.values()]
+      .flatMap(({ relations }) => [
+        ...(relations.parent === null ? [] : [relations.parent]),
+        ...relations.blockedBy,
+      ])
+      .filter((one) => synced.has(one.repository.id))
+      .map((one) => one.id),
+  );
+  await upsert(
+    issueType,
+    [...issues.values()].map(({ issue, relations }) =>
+      issueEntry(issue, relations, synced),
+    ),
+  );
+  await upsert(commentType, [...comments.values()].map(commentEntry));
+
+  const unseenIssues = new Set(
+    [...namedIssues].filter((id) => !issues.has(id)),
+  );
+  const unseenComments = new Set(
+    namedComments.filter((id) => !comments.has(id)),
+  );
+  if (unseenIssues.size === 0 && unseenComments.size === 0) return;
+  for (const [node, { repository, installation }] of listed) {
+    const octokit = clients.get(installation);
+    if (octokit === undefined || repository.has_issues === false) continue;
+    const under = { type: repositoryType, id: node };
+    const [owner = "", name = ""] = repository.full_name.split("/");
+    if (unseenIssues.size > 0) {
+      const rows = (
+        await context.linked(issueType, inRepository, under)
+      ).filter((row) => unseenIssues.has(linkOf(row) ?? ""));
+      await archiveGone(context, octokit, { owner, name }, rows);
+    }
+    if (unseenComments.size > 0) {
+      // Every installation was asked, and none holds it: deleted.
+      await context.archive(
+        commentType,
+        (await context.linked(commentType, inRepository, under)).flatMap(
+          (row) => {
+            const link = linkOf(row);
+            return link !== undefined && unseenComments.has(link) ? [link] : [];
+          },
+        ),
+      );
+    }
   }
 }
