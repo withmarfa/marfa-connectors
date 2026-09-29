@@ -164,10 +164,12 @@ export interface Change {
    */
   readonly changed: ReadonlySet<string>;
   /**
-   * For a create: when one was sent before and no link came back, so the
+   * For a create: when one was first sent and no link came back, so the
    * vendor may hold what it made; look for it there before making another.
    */
   readonly attempted?: string;
+  /** For a restore: where the row was restored from, the bin or archive. */
+  readonly was?: "trashed" | "archived";
   /**
    * The connections made or removed in Marfa since the vendor last had them,
    * by connection type; a target the vendor has not been told about waits

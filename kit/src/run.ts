@@ -705,9 +705,10 @@ export async function runOnce<E extends EnvDeclaration>(
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
+      // The first try's time: a later one's would miss what the first made.
       store.set(current.id, {
         ...agreement,
-        attempted: clock.now().toISOString(),
+        attempted: agreement.attempted ?? clock.now().toISOString(),
       });
       await store.flush([current.id]);
     }
@@ -717,6 +718,10 @@ export async function runOnce<E extends EnvDeclaration>(
         item: current,
         changed: new Set(changed),
         ...(attempted !== undefined && { attempted }),
+        ...(changeKind === "restored" &&
+          (agreement.state === "trashed" || agreement.state === "archived") && {
+            was: agreement.state,
+          }),
         ...(connected &&
           moved !== undefined && { connections: moved.connections }),
       },
