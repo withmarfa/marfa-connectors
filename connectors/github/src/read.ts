@@ -22,6 +22,7 @@ import {
   asInstallation,
   remaining,
   numbersIn,
+  reads,
   pagesOf,
   status,
   unlessUnchanged,
@@ -669,17 +670,35 @@ async function readNamed(
     string,
     { repository: RestRepository; installation: number }
   >,
-  clients: ReadonlyMap<number, Client>,
+  every: ReadonlyMap<number, Client>,
 ): Promise<void> {
-  const { hints, upsert } = context;
-  const synced = new Set(listed.keys());
+  const { hints, upsert, log } = context;
+  const clients = new Map(
+    [...every].filter(
+      ([, octokit]) => (remaining(octokit) ?? reserve) >= reserve,
+    ),
+  );
+  if (clients.size < every.size) {
+    log.condition(
+      "rate-limit-reserve",
+      "GitHub's hourly limit ran low, so what deliveries named in some repositories waits for the next scheduled run",
+    );
+  }
+  const synced = new Set(
+    [...listed].flatMap(([node, { installation }]) =>
+      clients.has(installation) ? [node] : [],
+    ),
+  );
   const issues = new Map<string, { issue: Issue; relations: Relations }>();
   const comments = new Map<string, Comment>();
+  // What GitHub shows anywhere is not gone, though outside the sync.
+  const shown = new Set<string>();
   const namedComments = [...(hints?.get(commentType) ?? [])];
   const namedIssues = new Set(hints?.get(issueType) ?? []);
   for (const octokit of clients.values()) {
     const wanted = namedComments.filter((id) => !comments.has(id));
     for (const comment of await commentsByNode(octokit, wanted)) {
+      shown.add(comment.node);
       if (!synced.has(comment.repository.node)) continue;
       comments.set(comment.node, comment);
       namedIssues.add(comment.issue);
@@ -689,6 +708,7 @@ async function readNamed(
     for (const octokit of clients.values()) {
       const wanted = ids.filter((id) => !issues.has(id));
       for (const found of await issuesByNode(octokit, wanted)) {
+        shown.add(found.issue.node);
         if (synced.has(found.issue.repository.node)) {
           issues.set(found.issue.node, found);
         }
@@ -705,6 +725,18 @@ async function readNamed(
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),
   );
+  // A repository added since the last whole read comes with its issues.
+  const touched = new Set([
+    ...[...issues.values()].map(({ issue }) => issue.repository.node),
+    ...[...comments.values()].map((comment) => comment.repository.node),
+  ]);
+  await upsert(
+    repositoryType,
+    [...touched].flatMap((node) => {
+      const at = listed.get(node);
+      return at === undefined ? [] : [repositoryEntry(at.repository)];
+    }),
+  );
   await upsert(
     issueType,
     [...issues.values()].map(({ issue, relations }) =>
@@ -713,35 +745,46 @@ async function readNamed(
   );
   await upsert(commentType, [...comments.values()].map(commentEntry));
 
-  const unseenIssues = new Set(
-    [...namedIssues].filter((id) => !issues.has(id)),
-  );
-  const unseenComments = new Set(
-    namedComments.filter((id) => !comments.has(id)),
-  );
-  if (unseenIssues.size === 0 && unseenComments.size === 0) return;
+  const unseenIssues = new Set([...namedIssues].filter((id) => !shown.has(id)));
+  const unseenComments = new Set(namedComments.filter((id) => !shown.has(id)));
   for (const [node, { repository, installation }] of listed) {
+    if (unseenIssues.size === 0 && unseenComments.size === 0) return;
     const octokit = clients.get(installation);
     if (octokit === undefined || repository.has_issues === false) continue;
     const under = { type: repositoryType, id: node };
+    const held = (rows: Item[], unseen: Set<string>): Item[] =>
+      rows.filter((row) => {
+        const link = linkOf(row);
+        return link !== undefined && unseen.delete(link);
+      });
+    const issueRows =
+      unseenIssues.size === 0
+        ? []
+        : held(
+            await context.linked(issueType, inRepository, under),
+            unseenIssues,
+          );
+    const commentRows =
+      unseenComments.size === 0
+        ? []
+        : held(
+            await context.linked(commentType, inRepository, under),
+            unseenComments,
+          );
+    if (issueRows.length === 0 && commentRows.length === 0) continue;
     const [owner = "", name = ""] = repository.full_name.split("/");
-    if (unseenIssues.size > 0) {
-      const rows = (
-        await context.linked(issueType, inRepository, under)
-      ).filter((row) => unseenIssues.has(linkOf(row) ?? ""));
-      await archiveGone(context, octokit, { owner, name }, rows);
-    }
-    if (unseenComments.size > 0) {
-      // Every installation was asked, and none holds it: deleted.
-      await context.archive(
-        commentType,
-        (await context.linked(commentType, inRepository, under)).flatMap(
-          (row) => {
-            const link = linkOf(row);
-            return link !== undefined && unseenComments.has(link) ? [link] : [];
-          },
-        ),
+    if (!(await reads(octokit, owner, name))) {
+      log.condition(
+        `repository-unreadable:${node}`,
+        `${repository.full_name} is listed for the App but does not read, so its rows are left as they are`,
       );
+      continue;
     }
+    await archiveGone(context, octokit, { owner, name }, issueRows);
+    // Every installation was asked, and none shows it: deleted.
+    await context.archive(
+      commentType,
+      commentRows.flatMap((row) => linkOf(row) ?? []),
+    );
   }
 }

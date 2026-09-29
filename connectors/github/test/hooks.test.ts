@@ -364,3 +364,76 @@ describe("a run for deliveries", () => {
     });
   });
 });
+
+describe("what the webhooks review found", () => {
+  it("leaves a named comment where its repository is listed but does not read", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Still here");
+    await watching(async () => {
+      const runs = marfa.runs.length;
+      repository.hidden = true;
+      deliver("issue_comment", {
+        action: "edited",
+        comment: { node_id: comment.node },
+        issue: { node_id: issue.node },
+      });
+      await until(() => marfa.runs.length > runs, "the run for it");
+      expect(row(comment.node).state).toBe("active");
+      expect(row(issue.node).state).toBe("active");
+    });
+  });
+
+  it("writes an issue named in a repository added since the last whole read under that repository", async () => {
+    github.addRepository("someone/tracker");
+    await watching(async () => {
+      const runs = marfa.runs.length;
+      const added = github.addRepository("someone/added");
+      const issue = github.addIssue(added, { title: "New" });
+      deliver("issues", { action: "opened", issue: { node_id: issue.node } });
+      await until(() => marfa.runs.length > runs, "the run for it");
+      expect(
+        marfa.targetsOf(row(issue.node).id, "github.in-repository"),
+      ).toEqual([row(added.node).id]);
+    });
+  });
+
+  it("asks Marfa nothing more where a named parent sits outside the sync", async () => {
+    const repositories = Array.from({ length: 5 }, (_, n) =>
+      github.addRepository(`someone/r${String(n)}`),
+    );
+    const outside = github.addRepository("stranger/public", {
+      installation: 99,
+      private: false,
+    });
+    const parent = github.addIssue(outside);
+    const [first] = repositories;
+    if (first === undefined) throw new Error("no repository");
+    const child = github.addIssue(first);
+    await watching(async () => {
+      deliver("ping", {});
+      await until(() => marfa.runs.length > 1, "the first run for deliveries");
+      const runs = marfa.runs.length;
+      const before = marfa.requests.length;
+      child.parent = parent.node;
+      deliver("sub_issues", {
+        action: "parent_issue_added",
+        sub_issue: { node_id: child.node },
+        parent_issue: { node_id: parent.node },
+      });
+      await until(() => marfa.runs.length > runs, "the run for it");
+      const linked = marfa.requests
+        .slice(before)
+        .filter(
+          (one) =>
+            one.method === "GET" &&
+            one.path === "/items" &&
+            [...one.query.keys()].some((key) => key.startsWith("edge")),
+        );
+      expect(linked).toEqual([]);
+      expect(String(row(child.node).properties["parent_url"])).toContain(
+        "stranger/public/issues/",
+      );
+    });
+  });
+});

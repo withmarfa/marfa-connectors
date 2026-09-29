@@ -433,7 +433,7 @@ export async function proveGitHub(
     );
 
     await check(
-      "github: running on a schedule, the connector takes an issue edited on GitHub within seconds of its delivery, asking GitHub for it alone and listing nothing",
+      "github: running on a schedule, the connector takes an issue edited on GitHub within seconds of its delivery, asking GitHub's GraphQL for that issue alone and listing no repository's issues or comments",
       async () => {
         const child = spawn(
           "node",
@@ -490,9 +490,15 @@ export async function proveGitHub(
           const listed = github.asked.filter((one) =>
             one.path.startsWith("/repos/"),
           );
-          if (listed.length > 0) {
+          const asked = github.asked.flatMap((one) =>
+            one.path === "/graphql"
+              ? ((one.body as { variables?: { ids?: string[] } }).variables
+                  ?.ids ?? [])
+              : [],
+          );
+          if (listed.length > 0 || [...new Set(asked)].join() !== parent.node) {
             throw new Error(
-              `GitHub was asked for ${listed.map((one) => one.path).join()}`,
+              `GitHub was asked for ${listed.map((one) => one.path).join()} and ${asked.join()}`,
             );
           }
           return `written ${String(took)} ms after its delivery, GitHub asked ${github.asked.map((one) => `${one.method} ${one.path}`).join(", ")}`;
