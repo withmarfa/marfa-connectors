@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { open, rm } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type {
   Connector,
@@ -15,6 +15,15 @@ import { describe } from "./run.js";
 
 const done =
   "<!doctype html><title>Done</title><p>Done: go back to the terminal.</p>";
+const failed =
+  "<!doctype html><title>Failed</title><p>Setup failed: the terminal says why.</p>";
+
+/** A local server, and the browser it holds at its callback. */
+interface Served {
+  readonly server: Server;
+  /** Answers a browser still held, as setup ended. */
+  release(succeeded: boolean): void;
+}
 
 /** Runs the connector's setup once and writes what it answers to a
  *  new, owner-only file, made first since a vendor may hand a secret once. */
@@ -37,7 +46,7 @@ export async function setUp<E extends EnvDeclaration>(
     logger.error(`${file} could not be made: ${describe(error)}`);
     return 1;
   }
-  const servers: Server[] = [];
+  const servers: Served[] = [];
   const context: SetupContext<E> = {
     env: environment.values,
     signal,
@@ -67,12 +76,16 @@ export async function setUp<E extends EnvDeclaration>(
   try {
     answered = await setup(context);
   } catch (error) {
+    for (const served of servers) served.release(false);
     await handle.close();
     await rm(file, { force: true });
     logger.error(`setup failed, and ${file} was removed: ${describe(error)}`);
     return 1;
   } finally {
-    for (const server of servers) server.close();
+    for (const served of servers) {
+      served.release(true);
+      served.server.close();
+    }
   }
   try {
     await handle.writeFile(`${JSON.stringify(answered, null, 2)}\n`);
@@ -98,7 +111,7 @@ export async function setUp<E extends EnvDeclaration>(
  *  arrives there. */
 function serve(
   page: string | ((callback: string) => string) | undefined,
-  servers: Server[],
+  servers: Served[],
   logger: Logger,
   signal: AbortSignal,
 ): Promise<LocalCallback> {
@@ -116,20 +129,43 @@ function serve(
   // Unguessable, so no other local process or page can answer for the vendor.
   const base = `/${randomUUID()}`;
   let shown: string | undefined;
-  const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const callback = url.pathname === `${base}/callback`;
-    const html = callback ? done : url.pathname === base ? shown : undefined;
-    if (html === undefined) {
-      response.writeHead(404).end();
-      return;
-    }
+  // The browser the vendor sent back, held until setup says where it goes.
+  let held: ServerResponse | undefined;
+  const answer = (response: ServerResponse, html: string): void => {
     response
       .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       .end(html);
-    if (callback) arrived(url.searchParams);
+  };
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === `${base}/callback` && held === undefined) {
+      held = response;
+      arrived(url.searchParams);
+      return;
+    }
+    if (url.pathname !== base || shown === undefined) {
+      response.writeHead(404).end();
+      return;
+    }
+    answer(response, shown);
   });
-  servers.push(server);
+  const release = (html: string): void => {
+    if (held !== undefined && !held.writableEnded) answer(held, html);
+  };
+  servers.push({
+    server,
+    release: (succeeded) => {
+      release(succeeded ? done : failed);
+    },
+  });
+  const onward = (address: string): void => {
+    const target = new URL(address);
+    if (target.protocol !== "https:" && target.protocol !== "http:") {
+      throw new Error(`the browser is sent on only to a web address`);
+    }
+    if (held === undefined || held.writableEnded) return;
+    held.writeHead(303, { Location: target.toString() }).end();
+  };
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     // The address the server bound, never `localhost`, which a browser may
@@ -145,7 +181,7 @@ function serve(
         return;
       }
       logger.info(`open ${url} in a browser`);
-      resolve({ url, callback: `${url}/callback`, redirected });
+      resolve({ url, callback: `${url}/callback`, redirected, onward });
     });
   });
 }

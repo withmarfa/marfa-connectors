@@ -133,6 +133,50 @@ describe("--setup", () => {
     expect(await exit).toBe(0);
   });
 
+  it("sends the browser the vendor redirected on to where setup says, once it knows", async () => {
+    const held: Held = {};
+    const file = join(dir, "secrets.json");
+    const exit = start(
+      withSetup(held, async (context) => {
+        held.opened = await context.listen("<form></form>");
+        const query = await held.opened.redirected;
+        held.opened.onward(
+          `https://vendor.example/apps/${query.get("code") ?? ""}/install`,
+        );
+        return { TEST_APP_KEY: made };
+      }),
+      harness.runtime(["--setup", file]),
+    );
+    await until(() => held.opened !== undefined);
+    const local = held.opened;
+    if (local === undefined) throw new Error("setup listened nowhere");
+    const answer = await fetch(`${local.callback}?code=abc`, {
+      redirect: "manual",
+    });
+    expect(answer.status).toBe(303);
+    expect(answer.headers.get("location")).toBe(
+      "https://vendor.example/apps/abc/install",
+    );
+    expect(await exit).toBe(0);
+  });
+
+  it("tells a browser held at the callback that setup failed", async () => {
+    const held: Held = {};
+    const file = join(dir, "secrets.json");
+    const exit = start(
+      withSetup(held, async (context) => {
+        held.opened = await context.listen("<form></form>");
+        await held.opened.redirected;
+        throw new Error("the vendor refused the code");
+      }),
+      harness.runtime(["--setup", file]),
+    );
+    await until(() => held.opened !== undefined);
+    const answer = await fetch(`${held.opened?.callback ?? ""}?code=abc`);
+    expect(await answer.text()).toContain("Setup failed");
+    expect(await exit).toBe(1);
+  });
+
   it("fails, keeping no file, where the page cannot be made", async () => {
     const file = join(dir, "secrets.json");
     const exit = start(
