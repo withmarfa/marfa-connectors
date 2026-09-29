@@ -534,6 +534,25 @@ function instantOf(value: string | null | undefined): string | undefined {
     : undefined;
 }
 
+/** Every property an entry carries. */
+export const taskFields = [
+  "todoist_id",
+  "title",
+  "description",
+  "priority",
+  "due_at",
+  "precision",
+  "status",
+  "completed_at",
+  "url",
+  "project_id",
+  "section_id",
+  "parent_id",
+  "labels",
+  "child_order",
+  "comment_count",
+] as const;
+
 export function entryOf(
   account: string,
   timeZone: string,

@@ -1,4 +1,5 @@
-import type { TypeDefinition } from "./define.js";
+import type { ConnectionDefinition, TypeDefinition } from "./define.js";
+import type { EdgeType } from "./marfa.js";
 
 /** What makes a field what it is; its description and label do not. */
 const shape = [
@@ -31,10 +32,8 @@ function names(value: unknown): string[] {
     : [];
 }
 
-/**
- * A field as the server stores it: a format that is a field type of its own
- * replaces the declared type, whatever that was, and is dropped.
- */
+/** A field as the server stores it: a format that is a field type
+ *  of its own replaces the declared type and is itself dropped. */
 function normalized(field: unknown): Record<string, unknown> {
   const out = { ...record(field) };
   const format = out["format"];
@@ -58,13 +57,8 @@ function show(value: unknown): string {
   return value === undefined ? "nothing" : JSON.stringify(value);
 }
 
-/**
- * How the server's type differs from the one a connector carries, in shape:
- * fields, what each field is, which are required, its parent and what it
- * declares itself compatible with. The server answers a type with its
- * parent's fields merged in, named by `inherited`. An empty list means the
- * two agree.
- */
+/** How the server's type differs from a connector's, in shape.
+ *  `inherited` is the parent's merged-in fields; empty means they agree. */
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,
@@ -125,5 +119,47 @@ export function typeDifferences(
       `compatible_with is ${show(compatible)} here and ${show(compatibleThere)} on the server`,
     );
   }
+  const linkThere = served["link_field"] ?? undefined;
+  if (carried.link_field !== linkThere) {
+    differences.push(
+      `link_field is ${show(carried.link_field)} here and ${show(linkThere)} on the server`,
+    );
+  }
   return differences;
+}
+
+/** How the server's edge type differs from the connection a
+ *  connector declares. */
+export function edgeTypeDifferences(
+  carried: ConnectionDefinition,
+  served: EdgeType,
+): string[] {
+  const sorted = (values: readonly string[] | undefined) =>
+    [...(values ?? [])].sort();
+  const pairs: [string, unknown, unknown][] = [
+    ["cardinality", carried.cardinality, served.cardinality],
+    [
+      "cascade_on_delete",
+      carried.cascade_on_delete ?? "orphan",
+      served.cascade_on_delete,
+    ],
+    [
+      "source_type_constraints",
+      sorted(carried.source_type_constraints),
+      sorted(served.source_type_constraints),
+    ],
+    [
+      "target_type_constraints",
+      sorted(carried.target_type_constraints),
+      sorted(served.target_type_constraints),
+    ],
+    ["reverse_name", carried.reverse_name, served.reverse_name],
+    ["written_at", carried.written_at ?? "source", served.written_at],
+  ];
+  return pairs
+    .filter(([, here, there]) => JSON.stringify(here) !== JSON.stringify(there))
+    .map(
+      ([name, here, there]) =>
+        `${name} is ${show(here)} here and ${show(there)} on the server`,
+    );
 }

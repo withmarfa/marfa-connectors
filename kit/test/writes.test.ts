@@ -1,5 +1,3 @@
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Harness, vendor } from "./harness.js";
 
@@ -86,12 +84,17 @@ describe("new rows", () => {
     ]);
   });
 
-  it("read the connector's own rows by type and source across every state", async () => {
+  it("look up the rows the entries name by their natural keys, and list the type only while nothing is kept", async () => {
     await harness.once(vendor([one]));
-    const listing = harness.server.requestsTo("GET", "/items")[0];
-    expect(listing?.query.get("type")).toBe("test.entry");
-    expect(listing?.query.get("source")).toBe("test");
-    expect(listing?.query.get("state")).toBe("any");
+    expect(harness.server.requestsTo("GET", "/items")).toHaveLength(1);
+    await harness.once(vendor([one, two]));
+    expect(
+      harness.server
+        .requestsTo("POST", "/items/lookup")
+        .slice(-1)
+        .map((r) => r.body),
+    ).toEqual([{ type: "test.entry", source: "test", source_ids: ["a:2"] }]);
+    expect(harness.server.requestsTo("GET", "/items")).toHaveLength(1);
   });
 
   it("write one row for an entry the vendor repeats", async () => {
@@ -142,8 +145,10 @@ describe("new rows", () => {
     expect(child?.properties).toEqual({ title: "A child" });
     expect(child?.state).toBe("active");
     expect(
-      harness.server.requestsTo("GET", "/items")[0]?.query.get("type"),
-    ).toBe("test.entry");
+      harness.server
+        .requestsTo("POST", "/items/lookup")
+        .map((request) => (request.body as { type: string }).type),
+    ).toEqual(["test.entry"]);
     expect(harness.lastRun().summary).toContain("skipped 1");
     expect(harness.lastRun().summary).toContain("type_mismatch");
   });
@@ -191,7 +196,7 @@ describe("compare first", () => {
     expect(harness.server.row("a:1").version).toBe(1);
   });
 
-  it("updates a changed row alone, with the version it read, replacing its properties", async () => {
+  it("updates a changed row alone, with the version it read, replacing its properties with what they should hold", async () => {
     await harness.once(vendor([one, two]));
     const changed = {
       ...one,
@@ -202,11 +207,11 @@ describe("compare first", () => {
     expect(patches()).toHaveLength(1);
     const row = harness.server.row("a:1");
     expect(patches()[0]?.path).toBe(`/items/${row.id}`);
+    // The row's own time did not move, so it is not sent.
     expect(patches()[0]?.body).toEqual({
       version: 1,
       properties: { title: "One, renamed", note: "first" },
       properties_mode: "replace",
-      occurred_at: "2026-09-01T10:00:00.000Z",
     });
     expect(row.version).toBe(2);
     expect(harness.server.row("a:2").version).toBe(1);
@@ -313,27 +318,43 @@ describe("archive", () => {
   });
 });
 
+describe("a field Marfa mirrors", () => {
+  it("is put back on the next run from what the kit last wrote, though the vendor sends nothing", async () => {
+    await harness.once(vendor([one]));
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+    expect(await harness.once(vendor([]))).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    expect(harness.lastRun().summary).toContain(
+      "title on " + row.id + " was changed in Marfa and put back",
+    );
+    expect(harness.server.agreements.get(row.id)?.waiting).toBe(false);
+  });
+});
+
 describe("the state", () => {
   it("is kept when every write landed", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
-  it("is held where it was when a write another process made first refuses one of this run's", async () => {
+  it("is held where a create meets a row another process made first, and a field another writer changed is put back from the vendor", async () => {
     const held = vendor([one, two]);
     held.token = "t1";
     await harness.once(held);
 
-    harness.server.afterList = () => {
+    // Once the run has read what the entries name, and before it writes.
+    harness.server.afterRead = (request) => {
+      if (!JSON.stringify(request.body).includes("a:3")) return;
       harness.server.touch("a:1", { note: "by another writer" });
       harness.server.insert(
         "a:3",
         { title: "Three, by another writer" },
         "test.entry",
       );
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -346,97 +367,93 @@ describe("the state", () => {
     const run = harness.lastRun();
     expect(run.outcome).toBe("succeeded");
     expect(run.summary).toMatch(
-      /^created 0, updated 0, archived 0, unchanged 1, skipped 2\./,
+      /^created 0, updated 1, archived 0, unchanged 1, skipped 1\./,
     );
     expect(run.summary).toContain("held");
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
-    expect(
-      harness.server.rows.filter((row) => row.source_id === "a:3"),
-    ).toHaveLength(1);
-    // The vendor's replace left the note out, which is a clear, and the
-    // other writer changed the note since: the two collide, the server
-    // refuses the write, and the row stands as the other writer left it.
-    expect(harness.server.row("a:1").properties).toEqual({
-      title: "One",
-      note: "by another writer",
-    });
-
-    expect(await harness.once(held)).toBe(0);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t2" } });
+    expect(run.summary).toContain("note on");
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
+    // Marfa mirrors a vendor it only reads: the vendor cleared the note, so
+    // the other writer's note is put back to that.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, changed",
     });
+
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
     expect(harness.server.row("a:3").properties).toEqual({ title: "Three" });
+    expect(
+      harness.server.rows.filter((row) => row.source_id === "a:3"),
+    ).toHaveLength(1);
   });
 
-  it("is held when a stale write collides with another writer's change to the same field", async () => {
+  it("puts the vendor's value back over another writer's change to the same field, and names it", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { title: "One, by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
       { ...one, properties: { title: "One, by the vendor", note: "first" } },
     ];
     expect(await harness.once(held)).toBe(0);
-    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
     expect(harness.server.row("a:1").properties["title"]).toBe(
-      "One, by another writer",
+      "One, by the vendor",
     );
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.lastRun().summary).toMatch(/updated 1/);
+    expect(harness.lastRun().summary).toContain(
+      "title on " +
+        harness.server.row("a:1").id +
+        " was changed in Marfa and put back",
+    );
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
   });
 
-  it("is held when a stale replace clears a field nobody touched since, and the field is cleared", async () => {
+  it("lands a clear beside another writer's change to another field, and puts that change back on the next run", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
     // The witness: the field is there to be cleared.
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { title: "One, by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One" } }];
     expect(await harness.once(held)).toBe(0);
-
-    // The vendor's clear lands over the other writer's title, which this
-    // run echoed at the value it read; the row holds both writers' changes,
-    // so the state waits for a run that reads it as it now is.
+    // The server merged the clear beside the other writer's title.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, by another writer",
     });
-    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(harness.lastRun().summary).toContain("held");
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
+
+    // The next run reads the other writer's title from the log, and puts it
+    // back from the vendor, which Marfa mirrors.
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
+    expect(harness.lastRun().summary).toContain("put back");
   });
 
-  it("is held when a stale replace clears a field the other writer changed since", async () => {
+  it("puts a clear back over another writer's change to the same field", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { note: "by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One" } }];
     expect(await harness.once(held)).toBe(0);
-
-    // A clear and a change to the same field collide: the server refuses
-    // the write, the other writer's value stands, and the state is held.
-    expect(harness.server.row("a:1").properties).toEqual({
-      title: "One",
-      note: "by another writer",
-    });
-    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
+    expect(harness.lastRun().summary).toMatch(/updated 1/);
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
   });
 
   it("clears a property named like a member every object has, by what the row holds", async () => {
@@ -452,9 +469,9 @@ describe("the state", () => {
       toString: "x",
     });
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.touch("a:1", { title: "One, by another writer" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...entry, properties: { title: "One" } }];
@@ -479,9 +496,9 @@ describe("the state", () => {
       toString: "x",
     });
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite("a:1", { title: "One" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...entry, properties: { title: "One, by the vendor" } }];
@@ -500,23 +517,19 @@ describe("the state", () => {
     await harness.once(held);
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite("a:1", { title: "One" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One, by the vendor" } }];
     expect(await harness.once(held)).toBe(0);
-
-    // Both writers cleared the note, so the vendor's clear is nothing new
-    // and its title lands over the row; a merged write still holds the
-    // state.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, by the vendor",
     });
     expect(harness.server.row("a:1").version).toBe(3);
-    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.lastRun().summary).toMatch(/updated 1/);
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
   });
 
   it("does not move a row's own time back to the value it read when another writer moved it since", async () => {
@@ -525,13 +538,13 @@ describe("the state", () => {
     await harness.once(held);
     expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite(
         "a:1",
         harness.server.row("a:1").properties,
         "2026-09-02T10:00:00.000Z",
       );
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -539,50 +552,49 @@ describe("the state", () => {
     ];
     expect(await harness.once(held)).toBe(0);
 
-    // The run echoed the own time it read, which is not a change, so the
+    // The vendor did not move the own time, so it is not sent, and the
     // other writer's stands beside the vendor's title.
     expect(harness.server.row("a:1").occurred_at).toBe(
       "2026-09-02T10:00:00.000Z",
     );
     expect(harness.server.row("a:1").properties["title"]).toBe("One, changed");
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
   });
 
-  it("is held when a stale write moves a row's own time that another writer moved since", async () => {
+  it("writes the vendor's own time over another writer's move of it", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
     expect(harness.server.row("a:1").occurred_at).toBe(one.occurred_at);
 
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.rewrite(
         "a:1",
         harness.server.row("a:1").properties,
         "2026-09-02T10:00:00.000Z",
       );
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [{ ...one, occurred_at: "2026-09-03T10:00:00.000Z" }];
     expect(await harness.once(held)).toBe(0);
 
-    // Two changes to the own time collide as two changes to a field do:
-    // refused, so the row's version stands where the other writer left it.
+    // The two moves collide; the row is read again and the vendor's lands.
     expect(harness.server.row("a:1").occurred_at).toBe(
-      "2026-09-02T10:00:00.000Z",
+      "2026-09-03T10:00:00.000Z",
     );
-    expect(harness.server.row("a:1").version).toBe(2);
-    expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.server.row("a:1").version).toBe(3);
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
   });
 
-  it("is lost at no cost but a full read: no row is written twice", async () => {
+  it("cleared on the instance costs a full read, and writes no row twice", async () => {
     const held = vendor([one, two]);
     held.token = "t1";
     await harness.once(held);
     harness.server.row("a:1").state = "trashed";
     await harness.once(held);
-    await rm(join(harness.stateDir, "test.json"));
+    harness.server.states.clear();
+    harness.server.agreements.clear();
 
     held.entries = [{ ...one, properties: { title: "One, changed" } }, two];
     expect(await harness.once(held)).toBe(0);
@@ -596,22 +608,16 @@ describe("the state", () => {
     );
   });
 
-  it("starts empty from a file it cannot read, and says so", async () => {
-    const held = vendor([one]);
-    held.token = "t1";
-    await harness.once(held);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(join(harness.stateDir, "test.json"), "{ not json");
+  it("reads a state document the kit did not write as empty", async () => {
+    harness.server.states.set("test", {
+      state: "not an object",
+      conditions: 7,
+    });
     expect(await harness.once(vendor([one]))).toBe(0);
-    expect(harness.lines.join("\n")).toContain(
-      "the state file is not one this kit wrote, so this run starts from nothing",
-    );
     expect(harness.lastRun().summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 1, skipped 0",
+      "created 1, updated 0, archived 0, unchanged 0, skipped 0",
     );
-    expect(harness.server.rows).toHaveLength(1);
-    expect(await harness.stateFile()).toHaveProperty("state", {});
+    expect(harness.kept()).toMatchObject({ state: {}, conditions: {} });
   });
 });
 
@@ -628,7 +634,7 @@ describe("a row the server refuses", () => {
     expect(harness.lastRun().summary).toContain("a:2");
     expect(harness.lastRun().summary).toContain("invalid_properties");
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
-    expect(await harness.stateFile()).toHaveProperty("state", {});
+    expect(harness.kept()).toHaveProperty("state", {});
 
     await harness.once(held);
     expect(harness.lastRun().summary).toBe(
@@ -638,7 +644,7 @@ describe("a row the server refuses", () => {
     harness.server.entryRefusals.delete("a:2");
     await harness.once(held);
     expect(harness.server.rows).toHaveLength(2);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
   it("fails the run when the refusal is the key's, not the row's", async () => {

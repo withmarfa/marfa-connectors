@@ -5,13 +5,8 @@ export interface Frame {
   data: string;
 }
 
-/**
- * Frames from a stream of bytes, as the server writes them: fields one per
- * line, a blank line ending a frame, a line starting with a colon a comment,
- * `data` lines joined with newlines. A frame may arrive split across chunks
- * and several may arrive in one, so the text is kept until a blank line
- * closes what it holds.
- */
+/** Frames from a stream of bytes: fields per line, blank ending each,
+ *  buffered since a frame may split or several arrive in one chunk. */
 export async function* frames(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Frame> {
@@ -57,9 +52,8 @@ export async function* frames(
         field(line);
       }
     }
-    // A frame the stream ended inside is not a frame: the blank line is
-    // what says the server finished writing it, and a stream cut off
-    // mid-frame may have been cut off mid-value.
+    // A frame the stream ended inside is not a frame: only the blank
+    // line says the server finished it, and a cut may be mid-value.
   } finally {
     await reader.cancel().catch(() => undefined);
   }

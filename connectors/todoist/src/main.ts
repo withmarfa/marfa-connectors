@@ -1,32 +1,71 @@
 import {
   defineConnector,
   main,
+  type Entry,
   type TypeDefinition,
 } from "@withmarfa/connector";
-import { carry, remake, linkField, outboundEnv } from "./outbound.js";
+import { carry, remake, outboundEnv } from "./outbound.js";
 import {
   accountOf,
   defaultBase,
   entryOf,
   firstSync,
+  getTask,
   namedZoneOf,
   sync,
+  taskFields,
   timezoneOf,
 } from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
+
+const taskType = todoistTask.id;
 
 const connector = defineConnector({
   name: "todoist",
   description:
     "Tasks from a Todoist account, read through the Sync API, and every todoist.task in Marfa carried back to it.",
   source: "todoist",
-  // Imported JSON widens every string, so its field types read as `string`
-  // here; the check on start holds the file to the server's type.
-  type: todoistTask as TypeDefinition,
-  link: linkField,
+  types: [
+    {
+      // Imported JSON widens every string, so its field types read as
+      // `string` here; the check on start holds the file to the server's.
+      type: todoistTask as TypeDefinition,
+      fields: taskFields,
+      // What the connector never sends to Todoist.
+      readOnly: [
+        "url",
+        "project_id",
+        "section_id",
+        "parent_id",
+        "labels",
+        "child_order",
+        "comment_count",
+      ],
+    },
+  ],
   env: outboundEnv,
-  async run({ env, signal, state, log, upsert, archive }) {
+  async run({ env, signal, state, log, hints, upsert, archive }) {
     const base = env.TODOIST_API_URL ?? defaultBase;
+    const keptAccount = state.get("account");
+    if (hints !== undefined && typeof keptAccount === "string") {
+      // What waits, fetched task by task; the sync token stays where it was,
+      // since the rest was not read.
+      const zone = state.get("timezone");
+      const found: Entry[] = [];
+      const gone: string[] = [];
+      for (const id of hints.get(taskType) ?? []) {
+        const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
+        if (task === "missing") gone.push(id);
+        else if (task !== "forbidden") {
+          found.push(
+            entryOf(keptAccount, typeof zone === "string" ? zone : "UTC", task),
+          );
+        }
+      }
+      await upsert(taskType, found);
+      await archive(taskType, gone);
+      return;
+    }
     const held = state.get("sync_token");
     const heldToken = typeof held === "string" ? held : firstSync;
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
@@ -78,12 +117,14 @@ const connector = defineConnector({
     // status and completion set. A full sync lists only active tasks, so a
     // task it leaves out is left as it is.
     await upsert(
+      taskType,
       answer.items
         .filter((item) => item.is_deleted !== true)
         .map((item) => entryOf(account, timeZone, item)),
     );
     // By the link: a row is archived by the task it is, whoever created it.
     await archive(
+      taskType,
       answer.items
         .filter((item) => item.is_deleted === true)
         .map((item) => item.id),

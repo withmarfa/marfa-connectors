@@ -8,7 +8,6 @@ export class ConfigurationError extends Error {
 export interface Environment {
   url: string;
   key: string;
-  stateDir: string;
   values: Record<string, string | undefined>;
   /** Every value that is never to be printed, the key included. */
   secrets: string[];
@@ -16,10 +15,8 @@ export interface Environment {
 
 const reservedSourcePrefixes = ["oauth:", "connector:"];
 
-/**
- * Shorter than this, a secret cannot be redacted without the redaction
- * showing where each of its characters falls in ordinary text.
- */
+/** Shorter than this, a secret cannot be redacted without the redaction
+ *  showing where each character falls in ordinary text. */
 export const shortestSecret = 8;
 
 /** An address a request can be sent to: no credentials, query or fragment. */
@@ -40,6 +37,7 @@ function isServerUrl(value: string): boolean {
 export function readEnvironment<E extends EnvDeclaration>(
   connector: Connector<E>,
   env: Readonly<Record<string, string | undefined>>,
+  setup = false,
 ): Environment {
   const missing: string[] = [];
   const present = (name: string): string | undefined => {
@@ -54,12 +52,14 @@ export function readEnvironment<E extends EnvDeclaration>(
 
   const url = need("MARFA_URL");
   const key = need("MARFA_KEY");
-  const stateDir = need("MARFA_STATE_DIR");
   const values: Record<string, string | undefined> = {};
   const secrets = new Map([["MARFA_KEY", key]]);
   for (const [name, kind] of Object.entries(connector.env ?? {})) {
-    if (kind === "optional") {
+    // Setup makes what the connector needs later, so it needs none of it.
+    if (kind === "optional" || setup) {
       values[name] = present(name);
+      const value = values[name];
+      if (kind === "secret" && value !== undefined) secrets.set(name, value);
       continue;
     }
     const value = need(name);
@@ -86,13 +86,11 @@ export function readEnvironment<E extends EnvDeclaration>(
       `${short.map(([name]) => name).join(", ")} is shorter than ${String(shortestSecret)} characters, too short to keep out of the logs`,
     );
   }
-  return { url, key, stateDir, values, secrets: [...secrets.values()] };
+  return { url, key, values, secrets: [...secrets.values()] };
 }
 
-/**
- * The kit's own rules for a connector's definition: the server's bounds on
- * a registration and a source.
- */
+/** The kit's own rules for a connector's definition: the server's bounds
+ *  on a registration and a source. */
 export function checkDefinition<E extends EnvDeclaration>(
   connector: Connector<E>,
 ): void {
@@ -112,6 +110,54 @@ export function checkDefinition<E extends EnvDeclaration>(
     problems.push(
       `a source outside the reserved ${reservedSourcePrefixes.join(" and ")} prefixes`,
     );
+  }
+  const ids = connector.types.map((kind) => kind.type.id);
+  if (ids.length < 1 || ids.length > 10) {
+    problems.push("one to ten types, as far as the log's type filter reaches");
+  }
+  if (new Set(ids).size !== ids.length) problems.push("each type once");
+  for (const kind of connector.types) {
+    const outside = [
+      ...(kind.readOnly ?? []),
+      ...(kind.type.link_field === undefined ? [] : [kind.type.link_field]),
+    ].filter((field) => !kind.fields.includes(field));
+    if (outside.length > 0) {
+      problems.push(
+        `${kind.type.id}'s link and read-only fields among its fields, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,
+      );
+    }
+  }
+  const types = new Set(ids);
+  const connections = (connector.connections ?? []).map((kind) => kind.id);
+  if (new Set(connections).size !== connections.length) {
+    problems.push("each connection type once");
+  }
+  for (const kind of connector.connections ?? []) {
+    const ends = [
+      ...(kind.source_type_constraints ?? []),
+      ...(kind.target_type_constraints ?? []),
+    ];
+    if (
+      (kind.source_type_constraints ?? []).length === 0 ||
+      (kind.target_type_constraints ?? []).length === 0 ||
+      ends.some((end) => !types.has(end))
+    ) {
+      problems.push(`${kind.id}'s both ends constrained to its own types`);
+    }
+    if ((kind.cascade_on_delete ?? "orphan") !== "orphan") {
+      problems.push(
+        `${kind.id} to orphan on delete, so a trash in Marfa takes no vendor's row with it`,
+      );
+    }
+    if (
+      Object.values(kind.property_schema ?? {}).some(
+        (property) => property.required === true,
+      )
+    ) {
+      problems.push(
+        `${kind.id} to require no property, since the kit writes none`,
+      );
+    }
   }
   if (problems.length > 0) {
     throw new ConfigurationError(`the connector needs ${problems.join("; ")}`);

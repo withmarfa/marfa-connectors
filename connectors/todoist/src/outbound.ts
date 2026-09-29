@@ -23,6 +23,7 @@ import {
   type TaskAnswer,
   type TodoistItem,
 } from "./todoist.js";
+import todoistTask from "./todoist.task.json" with { type: "json" };
 
 /** The environment the connector declares, as `main.ts` passes it on. */
 export const outboundEnv = {
@@ -33,7 +34,7 @@ export const outboundEnv = {
 export type OutboundEnv = typeof outboundEnv;
 
 /** The property that holds the Todoist task a row is. */
-export const linkField = "todoist_id";
+export const linkField = todoistTask.link_field;
 
 /** What of a row travels, as `item_add` and `item_update` take it. */
 export interface TaskArgs {
@@ -149,21 +150,22 @@ function commandId(item: Item, type: string): string {
 /**
  * Carries one change made in Marfa to Todoist. Resolving means the change
  * landed or was abandoned with a condition naming the row; a throw fails
- * the run and holds the cursor, so the change is offered again.
+ * the run, and the change waits for the next.
  */
 export async function carry(
   change: Change,
   context: WatchContext<OutboundEnv>,
   base: string,
-): Promise<void> {
+): Promise<undefined> {
   const { item, kind } = change;
   const { env, signal } = context;
   const todoist = new Door(base, env.TODOIST_API_TOKEN, signal);
   const timeZone = await timeZoneFor(context, todoist);
   let taskId = linkOf(item);
 
-  // Archiving keeps a task; Todoist has no state for a task set aside.
-  if (kind === "archived") return;
+  // Archiving keeps a task; Todoist has no state for a task set aside, so
+  // only the fields changed beside it travel.
+  if (kind === "archived" && change.changed.size === 0) return;
 
   if (taskId === undefined) {
     // A row Todoist was never told about and that is gone has nothing to

@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   Harness,
+  hung,
   secretToken,
   signed,
   vendor,
@@ -11,6 +12,7 @@ import {
 let harness: Harness;
 beforeEach(async () => {
   harness = await Harness.create();
+  hung.length = 0;
 });
 afterEach(async () => {
   await harness.close();
@@ -405,6 +407,46 @@ describe("between scheduled runs", () => {
     expect(await exit).toBe(0);
   });
 
+  it("leaves a delivery whose verify runs past its limit waiting, aborts the check, and takes the ones behind it", async () => {
+    const slow = signed({ ids: ["a:1"] });
+    harness.server.deliver(slow.body, [...slow.headers, ["X-Hang", "1"]]);
+    const after = signed({ ids: ["a:1"] });
+    harness.server.deliver(after.body, after.headers);
+    const held = vendor([one]);
+    const exit = harness.inbound(held, ["--every", "15m"]);
+    await until(() => hung.length === 1);
+    expect(hung[0]?.aborted).toBe(false);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(15 * minute);
+
+    expect(hung[0]?.aborted).toBe(true);
+    expect(outcomes()).toEqual([null, "processed"]);
+    const run = harness.lastRun();
+    expect(run.outcome).toBe("succeeded");
+    expect(run.summary).toContain(
+      "1 delivery's signature check ran past ten seconds, so it waits for a later run",
+    );
+    // Left waiting, the run is not settled, so the next is the schedule's
+    // and no look runs for the delivery in between.
+    expect(looks()).toHaveLength(0);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("hands verify the stop, and ends a run whose check hangs when asked to stop", async () => {
+    const slow = signed({ ids: ["a:1"] });
+    harness.server.deliver(slow.body, [...slow.headers, ["X-Hang", "1"]]);
+    const held = vendor([one]);
+    const exit = harness.inbound(held);
+    await until(() => hung.length === 1);
+    harness.stop();
+
+    expect(await exit).toBe(0);
+    expect(hung[0]?.aborted).toBe(true);
+    expect(outcomes()).toEqual([null]);
+    expect(held.runs).toBe(0);
+  });
+
   it("marks what a run took processed though a write was held, and does not run again at the next look", async () => {
     const held = vendor([one]);
     const exit = harness.inbound(held, ["--every", "15m"]);
@@ -487,7 +529,7 @@ describe("between scheduled runs", () => {
     expect(await exit).toBe(0);
   });
 
-  it("warns once while waiting deliveries cannot be read, and says when they can", async () => {
+  it("warns once while the look between runs fails, and says when it is answered again", async () => {
     const held = vendor([one]);
     const exit = harness.inbound(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
@@ -510,19 +552,19 @@ describe("between scheduled runs", () => {
 
     const lines = (text: string): number =>
       harness.lines.filter((line) => line.includes(text)).length;
-    expect(lines("waiting deliveries could not be read")).toBe(1);
-    expect(lines("waiting deliveries can be read again")).toBe(1);
+    expect(lines("the look between runs failed")).toBe(1);
+    expect(lines("the look between runs is answered again")).toBe(1);
     expect(outcomes()).toEqual(["processed"]);
     harness.stop();
     expect(await exit).toBe(0);
   });
 
-  it("looks as often as --deliveries-every says", async () => {
+  it("looks as often as --look-every says", async () => {
     const held = vendor([one]);
     const exit = harness.inbound(held, [
       "--every",
       "15m",
-      "--deliveries-every",
+      "--look-every",
       "30s",
     ]);
     await harness.clock.sleeping(30_000);
@@ -530,13 +572,9 @@ describe("between scheduled runs", () => {
     expect(await exit).toBe(0);
   });
 
-  it("refuses --deliveries-every without --every", async () => {
+  it("refuses --look-every without --every", async () => {
     expect(
-      await harness.inbound(vendor([one]), [
-        "--once",
-        "--deliveries-every",
-        "30s",
-      ]),
+      await harness.inbound(vendor([one]), ["--once", "--look-every", "30s"]),
     ).toBe(2);
   });
 
@@ -618,7 +656,7 @@ describe("between scheduled runs", () => {
     const exit = harness.inbound(held, [
       "--every",
       "16m",
-      "--deliveries-every",
+      "--look-every",
       "7m",
     ]);
     await harness.clock.wake(7 * minute);
@@ -642,9 +680,8 @@ describe("a two-way connector's run for deliveries", () => {
     properties: { title: "One", note: "first", vendor_id: "v1" },
   };
 
-  async function watched(): Promise<unknown> {
-    return ((await harness.stateFile()) as { watch: { cursor?: string } }).watch
-      .cursor;
+  function watched(): unknown {
+    return harness.kept()["cursor"];
   }
 
   /** Two scheduled runs, so the second reads the first's writes as its own. */
@@ -668,20 +705,73 @@ describe("a two-way connector's run for deliveries", () => {
     await harness.clock.sleeping(10_000);
   }
 
-  it("reads the vendor whole and carries what changed in Marfa, moving the cursor", async () => {
+  it("fetches no row that waits only on a target Marfa lacks", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+    };
+    const two = {
+      source_id: "a:2",
+      properties: { title: "Two", vendor_id: "v2" },
+    };
+    const held = vendor([
+      {
+        ...linked,
+        connections: { "test.blocks": [{ type: "test.entry", id: "v3" }] },
+      },
+      two,
+    ]);
+    held.connections = [
+      {
+        id: "test.blocks",
+        cardinality: "many-to-many",
+        source_type_constraints: ["test.entry"],
+        target_type_constraints: ["test.entry"],
+      },
+    ];
+    const { exit } = await settledTwoWay(held);
+    // A write the connector does not track puts the row in the log.
+    harness.server.edit(harness.server.row("a:1").id, { untracked: "x" });
+    const said = signed({ ids: ["v2"] });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 3);
+    await harness.clock.sleeping(10_000);
+    expect(held.hints?.at(-1)).toEqual(new Set(["v2"]));
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("drops what a delivery names of a type the connector does not declare, and says so", async () => {
     const held = vendor([linked]);
     const { exit } = await settledTwoWay(held);
-    const cursor = await watched();
+    const said = signed({ ids: ["v1"], type: "other.type" });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 3);
+    await harness.clock.sleeping(10_000);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    expect(harness.lastRun().summary).toContain(
+      "a delivery named other.type, which the connector does not declare, so it was not fetched",
+    );
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("fetches what the deliveries named and the rows waiting in Marfa, carries what changed, and moves the cursor", async () => {
+    const held = vendor([linked]);
+    const { exit } = await settledTwoWay(held);
+    const cursor = watched();
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { ...linked.properties, title: "Edited" });
     held.changes.length = 0;
 
     await delivered(held, 3);
-    expect(held.hints).toEqual([undefined, undefined, undefined]);
+    expect(held.hints).toEqual([undefined, undefined, new Set(["v1"])]);
     expect(
       held.changes.map((change) => change.item.properties["title"]),
     ).toEqual(["Edited"]);
-    expect(await watched()).not.toBe(cursor);
+    expect(watched()).not.toBe(cursor);
     expect(outcomes()).toEqual(["processed"]);
     harness.stop();
     expect(await exit).toBe(0);
@@ -712,16 +802,16 @@ describe("a two-way connector's run for deliveries", () => {
     expect(await exit).toBe(0);
   });
 
-  it("carries a person's edit that beat the vendor's mid-write, and the vendor's older entry never writes over it", async () => {
+  it("carries a person's edit that beat the vendor's mid-write on the next run, and the vendor's older entry never writes over it", async () => {
     const held = vendor([linked]);
     const { exit } = await settledTwoWay(held);
     const row = harness.server.row("a:1");
     const earlier = new Date(
       Date.parse(row.updated_at) - 120_000,
     ).toISOString();
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.edit(row.id, { note: "by a person, since the read" });
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.entries = [
       {
@@ -733,24 +823,23 @@ describe("a two-way connector's run for deliveries", () => {
     held.changes.length = 0;
 
     await delivered(held, 3);
-    expect(
-      held.changes.map((change) => change.item.properties["note"]),
-    ).toEqual(["by a person, since the read"]);
+    // Merged beside the vendor's write, and read from the log next run.
+    expect(harness.server.row("a:1").properties).toMatchObject({
+      title: "By the vendor",
+      note: "by a person, since the read",
+    });
+    expect(held.changes).toEqual([]);
 
-    // The vendor now holds what was carried to it.
-    held.entries = [
-      {
-        ...linked,
-        properties: {
-          ...linked.properties,
-          note: "by a person, since the read",
-        },
-      },
-    ];
     harness.clock.advance(15 * minute);
     await harness.clock.wake(10_000);
     await until(() => held.runs === 4);
     await harness.clock.sleeping(10_000);
+    expect(
+      held.changes.map((change) => [
+        change.item.properties["note"],
+        [...change.changed],
+      ]),
+    ).toEqual([["by a person, since the read", ["note"]]]);
     expect(harness.server.row("a:1").properties["note"]).toBe(
       "by a person, since the read",
     );
@@ -797,6 +886,90 @@ describe("a two-way connector's run for deliveries", () => {
         .filter((row) => row.properties["vendor_id"] === "v-theirs")
         .map((row) => row.id),
     ).toEqual([theirs.id]);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});
+
+describe("a two-way connector's run for what deliveries named", () => {
+  const first = {
+    source_id: "a:1",
+    properties: { title: "One", vendor_id: "v1" },
+  };
+  const second = {
+    source_id: "a:2",
+    properties: { title: "Two", vendor_id: "v2" },
+  };
+
+  async function settled(held: Vendor): Promise<{ exit: Promise<number> }> {
+    const exit = harness.inboundTwoWay(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    harness.clock.advance(15 * minute);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
+    await harness.clock.sleeping(10_000);
+    return { exit };
+  }
+
+  async function deliver(held: Vendor, ids: string[], runs: number) {
+    const said = signed({ ids });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === runs);
+    await harness.clock.sleeping(10_000);
+  }
+
+  it("carries a row waiting in Marfa whose entry it fetched, though the delivery named another", async () => {
+    const held = vendor([first, second]);
+    const { exit } = await settled(held);
+    harness.server.edit(harness.server.row("a:2").id, { title: "Two, edited" });
+    held.changes.length = 0;
+    await deliver(held, ["v1"], 3);
+    expect(held.hints?.at(-1)).toEqual(new Set(["v1", "v2"]));
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["Two, edited"]);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("leaves a field change waiting where the vendor did not send its row, for the scheduled run", async () => {
+    const held = vendor([first, second]);
+    const { exit } = await settled(held);
+    harness.server.edit(harness.server.row("a:2").id, { title: "Two, edited" });
+    // The vendor no longer answers for v2 alone.
+    held.entries = [first];
+    held.changes.length = 0;
+    await deliver(held, ["v1"], 3);
+    expect(held.changes).toEqual([]);
+    expect(
+      harness.server.agreements.get(harness.server.row("a:2").id)?.waiting,
+    ).toBe(true);
+
+    held.entries = [first, second];
+    harness.clock.advance(15 * minute);
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 4);
+    await harness.clock.sleeping(10_000);
+    expect(
+      held.changes.map((change) => change.item.properties["title"]),
+    ).toEqual(["Two, edited"]);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("archives only what the deliveries named", async () => {
+    const held = vendor([first, second]);
+    const { exit } = await settled(held);
+    held.archived = ["v2"];
+    await deliver(held, ["v1"], 3);
+    expect(harness.server.row("a:2").state).toBe("active");
+    expect(harness.lastRun().summary).toContain(
+      "v2 was named for archiving by a run for what deliveries named",
+    );
+    // The witness: a delivery naming it archives it.
+    await deliver(held, ["v2"], 4);
+    expect(harness.server.row("a:2").state).toBe("archived");
     harness.stop();
     expect(await exit).toBe(0);
   });

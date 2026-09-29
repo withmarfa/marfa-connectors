@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Harness, vendor } from "./harness.js";
+import { Harness, linkedType, vendor } from "./harness.js";
 
 let harness: Harness;
 beforeEach(async () => {
@@ -157,7 +157,7 @@ describe("setLink", () => {
     expect(harness.server.byId(theirs.id).version).toBe(3);
   });
 
-  it("refuses a value another row of the type carries, naming both", async () => {
+  it("is refused by the server where another row of the type carries the value, naming both", async () => {
     const holder = harness.server.insert(
       undefined,
       { title: "Holder", vendor_id: "v-taken" },
@@ -180,7 +180,6 @@ describe("setLink", () => {
     expect(
       harness.server.byId(theirs.id).properties["vendor_id"],
     ).toBeUndefined();
-    expect(patches()).toHaveLength(0);
   });
 });
 
@@ -276,7 +275,7 @@ describe("a vendor that lists every entry", () => {
     );
     expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
     expect(harness.lastRun().summary).toMatch(
-      /^created 0, updated 0, archived 0, unchanged 0, skipped 0, pushed 1, own 1, conflicts 0$/,
+      /^created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 1, own 1, conflicts 0$/,
     );
 
     // The vendor's copy of the carried change comes back under a new
@@ -319,8 +318,8 @@ describe("a vendor that lists every entry", () => {
   });
 });
 
-describe("a row the connector wrote before its link existed", () => {
-  it("is not carried to the vendor, and is linked by the vendor's entry as it comes", async () => {
+describe("a row the connector wrote before it declared a link", () => {
+  it("starts once its type names the link, and is linked by the vendor's entry by its natural key, not carried as a create", async () => {
     // Written by the one-way connector, so it carries no link value.
     expect(
       await harness.once(
@@ -330,16 +329,17 @@ describe("a row the connector wrote before its link existed", () => {
     const row = harness.server.row("a:1");
     expect(row.properties["vendor_id"]).toBeUndefined();
 
-    // The two-way connector's first run replays the create; the vendor's
-    // entry carries the link and finds the row by its natural key.
     const held = vendor([one]);
+    expect(await harness.twoWay(held)).not.toBe(0);
+    expect(harness.lines.join("\n")).toContain(
+      'link_field is "vendor_id" here and nothing on the server',
+    );
+    // A person replaces the type with one naming its link.
+    harness.server.types.set(linkedType.id, { ...linkedType });
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
     expect(harness.server.rows).toHaveLength(1);
     expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1");
-    expect(harness.lastRun().summary).toContain(
-      "1 row the connector wrote before its link existed is not carried to the vendor",
-    );
 
     // Linked, its next change is carried like any other.
     harness.server.edit(row.id, { title: "One, by a person" });
@@ -347,12 +347,19 @@ describe("a row the connector wrote before its link existed", () => {
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
-    // The condition is not raised again, and the run says it cleared.
-    expect(harness.lastRun().summary).not.toContain("before its link existed");
-    expect(harness.lines).toContainEqual(
-      expect.stringContaining(
-        "cleared: 1 row the connector wrote before its link existed",
-      ),
+  });
+
+  it("is not found by its natural key for an entry naming another of the vendor's items", async () => {
+    const held = vendor([one]);
+    expect(await harness.twoWay(held)).toBe(0);
+    held.entries = [
+      { ...one, properties: { ...one.properties, vendor_id: "v-other" } },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1");
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.lastRun().summary).toContain(
+      "a row linked to another of the vendor's items holds its natural key",
     );
   });
 });
@@ -411,6 +418,8 @@ describe("a restored row the vendor may no longer have", () => {
     harness.server.trash(row.id);
     await harness.twoWay(held);
     harness.server.restore(row.id);
+    // The trash deleted the item: the vendor no longer lists it.
+    held.entries = [];
     held.gone = new Map([[row.id, "v1-again"]]);
     held.changes.length = 0;
     await harness.twoWay(held);
@@ -422,7 +431,7 @@ describe("a restored row the vendor may no longer have", () => {
     expect(harness.lastRun().summary).toMatch(/pushed 1/);
   });
 
-  it("is offered to remake when edited after the restore, as an update that says so", async () => {
+  it("is offered to remake with the fields edited after the restore, and carried as a restore that names them", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
     const row = harness.server.row("a:1");
@@ -433,10 +442,13 @@ describe("a restored row the vendor may no longer have", () => {
     held.changes.length = 0;
     await harness.twoWay(held);
     const offered = held.remakes?.at(-1)?.change;
-    expect([offered?.kind, offered?.restored]).toEqual(["updated", true]);
+    expect([offered?.kind, [...(offered?.changed ?? [])]]).toEqual([
+      "restored",
+      ["title"],
+    ]);
     expect(
-      held.changes.map((change) => [change.kind, change.restored]),
-    ).toEqual([["updated", true]]);
+      held.changes.map((change) => [change.kind, [...change.changed]]),
+    ).toEqual([["restored", ["title"]]]);
 
     // A trash after the edit is a trash, with nothing to make again.
     harness.server.restore(row.id);
@@ -447,8 +459,8 @@ describe("a restored row the vendor may no longer have", () => {
     await harness.twoWay(held);
     expect(held.remakes?.length ?? 0).toBe(offers);
     expect(
-      held.changes.map((change) => [change.kind, change.restored]),
-    ).toEqual([["trashed", undefined]]);
+      held.changes.map((change) => [change.kind, [...change.changed]]),
+    ).toEqual([["trashed", []]]);
   });
 });
 
@@ -516,7 +528,7 @@ describe("what the two sides agree on, after each kind of agreement", () => {
   });
 });
 
-describe("a row relinked by the vendor's entry", () => {
+describe("a row the vendor moved, relinked by its entry", () => {
   it("is not found under its old value in the same run", async () => {
     const held = vendor([one]);
     expect(await harness.twoWay(held)).toBe(0);
@@ -527,6 +539,7 @@ describe("a row relinked by the vendor's entry", () => {
         ...one,
         properties: { ...one.properties, vendor_id: "v1-new" },
         changed_at: "2026-09-27T00:00:00.000Z",
+        movedFrom: "v1",
       },
     ];
     held.archived = ["v1"];
@@ -534,5 +547,29 @@ describe("a row relinked by the vendor's entry", () => {
     expect(harness.server.row("a:1").properties["vendor_id"]).toBe("v1-new");
     expect(harness.server.row("a:1").state).toBe("active");
     expect(harness.lastRun().summary).toMatch(/updated 1, archived 0/);
+  });
+});
+
+describe("a link put back", () => {
+  it("that another row took meanwhile waits with a condition, and the run goes on", async () => {
+    const two = {
+      source_id: "a:2",
+      properties: { title: "Two", vendor_id: "v2" },
+    };
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1");
+    const second = harness.server.row("a:2");
+    harness.server.edit(first.id, { vendor_id: "v9" });
+    harness.server.edit(second.id, { vendor_id: "v1" });
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      `the vendor_id of ${first.id} was changed in Marfa and cannot be put back`,
+    );
+    expect(harness.server.byId(second.id).properties["vendor_id"]).toBe("v2");
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.byId(first.id).properties["vendor_id"]).toBe("v1");
   });
 });

@@ -1,30 +1,48 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createClient } from "@withmarfa/client";
-import type { Connector, EnvDeclaration, EnvValues } from "./define.js";
+import type {
+  ConnectionDefinition,
+  Connector,
+  EnvDeclaration,
+  EnvValues,
+  TypeDefinition,
+} from "./define.js";
 import {
   checkDefinition,
   ConfigurationError,
   readEnvironment,
+  type Environment,
 } from "./environment.js";
 import { cap, Logger } from "./log.js";
 import { Marfa, Refusal, type Key } from "./marfa.js";
-import { describe, runOnce, type RunSetup } from "./run.js";
+import { Hold } from "./hold.js";
+import {
+  describe,
+  runOnce,
+  specsOf,
+  waitingInMarfa,
+  type RunResult,
+  type RunSetup,
+  type Trigger,
+} from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
+import { setUp } from "./setup.js";
 import {
   backoff,
   describeDuration,
   readSchedule,
   type Schedule,
 } from "./schedule.js";
-import { StateFile } from "./state.js";
-import { typeDifferences } from "./type-check.js";
+import { edgeTypeDifferences, typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
-/**
- * Worth another attempt: the server was unreachable, overloaded, failing or
- * too slow. `fetch failed` is the network's own refusal; any other
- * TypeError is a request the kit built wrong, which no retry mends.
- */
+/** How long a heartbeat may take before it counts as failed. */
+const beatTimeoutMs = 15_000;
+
+/** Worth another attempt: the server was unreachable, overloaded, failing
+ *  or slow; any TypeError besides `fetch failed` is a bug no retry mends. */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
     return (
@@ -50,37 +68,34 @@ function timedFetch(ms: number): typeof fetch {
   };
 }
 
-/**
- * The wait before another attempt at a start that could not reach the
- * server: a minute or the interval, whichever is shorter, doubled on each
- * attempt, so a long interval does not delay the first run by as much.
- */
+/** The wait before another start attempt: a minute or the interval,
+ *  whichever is shorter, doubled each time so it never delays the first run. */
 function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
 }
 
-async function checkType<E extends EnvDeclaration>(
-  connector: Connector<E>,
+async function checkType(
+  type: TypeDefinition,
   marfa: Marfa,
   served: Record<string, unknown>,
 ): Promise<string | undefined> {
-  const parent = connector.type.parent;
+  const parent = type.parent;
   const inherited =
     parent === undefined
       ? []
       : Object.keys((await marfa.type(parent))?.["fields"] ?? {});
-  const differences = typeDifferences(connector.type, served, inherited);
+  const differences = typeDifferences(type, served, inherited);
   if (differences.length === 0) return undefined;
-  return `the type ${connector.type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
+  return `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
 }
 
-/**
- * What the key holds beyond read and write on the connector's own type and
- * the registration of that type, each named: nothing, for a key minted as
- * the template's README says. A key that could mint, purge or reach
- * another type is refused before the connector does anything with it.
- */
-function keyWiderThanType(key: Key, type: string): string[] {
+/** What the key holds beyond read/write on the connector's own types,
+ *  connections and their registration: nothing, for a key per the README. */
+function keyWiderThanTypes(
+  key: Key,
+  types: ReadonlySet<string>,
+  connections: ReadonlySet<string>,
+): string[] {
   const wider: string[] = [];
   if (key.is_operator) wider.push("it is the operator key");
   for (const permission of key.permissions ?? []) wider.push(permission);
@@ -94,12 +109,116 @@ function keyWiderThanType(key: Key, type: string): string[] {
       wider.push(`${family} ${name}=${level}`);
     }
   };
-  held("type", key.type_permissions, (name) => name === type);
-  held("metadata", key.metadata_permissions, (name) => name === "types");
-  held("edge", key.edge_permissions, () => false);
+  held("type", key.type_permissions, (name) => types.has(name));
+  held(
+    "metadata",
+    key.metadata_permissions,
+    (name) =>
+      name === "types" || (name === "edge_types" && connections.size > 0),
+  );
+  held("edge", key.edge_permissions, (name) => connections.has(name));
   held("extension", key.extension_permissions, () => false);
   held("profile", key.profile_permissions, () => false);
+  // An exemption from the instance's own rules is never a connector's.
+  for (const lever of Object.keys(key.enforcement_override ?? {})) {
+    wider.push(`an enforcement override of ${lever}`);
+  }
   return wider;
+}
+
+/** The connector's types and connections the key may not write, each named. */
+function keyNarrowerThanTypes(
+  key: Key,
+  types: ReadonlySet<string>,
+  connections: ReadonlySet<string>,
+): string[] {
+  return [
+    ...[...types]
+      .filter((name) => key.type_permissions[name] !== "write")
+      .map((name) => `type ${name}`),
+    ...[...connections]
+      .filter((name) => key.edge_permissions?.[name] !== "write")
+      .map((name) => `edge ${name}`),
+  ];
+}
+
+/** Shipped connection types a connector may write between its own rows,
+ *  narrowed itself and never registered, e.g. a file attaching to its item. */
+const shippedConnections = new Set(["attached-to"]);
+
+async function ensureConnections(
+  connections: readonly ConnectionDefinition[],
+  marfa: Marfa,
+): Promise<string | undefined> {
+  if (connections.length === 0) return undefined;
+  let served = await marfa.edgeTypes();
+  for (const connection of connections) {
+    let held = served.find((type) => type.id === connection.id);
+    if (shippedConnections.has(connection.id)) {
+      const differences =
+        held === undefined
+          ? ["the instance does not hold it"]
+          : edgeTypeDifferences(
+              {
+                ...connection,
+                source_type_constraints: held.source_type_constraints,
+                target_type_constraints: held.target_type_constraints,
+                ...(held.reverse_name !== undefined && {
+                  reverse_name: held.reverse_name,
+                }),
+                written_at: held.written_at,
+              },
+              held,
+            );
+      if (differences.length > 0) {
+        return `the connection type ${connection.id} differs from the instance's own: ${differences.join("; ")}`;
+      }
+      continue;
+    }
+    if (held === undefined) {
+      try {
+        await marfa.registerEdgeType(connection);
+        continue;
+      } catch (error) {
+        if (transient(error)) throw error;
+        // Another process under the key registered it first.
+        if (!(error instanceof Refusal) || error.status !== 409) {
+          return `the connection type ${connection.id} could not be registered: ${describe(error)}`;
+        }
+        served = await marfa.edgeTypes();
+        held = served.find((type) => type.id === connection.id);
+        if (held === undefined) {
+          return `the connection type ${connection.id} could not be registered: ${describe(error)}`;
+        }
+      }
+    }
+    const differences = edgeTypeDifferences(connection, held);
+    if (differences.length > 0) {
+      return `the connection type ${connection.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
+    }
+  }
+  return undefined;
+}
+
+async function ensureType(
+  type: TypeDefinition,
+  marfa: Marfa,
+): Promise<string | undefined> {
+  const served = await marfa.type(type.id);
+  if (served !== undefined) return checkType(type, marfa, served);
+  try {
+    await marfa.registerType(type);
+    return undefined;
+  } catch (error) {
+    if (transient(error)) throw error;
+    // Another process holding the key registered it first, which is as good
+    // as registering it, if it is the same type.
+    if (error instanceof Refusal && error.status === 409) {
+      const now = await marfa.type(type.id);
+      if (now !== undefined) return checkType(type, marfa, now);
+    }
+    return `the type ${type.id} could not be registered: ${describe(error)}`;
+  }
 }
 
 async function registerAndCheck<E extends EnvDeclaration>(
@@ -119,78 +238,102 @@ async function registerAndCheck<E extends EnvDeclaration>(
         "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
     };
   }
-  const wider = keyWiderThanType(key, connector.type.id);
+  const types = connector.types.map((kind) => kind.type.id);
+  const connections = (connector.connections ?? []).map((kind) => kind.id);
+  const named = [...types, ...connections].join(", ");
+  const wider = keyWiderThanTypes(key, new Set(types), new Set(connections));
   if (wider.length > 0) {
     return {
       id,
       source,
-      problem: `the key ${key.id} holds more than read and write on ${connector.type.id}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+      problem: `the key ${key.id} holds more than read and write on ${named}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
     };
   }
-  const served = await marfa.type(connector.type.id);
-  if (served !== undefined) {
-    return { id, source, problem: await checkType(connector, marfa, served) };
-  }
-  try {
-    await marfa.registerType(connector.type);
-    return { id, source, problem: undefined };
-  } catch (error) {
-    if (transient(error)) throw error;
-    // Another process holding the key registered it first, which is as good
-    // as registering it, if it is the same type.
-    if (error instanceof Refusal && error.status === 409) {
-      const now = await marfa.type(connector.type.id);
-      if (now !== undefined)
-        return { id, source, problem: await checkType(connector, marfa, now) };
-    }
+  const narrower = keyNarrowerThanTypes(
+    key,
+    new Set(types),
+    new Set(connections),
+  );
+  if (narrower.length > 0) {
     return {
       id,
       source,
-      problem: `the type ${connector.type.id} could not be registered: ${describe(error)}`,
+      problem: `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
     };
   }
+  for (const kind of connector.types) {
+    const problem = await ensureType(kind.type, marfa);
+    if (problem !== undefined) return { id, source, problem };
+  }
+  const problem = await ensureConnections(connector.connections ?? [], marfa);
+  return { id, source, problem };
 }
 
-/**
- * Until the next scheduled run, looks for a waiting delivery every
- * `everyMs` and runs for it at once. A run for deliveries that fails, or
- * leaves what it took unmarked, leaves them waiting for the scheduled run
- * rather than being tried again at every look.
- */
-async function awaitDeliveries<E extends EnvDeclaration>(
+function carriesBack<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  environment: Environment,
+): boolean {
+  return [
+    ...specsOf(connector, environment.values as EnvValues<E>).values(),
+  ].some((spec) => spec.twoWay);
+}
+
+/** Whether the connector looks between runs: for deliveries, or changes
+ *  to carry back. */
+function looks<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  environment: Environment,
+): boolean {
+  return connector.inbound !== undefined || carriesBack(connector, environment);
+}
+
+/** Until the next scheduled run, looks every `everyMs` for a waiting
+ *  delivery or change to carry; on failure it waits, rather than retrying. */
+async function awaitChanges<E extends EnvDeclaration>(
   setup: RunSetup<E>,
+  held: (trigger: Trigger) => Promise<RunResult | undefined>,
   everyMs: number,
   next: number,
+  cursor: string | undefined,
 ): Promise<void> {
-  const { clock, signal, marfa, connectorId, logger } = setup;
+  const { clock, signal, marfa, connectorId, logger, connector } = setup;
   // Read through a call, since the signal can abort while a sleep waits.
   const stopped = (): boolean => signal.aborted;
   let unreachable = false;
+  let peeked = cursor;
   while (!stopped()) {
     const left = next - clock.now().getTime();
     if (left <= 0) return;
     await clock.sleep(Math.min(left, everyMs), signal);
     if (stopped() || clock.now().getTime() >= next) return;
-    let waiting: boolean;
+    let waiting = false;
     try {
-      waiting =
-        (await marfa.pendingDeliveries(connectorId, 1, signal)).length > 0;
-      if (unreachable) logger.info("waiting deliveries can be read again");
+      if (connector.inbound !== undefined) {
+        waiting =
+          (await marfa.pendingDeliveries(connectorId, 1, signal)).length > 0;
+      }
+      if (!waiting && carriesBack(connector, setup.environment)) {
+        const log = await waitingInMarfa(setup, peeked);
+        waiting = log.waiting;
+        if (!waiting) peeked = log.cursor;
+      }
+      if (unreachable) logger.info("the look between runs is answered again");
       unreachable = false;
     } catch (error) {
       if (stopped()) return;
       if (!unreachable) {
-        logger.warn(`waiting deliveries could not be read: ${describe(error)}`);
+        logger.warn(`the look between runs failed: ${describe(error)}`);
       }
       unreachable = true;
       continue;
     }
     if (!waiting || stopped()) continue;
-    const run = await runOnce(setup, "deliveries");
-    if (!run.succeeded || !run.settled) {
+    const run = await held("look");
+    if (run === undefined || !run.succeeded || !run.settled) {
       await clock.sleep(Math.max(0, next - clock.now().getTime()), signal);
       return;
     }
+    peeked = run.cursor;
   }
 }
 
@@ -208,7 +351,42 @@ export async function start<E extends EnvDeclaration>(
   try {
     checkDefinition(connector);
     schedule = readSchedule(runtime.argv);
-    environment = readEnvironment(connector, runtime.env);
+    if (schedule.mode === "setup") {
+      if (connector.setup === undefined) {
+        throw new ConfigurationError(
+          "--setup is for a connector with a setup, which this one has not",
+        );
+      }
+      if (existsSync(schedule.file)) {
+        throw new ConfigurationError(
+          `${schedule.file} exists already, and setup writes its secrets only to a new file`,
+        );
+      }
+    }
+    environment = readEnvironment(
+      connector,
+      runtime.env,
+      schedule.mode === "setup",
+    );
+    // Without a link, a row made in Marfa cannot be told to the vendor,
+    // nor a purge found there.
+    const unlinked = [
+      ...specsOf(connector, environment.values as EnvValues<E>).values(),
+    ].filter((spec) => spec.twoWay && spec.link === undefined);
+    if (unlinked.length > 0) {
+      throw new ConfigurationError(
+        `${unlinked.map((spec) => spec.type).join(", ")} ${unlinked.length === 1 ? "is" : "are"} carried back, so ${unlinked.length === 1 ? "its type needs" : "their types need"} a link_field`,
+      );
+    }
+    if (
+      schedule.mode === "every" &&
+      schedule.lookGiven &&
+      !looks(connector, environment)
+    ) {
+      throw new ConfigurationError(
+        "--look-every is for a connector that receives webhooks or carries changes back, which this one does not",
+      );
+    }
   } catch (error) {
     if (!(error instanceof ConfigurationError)) throw error;
     new Logger(write, clock).error(error.message);
@@ -216,7 +394,9 @@ export async function start<E extends EnvDeclaration>(
   }
   const logger = new Logger(write, clock, environment.secrets);
   try {
-    await connector.checkEnv?.(environment.values as EnvValues<E>);
+    if (schedule.mode !== "setup") {
+      await connector.checkEnv?.(environment.values as EnvValues<E>);
+    }
   } catch (error) {
     logger.error(`cannot start: ${describe(error)}`);
     return 2;
@@ -274,25 +454,48 @@ export async function start<E extends EnvDeclaration>(
     return 1;
   }
   if (stopped()) return 0;
+  if (schedule.mode === "setup") {
+    return setUp(
+      connector,
+      marfa,
+      connectorId,
+      environment,
+      logger,
+      stop.signal,
+      schedule.file,
+    );
+  }
 
+  const hold = new Hold(marfa, connectorId, randomUUID(), logger, clock);
   const beating = new AbortController();
   const beat = AbortSignal.any([beating.signal, stop.signal]);
   const beatingEnded = (): boolean => beat.aborted;
   const heartbeat = (async () => {
     let failing = false;
     while (!beatingEnded()) {
-      try {
-        await marfa.heartbeat(connectorId, beat);
-        if (failing) logger.info("the heartbeat is answered again");
-        failing = false;
-      } catch (error) {
-        // A heartbeat cut short because beating ended is not a failure.
-        if (!beatingEnded() && !failing) {
-          logger.warn(`the heartbeat failed: ${describe(error)}`);
-          failing = true;
+      // Side by side, and neither waiting long, so a slow heartbeat never
+      // leaves the hold unrenewed.
+      const beating = async (): Promise<void> => {
+        try {
+          await marfa.heartbeat(
+            connectorId,
+            AbortSignal.any([beat, AbortSignal.timeout(beatTimeoutMs)]),
+          );
+          if (failing) logger.info("the heartbeat is answered again");
+          failing = false;
+        } catch (error) {
+          // A heartbeat cut short because beating ended is not a failure.
+          if (!beatingEnded() && !failing) {
+            logger.warn(`the heartbeat failed: ${describe(error)}`);
+            failing = true;
+          }
         }
-      }
-      await clock.sleep(heartbeatMs, beat);
+      };
+      await Promise.all([beating(), hold.renew()]);
+      await clock.sleep(
+        Math.min(heartbeatMs, hold.renewEvery),
+        AbortSignal.any([beat, hold.rearmed]),
+      );
     }
   })();
 
@@ -301,20 +504,49 @@ export async function start<E extends EnvDeclaration>(
     environment,
     marfa,
     connectorId,
-    stateFile: new StateFile(environment.stateDir, started.source, logger),
+    process: hold.process,
     logger,
     clock,
     signal: stop.signal,
   };
+  /** A run under the hold; none where another process holds the connector. */
+  const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
+    let taken;
+    try {
+      taken = await hold.take();
+    } catch (error) {
+      if (stopped()) return undefined;
+      logger.error(`the hold could not be taken: ${describe(error)}`);
+      return { succeeded: false, settled: false, cursor: undefined };
+    }
+    if (!taken.held) {
+      logger.warn(
+        `another process holds this connector until ${taken.until}, so this one does not run`,
+      );
+      return undefined;
+    }
+    return runOnce(
+      {
+        ...setup,
+        signal: AbortSignal.any([stop.signal, hold.signal]),
+        fenced: () => hold.check(),
+      },
+      trigger,
+    );
+  };
   let code = 0;
   try {
     if (schedule.mode === "once") {
-      const { succeeded } = await runOnce(setup, "schedule");
-      code = succeeded || stopped() ? 0 : 1;
+      const run = await held("schedule");
+      code = run === undefined || run.succeeded || stopped() ? 0 : 1;
     } else {
       let failures = 0;
       while (!stopped()) {
-        const run = await runOnce(setup, "schedule");
+        const run = await held("schedule");
+        if (run === undefined) {
+          await clock.sleep(schedule.intervalMs, stop.signal);
+          continue;
+        }
         failures = run.succeeded ? 0 : failures + 1;
         if (stopped()) break;
         const wait = backoff(schedule.intervalMs, failures);
@@ -322,16 +554,17 @@ export async function start<E extends EnvDeclaration>(
           logger.info(`the next run is in ${describeDuration(wait)}`);
         }
         const next = clock.now().getTime() + wait;
-        if (connector.inbound === undefined || !run.settled) {
+        if (!looks(connector, environment) || !run.settled) {
           await clock.sleep(wait, stop.signal);
           continue;
         }
-        await awaitDeliveries(setup, schedule.deliveriesMs, next);
+        await awaitChanges(setup, held, schedule.lookMs, next, run.cursor);
       }
     }
   } finally {
     beating.abort();
     await heartbeat;
+    await hold.release();
   }
   return code;
 }

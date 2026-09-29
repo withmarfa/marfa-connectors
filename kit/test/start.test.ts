@@ -4,6 +4,7 @@ import {
   Harness,
   secretToken,
   testConnector,
+  testFields,
   testType,
   vendor,
 } from "./harness.js";
@@ -24,12 +25,7 @@ describe("configuration", () => {
     const reached = harness.server.requests.length;
     expect(reached).toBeGreaterThan(0);
 
-    const required = [
-      "MARFA_URL",
-      "MARFA_KEY",
-      "MARFA_STATE_DIR",
-      "TEST_TOKEN",
-    ];
+    const required = ["MARFA_URL", "MARFA_KEY", "TEST_TOKEN"];
     for (const name of required) {
       harness.lines.length = 0;
       expect(await harness.once(vendor([entry]), { [name]: undefined })).toBe(
@@ -225,12 +221,24 @@ describe("the key check on start", () => {
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
   });
 
-  it("refuses a pattern over every type, the operator key, and any extension or profile reach, naming each", async () => {
+  it("refuses a pattern over every type, the operator key, any extension or profile reach, and an enforcement override, naming each", async () => {
     for (const [grants, named] of [
       [{ type_permissions: { "*": "write" } }, "type *=write"],
       [{ is_operator: true }, "it is the operator key"],
       [{ extension_permissions: { "app.x": "read" } }, "extension app.x=read"],
       [{ profile_permissions: { email: "read" } }, "profile email=read"],
+      [
+        { enforcement_override: { strict_mode: { types: ["test.entry"] } } },
+        "an enforcement override of strict_mode",
+      ],
+      // Registering connection types is for a connector that declares them.
+      [
+        {
+          type_permissions: { "test.entry": "write" },
+          metadata_permissions: { edge_types: "write" },
+        },
+        "metadata edge_types=write",
+      ],
     ] as const) {
       harness.server.grants = grants;
       expect(await harness.once(vendor([entry]))).toBe(1);
@@ -383,15 +391,21 @@ describe("the type check on start", () => {
     const connector = testConnector(vendor([entry]));
     const carried = {
       ...connector,
-      type: {
-        ...testType,
-        fields: {
-          title: { type: "string" as const, required: true },
-          note: { type: "string" as const },
-          link: { type: "string" as const, format: "url" as const },
-          vendor_id: { type: "string" as const },
+      types: [
+        {
+          ...connector.types[0],
+          fields: testFields,
+          type: {
+            ...testType,
+            fields: {
+              title: { type: "string" as const, required: true },
+              note: { type: "string" as const },
+              link: { type: "string" as const, format: "url" as const },
+              vendor_id: { type: "string" as const },
+            },
+          },
         },
-      },
+      ],
     };
     harness.server.types.set("test.entry", testType);
     expect(await start(carried, harness.runtime(["--once"]))).toBe(0);
@@ -412,7 +426,15 @@ describe("the type check on start", () => {
       },
     });
     const connector = testConnector(vendor([entry]));
-    const child = { ...connector, type: { ...testType, parent: "test.base" } };
+    const child = {
+      ...connector,
+      types: [
+        {
+          fields: testFields,
+          type: { ...testType, parent: "test.base" },
+        },
+      ],
+    };
     expect(await start(child, harness.runtime(["--once"]))).toBe(0);
     expect(harness.server.rows).toHaveLength(1);
   });

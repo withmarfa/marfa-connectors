@@ -189,14 +189,14 @@ describe("secrets", () => {
     expect(error).not.toContain(encodeURIComponent(token));
   });
 
-  it("never reach the state file through a condition's key", async () => {
+  it("never reach the kept state through a condition's key", async () => {
     const held = vendor([one]);
     held.conditions = [[`expiring:${secretToken}`, "the token expires soon"]];
     await harness.once(held);
     expect(harness.lastRun().summary).toContain("the token expires soon");
     await harness.once(held);
     expect(harness.lastRun().summary).not.toContain("the token expires soon");
-    const stored = JSON.stringify(await harness.stateFile());
+    const stored = JSON.stringify(harness.kept());
     expect(stored).toContain("expiring:[redacted]");
     expect(stored).not.toContain(secretToken);
   });
@@ -262,7 +262,7 @@ describe("secrets", () => {
     expect(said).toContain("code [redacted] used");
   });
 
-  it("never reach the state file, nor a URL that carries one encoded", async () => {
+  it("never reach the kept state, nor a URL that carries one encoded", async () => {
     const token = "tok/with+marks=value";
     const leaky = vendor([one]);
     leaky.logs = [
@@ -270,8 +270,8 @@ describe("secrets", () => {
     ];
     leaky.conditions = [["token", `the token ${token} is about to expire`]];
     await harness.once(leaky, { TEST_TOKEN: token });
-    expect(JSON.stringify(await harness.stateFile())).not.toContain(token);
-    expect(JSON.stringify(await harness.stateFile())).toContain(
+    expect(JSON.stringify(harness.kept())).not.toContain(token);
+    expect(JSON.stringify(harness.kept())).toContain(
       "[redacted] is about to expire",
     );
     const said = harness.lines.join("\n");

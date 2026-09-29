@@ -1,9 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
@@ -25,6 +23,7 @@ const served = {
   id: "todoist.task",
   label: "Todoist Task",
   parent: "core.task",
+  link_field: "todoist_id",
   fields: {
     todoist_id: { type: "string" },
     project_id: { type: "string" },
@@ -78,10 +77,11 @@ let todoist: Server;
 let todoistUrl: string;
 let answer: (syncToken: string) => SyncAnswer | number;
 let received: { syncToken: string; resources: string; authorized: boolean }[];
-let stateDir: string;
 
 beforeEach(async () => {
-  marfa = await new ScriptedServer("todoist").start();
+  marfa = await new ScriptedServer("todoist", {
+    types: ["todoist.task"],
+  }).start();
   marfa.types.set("todoist.task", served);
   received = [];
   answer = () => ({
@@ -112,14 +112,12 @@ beforeEach(async () => {
   });
   await new Promise<void>((done) => todoist.listen(0, "127.0.0.1", done));
   todoistUrl = `http://127.0.0.1:${String((todoist.address() as AddressInfo).port)}`;
-  stateDir = await mkdtemp(join(tmpdir(), "connector-todoist-"));
 });
 
 afterEach(async () => {
   await marfa.stop();
   todoist.closeAllConnections();
   await new Promise((done) => todoist.close(done));
-  await rm(stateDir, { recursive: true, force: true });
 });
 
 async function once(
@@ -131,7 +129,6 @@ async function once(
         PATH: process.env["PATH"],
         MARFA_URL: marfa.url,
         MARFA_KEY: marfa.key,
-        MARFA_STATE_DIR: stateDir,
         TODOIST_API_TOKEN: token,
         TODOIST_API_URL: todoistUrl,
         ...env,
@@ -144,13 +141,11 @@ async function once(
   }
 }
 
-async function state(): Promise<Record<string, unknown>> {
-  const stored = JSON.parse(
-    await readFile(join(stateDir, "todoist.json"), "utf8"),
-  ) as {
-    state: Record<string, unknown>;
-  };
-  return stored.state;
+function state(): Record<string, unknown> {
+  return (marfa.states.get("todoist")?.["state"] ?? {}) as Record<
+    string,
+    unknown
+  >;
 }
 
 describe("the mapping", () => {
@@ -450,7 +445,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 2, updated 0, archived 0, unchanged 0, skipped 0, pushed 0, own 0, conflicts 0",
     );
-    expect(await state()).toEqual({
+    expect(state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t1",
@@ -469,7 +464,7 @@ describe("the connector, run as a process", () => {
     });
     expect((await once()).code).toBe(0);
     expect(marfa.rows.map((row) => row.source_id)).toEqual(["2671355:s"]);
-    expect(await state()).toMatchObject({ account: "2671355" });
+    expect(state()).toMatchObject({ account: "2671355" });
   });
 
   it("follows a delta: a change updated, a completion kept active, a deletion archived", async () => {
@@ -500,7 +495,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 0, updated 2, archived 1, unchanged 0, skipped 0, pushed 0, own 4, conflicts 0",
     );
-    expect(await state()).toEqual({
+    expect(state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t2",
@@ -552,7 +547,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs).toHaveLength(2);
     expect(marfa.runs.at(-1)?.summary).toMatch(/^created 0, /);
     expect(marfa.runs.at(-1)?.summary).not.toContain("timezone");
-    expect(await state()).toEqual({ account: "2671355", sync_token: "t1" });
+    expect(state()).toEqual({ account: "2671355", sync_token: "t1" });
   });
 
   it("holds the token when a write did not land, and asks for the same delta again", async () => {
@@ -567,13 +562,13 @@ describe("the connector, run as a process", () => {
       message: "too long",
     });
     expect((await once()).code).toBe(0);
-    expect(await state()).toEqual({});
+    expect(state()).toEqual({});
 
     marfa.entryRefusals.delete("2671355:b");
     expect((await once()).code).toBe(0);
     expect(received.map((request) => request.syncToken)).toEqual(["*", "*"]);
     expect(marfa.rows).toHaveLength(2);
-    expect(await state()).toEqual({
+    expect(state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t1",
@@ -638,7 +633,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.row("2671355:a").properties["due_at"]).toBe(
       "2026-10-01T13:00:00.000Z",
     );
-    expect(await state()).toMatchObject({ timezone: "America/New_York" });
+    expect(state()).toMatchObject({ timezone: "America/New_York" });
   });
 
   it("reads due dates anew once a timezone is named, having read them in UTC", async () => {
@@ -706,7 +701,7 @@ describe("the connector, run as a process", () => {
       completed_at: "2026-10-02T10:00:00.000Z",
     });
     expect(marfa.row("2671355:c").state).toBe("archived");
-    expect(await state()).toMatchObject({ sync_token: "t-delta" });
+    expect(state()).toMatchObject({ sync_token: "t-delta" });
   });
 
   it("lets a moved zone's full sync win over the delta, and keeps the delta's token for what lands between", async () => {

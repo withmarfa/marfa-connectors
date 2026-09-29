@@ -1,10 +1,8 @@
 import { createHmac } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   defineConnector,
   type Change,
+  type ConnectionDefinition,
   type Entry,
   type Inbound,
   type TypeDefinition,
@@ -99,6 +97,17 @@ export const testType: TypeDefinition = {
   },
 };
 
+/** The test type with the vendor's id as its link, as the two-way
+ *  connector declares it. */
+export const linkedType: TypeDefinition = {
+  ...testType,
+  link_field: "vendor_id",
+};
+
+/** Every property the test vendor holds; `toString` is a name
+ *  every object answers. */
+export const testFields = ["title", "note", "link", "vendor_id", "toString"];
+
 /** What the test vendor holds, which a test changes between runs. */
 export interface Vendor {
   entries: Entry[];
@@ -113,6 +122,12 @@ export interface Vendor {
   runs: number;
   /** What the two-way connector was handed to carry back, in order. */
   changes: Change[];
+  /** What `onChange` answers as the vendor's entry after its write. */
+  answer?: ((change: Change) => Entry | undefined) | undefined;
+  /** Called while `remake` makes the row again, before it links it. */
+  duringRemake?: (() => void) | undefined;
+  /** Thrown once the run has written what the vendor sent. */
+  failAfter?: Error | undefined;
   /** A push that throws, the first time the named row is offered. */
   pushFail?: { id: string; error: Error } | undefined;
   /** The vendor's id for a row the vendor has not been told about. */
@@ -121,8 +136,13 @@ export interface Vendor {
   gone?: Map<string, string>;
   /** What `remake` was asked, and how many runs had read the vendor then. */
   remakes?: { change: Change; runsBefore: number }[];
-  /** The hints each run was handed, in order. */
+  /** The ids each run was handed as hints, in order. */
   hints?: (ReadonlySet<string> | undefined)[];
+  /** The two-way connector's kind brings a trashed row back on
+   *  the vendor's change. */
+  revive?: boolean;
+  /** The connection types the connector declares. */
+  connections?: ConnectionDefinition[];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -134,7 +154,8 @@ export function testConnector(held: Vendor) {
     name: "test",
     description: "A connector the kit's tests drive.",
     source: "test",
-    type: testType,
+    types: [{ type: testType, fields: testFields }],
+    ...(held.connections !== undefined && { connections: held.connections }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -146,8 +167,10 @@ export function testConnector(held: Vendor) {
       }
       if (held.fail !== undefined) throw held.fail;
       if (held.token !== undefined) context.state.set("token", held.token);
-      await context.upsert(held.entries);
-      if (held.archived.length > 0) await context.archive(held.archived);
+      await context.upsert(testType.id, held.entries);
+      if (held.archived.length > 0) {
+        await context.archive(testType.id, held.archived);
+      }
     },
   });
 }
@@ -163,8 +186,10 @@ function twoWayConnector(held: Vendor) {
     name: "test",
     description: "A two-way connector the kit's tests drive.",
     source: "test",
-    type: testType,
-    link: "vendor_id",
+    types: [
+      { type: linkedType, fields: testFields, revive: held.revive === true },
+    ],
+    ...(held.connections !== undefined && { connections: held.connections }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -174,8 +199,11 @@ function twoWayConnector(held: Vendor) {
       }
       if (held.fail !== undefined) throw held.fail;
       if (held.token !== undefined) context.state.set("token", held.token);
-      await context.upsert(held.entries);
-      if (held.archived.length > 0) await context.archive(held.archived);
+      await context.upsert(testType.id, held.entries);
+      if (held.archived.length > 0) {
+        await context.archive(testType.id, held.archived);
+      }
+      if (held.failAfter !== undefined) throw held.failAfter;
     },
     async onChange(change, context) {
       held.changes.push(change);
@@ -186,27 +214,35 @@ function twoWayConnector(held: Vendor) {
       }
       const id = held.vendorIdFor?.(change);
       if (id !== undefined) await context.setLink(change.item, id);
+      return held.answer?.(change);
     },
     async remake(change, context) {
       (held.remakes ??= []).push({ change, runsBefore: held.runs });
       const id = held.gone?.get(change.item.id);
       if (id === undefined) return false;
       held.gone?.delete(change.item.id);
+      held.duringRemake?.();
       await context.setLink(change.item, id);
       return true;
     },
   });
 }
 
-/**
- * How the test connectors read deliveries: a delivery is the vendor's when
- * `X-Signature` is the HMAC of its body under the token, and its body names
- * what changed as `{"ids": [...]}`, or `{"everything": true}`. One carrying
- * `X-Throw` makes `verify` throw, quoting the body, and one whose body is not
- * JSON makes `hints` throw, as `JSON.parse` does.
- */
+/** The signals handed to each `verify` that hung, in the order they hung. */
+export const hung: AbortSignal[] = [];
+
+/** How the test connectors read deliveries: signed by `X-Signature`,
+ *  `X-Throw` throws, `X-Hang` waits, and a non-JSON body throws in hints. */
 const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
-  verify: (delivery, env) => {
+  verify: (delivery, env, signal) => {
+    if (delivery.header("x-hang") !== undefined) {
+      hung.push(signal);
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          resolve(true);
+        });
+      });
+    }
     if (delivery.header("x-throw") !== undefined) {
       throw new Error(`cannot read ${new TextDecoder().decode(delivery.body)}`);
     }
@@ -219,9 +255,12 @@ const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
   hints: (delivery) => {
     const said = JSON.parse(new TextDecoder().decode(delivery.body)) as {
       ids?: string[];
+      type?: string;
       everything?: boolean;
     };
-    return said.everything === true ? "everything" : (said.ids ?? []);
+    return said.everything === true
+      ? "everything"
+      : (said.ids ?? []).map((id) => ({ type: said.type ?? testType.id, id }));
   },
 };
 
@@ -231,7 +270,11 @@ export function inboundConnector(held: Vendor) {
   return defineConnector({
     ...base,
     async run(context) {
-      (held.hints ??= []).push(context.hints);
+      (held.hints ??= []).push(
+        context.hints === undefined
+          ? undefined
+          : (context.hints.get(testType.id) ?? new Set()),
+      );
       await base.run(context);
     },
     inbound: testInbound,
@@ -244,8 +287,26 @@ function inboundTwoWayConnector(held: Vendor) {
   return defineConnector({
     ...base,
     async run(context) {
-      (held.hints ??= []).push(context.hints);
-      await base.run(context);
+      const named =
+        context.hints === undefined
+          ? undefined
+          : (context.hints.get(testType.id) ?? new Set<string>());
+      (held.hints ??= []).push(named);
+      if (named === undefined) {
+        await base.run(context);
+        return;
+      }
+      // Fetched alone, as a vendor answers for one item at a time.
+      held.runs += 1;
+      await context.upsert(
+        testType.id,
+        held.entries.filter((entry) =>
+          named.has(String(entry.properties["vendor_id"])),
+        ),
+      );
+      if (held.archived.length > 0) {
+        await context.archive(testType.id, held.archived);
+      }
     },
     inbound: testInbound,
   });
@@ -253,7 +314,7 @@ function inboundTwoWayConnector(held: Vendor) {
 
 /** A body as the test vendor posts it, with the header that signs it. */
 export function signed(
-  said: { ids?: string[]; everything?: boolean },
+  said: { ids?: string[]; type?: string; everything?: boolean },
   secret = secretToken,
 ): { body: string; headers: [string, string][] } {
   const body = JSON.stringify(said);
@@ -273,20 +334,16 @@ export class Harness {
   requestTimeoutMs = 5000;
   private stopListener: (() => void) | undefined;
 
-  constructor(
-    readonly server: ScriptedServer,
-    readonly stateDir: string,
-  ) {}
+  constructor(readonly server: ScriptedServer) {}
 
   static async create(): Promise<Harness> {
-    const server = await new ScriptedServer("test").start();
-    const dir = await mkdtemp(join(tmpdir(), "connector-kit-"));
-    return new Harness(server, dir);
+    return new Harness(
+      await new ScriptedServer("test", { types: ["test.entry"] }).start(),
+    );
   }
 
   async close(): Promise<void> {
     await this.server.stop();
-    await rm(this.stateDir, { recursive: true, force: true });
   }
 
   runtime(
@@ -298,7 +355,6 @@ export class Harness {
       env: {
         MARFA_URL: this.server.url,
         MARFA_KEY: this.server.key,
-        MARFA_STATE_DIR: this.stateDir,
         TEST_TOKEN: secretToken,
         ...env,
       },
@@ -336,6 +392,11 @@ export class Harness {
     return start(inboundTwoWayConnector(held), this.runtime(argv));
   }
 
+  /** The two-way connector without webhooks, as the arguments say. */
+  twoWayRunning(held: Vendor, argv: readonly string[]): Promise<number> {
+    return start(twoWayConnector(held), this.runtime(argv));
+  }
+
   /** One run of the two-way connector. */
   twoWay(
     held: Vendor,
@@ -344,14 +405,14 @@ export class Harness {
     return start(twoWayConnector(held), this.runtime(["--once"], env));
   }
 
-  /** The state file kept for a key whose own source is `keySource`. */
-  async stateFile(keySource = "test"): Promise<unknown> {
-    return JSON.parse(
-      await readFile(
-        join(this.stateDir, `${encodeURIComponent(keySource)}.json`),
-        "utf8",
-      ),
-    );
+  /** The state document the instance keeps for the connector. */
+  kept(): Record<string, unknown> {
+    return this.server.connectorState ?? {};
+  }
+
+  /** The agreement the instance keeps for a row. */
+  agreement(id: string): Record<string, unknown> | undefined {
+    return this.server.agreements.get(id)?.record;
   }
 
   lastRun() {

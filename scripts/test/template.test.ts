@@ -43,7 +43,9 @@ async function copiedConnector(place: string): Promise<string> {
 
 it("builds and runs once copied to a connector's place", async () => {
   const place = await mkdtemp(join(tmpdir(), "template-copy-"));
-  const marfa = await new ScriptedServer("example").start();
+  const marfa = await new ScriptedServer("example", {
+    types: ["example.item"],
+  }).start();
   const vendor = createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -61,7 +63,6 @@ it("builds and runs once copied to a connector's place", async () => {
         PATH: process.env["PATH"],
         MARFA_URL: marfa.url,
         MARFA_KEY: marfa.key,
-        MARFA_STATE_DIR: join(place, "state"),
         EXAMPLE_URL: `http://127.0.0.1:${String((vendor.address() as AddressInfo).port)}/`,
         EXAMPLE_TOKEN: "example-vendor-token",
       },

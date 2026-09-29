@@ -1,6 +1,4 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { components, MarfaClient } from "@withmarfa/client";
@@ -28,10 +26,8 @@ export function keyBody(flags: KeyFlags) {
   };
 }
 
-/** One connector, as a person would run it: its own key, its own state, `--once`. */
+/** One connector, as a person would run it: its own key, `--once`, its state on the instance. */
 export class ConnectorUnderProof {
-  private stateDir: string | undefined;
-
   constructor(
     readonly name: string,
     private readonly url: string,
@@ -41,14 +37,12 @@ export class ConnectorUnderProof {
   ) {}
 
   async once(): Promise<{ code: number; output: string }> {
-    this.stateDir ??= await mkdtemp(join(tmpdir(), `proof-${this.name}-`));
     try {
       const { stderr } = await run("node", [this.entry, "--once"], {
         env: {
           PATH: process.env["PATH"],
           MARFA_URL: this.url,
           MARFA_KEY: this.key,
-          MARFA_STATE_DIR: this.stateDir,
           ...this.env,
         },
       });
@@ -59,12 +53,6 @@ export class ConnectorUnderProof {
         code: failed.code ?? -1,
         output: failed.stderr ?? String(error),
       };
-    }
-  }
-
-  async dispose(): Promise<void> {
-    if (this.stateDir !== undefined) {
-      await rm(this.stateDir, { recursive: true, force: true });
     }
   }
 }

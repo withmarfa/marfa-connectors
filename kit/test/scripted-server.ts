@@ -3,6 +3,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { CONTRACT_VERSION } from "@withmarfa/client";
 
@@ -38,6 +39,11 @@ export interface Row {
   occurred_at: string;
   created_at: string;
   updated_at: string;
+  /** The row whose trash took this one through a cascade, while in the bin. */
+  trashed_with?: string;
+  /** Told to every key that reads the row; `trashed_with` only to
+   *  one reading the root. */
+  trashed_by_cascade?: true;
 }
 
 export interface Run {
@@ -70,12 +76,28 @@ export interface Delivery {
   outcome: string | null;
 }
 
-/** One event as the log holds it. */
-export interface Event {
-  id: number;
-  event: string;
-  item: Row;
+/** An agreement as the instance keeps it. */
+interface Held {
+  waiting: boolean;
+  record: Record<string, unknown>;
+  updated_at: string;
 }
+
+/** One event as the log holds it. */
+export interface EdgeRow {
+  id: string;
+  source_id: string;
+  target_id: string;
+  edge_type: string;
+  properties: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export type Event =
+  | { id: number; event: string; item: Row }
+  | { id: number; event: string; edge: EdgeRow; purged_with?: string };
 
 interface Refusal {
   status: number;
@@ -96,7 +118,12 @@ interface Snapshot {
 }
 
 type Send = (status: number, payload: unknown) => void;
-type Refuse = (status: number, code: string, message?: string) => void;
+type Refuse = (
+  status: number,
+  code: string,
+  message?: string,
+  details?: Record<string, unknown>,
+) => void;
 
 function changedKeys(
   from: Record<string, unknown>,
@@ -115,11 +142,8 @@ export class ScriptedServer {
   readonly source: string;
   /** The calling key's own source, the connector's unless a test says not. */
   keySource: string;
-  /**
-   * What the calling key holds beside its source: nothing unless a test
-   * says so, which is narrower than any connector's type and so passes
-   * the kit's check on start.
-   */
+  /** What the calling key holds beside its source, over the write
+   *  on its minted types and connections: a test widens or narrows it. */
   grants: {
     sources?: string[];
     permissions?: string[];
@@ -129,9 +153,36 @@ export class ScriptedServer {
     edge_permissions?: Record<string, string>;
     extension_permissions?: Record<string, string>;
     profile_permissions?: Record<string, string>;
+    enforcement_override?: Record<string, unknown>;
   } = {};
   url = "";
   rows: Row[] = [];
+  /** Every edge, in the order made. */
+  edges: EdgeRow[] = [];
+  /** Edge types the instance holds, by id: the shipped `attached-to`,
+   *  and what is registered. */
+  readonly edgeTypes = new Map<string, Record<string, unknown>>([
+    [
+      "attached-to",
+      {
+        id: "attached-to",
+        cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        reverse_name: "has-attachment",
+        written_at: "source",
+      },
+    ],
+  ]);
+  /** Blobs stored, by hash. */
+  readonly blobs = new Map<string, { bytes: Buffer; mime_type: string }>();
+  /** Every upload, repeats included. */
+  uploads = 0;
+  /** Edges a lookup answers per type before its cursor, as the real
+   *  cap of 50. */
+  edgePageCap = 50;
   types = new Map<string, Record<string, unknown>>();
   runs: Run[] = [];
   heartbeats = 0;
@@ -141,8 +192,9 @@ export class ScriptedServer {
   readonly log: Event[] = [];
   /** Bulk entries refused by `source_id`, as the server refuses one entry. */
   readonly entryRefusals = new Map<string, Refusal>();
-  /** Called after an own-rows page is answered, before the next request. */
-  afterList: (() => void) | undefined;
+  /** Called after a read of rows is answered, a listing or a
+   *  lookup, before the next request. */
+  afterRead: ((request: Request) => void) | undefined;
   /** Awaited before a request is answered, with the request as it arrived. */
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
   /** A body over this many bytes is refused whole, as the server's cap refuses it. */
@@ -165,6 +217,37 @@ export class ScriptedServer {
   ];
   /** What arrived at them, oldest first. */
   readonly deliveries: Delivery[] = [];
+  /** Who holds the registration, and until when, by the server's clock. */
+  holder: { process: string; until: number } | undefined;
+  /** How long a hold lasts past its last renewal. */
+  holdMs = 180_000;
+  /** Every hold taken or renewed, and every release, in order. */
+  readonly holds: { process: string; released: boolean }[] = [];
+  /** Tombstones by `type`, then `link:<value>` or
+   *  `key:<source>:<source_id>`. */
+  readonly tombstones = new Map<
+    string,
+    { purged_at: string; settled_at: string }
+  >();
+  /** The state document kept for each key's own source. */
+  readonly states = new Map<string, Record<string, unknown>>();
+  /** Each row's agreement, by source and then by item id. */
+  private readonly agreementsBySource = new Map<string, Map<string, Held>>();
+
+  /** The state document kept for the calling key's own source. */
+  get connectorState(): Record<string, unknown> | undefined {
+    return this.states.get(this.keySource);
+  }
+
+  /** The agreements kept for the calling key's own source. */
+  get agreements(): Map<string, Held> {
+    let held = this.agreementsBySource.get(this.keySource);
+    if (held === undefined) {
+      held = new Map();
+      this.agreementsBySource.set(this.keySource, held);
+    }
+    return held;
+  }
   /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
   /** Each row's properties and own time at every version it has had. */
@@ -174,10 +257,29 @@ export class ScriptedServer {
   });
   private sequence = 0;
   private clock = Date.parse("2026-09-25T00:00:00.000Z");
+  /** Moves only with `advance`: a hold lapses with time, not with writes. */
+  private wall = this.clock;
 
-  constructor(source: string) {
+  /** The key a connector's README mints: write on its types and connections. */
+  private readonly minted: {
+    type_permissions: Record<string, string>;
+    edge_permissions: Record<string, string>;
+  };
+
+  constructor(
+    source: string,
+    minted: { types?: readonly string[]; edges?: readonly string[] } = {},
+  ) {
     this.source = source;
     this.keySource = source;
+    this.minted = {
+      type_permissions: Object.fromEntries(
+        (minted.types ?? []).map((type) => [type, "write"]),
+      ),
+      edge_permissions: Object.fromEntries(
+        (minted.edges ?? []).map((edge) => [edge, "write"]),
+      ),
+    };
   }
 
   async start(): Promise<this> {
@@ -300,6 +402,7 @@ export class ScriptedServer {
     const row = this.byId(id);
     this.snapshot(row);
     row.state = state;
+    if (state !== "trashed") this.leaveBin(row);
     row.updated_at = this.now();
     this.announce("item.state_changed", row);
     return row;
@@ -320,14 +423,38 @@ export class ScriptedServer {
     return row;
   }
 
+  /** A cascade from `root`'s trash takes the row with it. */
+  cascadeTrash(id: string, root: string): Row {
+    const row = this.byId(id);
+    // Announced as it was before the trash, as `trash` is.
+    const before = {
+      ...row,
+      state: "trashed" as const,
+      trashed_with: root,
+      trashed_by_cascade: true as const,
+    };
+    row.state = "trashed";
+    row.trashed_with = root;
+    row.trashed_by_cascade = true;
+    row.updated_at = this.now();
+    this.announce("item.deleted", before);
+    return row;
+  }
+
   /** A person brings a row back from the bin. */
   restore(id: string): Row {
     const row = this.byId(id);
     this.snapshot(row);
     row.state = "active";
+    this.leaveBin(row);
     row.updated_at = this.now();
     this.announce("item.restored", row);
     return row;
+  }
+
+  private leaveBin(row: Row): void {
+    Reflect.deleteProperty(row, "trashed_with");
+    Reflect.deleteProperty(row, "trashed_by_cascade");
   }
 
   /** A person empties the bin of this row. */
@@ -336,9 +463,68 @@ export class ScriptedServer {
     this.purgeById(row.id);
   }
 
+  /** The value the row holds in the link its type names, if any. */
+  linkOf(row: Pick<Row, "type" | "properties">): string | undefined {
+    const field = this.types.get(row.type)?.["link_field"];
+    if (typeof field !== "string") return undefined;
+    const value = row.properties[field];
+    return typeof value === "string" && value !== "" ? value : undefined;
+  }
+
+  /** Another row of the type already holding the link these
+   *  properties would. */
+  private linkHolder(
+    type: string,
+    properties: Record<string, unknown>,
+    except: string | undefined,
+  ): Row | undefined {
+    const value = this.linkOf({ type, properties });
+    if (value === undefined) return undefined;
+    return this.rows.find(
+      (row) =>
+        row.id !== except && row.type === type && this.linkOf(row) === value,
+    );
+  }
+
+  /** A row claiming a link or a natural key takes it back from a tombstone. */
+  private reclaim(row: Row): void {
+    const link = this.linkOf(row);
+    if (link !== undefined)
+      this.tombstones.delete(`${row.type}\u0000link:${link}`);
+    if (row.source_id !== undefined) {
+      this.tombstones.delete(
+        `${row.type}\u0000key:${row.source}:${row.source_id}`,
+      );
+    }
+  }
+
   purgeById(id: string): void {
     const row = this.byId(id);
     this.rows = this.rows.filter((candidate) => candidate.id !== id);
+    const at = this.now();
+    const link = this.linkOf(row);
+    if (link !== undefined) {
+      this.tombstones.set(`${row.type}\u0000link:${link}`, {
+        purged_at: at,
+        settled_at: at,
+      });
+    }
+    if (row.source_id !== undefined) {
+      this.tombstones.set(
+        `${row.type}\u0000key:${row.source}:${row.source_id}`,
+        { purged_at: at, settled_at: at },
+      );
+    }
+    // A row's agreement goes with it, as the instance's foreign key takes it.
+    for (const held of this.agreementsBySource.values()) held.delete(id);
+    for (const edge of this.edges.filter(
+      (candidate) => candidate.source_id === id || candidate.target_id === id,
+    )) {
+      this.announceEdge("edge.deleted", edge, id);
+    }
+    this.edges = this.edges.filter(
+      (edge) => edge.source_id !== id && edge.target_id !== id,
+    );
     this.announce("item.purged", row);
   }
 
@@ -384,10 +570,99 @@ export class ScriptedServer {
   /** Moves the server's clock on, so a later write is later by that much. */
   advance(ms: number): void {
     this.clock += ms;
+    this.wall += ms;
   }
 
   private announce(event: string, row: Row): void {
     this.log.push({ id: this.log.length + 1, event, item: { ...row } });
+  }
+
+  private announceEdge(
+    event: string,
+    edge: EdgeRow,
+    purgedWith?: string,
+  ): void {
+    this.log.push({
+      id: this.log.length + 1,
+      event,
+      edge: { ...edge },
+      ...(purgedWith !== undefined && { purged_with: purgedWith }),
+    });
+  }
+
+  /** Whether a live hold belongs to a process other than this one. */
+  private heldElsewhere(process: unknown): boolean {
+    return (
+      this.holder !== undefined &&
+      this.holder.process !== process &&
+      this.holder.until > this.wall
+    );
+  }
+
+  /** State and agreement writes are taken only from the live holder. */
+  private heldBy(process: unknown): boolean {
+    return (
+      this.holder !== undefined &&
+      this.holder.process === process &&
+      this.holder.until > this.wall
+    );
+  }
+
+  private refuseHeld(res: ServerResponse): void {
+    res.writeHead(409, {
+      "Content-Type": "application/json",
+      "X-Marfa-Contract": String(CONTRACT_VERSION),
+    });
+    res.end(
+      JSON.stringify({
+        error: {
+          code: "connector_held",
+          status: 409,
+          message: "this process does not hold this connector",
+          details:
+            this.holder !== undefined && this.holder.until > this.wall
+              ? { expires_at: new Date(this.holder.until).toISOString() }
+              : {},
+        },
+      }),
+    );
+  }
+
+  /** A person connects two rows, as the edge door does. */
+  drawEdge(sourceId: string, targetId: string, edgeType: string): EdgeRow {
+    const at = this.now();
+    this.sequence += 1;
+    const edge: EdgeRow = {
+      id: `edge-${String(this.sequence)}`,
+      source_id: sourceId,
+      target_id: targetId,
+      edge_type: edgeType,
+      properties: {},
+      created_at: at,
+      updated_at: at,
+      version: 1,
+    };
+    this.edges.push(edge);
+    this.announceEdge("edge.created", edge);
+    return edge;
+  }
+
+  /** A person removes a connection, as the edge door does. */
+  removeEdge(id: string): void {
+    const edge = this.edges.find((candidate) => candidate.id === id);
+    if (edge === undefined) throw new Error(`no scripted edge ${id}`);
+    this.edges = this.edges.filter((candidate) => candidate.id !== id);
+    this.announceEdge("edge.deleted", edge);
+  }
+
+  /** The row's outbound edges of the type, as `<target id>` in
+   *  the order made. */
+  targetsOf(sourceId: string, edgeType: string): string[] {
+    return this.edges
+      .filter(
+        (edge) => edge.source_id === sourceId && edge.edge_type === edgeType,
+      )
+      .map((edge) => edge.target_id);
   }
 
   /** A snapshot of the row as it stands, at this moment. */
@@ -454,8 +729,13 @@ export class ScriptedServer {
     const url = new URL(req.url ?? "/", this.url);
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
-    const text = Buffer.concat(chunks).toString("utf8");
-    const body: unknown = text === "" ? undefined : JSON.parse(text);
+    const raw = Buffer.concat(chunks);
+    const text = raw.toString("utf8");
+    // Bytes to the blob door, JSON to every other.
+    const body: unknown =
+      text === "" || req.url?.startsWith("/blobs") === true
+        ? undefined
+        : JSON.parse(text);
     const method = req.method ?? "GET";
     const headers: Record<string, string | undefined> = {};
     for (const [name, value] of Object.entries(req.headers)) {
@@ -477,8 +757,10 @@ export class ScriptedServer {
       });
       res.end(JSON.stringify(payload));
     };
-    const refuse: Refuse = (status, code, message = code) => {
-      send(status, { error: { code, message } });
+    const refuse: Refuse = (status, code, message = code, details) => {
+      send(status, {
+        error: { code, message, ...(details !== undefined && { details }) },
+      });
     };
 
     if (req.headers.authorization !== `Bearer ${this.key}`) {
@@ -509,9 +791,8 @@ export class ScriptedServer {
         permissions: [],
         default_tier: "feed",
         is_operator: false,
-        type_permissions: {},
+        ...this.minted,
         extension_permissions: {},
-        edge_permissions: {},
         metadata_permissions: {},
         profile_permissions: {},
         created_at: this.now(),
@@ -562,6 +843,30 @@ export class ScriptedServer {
         ...run,
         id: `run-${String(this.runs.length)}`,
         reported_at: this.now(),
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "endpoints"
+    ) {
+      this.sequence += 1;
+      const endpoint = {
+        id: `endpoint-${String(this.sequence)}`,
+        retired_at: null,
+      };
+      this.endpoints.push(endpoint);
+      send(201, {
+        ...endpoint,
+        connector_id: parts[1],
+        label: input["label"] ?? null,
+        duplicate_header:
+          typeof input["duplicate_header"] === "string"
+            ? input["duplicate_header"].toLowerCase()
+            : null,
+        path: `/inbound/in_${String(this.sequence).padStart(24, "0")}`,
+        created_at: this.now(),
       });
       return;
     }
@@ -651,6 +956,150 @@ export class ScriptedServer {
       });
       return;
     }
+    if (parts[0] === "connectors" && parts[2] === "hold") {
+      const process =
+        method === "DELETE"
+          ? (url.searchParams.get("process") ?? "")
+          : String(input["process"]);
+      const now = this.wall;
+      if (method === "DELETE") {
+        if (this.holder?.process === process) this.holder = undefined;
+        this.holds.push({ process, released: true });
+        send(200, { ok: true });
+        return;
+      }
+      if (this.heldElsewhere(process)) {
+        this.refuseHeld(res);
+        return;
+      }
+      const renewed =
+        this.holder?.process === process && this.holder.until > now;
+      this.holder = { process, until: now + this.holdMs };
+      this.holds.push({ process, released: false });
+      // By the server's own clock, as the real answer's header is.
+      res.setHeader("Date", new Date(now).toUTCString());
+      send(200, {
+        expires_at: new Date(this.holder.until).toISOString(),
+        renewed,
+      });
+      return;
+    }
+    if (
+      parts[0] === "connectors" &&
+      parts[2] === "state" &&
+      (method === "GET" || method === "PUT")
+    ) {
+      if (method === "PUT") {
+        const state = input["state"];
+        if (typeof state !== "object" || state === null) {
+          refuse(400, "validation_error");
+          return;
+        }
+        if (!this.heldBy(input["process"])) {
+          this.refuseHeld(res);
+          return;
+        }
+        if (Buffer.byteLength(JSON.stringify(state)) > 512 * 1024) {
+          refuse(400, "validation_error", "a state is at most 512 KiB");
+          return;
+        }
+        this.states.set(
+          this.keySource,
+          structuredClone(state) as Record<string, unknown>,
+        );
+      }
+      send(200, {
+        state: this.connectorState ?? {},
+        updated_at: this.connectorState === undefined ? null : this.now(),
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "agreements" &&
+      parts[3] === "find"
+    ) {
+      const ids = input["item_ids"] as string[];
+      if (ids.length > 500) {
+        refuse(400, "validation_error");
+        return;
+      }
+      send(200, {
+        data: ids.flatMap((id) => {
+          const held = this.agreements.get(id);
+          return held === undefined
+            ? []
+            : [{ item_id: id, ...structuredClone(held) }];
+        }),
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      parts[0] === "connectors" &&
+      parts[2] === "agreements"
+    ) {
+      const set = (input["set"] ?? []) as {
+        item_id: string;
+        waiting: boolean;
+        record: Record<string, unknown>;
+      }[];
+      const clear = (input["clear"] ?? []) as string[];
+      if (set.length > 500 || clear.length > 500) {
+        refuse(400, "validation_error");
+        return;
+      }
+      if (!this.heldBy(input["process"])) {
+        this.refuseHeld(res);
+        return;
+      }
+      if (
+        set.some(
+          (entry) =>
+            Buffer.byteLength(JSON.stringify(entry.record)) > 16 * 1024,
+        )
+      ) {
+        refuse(400, "validation_error", "a record is at most 16 KiB");
+        return;
+      }
+      const skipped: string[] = [];
+      for (const entry of set) {
+        if (!this.rows.some((row) => row.id === entry.item_id)) {
+          skipped.push(entry.item_id);
+          continue;
+        }
+        this.agreements.set(entry.item_id, {
+          waiting: entry.waiting,
+          record: structuredClone(entry.record),
+          updated_at: this.now(),
+        });
+      }
+      for (const id of clear) this.agreements.delete(id);
+      send(200, {
+        written: set.length - skipped.length,
+        cleared: clear.length,
+        skipped,
+      });
+      return;
+    }
+    if (
+      method === "GET" &&
+      parts[0] === "connectors" &&
+      parts[2] === "agreements"
+    ) {
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const waiting = [...this.agreements]
+        .filter(([, held]) => held.waiting)
+        .map(([id, held]) => ({ item_id: id, ...structuredClone(held) }));
+      send(200, {
+        data: waiting.slice(from, from + limit),
+        next_cursor:
+          from + limit < waiting.length ? String(from + limit) : null,
+      });
+      return;
+    }
     if (method === "GET" && parts[0] === "types" && parts[1] !== undefined) {
       const type = this.types.get(parts[1]);
       if (type === undefined) {
@@ -676,7 +1125,7 @@ export class ScriptedServer {
     }
     if (method === "GET" && url.pathname === "/items") {
       this.listItems(url.searchParams, send);
-      this.afterList?.();
+      this.afterRead?.(request);
       return;
     }
     if (method === "POST" && url.pathname === "/items") {
@@ -696,6 +1145,100 @@ export class ScriptedServer {
         item: this.wire(row),
         metadata: { item_id: row.id, tags: [], extensions: {} },
       });
+      return;
+    }
+    if (method === "POST" && url.pathname === "/blobs") {
+      const hash = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+      const mime = req.headers["content-type"] ?? "application/octet-stream";
+      this.blobs.set(hash, { bytes: raw, mime_type: mime });
+      this.uploads += 1;
+      send(201, { hash, mime_type: mime, size_bytes: raw.length });
+      return;
+    }
+    if (method === "GET" && url.pathname === "/edge-types") {
+      send(200, { data: [...this.edgeTypes.values()], next_cursor: null });
+      return;
+    }
+    if (method === "POST" && url.pathname === "/edge-types") {
+      const id = String(input["id"]);
+      if (this.edgeTypes.has(id)) {
+        refuse(409, "conflict", `the edge type ${id} exists`);
+        return;
+      }
+      const stored = {
+        source_type_constraints: [],
+        target_type_constraints: [],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        written_at: "source",
+        ...input,
+      };
+      this.edgeTypes.set(id, stored);
+      send(201, { edge_type: stored });
+      return;
+    }
+    if (method === "POST" && url.pathname === "/edges/bulk") {
+      const entries = (input["edges"] ?? []) as Record<string, string>[];
+      const results = entries.map((entry, index) =>
+        this.upsertEdge(entry, index),
+      );
+      send(200, {
+        counts: {
+          created: results.filter((r) => r.outcome === "created").length,
+          updated: results.filter((r) => r.outcome === "updated").length,
+          skipped: 0,
+          errored: results.filter((r) => r.outcome === "errored").length,
+        },
+        results,
+      });
+      return;
+    }
+    if (method === "DELETE" && parts[0] === "edges" && parts[1] !== undefined) {
+      const edge = this.edges.find((candidate) => candidate.id === parts[1]);
+      if (edge === undefined) {
+        refuse(404, "edge_not_found");
+        return;
+      }
+      this.removeEdge(edge.id);
+      send(200, { ok: true });
+      return;
+    }
+    if (
+      method === "GET" &&
+      parts[0] === "items" &&
+      parts[2] === "edges" &&
+      parts[1] !== undefined
+    ) {
+      const type = url.searchParams.get("edge_type");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const all = this.edges.filter(
+        (edge) =>
+          edge.source_id === parts[1] &&
+          (type === null || edge.edge_type === type),
+      );
+      send(200, {
+        data: all.slice(from, from + limit),
+        next_cursor: from + limit < all.length ? String(from + limit) : null,
+      });
+      return;
+    }
+    if (method === "POST" && url.pathname === "/items/lookup") {
+      send(200, this.lookup(input));
+      this.afterRead?.(request);
+      return;
+    }
+    if (method === "POST" && url.pathname === "/items/tombstones") {
+      const type = String(input["type"]);
+      const until = String(input["settled_at"]);
+      const keys = this.tombstoneKeys(type, input);
+      for (const key of keys) {
+        const held = this.tombstones.get(key);
+        if (held !== undefined && until > held.settled_at) {
+          held.settled_at = until;
+        }
+      }
+      send(200, { tombstones: this.tombstonesOf(keys) });
       return;
     }
     if (method === "POST" && url.pathname === "/items/bulk") {
@@ -864,12 +1407,18 @@ export class ScriptedServer {
       type: "stream_cursor",
       cursor: String(this.head),
     });
-    const type = query.get("type");
+    // Up to ten types, comma-separated, as the real stream takes them.
+    const types = query.get("type")?.split(",") ?? [null];
     let sent = 0;
     let lastSent: number | undefined;
+    const edges = query.get("edges") !== "none";
     for (const event of this.log) {
       if (cursor === undefined || event.id <= cursor) continue;
-      if (!this.ofType(event.item, type)) continue;
+      if ("edge" in event) {
+        if (!edges) continue;
+      } else if (!types.some((type) => this.ofType(event.item, type))) {
+        continue;
+      }
       if (this.stallAfter !== undefined && sent === this.stallAfter) return;
       if (this.incompleteAfter !== undefined && sent === this.incompleteAfter) {
         frame("stream_incomplete", {
@@ -882,7 +1431,15 @@ export class ScriptedServer {
       }
       frame(
         event.event,
-        { type: event.event, item: this.wire(event.item) },
+        "edge" in event
+          ? {
+              type: event.event,
+              edge: event.edge,
+              ...(event.purged_with !== undefined && {
+                purged_with: event.purged_with,
+              }),
+            }
+          : { type: event.event, item: this.wire(event.item) },
         event.id,
       );
       sent += 1;
@@ -899,6 +1456,166 @@ export class ScriptedServer {
         ? null
         : (this.liveCursor ?? String(this.head)),
     });
+  }
+
+  private tombstoneKeys(
+    type: string,
+    input: Record<string, unknown>,
+  ): string[] {
+    const links = (input["links"] ?? []) as string[];
+    const sourceIds = (input["source_ids"] ?? []) as string[];
+    return [
+      ...links.map((link) => `${type}\u0000link:${link}`),
+      ...sourceIds.map(
+        (sourceId) => `${type}\u0000key:${String(input["source"])}:${sourceId}`,
+      ),
+    ];
+  }
+
+  private tombstonesOf(keys: readonly string[]): Record<string, unknown>[] {
+    return keys.flatMap((key) => {
+      const held = this.tombstones.get(key);
+      const name = key
+        .slice(key.indexOf("\u0000") + 1)
+        .replace(/^(link|key:[^:]*):/, "");
+      return held === undefined ? [] : [{ key: name, ...held }];
+    });
+  }
+
+  /** One bulk edge entry, upserted on its ends and type as the door does. */
+  private upsertEdge(
+    entry: Record<string, string>,
+    index: number,
+  ): {
+    index: number;
+    outcome: "created" | "updated" | "errored";
+    id?: string;
+    error?: { code: string; message: string };
+  } {
+    const source = this.rows.find((row) => row.id === entry["source_id"]);
+    const target = this.rows.find((row) => row.id === entry["target_id"]);
+    const kind = this.edgeTypes.get(String(entry["edge_type"]));
+    if (source === undefined || target === undefined || kind === undefined) {
+      return {
+        index,
+        outcome: "errored",
+        error: { code: "item_not_found", message: "an end is missing" },
+      };
+    }
+    const allowed = (constraints: unknown, type: string) =>
+      !Array.isArray(constraints) ||
+      constraints.length === 0 ||
+      constraints.includes("*") ||
+      constraints.includes(type);
+    if (
+      !allowed(kind["source_type_constraints"], source.type) ||
+      !allowed(kind["target_type_constraints"], target.type)
+    ) {
+      return {
+        index,
+        outcome: "errored",
+        error: {
+          code: "edge_constraint_violation",
+          message: "an end's type is outside the edge type's constraints",
+        },
+      };
+    }
+    if (source.state === "trashed" || target.state === "trashed") {
+      return {
+        index,
+        outcome: "errored",
+        error: { code: "item_not_found", message: "an end is in the bin" },
+      };
+    }
+    const held = this.edges.find(
+      (edge) =>
+        edge.source_id === source.id &&
+        edge.target_id === target.id &&
+        edge.edge_type === entry["edge_type"],
+    );
+    if (held !== undefined) return { index, outcome: "updated", id: held.id };
+    // As the server counts them: one-to-many or one-to-one caps a
+    // target at one inbound edge, many-to-one or one-to-one a source.
+    const cardinality = String(kind["cardinality"]);
+    const ofType = this.edges.filter(
+      (edge) => edge.edge_type === entry["edge_type"],
+    );
+    if (
+      (["one-to-many", "one-to-one"].includes(cardinality) &&
+        ofType.some((edge) => edge.target_id === target.id)) ||
+      (["many-to-one", "one-to-one"].includes(cardinality) &&
+        ofType.some((edge) => edge.source_id === source.id))
+    ) {
+      return {
+        index,
+        outcome: "errored",
+        error: {
+          code: "edge_constraint_violation",
+          message: `the edge type is ${cardinality}`,
+        },
+      };
+    }
+    const made = this.drawEdge(
+      source.id,
+      target.id,
+      String(entry["edge_type"]),
+    );
+    return { index, outcome: "created", id: made.id };
+  }
+
+  /** A row's outbound edges by type, each cut at the page cap with a cursor. */
+  private hydrated(id: string): Record<string, unknown> {
+    const byType = new Map<string, EdgeRow[]>();
+    for (const edge of this.edges.filter((edge) => edge.source_id === id)) {
+      byType.set(edge.edge_type, [...(byType.get(edge.edge_type) ?? []), edge]);
+    }
+    return Object.fromEntries(
+      [...byType].map(([type, edges]) => [
+        type,
+        {
+          data: edges.slice(0, this.edgePageCap),
+          next_cursor:
+            edges.length > this.edgePageCap ? String(this.edgePageCap) : null,
+        },
+      ]),
+    );
+  }
+
+  /** Rows in any state by link, natural key or id, with their tombstones. */
+  private lookup(input: Record<string, unknown>): unknown {
+    const type = String(input["type"]);
+    const links = input["links"] as string[] | undefined;
+    const sourceIds = input["source_ids"] as string[] | undefined;
+    const ids = input["ids"] as string[] | undefined;
+    const rows =
+      links !== undefined
+        ? links.flatMap((link) =>
+            this.rows.filter(
+              (row) => row.type === type && this.linkOf(row) === link,
+            ),
+          )
+        : sourceIds !== undefined
+          ? sourceIds.flatMap((sourceId) =>
+              this.rows.filter(
+                (row) =>
+                  row.source === input["source"] && row.source_id === sourceId,
+              ),
+            )
+          : (ids ?? []).flatMap((id) =>
+              this.rows.filter((row) => row.id === id),
+            );
+    const include = (input["include"] ?? []) as string[];
+    return {
+      data: rows.map((row) =>
+        include.includes("edges")
+          ? { ...this.wire(row), edges: this.hydrated(row.id) }
+          : this.wire(row),
+      ),
+      tombstones:
+        ids === undefined
+          ? this.tombstonesOf(this.tombstoneKeys(type, input))
+          : [],
+    };
   }
 
   private bulk(input: Record<string, unknown>): unknown {
@@ -953,6 +1670,22 @@ export class ScriptedServer {
         });
         return { index, outcome: "updated", id: existing.id };
       }
+      const holder = this.linkHolder(
+        String(entry["type"]),
+        (entry["properties"] ?? {}) as Record<string, unknown>,
+        undefined,
+      );
+      if (holder !== undefined) {
+        return {
+          index,
+          outcome: "errored",
+          error: {
+            code: "link_taken",
+            message: "another item holds the link",
+            details: { existing_id: holder.id },
+          },
+        };
+      }
       const row = this.newRow(
         String(entry["type"]),
         source,
@@ -961,6 +1694,7 @@ export class ScriptedServer {
         entry["occurred_at"] as string | undefined,
         entry["tier"] === "library" ? "library" : "feed",
       );
+      this.reclaim(row);
       this.rows.push(row);
       this.announce("item.created", row);
       return { index, outcome: "created", id: row.id };
@@ -985,12 +1719,9 @@ export class ScriptedServer {
     refuse: Refuse,
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
-    if (row === undefined) {
+    // The door reads the row as every read does, the bin left out.
+    if (row === undefined || row.state === "trashed") {
       refuse(404, "item_not_found");
-      return;
-    }
-    if (row.state === "trashed") {
-      refuse(400, "invalid_transition");
       return;
     }
     const version = input["version"];
@@ -1000,6 +1731,19 @@ export class ScriptedServer {
     }
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
     const occurredAt = input["occurred_at"];
+    const holder = this.linkHolder(
+      row.type,
+      input["properties_mode"] === "replace"
+        ? properties
+        : { ...row.properties, ...properties },
+      row.id,
+    );
+    if (holder !== undefined) {
+      refuse(409, "link_taken", "another item holds the link", {
+        existing_id: holder.id,
+      });
+      return;
+    }
     if (version !== row.version) {
       const ancestor = this.snapshots
         .get(row.id)

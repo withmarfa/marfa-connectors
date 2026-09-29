@@ -93,7 +93,6 @@ function edit(
 
 export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
   const served = await serveFeeds();
-  let connector: ConnectorUnderProof | undefined;
   try {
     const key = await mintAsReadmeSays(marfa, {
       label: "rss",
@@ -103,7 +102,6 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
     const runner = new ConnectorUnderProof("rss", url, key.key, {
       RSS_FEEDS: `${served.url}/atom.xml\n${served.url}/rss.xml`,
     });
-    connector = runner;
     const runOnce = async (): Promise<void> => {
       const { code, output } = await runner.once();
       if (code !== 0)
@@ -316,7 +314,6 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
       },
     );
   } finally {
-    await connector?.dispose();
     await served.close();
   }
 }

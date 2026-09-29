@@ -5,6 +5,7 @@ import {
   type TypeDefinition,
 } from "@withmarfa/connector";
 import {
+  entryFields,
   feedHash,
   feedList,
   feedName,
@@ -52,9 +53,14 @@ const connector = defineConnector({
   name: "rss",
   description: "Entries from Atom and RSS 2.0 feeds.",
   source: "rss",
-  // Imported JSON widens every string, so its field types read as `string`
-  // here; the check on start holds the file to the server's type.
-  type: rssEntry as TypeDefinition,
+  types: [
+    {
+      // Imported JSON widens every string, so its field types read as
+      // `string` here; the check on start holds the file to the server's.
+      type: rssEntry as TypeDefinition,
+      fields: entryFields,
+    },
+  ],
   // A secret, since a private feed's address carries its token.
   env: {
     RSS_FEEDS: "secret",
@@ -131,7 +137,7 @@ const connector = defineConnector({
       raiseHeld(log, id, name, now);
       if (first !== undefined) continue;
       read.set(entries.key, name);
-      await upsert(entries.entries);
+      await upsert(rssEntry.id, entries.entries);
     }
     state.set("feeds", kept);
   },

@@ -1,5 +1,3 @@
-import { readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
 import { Harness, testConnector, vendor } from "./harness.js";
@@ -47,7 +45,7 @@ describe("rows too big for one request", () => {
     expect(await harness.once(held)).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
     expect(harness.lastRun().summary).toContain("a:big");
-    expect(await harness.stateFile()).toHaveProperty("state", {});
+    expect(harness.kept()).toHaveProperty("state", {});
   });
 
   it("refuse one update and leave the others landed", async () => {
@@ -69,32 +67,45 @@ describe("rows too big for one request", () => {
 });
 
 describe("a row a person purged", () => {
-  it("is written again while the vendor still has it, since nothing remembers it", async () => {
+  it("is not written back while the vendor has not changed it since, and comes back as a new row once it has", async () => {
     await harness.once(vendor([one, two]));
     harness.server.row("a:1").state = "trashed";
     await harness.once(vendor([one, two]));
     expect(harness.lastRun().summary).toBe(
       "created 0, updated 0, archived 0, unchanged 1, skipped 1",
     );
+    const purged = harness.server.row("a:1").id;
     harness.server.purge("a:1");
     expect(await harness.once(vendor([one, two]))).toBe(0);
-    expect(harness.server.rows.map((row) => row.source_id)).toEqual([
-      "a:2",
-      "a:1",
-    ]);
-    expect(harness.lastRun().summary).toBe(
-      "created 1, updated 0, archived 0, unchanged 1, skipped 0",
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
+    expect(harness.lastRun().summary).toContain(
+      "1 entry names a row purged in Marfa and unchanged at the vendor since, so it is not written back",
     );
+    // Remembered by the instance, not the log: a later run still holds it.
+    expect(await harness.once(vendor([one, two]))).toBe(0);
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
+
+    const changed = {
+      ...one,
+      properties: { title: "One, changed" },
+      changed_at: "2026-10-01T00:00:00.000Z",
+    };
+    expect(await harness.once(vendor([changed, two]))).toBe(0);
+    const back = harness.server.row("a:1");
+    expect(back.id).not.toBe(purged);
+    expect(back.properties).toEqual({ title: "One, changed" });
   });
 
-  it("leaves nothing of the bin in the state file", async () => {
+  it("keeps nothing of the bin in the connector's state", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
     harness.server.row("a:1").state = "trashed";
     await harness.once(held);
-    const stored = await harness.stateFile();
-    expect(stored).toEqual({ state: { token: "t1" }, conditions: {} });
+    const kept = harness.kept();
+    expect(kept["state"]).toEqual({ token: "t1" });
+    expect(kept["conditions"]).toEqual({});
+    expect(Object.keys(kept).sort()).toEqual(["conditions", "cursor", "state"]);
   });
 });
 
@@ -103,9 +114,9 @@ describe("a row trashed while a run is writing", () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.row("a:1").state = "trashed";
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [
@@ -113,23 +124,23 @@ describe("a row trashed while a run is writing", () => {
     ];
     expect(await harness.once(held)).toBe(0);
     expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
   it("answers an archive invalid_transition, which is skipped and holds the state", async () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.server.row("a:1").state = "trashed";
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     held.token = "t2";
     held.entries = [];
     held.archived = ["a:1"];
     expect(await harness.once(held)).toBe(0);
     expect(harness.lastRun().summary).toMatch(/skipped 1\./);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
   it("is not archived when it was already in the bin, and holds nothing", async () => {
@@ -145,7 +156,7 @@ describe("a row trashed while a run is writing", () => {
         request.path.endsWith("/transition"),
       ),
     ).toEqual([]);
-    expect(await harness.stateFile()).toMatchObject({ state: { token: "t1" } });
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 });
 
@@ -153,9 +164,9 @@ describe("a stop before a write", () => {
   it("sends no create and no archive", async () => {
     await harness.once(vendor([one]));
     const before = harness.server.requests.length;
-    harness.server.afterList = () => {
+    harness.server.afterRead = () => {
       harness.stop();
-      harness.server.afterList = undefined;
+      harness.server.afterRead = undefined;
     };
     const held = vendor([two]);
     held.archived = ["a:1"];
@@ -166,19 +177,6 @@ describe("a stop before a write", () => {
       false,
     );
     expect(harness.lastRun().error).toContain("stopped");
-  });
-});
-
-describe("the state directory", () => {
-  it("is made when it does not exist", async () => {
-    const nested = join(harness.stateDir, "not", "yet");
-    expect(await harness.once(vendor([one]), { MARFA_STATE_DIR: nested })).toBe(
-      0,
-    );
-    expect(
-      JSON.parse(await readFile(join(nested, "test.json"), "utf8")),
-    ).toHaveProperty("state");
-    await rm(nested, { recursive: true, force: true });
   });
 });
 
@@ -204,8 +202,8 @@ describe("a connector's name", () => {
   });
 });
 
-describe("the state file", () => {
-  it("is the key's own, so two accounts sharing a directory keep theirs apart", async () => {
+describe("the connector's state", () => {
+  it("is the key's own source's, so two accounts keep theirs apart", async () => {
     const first = vendor([one]);
     first.token = "t-first";
     expect(await harness.once(first)).toBe(0);
@@ -215,15 +213,11 @@ describe("the state file", () => {
     second.token = "t-second";
     expect(await harness.once(second)).toBe(0);
 
-    expect(await harness.stateFile()).toMatchObject({
+    expect(harness.server.states.get("test")).toMatchObject({
       state: { token: "t-first" },
     });
-    expect(await harness.stateFile("test/account 2")).toMatchObject({
+    expect(harness.server.states.get("test/account 2")).toMatchObject({
       state: { token: "t-second" },
     });
-    expect((await readdir(harness.stateDir)).sort()).toEqual([
-      "test%2Faccount%202.json",
-      "test.json",
-    ]);
   });
 });

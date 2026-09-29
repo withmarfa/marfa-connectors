@@ -14,16 +14,20 @@ function spelledAs(secret: string): string[] {
 }
 
 export class Logger {
-  private readonly secrets: string[];
+  private secrets: string[] = [];
 
   constructor(
     private readonly write: (line: string) => void,
     private readonly clock: Clock,
     secrets: readonly string[] = [],
   ) {
-    // One variable may hold several secrets, as a list of private feed
-    // addresses does, and each can appear without the others. Longest first,
-    // so a secret that contains another is replaced whole.
+    this.keep(secrets);
+  }
+
+  /** Keeps these out of every line and report from now on. */
+  keep(secrets: readonly string[]): void {
+    // One variable may hold several secrets, each able to appear alone.
+    // Longest first, so a secret that contains another is replaced whole.
     const spellings = secrets
       .flatMap((secret) => [
         secret,
@@ -31,8 +35,11 @@ export class Logger {
           .split(/[\s,]+/)
           .filter((part) => part.length >= shortestSecret),
       ])
-      .flatMap(spelledAs);
-    this.secrets = [...new Set(spellings)].sort((a, b) => b.length - a.length);
+      .flatMap(spelledAs)
+      .filter((spelling) => spelling !== "");
+    this.secrets = [...new Set([...this.secrets, ...spellings])].sort(
+      (a, b) => b.length - a.length,
+    );
   }
 
   redact(text: string): string {
@@ -59,6 +66,17 @@ export class Logger {
       `${this.clock.now().toISOString()} ${level} ${this.redact(message)}`,
     );
   }
+}
+
+/** A value made at run time kept out of every line from now on; one too
+ *  short to find without redacting ordinary words is refused. */
+export function keepSecret(logger: Logger, value: string): void {
+  if (value.length < shortestSecret) {
+    throw new Error(
+      `a secret shorter than ${String(shortestSecret)} characters cannot be kept out of the logs`,
+    );
+  }
+  logger.keep([value]);
 }
 
 /** The longest text the server takes in a run's summary or error. */

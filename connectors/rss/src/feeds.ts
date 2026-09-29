@@ -360,6 +360,23 @@ export interface Read {
   unkeyed: number;
 }
 
+/** Every property an entry carries. */
+export const entryFields = [
+  "url",
+  "title",
+  "description",
+  "body",
+  "author",
+  "published_at",
+  "image_url",
+  "source_url",
+  "source_title",
+  "language",
+  "entry_id",
+  "feed_origin",
+  "feed_hash",
+] as const;
+
 /** The `xml:base` on an RSS 2.0 `<channel>`, which feedsmith does not read. */
 function channelBaseOf(text: string): string | undefined {
   const channel = DomUtils.findOne(
