@@ -1366,11 +1366,26 @@ export class ScriptedServer {
   private listItems(query: URLSearchParams, send: Send): void {
     const state = query.get("state") ?? "active";
     const type = query.get("type");
+    // The one filter the kit sends: an outbound edge of a kind to a target.
+    const filter = /^edge\[([^\]]+)\] eq "([^"]+)"$/.exec(
+      query.get("filter") ?? "",
+    );
+    if (query.get("filter") !== null && filter === null) {
+      send(400, { error: { code: "validation_error" } });
+      return;
+    }
     const matches = this.rows.filter(
       (row) =>
         this.ofType(row, type) &&
         (query.get("source") === null || row.source === query.get("source")) &&
-        (state === "any" || row.state === state),
+        (state === "any" || row.state === state) &&
+        (filter === null ||
+          this.edges.some(
+            (edge) =>
+              edge.source_id === row.id &&
+              edge.edge_type === filter[1] &&
+              edge.target_id === filter[2],
+          )),
     );
     const limit = Number(query.get("limit") ?? "50");
     const start = Number(query.get("cursor") ?? "0");

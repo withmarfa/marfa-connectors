@@ -195,6 +195,21 @@ export async function proveTracker(
     );
 
     await check(
+      "tracker: a run finds, through the server's edge filter, the row holding a connection to another",
+      async () => {
+        const output = await runOnce();
+        const said = `the parents of ${child.id} are ${parent.id}`;
+        if (
+          !output.includes(said) ||
+          output.includes(`parents of ${parent.id}`)
+        ) {
+          throw new Error(`the run said: ${output}`);
+        }
+        return said;
+      },
+    );
+
+    await check(
       "tracker: the pinned server reads the attachment's dimensions, its type inheriting from core.file.image",
       async () => {
         await until(async () => {

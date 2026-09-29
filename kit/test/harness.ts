@@ -5,6 +5,7 @@ import {
   type ConnectionDefinition,
   type Entry,
   type Inbound,
+  type Target,
   type TypeDefinition,
 } from "../src/define.js";
 import { start } from "../src/main.js";
@@ -145,6 +146,10 @@ export interface Vendor {
   connections?: ConnectionDefinition[];
   /** The two-way kind's read-only fields and connection types. */
   readOnly?: string[];
+  /** Asked of `linked` by each two-way run, after it upserts, and what
+   *  each answered. */
+  ask?: { connection: string; target: Target } | undefined;
+  answers?: string[][];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -209,6 +214,16 @@ function twoWayConnector(held: Vendor) {
       await context.upsert(testType.id, held.entries);
       if (held.archived.length > 0) {
         await context.archive(testType.id, held.archived);
+      }
+      if (held.ask !== undefined) {
+        const rows = await context.linked(
+          testType.id,
+          held.ask.connection,
+          held.ask.target,
+        );
+        (held.answers ??= []).push(
+          rows.map((row) => String(row.properties["vendor_id"])),
+        );
       }
       if (held.failAfter !== undefined) throw held.failAfter;
     },
