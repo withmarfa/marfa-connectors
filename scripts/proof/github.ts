@@ -255,8 +255,8 @@ export async function proveGitHub(
         const issue = github.issues.find(
           (one) => one.title === "Made in Marfa",
         );
-        const comment = github.comments.find(
-          (one) => one.body === "Said in Marfa",
+        const comment = github.comments.find((one) =>
+          one.body.startsWith("Said in Marfa"),
         );
         const madeRow = await item(marfa, made.id);
         const saidRow = await item(marfa, said.id);
@@ -267,7 +267,13 @@ export async function proveGitHub(
           comment.issue !== parent.node ||
           madeRow.properties["github_id"] !== issue.node ||
           madeRow.properties["number"] !== issue.number ||
-          saidRow.properties["github_id"] !== comment.node
+          saidRow.properties["github_id"] !== comment.node ||
+          // Marked on GitHub, and read back without the mark.
+          !/^From the proof\n\n<!-- marfa:[0-9a-f]{16} -->$/.test(
+            issue.body ?? "",
+          ) ||
+          madeRow.properties["body"] !== "From the proof" ||
+          saidRow.properties["body"] !== "Said in Marfa"
         ) {
           throw new Error(
             `issue ${JSON.stringify(issue)}, comment ${JSON.stringify(comment)}, rows ${JSON.stringify([madeRow.properties, saidRow.properties])}`,

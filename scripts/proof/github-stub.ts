@@ -114,6 +114,13 @@ export class GitHubStub {
   /** Makes the next issue or comment asked for, then answers 502, as a
    *  write whose answer is lost on the way back. */
   loseNextCreate = false;
+  /** Refuses this many repository writes as over a limit: GitHub's
+   *  secondary limit answers 403, its primary one 429; with a title,
+   *  only writes sending it. */
+  writesLimited:
+    { left: number; status: 403 | 429; title?: string } | undefined;
+  /** Answers this many GraphQL writes as over GitHub's GraphQL limit. */
+  mutationsLimited = 0;
   /** The App's webhook as last set. */
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
@@ -628,6 +635,28 @@ export class GitHubStub {
       );
       return;
     }
+    const limited = this.writesLimited;
+    if (
+      limited !== undefined &&
+      limited.left > 0 &&
+      method !== "GET" &&
+      (limited.title === undefined ||
+        (body as { title?: unknown } | undefined)?.title === limited.title) &&
+      path.startsWith("/repos/")
+    ) {
+      limited.left -= 1;
+      send(
+        limited.status,
+        {
+          message:
+            limited.status === 403
+              ? "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+              : "API rate limit exceeded",
+        },
+        { "retry-after": "1" },
+      );
+      return;
+    }
     if (this.write(req, method, path, body, send)) return;
     send(404, { message: `the stub knows no ${method} ${path}` });
   }
@@ -764,6 +793,14 @@ export class GitHubStub {
         ? found
         : undefined;
     };
+    if (this.mutationsLimited > 0) {
+      this.mutationsLimited -= 1;
+      send(200, {
+        data: null,
+        errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+      });
+      return true;
+    }
     const one = issue("issueId");
     const other = issue("other");
     const relations = [

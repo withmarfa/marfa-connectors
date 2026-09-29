@@ -1,4 +1,22 @@
+import { createHash } from "node:crypto";
 import type { Entry, Target } from "@withmarfa/connector";
+
+/** What the App writes at the end of what a row makes, unseen on GitHub's
+ *  page, so a later try finds what an earlier one made whatever changed. */
+export function markOf(rowId: string): string {
+  const digest = createHash("sha256").update(rowId).digest("hex");
+  return `<!-- marfa:${digest.slice(0, 16)} -->`;
+}
+
+/** A body as the person wrote it, without the App's mark. */
+export function unmarked(body: string): string {
+  return body.replace(/\s*<!-- marfa:[0-9a-f]{16} -->\s*$/, "");
+}
+
+function issueBody(body: string | null): string | null {
+  const text = body === null ? "" : unmarked(body);
+  return text === "" ? null : text;
+}
 
 export const repositoryType = "github.repository";
 export const issueType = "github.issue";
@@ -164,7 +182,7 @@ export function issueEntry(
     properties: {
       github_id: issue.node,
       title: issue.title,
-      body: issue.body,
+      body: issueBody(issue.body),
       status: statusOf(issue.open, issue.reason),
       completed_at: issue.open ? null : issue.closedAt,
       url: issue.url,
@@ -195,7 +213,7 @@ export function commentEntry(comment: Comment): Entry {
     source_id: comment.node,
     properties: {
       github_id: comment.node,
-      body: comment.body,
+      body: unmarked(comment.body),
       from: comment.author ?? "ghost",
       repository: comment.repository.name,
       url: comment.url,

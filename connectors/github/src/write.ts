@@ -18,6 +18,8 @@ import {
   inRepository,
   issueEntry,
   issueOfRest,
+  markOf,
+  unmarked,
   issueType,
   subIssueOf,
   type RestComment,
@@ -97,6 +99,15 @@ function refusal(error: unknown): string | undefined {
  * passing limit rather than a refusal of the change itself.
  */
 function unreachable(error: unknown): string | undefined {
+  // The throttling plugin answers GraphQL's limit with a plain error.
+  const said = (error as { response?: { data?: { errors?: unknown } } })
+    .response?.data?.errors;
+  if (
+    Array.isArray(said) &&
+    said.some((one) => (one as { type?: unknown }).type === "RATE_LIMITED")
+  ) {
+    return "GitHub's rate limit ran out";
+  }
   if (!(error instanceof RequestError)) return undefined;
   if (error.request.url.endsWith("/access_tokens") || error.status === 401) {
     return `the App's installation refused it (${String(error.status)})`;
@@ -135,6 +146,9 @@ async function refusedOrWaits(
   owner: string,
   repo: string,
 ): Promise<string> {
+  const limit = unreachable(error);
+  if (limit !== undefined)
+    throw new Unreachable(`${owner}/${repo} waits: ${limit}`);
   const why = refusal(error);
   if (why === undefined) throw error;
   if (!(await reads(octokit, owner, repo))) {
@@ -379,21 +393,21 @@ async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
   }
 }
 
-/**
- * What a first try may have made: the App's own since it, the ones `same`
- * picks first, linked to the row; one another row holds is passed over.
- */
-async function linkMade<T extends { node_id: string }>(
+/** The row's body, marked as the App's making of it. */
+function marked(item: Item): string {
+  const body = text(item, "body") ?? "";
+  return body === "" ? markOf(item.id) : `${body}\n\n${markOf(item.id)}`;
+}
+
+/** What a first try made, found by the row's mark, linked to the row. */
+async function linkMade<T extends { node_id: string; body?: string | null }>(
   context: Context,
   item: Item,
   candidates: readonly T[],
-  same: (one: T) => boolean,
 ): Promise<T | undefined> {
-  const ordered = [
-    ...candidates.filter(same),
-    ...candidates.filter((one) => !same(one)),
-  ];
-  for (const one of ordered) {
+  const mark = markOf(item.id);
+  for (const one of candidates) {
+    if (!(one.body ?? "").includes(mark)) continue;
     try {
       await context.setLink(item, one.node_id);
       return one;
@@ -501,6 +515,18 @@ async function carryIssue(
     const held = fromBin
       ? (await issuesByNode(octokit, [node]))[0]?.issue
       : undefined;
+    if (fromBin && held === undefined) {
+      if (!(await reads(octokit, owner, repo))) {
+        throw new Unreachable(
+          `${owner}/${repo} is out of the App's reach, so the restore of ${item.id} waits`,
+        );
+      }
+      context.log.condition(
+        `issue-gone:${item.id}`,
+        `GitHub no longer shows ${owner}/${repo}#${String(number)}, so the restore of ${item.id} is not sent`,
+      );
+      return undefined;
+    }
     const closed = held === undefined ? closedAt(item) : !held.open;
     const reason =
       held === undefined ? item.properties["state_reason"] : held.reason;
@@ -585,7 +611,6 @@ async function createIssue(
             { owner, repo },
             change.attempted,
           ),
-          (one) => one.title === title,
         );
   if (made !== undefined) {
     return placeIssue(change, context, octokit, { owner, repo }, made, true);
@@ -599,7 +624,7 @@ async function createIssue(
         owner,
         repo,
         title,
-        body: text(item, "body") ?? "",
+        body: marked(item),
         labels: list(item, "labels"),
         assignees: list(item, "assignees"),
       })
@@ -641,7 +666,7 @@ async function placeIssue(
     const title = text(item, "title") ?? "";
     const body = text(item, "body") ?? "";
     if (title !== held.title) patch["title"] = title;
-    if (body !== (held.body ?? "")) patch["body"] = body;
+    if (body !== unmarked(held.body ?? "")) patch["body"] = body;
     if (!same(list(item, "labels"), held.labels)) {
       patch["labels"] = list(item, "labels");
     }
@@ -754,7 +779,6 @@ async function createComment(
             { owner, repo, issue_number: number },
             change.attempted,
           ),
-          (one) => one.body === body,
         );
   if (made === undefined) {
     try {
@@ -766,7 +790,7 @@ async function createComment(
             owner,
             repo,
             issue_number: number,
-            body,
+            body: marked(item),
           },
         )
       ).data as RestComment;
@@ -787,7 +811,7 @@ async function createComment(
     }
   }
   // Found from a first try, it takes what the row says now.
-  if ((made.body ?? "") !== body) {
+  if (unmarked(made.body ?? "") !== body) {
     return commentEntry(await updateComment(octokit, made.node_id, body));
   }
   // GitHub's own answer, which a read straight after may not show yet.
@@ -824,6 +848,12 @@ export async function remake(
       context,
       app,
     );
-    return made !== undefined;
+    // Not made, the restore waits: `false` would say GitHub still has it.
+    if (made === undefined) {
+      throw new Unreachable(
+        `${change.item.id} could not be made again on GitHub, so its restore waits`,
+      );
+    }
+    return true;
   });
 }
