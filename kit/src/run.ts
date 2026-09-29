@@ -419,8 +419,10 @@ export async function runOnce<E extends EnvDeclaration>(
             return false;
           if (spec.link === undefined && row.source !== spec.source)
             return false;
-          // One this run's entries moved elsewhere is no longer under it.
-          const named = rows.connecting.get(row.id)?.[connection];
+          // One this run's entries or answers moved elsewhere is not under it.
+          const named =
+            rows.connecting.get(row.id)?.[connection] ??
+            answeredConnections.get(row.id)?.[connection];
           return (
             named === undefined ||
             named.some(

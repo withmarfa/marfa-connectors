@@ -136,8 +136,8 @@ export interface RunContext<E extends EnvDeclaration> {
    * to find what the vendor no longer lists: only rows of the type itself
    * the vendor has been told about. Empty where Marfa lacks the target.
    * Connections a run names are written once it ends, so a row this run's
-   * entries connect shows from the next, and one they move elsewhere is
-   * left out now.
+   * entries connect shows from the next, and one they or an answer move
+   * elsewhere is left out now. A target in the bin still answers its rows.
    */
   readonly linked: (
     type: string,

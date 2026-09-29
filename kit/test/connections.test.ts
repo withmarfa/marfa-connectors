@@ -393,6 +393,48 @@ describe("what a run finds linked", () => {
     expect(held.answers).toEqual([["v4"]]);
   });
 
+  it("leaves out a row an answer before the run moved elsewhere", async () => {
+    const held = connected([entry(1), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    const made = harness.server.insert(
+      undefined,
+      { title: "Made" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(
+      made.id,
+      harness.server.row("a:2").id,
+      "test.blocks",
+    );
+    held.vendorIdFor = () => "v9";
+    held.answer = (change) => ({
+      source_id: "a:9",
+      properties: { ...change.item.properties, vendor_id: "v9" },
+      connections: { "test.blocks": [{ type: "test.entry", id: "v3" }] },
+    });
+    held.entries = [];
+    held.ask = {
+      connection: "test.blocks",
+      target: { type: "test.entry", id: "v2" },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.answers).toEqual([[]]);
+  });
+
+  it("reads every page", async () => {
+    const many = Array.from({ length: 450 }, (_, at) => entry(at + 2, [1]));
+    const held = connected([entry(1), ...many]);
+    await harness.twoWay(held);
+    held.entries = [];
+    held.ask = {
+      connection: "test.blocks",
+      target: { type: "test.entry", id: "v1" },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.answers?.[0]).toHaveLength(450);
+  });
+
   it("is nothing where Marfa lacks the target", async () => {
     const held = connected([entry(1)]);
     held.ask = {
