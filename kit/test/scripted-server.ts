@@ -159,8 +159,8 @@ export class ScriptedServer {
   rows: Row[] = [];
   /** Every edge, in the order made. */
   edges: EdgeRow[] = [];
-  /** Edge types the instance holds, by id: the shipped `attached-to`,
-   *  and what is registered. */
+  /** Edge types the instance holds, by id: the shipped `attached-to` and
+   *  `in-thread`, and what is registered. */
   readonly edgeTypes = new Map<string, Record<string, unknown>>([
     [
       "attached-to",
@@ -172,6 +172,20 @@ export class ScriptedServer {
         cascade_on_delete: "orphan",
         property_schema: {},
         reverse_name: "has-attachment",
+        written_at: "source",
+      },
+    ],
+    [
+      "in-thread",
+      {
+        id: "in-thread",
+        cardinality: "many-to-one",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {
+          position: { type: "number", description: "Ordering." },
+        },
         written_at: "source",
       },
     ],
