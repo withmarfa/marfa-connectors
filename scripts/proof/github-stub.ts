@@ -104,6 +104,8 @@ export class GitHubStub {
   /** What each answer says is left of the hourly limit; at 0 it refuses
    *  every repository request, as GitHub's rate limit does. */
   rateRemaining = 4999;
+  /** Refuses each repository request as over the rate limit. */
+  rateLimited = false;
   /** The App's webhook as last set. */
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
@@ -408,8 +410,12 @@ export class GitHubStub {
     const method = req.method ?? "GET";
     const path = url.pathname;
     let match: RegExpExecArray | null;
-    if (this.rateRemaining <= 0 && path.startsWith("/repos/")) {
-      send(403, { message: "API rate limit exceeded for installation" });
+    if (this.rateLimited && path.startsWith("/repos/")) {
+      send(
+        403,
+        { message: "API rate limit exceeded for installation" },
+        { "x-ratelimit-remaining": "0" },
+      );
       return;
     }
 

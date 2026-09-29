@@ -543,7 +543,7 @@ describe("what the adversarial review found", () => {
     const repository = github.addRepository("someone/tracker");
     github.addIssue(repository);
     await ok();
-    github.rateRemaining = 0;
+    github.rateLimited = true;
     const { code, output } = await once();
     expect(code).toBe(1);
     expect(output).not.toContain("so its rows are left as they are");
