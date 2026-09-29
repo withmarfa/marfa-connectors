@@ -85,6 +85,11 @@ function appAuth(app: App): ReturnType<typeof createAppAuth> {
 }
 
 /** As the App itself, for its installations and its webhook. */
+/** A client with no credentials, for what GitHub proves otherwise. */
+export function anonymous(base: string, signal: AbortSignal): Client {
+  return client(base, signal);
+}
+
 export function asApp(app: App, signal: AbortSignal): Client {
   return client(app.base, signal, {
     authStrategy: createAppAuth,

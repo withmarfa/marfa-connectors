@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { EnvDeclaration, SetupContext } from "@withmarfa/connector";
-import { Octokit } from "@octokit/core";
-import { asApp, defaultBase, type App } from "./github.js";
+import { anonymous, asApp, defaultBase, type App } from "./github.js";
 
 export interface SetupEnv {
   readonly GITHUB_APP_ID?: string | undefined;
@@ -171,9 +170,10 @@ export async function setUp<E extends EnvDeclaration>(
   }
   // Needs no authentication: the code, good for an hour, is the proof.
   const conversion = (
-    await new Octokit({ baseUrl: base, request: { signal } }).request(
+    await anonymous(base, signal).request(
       "POST /app-manifests/{code}/conversions",
-      { code },
+      // Good once: a retry after GitHub made the App would lose its key.
+      { code, request: { retries: 0 } },
     )
   ).data as unknown as Conversion;
   secret(conversion.pem);

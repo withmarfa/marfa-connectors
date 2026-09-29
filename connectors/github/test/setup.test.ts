@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
+import { apiVersion } from "../src/github.js";
 
 const built = resolve(import.meta.dirname, "../dist/main.js");
 
@@ -144,6 +145,11 @@ describe("setup", () => {
     );
     expect(finished.output).not.toContain("BEGIN RSA PRIVATE KEY");
     expect(finished.output).not.toContain("stub-webhook-secret-from-github");
+    expect(
+      github.asked
+        .filter((one) => one.path.startsWith("/app-manifests/"))
+        .map((one) => one.version),
+    ).toEqual([apiVersion]);
   });
 
   it("asks only to read where the connector runs read only, and leaves the webhook off without a public address", async () => {
