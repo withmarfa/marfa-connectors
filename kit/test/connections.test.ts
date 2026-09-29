@@ -359,6 +359,54 @@ describe("connections made in Marfa", () => {
   });
 });
 
+describe("connections the vendor answers after a carry", () => {
+  it("are what it holds: one it would not take is taken back in Marfa, and nothing more is carried", async () => {
+    const held = connected([entry(1), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    const one = harness.server.row("a:1");
+    const two = harness.server.row("a:2");
+    const three = harness.server.row("a:3");
+    harness.server.drawEdge(one.id, two.id, "test.blocks");
+    harness.server.drawEdge(one.id, three.id, "test.blocks");
+    // The vendor takes the first and refuses the second.
+    held.answer = (change) => ({
+      ...entry(1, [2]),
+      properties: change.item.properties,
+    });
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes[0]?.connections?.["test.blocks"]?.added.map((row) => row.id),
+    ).toEqual([two.id, three.id]);
+    expect(targets(1)).toEqual(["a:2"]);
+    expect(harness.agreement(one.id)?.["connections"]).toEqual({
+      "test.blocks": [two.id],
+    });
+    held.changes.length = 0;
+    held.answer = undefined;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("leave a type the answer does not name as carried", async () => {
+    const held = connected([entry(1), entry(2)]);
+    await harness.twoWay(held);
+    const one = harness.server.row("a:1");
+    harness.server.drawEdge(
+      one.id,
+      harness.server.row("a:2").id,
+      "test.blocks",
+    );
+    held.answer = (change) => ({
+      source_id: "a:1",
+      properties: change.item.properties,
+    });
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual(["a:2"]);
+  });
+});
+
 describe("a read-only connection type on a two-way kind", () => {
   function mirrored(entries: Entry[]): Vendor {
     const held = connected(entries);

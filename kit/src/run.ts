@@ -18,6 +18,7 @@ import type {
   Log,
   RunContext,
   State,
+  Target,
   WatchContext,
 } from "./define.js";
 import { Connections, connectionsKey, type Carried } from "./connections.js";
@@ -701,6 +702,11 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return next;
   };
+  /** The connections the vendor answered it holds after a carry, by row. */
+  const answeredConnections = new Map<
+    string,
+    Readonly<Record<string, readonly Target[]>>
+  >();
   const settle = (
     kind: Spec,
     item: Item,
@@ -710,6 +716,9 @@ export async function runOnce<E extends EnvDeclaration>(
     moved: Carried | undefined,
   ): void => {
     pushed += 1;
+    if (answered?.connections !== undefined && item.state !== "trashed") {
+      answeredConnections.set(item.id, answered.connections);
+    }
     const base = store.get(item.id);
     // A vendor makes a row live; a state beside the create is carried next.
     const later = changeKind === "created" && item.state !== "active";
@@ -1066,6 +1075,10 @@ export async function runOnce<E extends EnvDeclaration>(
         const found = await find(id);
         if (agreement?.waiting === undefined || found === undefined) continue;
         if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
+      }
+      // A connection the vendor would not take is taken back in Marfa.
+      if (answeredConnections.size > 0) {
+        await connections.connect(answeredConnections, []);
       }
       for (const item of purged.values()) {
         if (setup.fenced?.() === true || setup.signal.aborted) {
