@@ -1,0 +1,24 @@
+{
+  "id": "github.repository",
+  "label": "GitHub Repository",
+  "description": "A repository the GitHub connector syncs: one the GitHub App is installed on. Read only; its issues and their comments are connected to it.",
+  "parent": "core.entity",
+  "link_field": "github_id",
+  "fields": {
+    "github_id": {
+      "type": "string",
+      "description": "The repository's GitHub node id."
+    },
+    "private": {
+      "type": "boolean",
+      "description": "Whether the repository is private on GitHub."
+    },
+    "archived_on_github": {
+      "type": "boolean",
+      "description": "Whether the repository is archived on GitHub, where it reads only."
+    }
+  },
+  "display_hints": {
+    "title_field": "name"
+  }
+}
