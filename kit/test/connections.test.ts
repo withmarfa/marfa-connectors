@@ -359,6 +359,128 @@ describe("connections made in Marfa", () => {
   });
 });
 
+describe("a read-only connection type on a two-way kind", () => {
+  function mirrored(entries: Entry[]): Vendor {
+    const held = connected(entries);
+    held.readOnly = ["test.blocks"];
+    return held;
+  }
+
+  it("is put back when changed in Marfa, carried nowhere, and the run names it", async () => {
+    const held = mirrored([entry(1, [2]), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    const one = harness.server.row("a:1");
+    const three = harness.server.row("a:3");
+    harness.server.removeEdge(harness.server.edges[0]?.id ?? "");
+    harness.server.drawEdge(one.id, three.id, "test.blocks");
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual(["a:2"]);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toContain(
+      `the test.blocks connections of ${one.id} were changed in Marfa and put back`,
+    );
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("follows the vendor, whatever Marfa agreed", async () => {
+    const held = mirrored([entry(1, [2]), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    held.entries = [entry(1, [3])];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual(["a:3"]);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("places a create, handed to it with the row", async () => {
+    const held = mirrored([entry(2)]);
+    await harness.twoWay(held);
+    const two = harness.server.row("a:2");
+    const made = harness.server.insert(
+      undefined,
+      { title: "Made in Marfa" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(made.id, two.id, "test.blocks");
+    held.vendorIdFor = () => "v9";
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.kind)).toEqual(["created"]);
+    expect(
+      held.changes[0]?.connections?.["test.blocks"]?.added.map((row) => row.id),
+    ).toEqual([two.id]);
+    expect(harness.server.targetsOf(made.id, "test.blocks")).toEqual([two.id]);
+  });
+
+  it("holds a create back until the vendor has the row it names, made later in the same run", async () => {
+    const held = mirrored([]);
+    await harness.twoWay(held);
+    const first = harness.server.insert(
+      undefined,
+      { title: "First" },
+      "test.entry",
+      "person",
+    );
+    const second = harness.server.insert(
+      undefined,
+      { title: "Second" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(first.id, second.id, "test.blocks");
+    held.vendorIdFor = (change) =>
+      change.item.id === first.id ? "v-first" : "v-second";
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.item.id)).toEqual([
+      second.id,
+      first.id,
+    ]);
+    expect(
+      held.changes[1]?.connections?.["test.blocks"]?.added.map((row) => row.id),
+    ).toEqual([second.id]);
+  });
+
+  it("holds a create back across runs while the row it names stays untold", async () => {
+    const held = mirrored([]);
+    await harness.twoWay(held);
+    const first = harness.server.insert(
+      undefined,
+      { title: "First" },
+      "test.entry",
+      "person",
+    );
+    const second = harness.server.insert(
+      undefined,
+      { title: "Second" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(first.id, second.id, "test.blocks");
+    held.pushFail = { id: second.id, error: new Error("the vendor is down") };
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
+    held.changes.length = 0;
+    held.vendorIdFor = (change) =>
+      change.item.id === first.id ? "v-first" : "v-second";
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.item.id)).toEqual([
+      second.id,
+      first.id,
+    ]);
+  });
+
+  it("naming no connection type of the kind is refused at start", async () => {
+    const held = connected([]);
+    held.readOnly = ["test.other"];
+    expect(await harness.twoWay(held)).toBe(2);
+    expect(harness.lines.join("\n")).toContain(
+      "test.entry's link and read-only fields among its fields or the connection types from it, where test.other is not",
+    );
+  });
+});
+
 describe("a connection type", () => {
   it("that cascades, or reaches past the connector's types, is refused at start", async () => {
     const cascading = connected([]);

@@ -143,6 +143,8 @@ export interface Vendor {
   revive?: boolean;
   /** The connection types the connector declares. */
   connections?: ConnectionDefinition[];
+  /** The two-way kind's read-only fields and connection types. */
+  readOnly?: string[];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -187,7 +189,12 @@ function twoWayConnector(held: Vendor) {
     description: "A two-way connector the kit's tests drive.",
     source: "test",
     types: [
-      { type: linkedType, fields: testFields, revive: held.revive === true },
+      {
+        type: linkedType,
+        fields: testFields,
+        revive: held.revive === true,
+        ...(held.readOnly !== undefined && { readOnly: held.readOnly }),
+      },
     ],
     ...(held.connections !== undefined && { connections: held.connections }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },

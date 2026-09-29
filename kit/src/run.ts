@@ -485,18 +485,31 @@ export async function runOnce<E extends EnvDeclaration>(
       current.properties,
     );
     const back = stale.length === 0 ? [] : await rows.putBack(id, stale);
-    if (!kind.twoWay && agreement.waiting[connectionsKey] !== undefined) {
+    const types = connections.typesFrom(kind.type);
+    const mirrored = types.filter((type) => connections.mirrored(kind, type));
+    // A create's mirrored connections place it, so they are not put back.
+    const told = !kind.twoWay || agreement.link !== undefined;
+    if (
+      mirrored.length > 0 &&
+      told &&
+      agreement.waiting[connectionsKey] !== undefined
+    ) {
       const edges = (await connections.edgesOf([id])).get(id)?.edges ?? [];
       store.set(
         id,
-        await connections.putBack(current, store.get(id) ?? agreement, edges),
+        await connections.putBack(
+          current,
+          kind,
+          store.get(id) ?? agreement,
+          edges,
+        ),
       );
     }
     const waiting = { ...store.get(id)?.waiting };
     for (const field of [
       ...back,
       ...(kind.link === undefined ? [] : [kind.link]),
-      ...(kind.twoWay ? [] : [connectionsKey]),
+      ...(told && mirrored.length === types.length ? [connectionsKey] : []),
     ]) {
       Reflect.deleteProperty(waiting, field);
     }
@@ -532,7 +545,12 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return merged;
   };
-  const carry = async (item: Item, agreement: Agreement): Promise<void> => {
+  /** Carries a row's change; answers `unplaced` for a create waiting on
+   *  the vendor to have a row its mirrored connections name. */
+  const carry = async (
+    item: Item,
+    agreement: Agreement,
+  ): Promise<"unplaced" | undefined> => {
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec: kind, rows } = lane(item.type);
     if (connector.onChange === undefined || !kind.twoWay) return;
@@ -596,12 +614,17 @@ export async function runOnce<E extends EnvDeclaration>(
         agreement.waiting?.[connectionsKey] !== undefined)
         ? await connections.changes(
             current,
+            kind,
             agreement,
             (await connections.edgesOf([current.id])).get(current.id)?.edges ??
               [],
             changeKind === "created",
           )
         : undefined;
+    // Placed by a row the vendor lacks: made once the vendor has that row.
+    if (changeKind === "created" && moved?.unplaced === true) {
+      return "unplaced";
+    }
     const connected = Object.keys(moved?.connections ?? {}).length > 0;
     if (changeKind === "updated" && changed.length === 0 && !connected) {
       // A read-only field no version could put back still waits.
@@ -903,6 +926,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (twoWay) {
       // An untold or restored-but-vendor-lost row is made there before
       // the vendor is read, so failing before it links makes no twin.
+      const unplaced: string[] = [];
       for (const id of order) {
         const agreement = store.get(id);
         const found = await find(id);
@@ -910,7 +934,7 @@ export async function runOnce<E extends EnvDeclaration>(
         const { item, spec: kind } = found;
         if (!kind.twoWay) continue;
         if (agreement.waiting?.[createKey] !== undefined) {
-          await carry(item, agreement);
+          if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
           done.add(id);
           continue;
         }
@@ -955,6 +979,14 @@ export async function runOnce<E extends EnvDeclaration>(
             });
             done.add(id);
           }
+        }
+      }
+      // Once more, for a create naming a row made after it in this run.
+      for (const id of unplaced) {
+        const agreement = store.get(id);
+        const found = await find(id);
+        if (agreement !== undefined && found !== undefined) {
+          await carry(found.item, agreement);
         }
       }
     }

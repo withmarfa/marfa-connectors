@@ -117,13 +117,20 @@ export function checkDefinition<E extends EnvDeclaration>(
   }
   if (new Set(ids).size !== ids.length) problems.push("each type once");
   for (const kind of connector.types) {
+    const from = new Set(
+      (connector.connections ?? [])
+        .filter((connection) =>
+          connection.source_type_constraints?.includes(kind.type.id),
+        )
+        .map((connection) => connection.id),
+    );
     const outside = [
-      ...(kind.readOnly ?? []),
+      ...(kind.readOnly ?? []).filter((name) => !from.has(name)),
       ...(kind.type.link_field === undefined ? [] : [kind.type.link_field]),
     ].filter((field) => !kind.fields.includes(field));
     if (outside.length > 0) {
       problems.push(
-        `${kind.type.id}'s link and read-only fields among its fields, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,
+        `${kind.type.id}'s link and read-only fields among its fields or the connection types from it, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,
       );
     }
   }
