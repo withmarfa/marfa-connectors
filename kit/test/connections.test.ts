@@ -373,6 +373,26 @@ describe("what a run finds linked", () => {
     expect(held.answers).toEqual([["v1"]]);
   });
 
+  it("leaves out a row this run's entries moved elsewhere, and one never told to the vendor", async () => {
+    const held = connected([entry(1, [2]), entry(2), entry(3), entry(4, [2])]);
+    await harness.twoWay(held);
+    const two = harness.server.row("a:2");
+    const untold = harness.server.insert(
+      undefined,
+      { title: "Untold" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(untold.id, two.id, "test.blocks");
+    held.entries = [entry(1, [3])];
+    held.ask = {
+      connection: "test.blocks",
+      target: { type: "test.entry", id: "v2" },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.answers).toEqual([["v4"]]);
+  });
+
   it("is nothing where Marfa lacks the target", async () => {
     const held = connected([entry(1)]);
     held.ask = {

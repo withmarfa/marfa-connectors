@@ -133,9 +133,11 @@ export interface RunContext<E extends EnvDeclaration> {
   /**
    * The active rows of the type that hold a connection of the kind to the
    * target: what Marfa has under something, such as a repository's issues,
-   * to find what the vendor no longer lists. Empty where Marfa lacks the
-   * target. Connections a run names are written once it ends, so a row
-   * connected by this run's own entries shows from the next.
+   * to find what the vendor no longer lists: only rows of the type itself
+   * the vendor has been told about. Empty where Marfa lacks the target.
+   * Connections a run names are written once it ends, so a row this run's
+   * entries connect shows from the next, and one they move elsewhere is
+   * left out now.
    */
   readonly linked: (
     type: string,

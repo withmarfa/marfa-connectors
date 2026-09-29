@@ -406,9 +406,32 @@ export async function runOnce<E extends EnvDeclaration>(
         target.id,
       );
       if (held === undefined) return [];
+      const spec = lane(type).spec;
       const found = await setup.marfa.connectedTo(type, connection, held.id);
-      for (const row of found) rows.adopt(row);
-      return found;
+      return found
+        .filter((row) => {
+          if (row.type !== type) return false;
+          // A row the vendor has not been told about has nothing to ask it.
+          if (
+            spec.link !== undefined &&
+            rows.linkOf(row.properties) === undefined
+          )
+            return false;
+          if (spec.link === undefined && row.source !== spec.source)
+            return false;
+          // One this run's entries moved elsewhere is no longer under it.
+          const named = rows.connecting.get(row.id)?.[connection];
+          return (
+            named === undefined ||
+            named.some(
+              (one) => one.type === target.type && one.id === target.id,
+            )
+          );
+        })
+        .map((row) => {
+          rows.adopt(row);
+          return structuredClone(row);
+        });
     },
   };
   const watchContext: WatchContext<E> = {
