@@ -1,0 +1,240 @@
+import type { Entry, Target } from "@withmarfa/connector";
+
+export const repositoryType = "github.repository";
+export const issueType = "github.issue";
+export const commentType = "github.comment";
+export const inRepository = "github.in-repository";
+export const subIssueOf = "github.sub-issue-of";
+export const blockedBy = "github.blocked-by";
+export const inThread = "in-thread";
+
+/** A repository as the installation lists it. */
+export interface RestRepository {
+  node_id: string;
+  full_name: string;
+  html_url: string;
+  description: string | null;
+  private: boolean;
+  archived: boolean;
+  updated_at: string;
+}
+
+/** An issue as REST lists it; a pull request carries `pull_request`. */
+export interface RestIssue {
+  node_id: string;
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  state_reason?: string | null;
+  html_url: string;
+  closed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  user: { login: string } | null;
+  labels: ({ name?: string } | string)[];
+  assignees?: { login: string }[] | null;
+  comments: number;
+  pull_request?: unknown;
+  parent_issue_url?: string | null;
+  issue_dependencies_summary?: {
+    total_blocked_by?: number;
+    total_blocking?: number;
+  };
+}
+
+/** A comment as REST lists it. */
+export interface RestComment {
+  node_id: string;
+  body: string | null;
+  html_url: string;
+  issue_url: string;
+  created_at: string;
+  updated_at: string;
+  user: { login: string } | null;
+}
+
+/** An issue at the other end of a relation. */
+export interface Related {
+  id: string;
+  url: string;
+  repository: { id: string };
+}
+
+/** An issue as the connector writes it, from REST or GraphQL. */
+export interface Issue {
+  node: string;
+  number: number;
+  title: string;
+  body: string | null;
+  open: boolean;
+  /** As REST names it: completed, not_planned, duplicate, reopened. */
+  reason: string | null;
+  url: string;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  author: string | null;
+  labels: string[];
+  assignees: string[];
+  repository: { node: string; name: string };
+}
+
+export interface Relations {
+  parent: Related | null;
+  /** The parent's address where GitHub shows no node for it. */
+  parentUrl: string | null;
+  blockedBy: Related[];
+}
+
+export const noRelations: Relations = {
+  parent: null,
+  parentUrl: null,
+  blockedBy: [],
+};
+
+export interface Comment {
+  node: string;
+  body: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  author: string | null;
+  issue: string;
+  repository: string;
+}
+
+/** An issue whose relations only GraphQL can name. */
+export function related(issue: RestIssue): boolean {
+  const summary = issue.issue_dependencies_summary;
+  return (
+    (issue.parent_issue_url ?? null) !== null ||
+    (summary?.total_blocked_by ?? 0) > 0 ||
+    (summary?.total_blocking ?? 0) > 0
+  );
+}
+
+export function issueOfRest(
+  issue: RestIssue,
+  repository: { node: string; name: string },
+): Issue {
+  return {
+    node: issue.node_id,
+    number: issue.number,
+    title: issue.title,
+    body: issue.body === "" ? null : issue.body,
+    open: issue.state === "open",
+    reason: issue.state_reason ?? null,
+    url: issue.html_url,
+    closedAt: issue.closed_at,
+    createdAt: issue.created_at,
+    updatedAt: issue.updated_at,
+    author: issue.user?.login ?? null,
+    labels: issue.labels.flatMap((label) =>
+      typeof label === "string"
+        ? [label]
+        : label.name === undefined
+          ? []
+          : [label.name],
+    ),
+    assignees: (issue.assignees ?? []).map((one) => one.login),
+    repository,
+  };
+}
+
+/** The web address of an issue REST names by its API address. */
+export function webAddress(api: string): string {
+  const found = /\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(api);
+  return found === null
+    ? api
+    : `https://github.com/${found[1] ?? ""}/${found[2] ?? ""}/issues/${found[3] ?? ""}`;
+}
+
+/** Marfa's status for GitHub's state and reason. */
+export function statusOf(open: boolean, reason: string | null): string {
+  if (open) return "pending";
+  return reason === "not_planned" || reason === "duplicate"
+    ? "canceled"
+    : "completed";
+}
+
+export function repositoryEntry(repository: RestRepository): Entry {
+  return {
+    source_id: repository.node_id,
+    properties: {
+      github_id: repository.node_id,
+      name: repository.full_name,
+      url: repository.html_url,
+      description: repository.description,
+      private: repository.private,
+      archived_on_github: repository.archived,
+    },
+    changed_at: repository.updated_at,
+  };
+}
+
+/**
+ * An issue as an entry: its relations to issues in synced repositories are
+ * connections, and to the rest their addresses.
+ */
+export function issueEntry(
+  issue: Issue,
+  relations: Relations,
+  synced: ReadonlySet<string>,
+): Entry {
+  const inside = (one: Related): boolean => synced.has(one.repository.id);
+  const target = (one: Related): Target => ({ type: issueType, id: one.id });
+  const parent = relations.parent;
+  return {
+    source_id: issue.node,
+    properties: {
+      github_id: issue.node,
+      title: issue.title,
+      body: issue.body,
+      status: statusOf(issue.open, issue.reason),
+      completed_at: issue.open ? null : issue.closedAt,
+      url: issue.url,
+      number: issue.number,
+      repository: issue.repository.name,
+      author: issue.author,
+      labels: issue.labels,
+      assignees: issue.assignees,
+      state_reason: issue.reason,
+      github_updated_at: issue.updatedAt,
+      parent_url:
+        parent === null
+          ? relations.parentUrl
+          : inside(parent)
+            ? null
+            : parent.url,
+      blocked_by_urls: relations.blockedBy
+        .filter((one) => !inside(one))
+        .map((one) => one.url),
+    },
+    occurred_at: issue.createdAt,
+    changed_at: issue.updatedAt,
+    connections: {
+      [inRepository]: [{ type: repositoryType, id: issue.repository.node }],
+      [subIssueOf]: parent !== null && inside(parent) ? [target(parent)] : [],
+      [blockedBy]: relations.blockedBy.filter(inside).map(target),
+    },
+  };
+}
+
+export function commentEntry(comment: Comment): Entry {
+  return {
+    source_id: comment.node,
+    properties: {
+      github_id: comment.node,
+      body: comment.body,
+      from: comment.author ?? "ghost",
+      url: comment.url,
+    },
+    occurred_at: comment.createdAt,
+    changed_at: comment.updatedAt,
+    connections: {
+      [inThread]: [{ type: issueType, id: comment.issue }],
+      [inRepository]: [{ type: repositoryType, id: comment.repository }],
+    },
+  };
+}

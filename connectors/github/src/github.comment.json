@@ -1,0 +1,21 @@
+{
+  "id": "github.comment",
+  "label": "GitHub Comment",
+  "description": "A comment on an issue in a repository the GitHub connector syncs, in the issue's thread. Its body travels both ways.",
+  "parent": "core.message",
+  "link_field": "github_id",
+  "fields": {
+    "github_id": {
+      "type": "string",
+      "description": "The comment's GitHub node id. A row without one has not been sent to GitHub."
+    },
+    "url": {
+      "type": "string",
+      "format": "url",
+      "description": "The comment's address on GitHub."
+    }
+  },
+  "display_hints": {
+    "body_field": "body"
+  }
+}

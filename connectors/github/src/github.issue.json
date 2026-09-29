@@ -1,0 +1,58 @@
+{
+  "id": "github.issue",
+  "label": "GitHub Issue",
+  "description": "An issue in a repository the GitHub connector syncs: a task whose title, body, status, labels and assignees travel both ways, open while its status is anything but completed or canceled.",
+  "parent": "core.task",
+  "link_field": "github_id",
+  "fields": {
+    "github_id": {
+      "type": "string",
+      "description": "The issue's GitHub node id: set from GitHub for an issue read from it, and from GitHub's answer for a row created in Marfa and sent there. A row without one has not been sent to GitHub."
+    },
+    "number": {
+      "type": "integer",
+      "description": "The issue's number in its repository."
+    },
+    "repository": {
+      "type": "string",
+      "description": "The repository's full name, as owner/name."
+    },
+    "author": {
+      "type": "string",
+      "description": "The GitHub login that opened the issue."
+    },
+    "labels": {
+      "type": "array",
+      "items_type": "string",
+      "description": "The issue's labels, by name."
+    },
+    "assignees": {
+      "type": "array",
+      "items_type": "string",
+      "description": "The logins the issue is assigned to."
+    },
+    "state_reason": {
+      "type": "string",
+      "description": "Why GitHub says the issue is closed or was reopened: completed, not_planned, duplicate or reopened, as GitHub names it."
+    },
+    "github_updated_at": {
+      "type": "string",
+      "format": "datetime",
+      "description": "When GitHub last changed the issue, a new comment included."
+    },
+    "parent_url": {
+      "type": "string",
+      "format": "url",
+      "description": "The address of the issue this one is a sub-issue of, where that issue's repository is not synced."
+    },
+    "blocked_by_urls": {
+      "type": "array",
+      "items_type": "string",
+      "description": "The addresses of the issues blocking this one whose repositories are not synced."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "body"
+  }
+}
