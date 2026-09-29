@@ -682,20 +682,25 @@ describe("GITHUB_REPOSITORIES", () => {
     ).toBe(false);
   });
 
-  it("archives a repository's rows once it is left out, and brings them back when it is named again", async () => {
+  it("leaves a repository's rows as they are once it is left out, reads nothing of it, and takes it up again when it is named again", async () => {
     const repository = github.addRepository("someone/tracker");
-    const issue = github.addIssue(repository);
+    const issue = github.addIssue(repository, { title: "Before" });
     const comment = github.addComment(issue, "Said");
     await ok();
+    github.edit(issue, { title: "Changed while left out" });
     const { output } = await once({ GITHUB_REPOSITORIES: "someone/other" });
     expect(output).toContain(
-      "someone/tracker is no longer among GITHUB_REPOSITORIES",
+      "someone/tracker is left out by GITHUB_REPOSITORIES, so its rows are left as they are",
     );
     expect(
       [repository.node, issue.node, comment.node].map((one) => row(one).state),
-    ).toEqual(["archived", "archived", "archived"]);
-    await once({ GITHUB_REPOSITORIES: "someone/tracker" });
+    ).toEqual(["active", "active", "active"]);
+    expect(row(issue.node).properties["title"]).toBe("Before");
+    // A typo or a rename leaves it paused, never archived.
+    await once({ GITHUB_REPOSITORIES: "someone/trakcer" });
     expect(row(issue.node).state).toBe("active");
+    await once({ GITHUB_REPOSITORIES: "someone/tracker" });
+    expect(row(issue.node).properties["title"]).toBe("Changed while left out");
   });
 
   it("names an entry no installation shows", async () => {
@@ -715,5 +720,15 @@ describe("GITHUB_REPOSITORIES", () => {
     expect(code).not.toBe(0);
     expect(output).toContain("each is owner/repo or owner/*");
     expect(marfa.rows).toEqual([]);
+  });
+});
+
+describe("GITHUB_REPOSITORIES entries", () => {
+  it("take owners GitHub allows, underscores and all", async () => {
+    const repository = github.addRepository("mona_octo/tracker");
+    const issue = github.addIssue(repository);
+    const { code } = await once({ GITHUB_REPOSITORIES: "mona_octo/*" });
+    expect(code).toBe(0);
+    expect(row(issue.node).state).toBe("active");
   });
 });

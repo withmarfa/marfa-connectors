@@ -5,7 +5,8 @@ export interface Scope {
   unmatched(fullNames: Iterable<string>): string[];
 }
 
-const entry = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/(?:\*|[a-z0-9._-]+)$/;
+// Loose on purpose: a typo is named as unmatched rather than refused.
+const entry = /^[a-z0-9_.-]+\/(?:\*|[a-z0-9_.-]+)$/;
 
 /**
  * `GITHUB_REPOSITORIES`: `owner/repo` or `owner/*`, set apart by commas or

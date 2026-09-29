@@ -55,6 +55,9 @@ export interface Kept {
    *  ETag then cannot say nothing lies past it. */
   comments?: { since: string; etag?: string; full?: boolean };
   checked?: string;
+  /** Left out by GITHUB_REPOSITORIES: its rows are left as they are, and
+   *  its cursors kept for when it is named again. */
+  paused?: boolean;
 }
 
 type Context = RunContext<EnvDeclaration>;
@@ -128,7 +131,7 @@ export async function read(
   >();
   const answered = new Set<number>();
   // Seen through the App but left out by GITHUB_REPOSITORIES.
-  const outside = new Set<string>();
+  const outside = new Map<string, RestRepository>();
   const seen: string[] = [];
   for (const installation of installations) {
     const who = installation.account?.login ?? String(installation.id);
@@ -149,7 +152,7 @@ export async function read(
       for (const repository of repositories) {
         seen.push(repository.full_name);
         if (scope !== undefined && !scope.admits(repository.full_name)) {
-          outside.add(repository.node_id);
+          outside.set(repository.node_id, repository);
           continue;
         }
         listed.set(repository.node_id, {
@@ -182,17 +185,22 @@ export async function read(
   const next: Record<string, Kept> = {};
   for (const [node, { repository, installation }] of listed) {
     next[node] = { ...kept[node], installation, name: repository.full_name };
+    Reflect.deleteProperty(next[node], "paused");
   }
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node)) continue;
+    const left = outside.get(node);
+    if (left !== undefined) {
+      if (repository.paused !== true) {
+        log.info(
+          `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are and changes made to them wait until it is named again`,
+        );
+      }
+      next[node] = { ...repository, name: left.full_name, paused: true };
+      continue;
+    }
     if (answered.has(repository.installation)) {
-      await takeOut(
-        context,
-        node,
-        outside.has(node)
-          ? `${repository.name} is no longer among GITHUB_REPOSITORIES`
-          : `${repository.name} was taken out of the App's installation`,
-      );
+      await takeOut(context, node, repository.name);
       continue;
     }
     next[node] = repository;
@@ -261,7 +269,7 @@ export async function read(
 
 /** A repository taken out of the App's installation: its rows archived,
  *  back again if it is added again. */
-async function takeOut(context: Context, node: string, why: string) {
+async function takeOut(context: Context, node: string, name: string) {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
   const links = (rows: Item[]): string[] =>
@@ -272,7 +280,9 @@ async function takeOut(context: Context, node: string, why: string) {
   );
   await archive(issueType, links(await linked(issueType, inRepository, under)));
   await archive(repositoryType, [node]);
-  log.info(`${why}, so its rows are archived`);
+  log.info(
+    `${name} was taken out of the App's installation, and its rows archived`,
+  );
 }
 
 /**
