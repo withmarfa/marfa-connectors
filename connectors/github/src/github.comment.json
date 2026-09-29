@@ -9,6 +9,10 @@
       "type": "string",
       "description": "The comment's GitHub node id. A row without one has not been sent to GitHub."
     },
+    "repository": {
+      "type": "string",
+      "description": "The repository's full name, as owner/name."
+    },
     "url": {
       "type": "string",
       "format": "url",

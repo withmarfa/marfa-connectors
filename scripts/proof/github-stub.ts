@@ -692,7 +692,13 @@ export class GitHubStub {
             createdAt: comment.created_at,
             updatedAt: comment.updated_at,
             author: { login: comment.user },
-            issue: { id: issue.node, repository: { id: repository.node } },
+            issue: {
+              id: issue.node,
+              repository: {
+                id: repository.node,
+                nameWithOwner: `${repository.owner}/${repository.name}`,
+              },
+            },
           };
         }),
       };

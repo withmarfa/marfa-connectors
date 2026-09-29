@@ -90,7 +90,7 @@ export interface Comment {
   updatedAt: string;
   author: string | null;
   issue: string;
-  repository: string;
+  repository: { node: string; name: string };
 }
 
 export function issueOfRest(
@@ -194,13 +194,14 @@ export function commentEntry(comment: Comment): Entry {
       github_id: comment.node,
       body: comment.body,
       from: comment.author ?? "ghost",
+      repository: comment.repository.name,
       url: comment.url,
     },
     occurred_at: comment.createdAt,
     changed_at: comment.updatedAt,
     connections: {
       [inThread]: [{ type: issueType, id: comment.issue }],
-      [inRepository]: [{ type: repositoryType, id: comment.repository }],
+      [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
     },
   };
 }

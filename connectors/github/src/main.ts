@@ -84,8 +84,8 @@ const connector = defineConnector({
     },
     {
       type: comment as TypeDefinition,
-      fields: ["github_id", "body", "from", "url"],
-      readOnly: ["from", "url", inThread, inRepository],
+      fields: ["github_id", "body", "from", "repository", "url"],
+      readOnly: ["from", "repository", "url", inThread, inRepository],
     },
   ],
   connections: [

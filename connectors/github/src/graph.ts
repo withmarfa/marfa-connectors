@@ -35,7 +35,7 @@ const commentsQuery = `query Comments($ids: [ID!]!) {
     ... on IssueComment {
       id body url createdAt updatedAt
       author { login }
-      issue { id repository { id } }
+      issue { id repository { id nameWithOwner } }
     }
   }
 }`;
@@ -89,7 +89,7 @@ interface GraphComment {
   createdAt: string;
   updatedAt: string;
   author: { login: string } | null;
-  issue: { id: string; repository: { id: string } };
+  issue: { id: string; repository: { id: string; nameWithOwner: string } };
 }
 
 interface Nodes<T> {
@@ -197,7 +197,10 @@ export async function commentsByNode(
         updatedAt: node.updatedAt,
         author: node.author?.login ?? null,
         issue: node.issue.id,
-        repository: node.issue.repository.id,
+        repository: {
+          node: node.issue.repository.id,
+          name: node.issue.repository.nameWithOwner,
+        },
       });
     }
   }

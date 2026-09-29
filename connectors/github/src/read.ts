@@ -230,7 +230,7 @@ async function readNamed(
   const issues = new Map<string, { issue: Issue; relations: Relations }>();
   for (const octokit of clients) {
     for (const comment of await commentsByNode(octokit, commentIds)) {
-      if (!synced.has(comment.repository)) continue;
+      if (!synced.has(comment.repository.node)) continue;
       comments.set(comment.node, comment);
       issueIds.add(comment.issue);
     }
@@ -390,7 +390,7 @@ async function syncRepository(
               updatedAt: comment.updated_at,
               author: comment.user?.login ?? null,
               issue,
-              repository: node,
+              repository: { node, name: repository.name },
             }),
           ];
     }),
