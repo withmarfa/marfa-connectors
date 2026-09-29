@@ -705,9 +705,10 @@ export async function runOnce<E extends EnvDeclaration>(
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
+      // The first try's time: a later one's would miss what the first made.
       store.set(current.id, {
         ...agreement,
-        attempted: clock.now().toISOString(),
+        attempted: agreement.attempted ?? clock.now().toISOString(),
       });
       await store.flush([current.id]);
     }
@@ -717,6 +718,10 @@ export async function runOnce<E extends EnvDeclaration>(
         item: current,
         changed: new Set(changed),
         ...(attempted !== undefined && { attempted }),
+        ...(changeKind === "restored" &&
+          (agreement.state === "trashed" || agreement.state === "archived") && {
+            was: agreement.state,
+          }),
         ...(connected &&
           moved !== undefined && { connections: moved.connections }),
       },
@@ -1020,8 +1025,11 @@ export async function runOnce<E extends EnvDeclaration>(
           done.add(id);
           continue;
         }
+        // A row never linked has nothing at the vendor to make again: its
+        // restore is carried as the create it still is.
+        const told = kind.link === undefined || agreement.link !== undefined;
         const restored =
-          item.state === "active" && agreement.state !== "active";
+          told && item.state === "active" && agreement.state !== "active";
         if (connector.remake !== undefined && restored) {
           if (setup.signal.aborted) throw new Stopped();
           // Its mirrored connections say where it is made again.
@@ -1056,6 +1064,7 @@ export async function runOnce<E extends EnvDeclaration>(
               ),
             ),
             ...(Object.keys(handed).length > 0 && { connections: handed }),
+            ...(agreement.state !== "active" && { was: agreement.state }),
           };
           // Placed by a row the vendor lacks: made again once it has it.
           if (placed?.unplaced === true) {

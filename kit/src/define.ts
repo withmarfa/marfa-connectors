@@ -164,10 +164,16 @@ export interface Change {
    */
   readonly changed: ReadonlySet<string>;
   /**
-   * For a create: when one was sent before and no link came back, so the
-   * vendor may hold what it made; look for it there before making another.
+   * For a create, or the trash of a row whose create got no link: when it
+   * was first sent, so the vendor may hold what it made; look for it there
+   * before making another. It can be long ago, for a create abandoned then
+   * sent again, so a match may belong to another row, which `setLink`
+   * refuses.
    */
   readonly attempted?: string;
+  /** For a restore, to `onChange` or `remake`: where the row was restored
+   *  from, the bin or archive. */
+  readonly was?: "trashed" | "archived";
   /**
    * The connections made or removed in Marfa since the vendor last had them,
    * by connection type; a target the vendor has not been told about waits
