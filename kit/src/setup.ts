@@ -97,7 +97,7 @@ export async function setUp<E extends EnvDeclaration>(
 /** Serves the page on a local address until the vendor's redirect
  *  arrives there. */
 function serve(
-  page: string | undefined,
+  page: string | ((callback: string) => string) | undefined,
   servers: Server[],
   logger: Logger,
   signal: AbortSignal,
@@ -115,10 +115,11 @@ function serve(
   redirected.catch(() => undefined);
   // Unguessable, so no other local process or page can answer for the vendor.
   const base = `/${randomUUID()}`;
+  let shown: string | undefined;
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const callback = url.pathname === `${base}/callback`;
-    const html = callback ? done : url.pathname === base ? page : undefined;
+    const html = callback ? done : url.pathname === base ? shown : undefined;
     if (html === undefined) {
       response.writeHead(404).end();
       return;
@@ -136,6 +137,7 @@ function serve(
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
       const url = `http://127.0.0.1:${String(port)}${base}`;
+      shown = typeof page === "function" ? page(`${url}/callback`) : page;
       logger.info(`open ${url} in a browser`);
       resolve({ url, callback: `${url}/callback`, redirected });
     });

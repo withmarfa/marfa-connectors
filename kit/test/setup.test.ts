@@ -110,6 +110,29 @@ describe("--setup", () => {
     expect(harness.server.holds).toEqual([]);
   });
 
+  it("serves a page made from the address the vendor sends the browser back to", async () => {
+    const held: Held = {};
+    const file = join(dir, "secrets.json");
+    const exit = start(
+      withSetup(held, async (context) => {
+        held.opened = await context.listen(
+          (callback) => `<form data-redirect="${callback}"></form>`,
+        );
+        await held.opened.redirected;
+        return { TEST_APP_KEY: made };
+      }),
+      harness.runtime(["--setup", file]),
+    );
+    await until(() => held.opened !== undefined);
+    const local = held.opened;
+    if (local === undefined) throw new Error("setup listened nowhere");
+    expect(await (await fetch(local.url)).text()).toBe(
+      `<form data-redirect="${local.callback}"></form>`,
+    );
+    await fetch(`${local.callback}?code=abc`);
+    expect(await exit).toBe(0);
+  });
+
   it("writes over no file, and is refused for a connector without a setup", async () => {
     const file = join(dir, "secrets.json");
     await writeFile(file, "kept");

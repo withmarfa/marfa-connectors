@@ -207,8 +207,14 @@ export interface SetupContext<E extends EnvDeclaration> {
   readonly signal: AbortSignal;
   readonly log: Pick<Log, "info" | "warn">;
   readonly secret: Secret;
-  /** Serves `page` at a local address, and waits for the vendor's redirect. */
-  readonly listen: (page?: string) => Promise<LocalCallback>;
+  /**
+   * Serves `page` at a local address, and waits for the vendor's redirect.
+   * A page that must name where the vendor sends the browser back, such
+   * as a manifest's `redirect_url`, is made from that address.
+   */
+  readonly listen: (
+    page?: string | ((callback: string) => string),
+  ) => Promise<LocalCallback>;
   /**
    * Makes a webhook endpoint for the connector: its path in full this once,
    * and the address as the kit reaches the instance, which a vendor may
