@@ -199,6 +199,13 @@ export interface LocalCallback {
   readonly callback: string;
   /** The query the redirect carried, once the browser arrives. */
   readonly redirected: Promise<URLSearchParams>;
+  /**
+   * Sends the browser, held at the callback, on to a web address, such as
+   * the page where the vendor asks for the next step; asked before the
+   * browser arrives, it throws. A browser not sent on is told when setup
+   * ends that it is done, or that it failed. The callback answers once.
+   */
+  readonly onward: (address: string) => void;
 }
 
 export interface SetupContext<E extends EnvDeclaration> {
