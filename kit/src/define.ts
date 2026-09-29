@@ -164,9 +164,9 @@ export interface Change {
    */
   readonly changed: ReadonlySet<string>;
   /**
-   * For a create, or the trash of a row whose create got no link: when it
-   * was first sent, so the vendor may hold what it made; look for it there
-   * before making another. It can be long ago, for a create abandoned then
+   * For a create, the trash of a row whose create got no link, or a remake:
+   * when it was first sent, so the vendor may hold what it made; look for
+   * it there before making another. It can be long ago, for a create abandoned then
    * sent again, so a match may belong to another row, which `setLink`
    * refuses.
    */
@@ -354,7 +354,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * vendor now holds, connections included, so one the vendor would not
    * take is taken back in Marfa; otherwise the carried values are taken as
    * the vendor's. Resolving means the change landed or was abandoned with a
-   * condition; throwing fails the run, and the change waits for the next.
+   * condition; throwing fails the run, and the change waits for the next,
+   * but throwing `Unreachable` leaves the run going on.
    * For a purge, the answer's `changed_at` keeps the purge remembered past
    * the vendor's own change, such as a close.
    */
@@ -368,7 +369,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * that fails between the vendor's answer and the link cannot read the
    * vendor's copy first and create the row's twin. Answers whether it made
    * the row; one the vendor still has is carried by `onChange` after the
-   * read.
+   * read. Where a remake failed before, `change.attempted` says when it was
+   * first asked; it may throw `Unreachable` as `onChange` may.
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**

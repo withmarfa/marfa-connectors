@@ -34,6 +34,7 @@ import {
   Rows,
   stateKey,
   Stopped,
+  Unreachable,
   type Counts,
   type Spec,
 } from "./rows.js";
@@ -712,21 +713,29 @@ export async function runOnce<E extends EnvDeclaration>(
       });
       await store.flush([current.id]);
     }
-    const answered = await connector.onChange(
-      {
-        kind: changeKind,
-        item: current,
-        changed: new Set(changed),
-        ...(attempted !== undefined && { attempted }),
-        ...(changeKind === "restored" &&
-          (agreement.state === "trashed" || agreement.state === "archived") && {
-            was: agreement.state,
-          }),
-        ...(connected &&
-          moved !== undefined && { connections: moved.connections }),
-      },
-      watchContext,
-    );
+    let answered: Entry | undefined;
+    try {
+      answered = await connector.onChange(
+        {
+          kind: changeKind,
+          item: current,
+          changed: new Set(changed),
+          ...(attempted !== undefined && { attempted }),
+          ...(changeKind === "restored" &&
+            (agreement.state === "trashed" ||
+              agreement.state === "archived") && {
+              was: agreement.state,
+            }),
+          ...(connected &&
+            moved !== undefined && { connections: moved.connections }),
+        },
+        watchContext,
+      );
+    } catch (error) {
+      if (!(error instanceof Unreachable)) throw error;
+      raised.set(`unreachable:${current.id}`, error.message);
+      return;
+    }
     settle(kind, current, changeKind, changed, answered, moved);
     // What the vendor answered for a field the change did not carry is the
     // row's, such as a number it gave; a carried field keeps its value.
@@ -977,6 +986,10 @@ export async function runOnce<E extends EnvDeclaration>(
       const observed = observe(kind, seen, agreement);
       own += observed.own;
       const next = observed.next;
+      // A remake's first try holds only while its restore does.
+      if (next.link !== undefined && last.state !== "active") {
+        Reflect.deleteProperty(next, "attempted");
+      }
       store.set(id, next);
       if (carriable(next.waiting)) order.add(id);
     }
@@ -1031,7 +1044,9 @@ export async function runOnce<E extends EnvDeclaration>(
         const restored =
           told && item.state === "active" && agreement.state !== "active";
         if (connector.remake !== undefined && restored) {
-          if (setup.signal.aborted) throw new Stopped();
+          if (setup.fenced?.() === true || setup.signal.aborted) {
+            throw new Stopped();
+          }
           // Its mirrored connections say where it is made again.
           const placing = new Set(
             connections
@@ -1065,6 +1080,9 @@ export async function runOnce<E extends EnvDeclaration>(
             ),
             ...(Object.keys(handed).length > 0 && { connections: handed }),
             ...(agreement.state !== "active" && { was: agreement.state }),
+            ...(agreement.attempted !== undefined && {
+              attempted: agreement.attempted,
+            }),
           };
           // Placed by a row the vendor lacks: made again once it has it.
           if (placed?.unplaced === true) {
@@ -1072,7 +1090,28 @@ export async function runOnce<E extends EnvDeclaration>(
             done.add(id);
             continue;
           }
-          if (await connector.remake(change, watchContext)) {
+          // Kept before the vendor is asked, as for a create.
+          store.set(id, {
+            ...agreement,
+            attempted: agreement.attempted ?? clock.now().toISOString(),
+          });
+          await store.flush([id]);
+          let remade: boolean;
+          try {
+            remade = await connector.remake(change, watchContext);
+          } catch (error) {
+            if (!(error instanceof Unreachable)) throw error;
+            raised.set(`unreachable:${id}`, error.message);
+            done.add(id);
+            continue;
+          }
+          if (!remade) {
+            // Nothing was made: the vendor still has it.
+            const kept = { ...(store.get(id) ?? agreement) };
+            Reflect.deleteProperty(kept, "attempted");
+            store.set(id, kept);
+          }
+          if (remade) {
             pushed += 1;
             // What was sent, never the server's answer, which can hold a
             // person's edit made meanwhile.
@@ -1162,10 +1201,18 @@ export async function runOnce<E extends EnvDeclaration>(
           purged.delete(item.id);
           continue;
         }
-        const answered = await connector.onChange?.(
-          { kind: "purged", item, changed: new Set() },
-          watchContext,
-        );
+        let answered: Entry | undefined;
+        try {
+          answered = await connector.onChange?.(
+            { kind: "purged", item, changed: new Set() },
+            watchContext,
+          );
+        } catch (error) {
+          if (!(error instanceof Unreachable)) throw error;
+          // Kept among the purges, for a later run to carry.
+          raised.set(`unreachable:${item.id}`, error.message);
+          continue;
+        }
         pushed += 1;
         await settlePurge(lane(item.type).spec, item, answered);
         purged.delete(item.id);
