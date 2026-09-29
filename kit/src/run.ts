@@ -986,6 +986,10 @@ export async function runOnce<E extends EnvDeclaration>(
       const observed = observe(kind, seen, agreement);
       own += observed.own;
       const next = observed.next;
+      // A remake's first try holds only while its restore does.
+      if (next.link !== undefined && last.state !== "active") {
+        Reflect.deleteProperty(next, "attempted");
+      }
       store.set(id, next);
       if (carriable(next.waiting)) order.add(id);
     }
@@ -1040,7 +1044,9 @@ export async function runOnce<E extends EnvDeclaration>(
         const restored =
           told && item.state === "active" && agreement.state !== "active";
         if (connector.remake !== undefined && restored) {
-          if (setup.signal.aborted) throw new Stopped();
+          if (setup.fenced?.() === true || setup.signal.aborted) {
+            throw new Stopped();
+          }
           // Its mirrored connections say where it is made again.
           const placing = new Set(
             connections
@@ -1195,10 +1201,18 @@ export async function runOnce<E extends EnvDeclaration>(
           purged.delete(item.id);
           continue;
         }
-        const answered = await connector.onChange?.(
-          { kind: "purged", item, changed: new Set() },
-          watchContext,
-        );
+        let answered: Entry | undefined;
+        try {
+          answered = await connector.onChange?.(
+            { kind: "purged", item, changed: new Set() },
+            watchContext,
+          );
+        } catch (error) {
+          if (!(error instanceof Unreachable)) throw error;
+          // Kept among the purges, for a later run to carry.
+          raised.set(`unreachable:${item.id}`, error.message);
+          continue;
+        }
         pushed += 1;
         await settlePurge(lane(item.type).spec, item, answered);
         purged.delete(item.id);

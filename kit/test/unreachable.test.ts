@@ -114,3 +114,55 @@ describe("a remake", () => {
     );
   });
 });
+
+describe("a purge the vendor cannot be reached for", () => {
+  it("waits, while the run carries the other purges and succeeds", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1");
+    const second = harness.server.row("a:2");
+    harness.server.trash(first.id);
+    harness.server.trash(second.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.purge("a:1");
+    harness.server.purge("a:2");
+    held.unreachable = new Set([first.id]);
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    expect(held.changes.map((change) => change.item.id).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+    held.unreachable = undefined;
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
+      [["purged", first.id]],
+    );
+  });
+});
+
+describe("a remake the vendor could not be reached for", () => {
+  it("leaves no first try behind once the row is back in the bin", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    held.entries = [];
+    held.gone = new Map([[row.id, "v1-again"]]);
+    held.unreachable = new Set([row.id]);
+    await harness.twoWay(held);
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    held.unreachable = undefined;
+    harness.server.restore(row.id);
+    held.remakes = [];
+    await harness.twoWay(held);
+    expect(held.remakes.map((remake) => remake.change.attempted)).toEqual([
+      undefined,
+    ]);
+  });
+});

@@ -369,7 +369,8 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * that fails between the vendor's answer and the link cannot read the
    * vendor's copy first and create the row's twin. Answers whether it made
    * the row; one the vendor still has is carried by `onChange` after the
-   * read.
+   * read. Where a remake failed before, `change.attempted` says when it was
+   * first asked; it may throw `Unreachable` as `onChange` may.
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**
