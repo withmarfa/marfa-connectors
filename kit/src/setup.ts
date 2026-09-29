@@ -72,39 +72,47 @@ export async function setUp<E extends EnvDeclaration>(
       };
     },
   };
-  let answered: Readonly<Record<string, string>>;
+  const written = async (): Promise<number> => {
+    let answered: Readonly<Record<string, string>>;
+    try {
+      answered = await setup(context);
+    } catch (error) {
+      await handle.close();
+      await rm(file, { force: true });
+      logger.error(`setup failed, and ${file} was removed: ${describe(error)}`);
+      return 1;
+    }
+    try {
+      await handle.writeFile(`${JSON.stringify(answered, null, 2)}\n`);
+    } finally {
+      await handle.close();
+    }
+    const names = Object.keys(answered);
+    logger.info(
+      `setup wrote ${names.join(", ")} to ${file}, which its owner alone may read: move them into the secret store, then delete the file`,
+    );
+    const declared = Object.keys(connector.env ?? {});
+    const unknown = names.filter((name) => !declared.includes(name));
+    if (unknown.length > 0) {
+      logger.error(
+        `setup answered ${unknown.join(", ")}, which the connector does not declare`,
+      );
+      return 1;
+    }
+    return 0;
+  };
+  // A browser held at the callback is told how setup ended, once it has.
+  let succeeded = false;
   try {
-    answered = await setup(context);
-  } catch (error) {
-    for (const served of servers) served.release(false);
-    await handle.close();
-    await rm(file, { force: true });
-    logger.error(`setup failed, and ${file} was removed: ${describe(error)}`);
-    return 1;
+    const code = await written();
+    succeeded = code === 0;
+    return code;
   } finally {
     for (const served of servers) {
-      served.release(true);
+      served.release(succeeded);
       served.server.close();
     }
   }
-  try {
-    await handle.writeFile(`${JSON.stringify(answered, null, 2)}\n`);
-  } finally {
-    await handle.close();
-  }
-  const names = Object.keys(answered);
-  logger.info(
-    `setup wrote ${names.join(", ")} to ${file}, which its owner alone may read: move them into the secret store, then delete the file`,
-  );
-  const declared = Object.keys(connector.env ?? {});
-  const unknown = names.filter((name) => !declared.includes(name));
-  if (unknown.length > 0) {
-    logger.error(
-      `setup answered ${unknown.join(", ")}, which the connector does not declare`,
-    );
-    return 1;
-  }
-  return 0;
 }
 
 /** Serves the page on a local address until the vendor's redirect
@@ -159,11 +167,16 @@ function serve(
     },
   });
   const onward = (address: string): void => {
-    const target = new URL(address);
-    if (target.protocol !== "https:" && target.protocol !== "http:") {
-      throw new Error(`the browser is sent on only to a web address`);
+    const target = URL.parse(address);
+    if (target?.protocol !== "https:" && target?.protocol !== "http:") {
+      throw new Error("onward sends the browser only to a web address");
     }
-    if (held === undefined || held.writableEnded) return;
+    if (held === undefined) {
+      throw new Error(
+        "onward sends on the browser the vendor sent back, which has not arrived",
+      );
+    }
+    if (held.writableEnded) return;
     held.writeHead(303, { Location: target.toString() }).end();
   };
   return new Promise((resolve, reject) => {

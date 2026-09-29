@@ -177,6 +177,75 @@ describe("--setup", () => {
     expect(await exit).toBe(1);
   });
 
+  it("tells the browser setup failed where it failed after the browser arrived, and answers the callback once", async () => {
+    const held: Held = {};
+    const file = join(dir, "secrets.json");
+    let answered: Promise<Response> | undefined;
+    const exit = start(
+      withSetup(held, async (context) => {
+        held.opened = await context.listen("<form></form>");
+        // The browser arrives as setup is already failing.
+        answered = fetch(`${held.opened.callback}?code=abc`);
+        await new Promise((resolve) => setImmediate(resolve));
+        throw new Error("the vendor refused the code");
+      }),
+      harness.runtime(["--setup", file]),
+    );
+    expect(await exit).toBe(1);
+    expect(await (await answered)?.text()).toContain("Setup failed");
+    const again = await fetch(`${held.opened?.callback ?? ""}?code=abc`).catch(
+      () => undefined,
+    );
+    expect(again?.status ?? 404).toBe(404);
+  });
+
+  it("says done to a browser setup did not send on, and fails a setup sending it somewhere not on the web, or before it arrives", async () => {
+    const plain: Held = {};
+    const exit = start(
+      withSetup(plain, async (context) => {
+        plain.opened = await context.listen("<form></form>");
+        await plain.opened.redirected;
+        return { TEST_APP_KEY: made };
+      }),
+      harness.runtime(["--setup", join(dir, "one.json")]),
+    );
+    await until(() => plain.opened !== undefined);
+    const done = await fetch(`${plain.opened?.callback ?? ""}?code=abc`);
+    expect(await done.text()).toContain("Done: go back to the terminal");
+    expect(await exit).toBe(0);
+
+    const early: Held = {};
+    expect(
+      await start(
+        withSetup(early, async (context) => {
+          const local = await context.listen("<form></form>");
+          local.onward("https://vendor.example/next");
+          return { TEST_APP_KEY: made };
+        }),
+        harness.runtime(["--setup", join(dir, "two.json")]),
+      ),
+    ).toBe(1);
+    expect(harness.lines.join("\n")).toContain("which has not arrived");
+
+    const elsewhere: Held = {};
+    const refused = start(
+      withSetup(elsewhere, async (context) => {
+        elsewhere.opened = await context.listen("<form></form>");
+        await elsewhere.opened.redirected;
+        elsewhere.opened.onward("javascript:alert(1)");
+        return { TEST_APP_KEY: made };
+      }),
+      harness.runtime(["--setup", join(dir, "three.json")]),
+    );
+    await until(() => elsewhere.opened !== undefined);
+    const told = await fetch(`${elsewhere.opened?.callback ?? ""}?code=abc`);
+    expect(await told.text()).toContain("Setup failed");
+    expect(await refused).toBe(1);
+    expect(harness.lines.join("\n")).toContain(
+      "onward sends the browser only to a web address",
+    );
+  });
+
   it("fails, keeping no file, where the page cannot be made", async () => {
     const file = join(dir, "secrets.json");
     const exit = start(
