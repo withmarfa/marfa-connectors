@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
+import { numbersIn, runsOf } from "../src/github.js";
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
@@ -384,6 +385,28 @@ describe("a repository", () => {
     expect(kept()[repository.node]).toBeDefined();
   });
 
+  it("whose App is uninstalled changes nothing and says so", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    await ok();
+    github.installations = [];
+    const output = await ok();
+    expect(output).toContain("can no longer be read through the App");
+    expect(row(repository.node).state).toBe("active");
+    expect(row(issue.node).state).toBe("active");
+  });
+
+  it("with its issues turned off changes nothing and says so", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    await ok();
+    repository.issuesOff = true;
+    checkDue();
+    const output = await ok();
+    expect(output).toContain("has its issues turned off");
+    expect(row(issue.node).state).toBe("active");
+  });
+
   it("listed but answering 404 changes nothing and says so", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
@@ -395,13 +418,103 @@ describe("a repository", () => {
   });
 });
 
-describe("the App's key", () => {
-  it("is never written to a log or a report, nor is any token", async () => {
+describe("the App's key and its tokens", () => {
+  it("never reach a log or a report, even where GitHub's answer quotes a token", async () => {
     const repository = github.addRepository("someone/tracker");
     github.addIssue(repository);
-    const output = await ok();
+    github.echoCredentials = true;
+    const { code, output } = await once();
+    expect(code).toBe(1);
+    expect(output).toContain("broken for token [redacted]");
     expect(output).not.toContain("BEGIN RSA PRIVATE KEY");
     expect(output).not.toContain("ghs_stub_");
     expect(JSON.stringify(marfa.runs)).not.toContain("ghs_stub_");
+  }, 30_000);
+});
+
+describe("a larger repository", () => {
+  it("is listed page by page, and a parent drawn on GitHub for a child on a page that did not change is taken", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issues = Array.from({ length: 150 }, (_, at) =>
+      github.addIssue(repository, { title: `Issue ${String(at + 1)}` }),
+    );
+    await ok();
+    expect(
+      marfa.rows.filter((one) => one.type === "github.issue"),
+    ).toHaveLength(150);
+    const child = issues[2];
+    const parent = issues[139];
+    if (child === undefined || parent === undefined) throw new Error("none");
+    child.parent = parent.node;
+    const asked = github.asked.length;
+    await ok();
+    const pages = github.asked
+      .slice(asked)
+      .filter((one) => one.query.includes("state=open"));
+    expect(pages.map((one) => one.status)).toEqual([304, 200]);
+    expect(links(child.node, "github.sub-issue-of")).toEqual([parent.node]);
+  });
+
+  it("reads its comments on the first sync in one listing, not issue by issue", async () => {
+    const repository = github.addRepository("someone/tracker");
+    for (let at = 0; at < 5; at += 1) {
+      github.addComment(github.addIssue(repository), `Comment ${String(at)}`);
+    }
+    await ok();
+    expect(
+      github.asked.filter((one) => /\/issues\/\d+\/comments$/.test(one.path)),
+    ).toEqual([]);
+    expect(
+      marfa.rows.filter((one) => one.type === "github.comment"),
+    ).toHaveLength(5);
+  });
+
+  it("keeps each page's numbers as runs, so its state stays small", () => {
+    expect(runsOf([5, 1, 2, 3, 7, 8, 3])).toBe("1-3,5,7-8");
+    expect(numbersIn("1-3,5,7-8")).toEqual([1, 2, 3, 5, 7, 8]);
+    expect(numbersIn(runsOf([]))).toEqual([]);
+  });
+});
+
+describe("a comment a run missed", () => {
+  it("is written at the daily check", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.addComment(issue, "Seen");
+    await ok();
+    await ok();
+    // Shown late by GitHub, under a time before the run's cursor.
+    const late = github.addComment(issue, "Late");
+    late.updated_at = github.ago(1);
+    late.created_at = late.updated_at;
+    await ok();
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === late.node),
+    ).toBe(false);
+    checkDue();
+    await ok();
+    expect(row(late.node).properties["body"]).toBe("Late");
+  });
+});
+
+describe("a bot", () => {
+  it("is named the same whether REST or GraphQL answered", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const old = github.addIssue(repository, {
+      title: "Old, by a bot",
+      user: "dependabot[bot]",
+      state: "closed",
+      state_reason: "completed",
+      closed_at: github.ago(200),
+      updated_at: github.ago(200),
+    });
+    const listed = github.addIssue(repository, {
+      title: "Listed, by a bot",
+      user: "dependabot[bot]",
+    });
+    listed.blocked_by = [old.node];
+    await ok();
+    expect(row(old.node).properties["author"]).toBe("dependabot[bot]");
+    expect(row(listed.node).properties["author"]).toBe("dependabot[bot]");
   });
 });

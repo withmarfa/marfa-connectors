@@ -5,7 +5,7 @@ const related = "id url repository { id }";
 
 const issueFields = `
   id number title body state stateReason url closedAt createdAt updatedAt
-  author { login }
+  author { login __typename }
   labels(first: 100) { nodes { name } }
   assignees(first: 100) { nodes { login } }
   repository { id nameWithOwner }
@@ -25,6 +25,7 @@ const relationsQuery = `query Relations($ids: [ID!]!) {
       parent { ${related} }
       blockedBy(first: 50) { nodes { ${related} } }
       blocking(first: 50) { nodes { id } }
+      subIssues(first: 100) { nodes { id } }
     }
   }
 }`;
@@ -34,7 +35,7 @@ const commentsQuery = `query Comments($ids: [ID!]!) {
     __typename
     ... on IssueComment {
       id body url createdAt updatedAt
-      author { login }
+      author { login __typename }
       issue { id repository { id nameWithOwner } }
     }
   }
@@ -53,6 +54,18 @@ const numbersQuery = (count: number): string =>
   }
 }`;
 
+interface Author {
+  login: string;
+  __typename: string;
+}
+
+/** A bot's login as REST writes it, with its suffix, which GraphQL leaves
+ *  off, so a row reads the same whichever answered. */
+export function loginOf(author: Author | null): string | null {
+  if (author === null) return null;
+  return author.__typename === "Bot" ? `${author.login}[bot]` : author.login;
+}
+
 interface GraphIssue {
   __typename: string;
   id: string;
@@ -65,7 +78,7 @@ interface GraphIssue {
   closedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  author: { login: string } | null;
+  author: Author | null;
   labels: { nodes: { name: string }[] };
   assignees: { nodes: { login: string }[] };
   repository: { id: string; nameWithOwner: string };
@@ -79,6 +92,7 @@ interface GraphRelations {
   parent: Related | null;
   blockedBy: { nodes: (Related | null)[] };
   blocking: { nodes: ({ id: string } | null)[] };
+  subIssues: { nodes: ({ id: string } | null)[] };
 }
 
 interface GraphComment {
@@ -88,7 +102,7 @@ interface GraphComment {
   url: string;
   createdAt: string;
   updatedAt: string;
-  author: { login: string } | null;
+  author: Author | null;
   issue: { id: string; repository: { id: string; nameWithOwner: string } };
 }
 
@@ -133,9 +147,9 @@ export async function issuesByNode(
           closedAt: node.closedAt,
           createdAt: node.createdAt,
           updatedAt: node.updatedAt,
-          author: node.author?.login ?? null,
-          labels: node.labels.nodes.map((label) => label.name),
-          assignees: node.assignees.nodes.map((one) => one.login),
+          author: loginOf(node.author),
+          labels: node.labels.nodes.map((label) => label.name).sort(),
+          assignees: node.assignees.nodes.map((one) => one.login).sort(),
           repository: {
             node: node.repository.id,
             name: node.repository.nameWithOwner,
@@ -153,12 +167,18 @@ export async function issuesByNode(
   return found;
 }
 
-/** The relations of issues by node id, and the issues each one blocks. */
+/** The relations of issues by node id, and the issues each one blocks and
+ *  holds beneath it, whose own relations changed with it. */
 export async function relationsOf(
   octokit: Client,
   ids: readonly string[],
-): Promise<Map<string, Relations & { blocking: string[] }>> {
-  const found = new Map<string, Relations & { blocking: string[] }>();
+): Promise<
+  Map<string, Relations & { blocking: string[]; children: string[] }>
+> {
+  const found = new Map<
+    string,
+    Relations & { blocking: string[]; children: string[] }
+  >();
   for (const batch of batches([...new Set(ids)])) {
     const answer = (await query(octokit, relationsQuery, {
       ids: batch,
@@ -170,6 +190,9 @@ export async function relationsOf(
           (one): one is Related => one !== null,
         ),
         blocking: node.blocking.nodes.flatMap((one) =>
+          one === null ? [] : [one.id],
+        ),
+        children: node.subIssues.nodes.flatMap((one) =>
           one === null ? [] : [one.id],
         ),
       });
@@ -195,7 +218,7 @@ export async function commentsByNode(
         url: node.url,
         createdAt: node.createdAt,
         updatedAt: node.updatedAt,
-        author: node.author?.login ?? null,
+        author: loginOf(node.author),
         issue: node.issue.id,
         repository: {
           node: node.issue.repository.id,

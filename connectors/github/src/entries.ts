@@ -16,6 +16,7 @@ export interface RestRepository {
   description: string | null;
   private: boolean;
   archived: boolean;
+  has_issues?: boolean;
   updated_at: string;
 }
 
@@ -109,14 +110,16 @@ export function issueOfRest(
     createdAt: issue.created_at,
     updatedAt: issue.updated_at,
     author: issue.user?.login ?? null,
-    labels: issue.labels.flatMap((label) =>
-      typeof label === "string"
-        ? [label]
-        : label.name === undefined
-          ? []
-          : [label.name],
-    ),
-    assignees: (issue.assignees ?? []).map((one) => one.login),
+    labels: issue.labels
+      .flatMap((label) =>
+        typeof label === "string"
+          ? [label]
+          : label.name === undefined
+            ? []
+            : [label.name],
+      )
+      .sort(),
+    assignees: (issue.assignees ?? []).map((one) => one.login).sort(),
     repository,
   };
 }

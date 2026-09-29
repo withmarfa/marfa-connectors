@@ -7,20 +7,23 @@ Reads the repositories a GitHub App is installed on, their issues and the issues
 - **Repositories**: every repository of every installation of the App, as the person chose them when installing it. A repository is a `github.repository`, read only.
 - **Issues**: everything open, and what closed or changed in the last ninety days; an older issue comes in once anything happens to it, or when an issue in the sync names it as its parent or blocker. Each is a `github.issue`, a core task: its title, body, labels and assignees, and its state as the task's status (`pending` while open, `completed` when closed as completed, `canceled` when closed as not planned or a duplicate, with `state_reason` saying which). Pull requests are left out.
 - **Comments** on those issues, each a `github.comment`, a core message from its author, in its issue's thread through Marfa's own `in-thread`.
-- **Relations**, as connections: `github.sub-issue-of` from an issue to its parent, `github.blocked-by` from an issue to each issue blocking it, and `github.in-repository` from each issue and comment to its repository. A parent or blocker in a repository the App is not installed on is kept as its address, in `parent_url` or `blocked_by_urls`, until it is.
+- **Relations**, as connections: `github.sub-issue-of` from an issue to its parent, `github.blocked-by` from an issue to each issue blocking it, and `github.in-repository` from each issue and comment to its repository. A parent or blocker in a public repository the App is not installed on is kept as its address, in `parent_url` or `blocked_by_urls`, until it is. GitHub shows an App nothing of a private repository it is not installed on, not even as the end of a relation, so such a relation is not known at all; nor is one between private repositories under two different installations of the App.
 
 Each row links to GitHub by `github_id`, the GitHub node id of what it is.
 
 ## How changes are noticed
 
-A scheduled run lists each repository's issues whole, open and within the window, page by page, asking each page with the ETag it last answered: a page that did not change answers 304, which costs nothing against GitHub's rate limit, so a quiet repository costs nothing to poll. A new comment moves its issue's time; an edited comment, a sub-issue or a blocker does not, which is why the listing is read whole rather than since a time. Comments are read since the last run. An installation's rate limit is 5,000 requests an hour; a first sync of a repository with 500 issues in the window, 300 with comments, is about 300 requests.
+A scheduled run lists each repository's issues whole, open and within the window, page by page, asking each page with the ETag it last answered: a page that did not change answers 304, which costs nothing against GitHub's rate limit. A new comment moves its issue's time; an edited comment, a sub-issue or a blocker does not, which is why the listing is read whole rather than since a time, and the relations of each issue that changed are asked of GitHub's GraphQL API. Comments are read since the last run.
+
+GitHub answers 304 only to the installation token that was answered the ETag, and a token lasts an hour. Run the connector with `--every`, which keeps its tokens between runs: a quiet repository then costs one full listing an hour, a request per hundred issues, and nothing between. Run with `--once`, each run lists everything afresh. An installation's rate limit is 5,000 requests an hour; a first sync of a repository with 500 issues in the window and 2,000 comments is about 30 requests.
 
 Once a day, a scheduled run also asks GitHub about each row it no longer lists. Only GitHub saying so archives anything:
 
 - An issue GitHub says was deleted (410) is archived; one it says moved to another repository (301) is archived, and the run says so, since it arrives there as a new row.
 - A comment gone from a repository GitHub still reads is archived.
 - A repository taken out of the App's installation has its rows archived; they come back if it is added again.
-- A lost installation, a suspended one, or a repository that stops answering changes nothing: the run says so, and the rows stay as they are.
+- An App uninstalled, or its installation suspended or refusing it, a repository that stops answering, or one whose issues are turned off, changes nothing: the run says so, and the rows stay as they are.
+- The daily check also writes any comment a run missed.
 
 ## Setting it up
 

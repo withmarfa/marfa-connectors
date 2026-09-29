@@ -8,9 +8,6 @@ import {
   issueType,
   repositoryEntry,
   repositoryType,
-  type Comment,
-  type Issue,
-  type Relations,
   type RestComment,
   type RestIssue,
   type RestRepository,
@@ -18,6 +15,7 @@ import {
 import {
   asApp,
   asInstallation,
+  numbersIn,
   pagesOf,
   status,
   unlessUnchanged,
@@ -57,14 +55,21 @@ interface Installation {
   account?: { login?: string } | null;
 }
 
-/** Refused for want of access, rather than for a passing reason. */
+/** Refused for want of access, rather than for a passing reason such as a
+ *  rate limit, which fails the run for the next to take up. */
 function lostAccess(error: unknown): boolean {
   const code = status(error);
   if (code === 403) {
-    const headers = (
-      error as { response?: { headers?: Record<string, unknown> } }
-    ).response?.headers;
-    if (headers?.["x-ratelimit-remaining"] === "0") return false;
+    const answer = error as {
+      message?: string;
+      response?: { headers?: Record<string, unknown> };
+    };
+    if (
+      answer.response?.headers?.["x-ratelimit-remaining"] === "0" ||
+      /rate limit/i.test(answer.message ?? "")
+    ) {
+      return false;
+    }
   }
   return code === 401 || code === 403 || code === 404;
 }
@@ -76,8 +81,12 @@ function keptOf(value: unknown): Record<string, Kept> {
 }
 
 function numbersOf(pages: readonly Page[] | undefined): number[] {
-  return (pages ?? []).flatMap((page) => page.numbers);
+  return (pages ?? []).flatMap((page) => numbersIn(page.numbers));
 }
+
+/** A comment cursor asked a little early, so one GitHub shows late under
+ *  an earlier time is still read; what comes again is unchanged. */
+const overlap = 5 * 60 * 1000;
 
 function day(at: Date): string {
   return at.toISOString().slice(0, 10);
@@ -89,7 +98,7 @@ function linkOf(row: Item): string | undefined {
 }
 
 export async function read(context: Context, app: App): Promise<void> {
-  const { hints, state, log, secret, signal, upsert } = context;
+  const { state, log, secret, signal, upsert } = context;
   const kept = keptOf(state.get("repositories"));
   const installations = (await asApp(app, signal).paginate(
     "GET /app/installations",
@@ -137,7 +146,7 @@ export async function read(context: Context, app: App): Promise<void> {
   }
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node)) continue;
-    if (hints === undefined && answered.has(repository.installation)) {
+    if (answered.has(repository.installation)) {
       await takeOut(context, node, repository.name);
       continue;
     }
@@ -155,6 +164,14 @@ export async function read(context: Context, app: App): Promise<void> {
     const repository = next[node];
     const octokit = at === undefined ? undefined : clients.get(at.installation);
     if (octokit === undefined || repository === undefined) return;
+    // GitHub answers each issue of such a repository 410, as if deleted.
+    if (at?.repository.has_issues === false) {
+      log.condition(
+        `issues-off:${node}`,
+        `${repository.name} has its issues turned off on GitHub, so its rows are left as they are`,
+      );
+      return;
+    }
     try {
       next[node] = await syncRepository(context, octokit, node, repository, {
         synced,
@@ -169,32 +186,17 @@ export async function read(context: Context, app: App): Promise<void> {
     }
   };
 
-  if (hints === undefined) {
-    await upsert(
-      repositoryType,
-      [...listed.values()].map(({ repository }) => repositoryEntry(repository)),
+  await upsert(
+    repositoryType,
+    [...listed.values()].map(({ repository }) => repositoryEntry(repository)),
+  );
+  const now = Date.now();
+  for (const node of listed.keys()) {
+    const checked = next[node]?.checked;
+    await sync(
+      node,
+      checked === undefined || now - Date.parse(checked) >= checkEvery,
     );
-    const now = Date.now();
-    for (const node of listed.keys()) {
-      const checked = next[node]?.checked;
-      await sync(
-        node,
-        checked === undefined || now - Date.parse(checked) >= checkEvery,
-      );
-    }
-  } else {
-    const named = [...(hints.get(repositoryType) ?? [])].filter((node) =>
-      listed.has(node),
-    );
-    await upsert(
-      repositoryType,
-      named.flatMap((node) => {
-        const at = listed.get(node);
-        return at === undefined ? [] : [repositoryEntry(at.repository)];
-      }),
-    );
-    for (const node of named) await sync(node, true);
-    await readNamed(context, [...clients.values()], synced);
   }
   state.set("repositories", next);
 }
@@ -217,38 +219,6 @@ async function takeOut(context: Context, node: string, name: string) {
   );
 }
 
-/** What the hints name, fetched by node: each comment's issue beside it. */
-async function readNamed(
-  context: Context,
-  clients: readonly Client[],
-  synced: ReadonlySet<string>,
-): Promise<void> {
-  const { hints, upsert } = context;
-  const commentIds = [...(hints?.get(commentType) ?? [])];
-  const issueIds = new Set(hints?.get(issueType) ?? []);
-  const comments = new Map<string, Comment>();
-  const issues = new Map<string, { issue: Issue; relations: Relations }>();
-  for (const octokit of clients) {
-    for (const comment of await commentsByNode(octokit, commentIds)) {
-      if (!synced.has(comment.repository.node)) continue;
-      comments.set(comment.node, comment);
-      issueIds.add(comment.issue);
-    }
-    for (const found of await issuesByNode(octokit, [...issueIds])) {
-      if (synced.has(found.issue.repository.node)) {
-        issues.set(found.issue.node, found);
-      }
-    }
-  }
-  await upsert(
-    issueType,
-    [...issues.values()].map(({ issue, relations }) =>
-      issueEntry(issue, relations, synced),
-    ),
-  );
-  await upsert(commentType, [...comments.values()].map(commentEntry));
-}
-
 /**
  * One repository: its issues listed whole, each page asked with its ETag
  * so an unchanged one costs nothing; the comments changed since the last
@@ -262,7 +232,7 @@ async function syncRepository(
   repository: Kept,
   options: { synced: ReadonlySet<string>; check: boolean },
 ): Promise<Kept> {
-  const { upsert, hints } = context;
+  const { upsert } = context;
   const [owner = "", name = ""] = repository.name.split("/");
   const started = new Date();
   const windowStart = day(
@@ -307,6 +277,8 @@ async function syncRepository(
   const listedNodes = new Set(listed.map((issue) => issue.node_id));
   const around = [...relations.values()].flatMap((one) => [
     ...one.blocking,
+    // A child names its parent; it may sit on a page that did not change.
+    ...one.children,
     ...(one.parent !== null && options.synced.has(one.parent.repository.id)
       ? [one.parent.id]
       : []),
@@ -332,12 +304,19 @@ async function syncRepository(
       ),
   ]);
 
-  // Comments: those changed since the last run, and all of each issue new
-  // to the sync, as on the first.
+  // Comments: on the first sync the repository's whole, then those changed
+  // since, and all of each issue new to the sync.
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
   let etag = repository.comments?.etag;
-  if (repository.comments !== undefined) {
+  if (repository.comments === undefined) {
+    for (const comment of (await octokit.paginate(
+      "GET /repos/{owner}/{repo}/issues/comments",
+      { owner, repo: name, per_page: 100 },
+    )) as RestComment[]) {
+      comments.set(comment.node_id, comment);
+    }
+  } else {
     const changed = await changedComments(
       octokit,
       { owner, repo: name },
@@ -350,50 +329,23 @@ async function syncRepository(
       }
       etag = changed.etag;
     }
+    for (const number of scope) {
+      if (before.has(number)) continue;
+      if ((byNumber.get(number)?.comments ?? 0) === 0) continue;
+      for (const comment of (await octokit.paginate(
+        "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+        { owner, repo: name, issue_number: number, per_page: 100 },
+      )) as RestComment[]) {
+        comments.set(comment.node_id, comment);
+      }
+    }
   }
-  for (const number of scope) {
-    if (before.has(number) && repository.comments !== undefined) continue;
-    if ((byNumber.get(number)?.comments ?? 0) === 0) continue;
-    const all = (await octokit.paginate(
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
-      { owner, repo: name, issue_number: number, per_page: 100 },
-    )) as RestComment[];
-    for (const comment of all) comments.set(comment.node_id, comment);
-  }
-  const numberOf = (comment: RestComment): number =>
-    Number(/\/issues\/(\d+)$/.exec(comment.issue_url)?.[1] ?? Number.NaN);
-  const inScope = [...comments.values()].filter((comment) =>
-    scope.has(numberOf(comment)),
-  );
-  const nodes = new Map(listed.map((issue) => [issue.number, issue.node_id]));
-  const missing = inScope.map(numberOf).filter((number) => !nodes.has(number));
-  for (const [number, id] of await nodesOfNumbers(
+  await writeComments(
+    context,
     octokit,
-    owner,
-    name,
-    missing,
-  )) {
-    nodes.set(number, id);
-  }
-  await upsert(
-    commentType,
-    inScope.flatMap((comment) => {
-      const issue = nodes.get(numberOf(comment));
-      return issue === undefined
-        ? []
-        : [
-            commentEntry({
-              node: comment.node_id,
-              body: comment.body ?? "",
-              url: comment.html_url,
-              createdAt: comment.created_at,
-              updatedAt: comment.updated_at,
-              author: comment.user?.login ?? null,
-              issue,
-              repository: { node, name: repository.name },
-            }),
-          ];
-    }),
+    { node, owner, name, scope },
+    [...comments.values()],
+    new Map(listed.map((issue) => [issue.number, issue.node_id])),
   );
 
   const kept: Kept = {
@@ -415,10 +367,62 @@ async function syncRepository(
     });
   }
   if (!options.check) return kept;
-  await checkComments(context, octokit, { node, owner, name });
-  return hints === undefined
-    ? { ...kept, checked: started.toISOString() }
-    : kept;
+  await checkComments(context, octokit, { node, owner, name, scope });
+  return { ...kept, checked: started.toISOString() };
+}
+
+/** Comments on issues in the sync, each in its issue's thread. */
+async function writeComments(
+  context: Context,
+  octokit: Client,
+  where: {
+    node: string;
+    owner: string;
+    name: string;
+    scope: ReadonlySet<number>;
+  },
+  comments: readonly RestComment[],
+  nodes: Map<number, string>,
+): Promise<void> {
+  const inScope = comments.filter((comment) =>
+    where.scope.has(numberOf(comment)),
+  );
+  const missing = inScope.map(numberOf).filter((number) => !nodes.has(number));
+  for (const [number, id] of await nodesOfNumbers(
+    octokit,
+    where.owner,
+    where.name,
+    missing,
+  )) {
+    nodes.set(number, id);
+  }
+  await context.upsert(
+    commentType,
+    inScope.flatMap((comment) => {
+      const issue = nodes.get(numberOf(comment));
+      return issue === undefined
+        ? []
+        : [
+            commentEntry({
+              node: comment.node_id,
+              body: comment.body ?? "",
+              url: comment.html_url,
+              createdAt: comment.created_at,
+              updatedAt: comment.updated_at,
+              author: comment.user?.login ?? null,
+              issue,
+              repository: {
+                node: where.node,
+                name: `${where.owner}/${where.name}`,
+              },
+            }),
+          ];
+    }),
+  );
+}
+
+function numberOf(comment: RestComment): number {
+  return Number(/\/issues\/(\d+)$/.exec(comment.issue_url)?.[1] ?? Number.NaN);
 }
 
 /** The comments changed since the last run, `undefined` where none did. */
@@ -432,7 +436,7 @@ async function changedComments(
     ...where,
     sort: "updated" as const,
     direction: "asc" as const,
-    since: last.since,
+    since: new Date(Date.parse(last.since) - overlap).toISOString(),
     per_page: 100,
   };
   const first = await unlessUnchanged(octokit, route, parameters, last.etag);
@@ -488,7 +492,7 @@ async function checkIssues(
       gone.push(link);
       log.condition(
         `issue-moved:${link}`,
-        `${where.owner}/${where.name}#${String(number)} was moved to another repository, so its row is archived; it arrives there as a new one`,
+        `${where.owner}/${where.name}#${String(number)} was moved to another repository, so its row here is archived`,
       );
     } else if (said === "missing") {
       log.condition(
@@ -501,25 +505,34 @@ async function checkIssues(
 }
 
 /** The comments Marfa holds under the repository that GitHub no longer
- *  lists, archived where GitHub, still reading the repository, says so. */
+ *  lists, archived where GitHub, still reading the repository, says so;
+ *  and those in the sync Marfa lacks, which a run missed, written. */
 async function checkComments(
   context: Context,
   octokit: Client,
-  where: { node: string; owner: string; name: string },
+  where: {
+    node: string;
+    owner: string;
+    name: string;
+    scope: ReadonlySet<number>;
+  },
 ): Promise<void> {
   const { linked, archive } = context;
   const under = { type: repositoryType, id: where.node };
   const rows = await linked(commentType, inRepository, under);
-  if (rows.length === 0) return;
-  const listed = new Set(
-    (
-      (await octokit.paginate("GET /repos/{owner}/{repo}/issues/comments", {
-        owner: where.owner,
-        repo: where.name,
-        per_page: 100,
-      })) as RestComment[]
-    ).map((comment) => comment.node_id),
+  const all = (await octokit.paginate(
+    "GET /repos/{owner}/{repo}/issues/comments",
+    { owner: where.owner, repo: where.name, per_page: 100 },
+  )) as RestComment[];
+  const held = new Set(rows.flatMap((row) => linkOf(row) ?? []));
+  await writeComments(
+    context,
+    octokit,
+    where,
+    all.filter((comment) => !held.has(comment.node_id)),
+    new Map(),
   );
+  const listed = new Set(all.map((comment) => comment.node_id));
   const absent = rows.flatMap((row) => {
     const link = linkOf(row);
     return link === undefined || listed.has(link) ? [] : [link];

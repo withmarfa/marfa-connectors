@@ -79,7 +79,7 @@ describe("setup", () => {
     const seenPage: {
       action?: string;
       manifest?: Record<string, unknown>;
-      onward?: string;
+      onward?: string | undefined;
     } = {};
     const finished = await setup(
       file,

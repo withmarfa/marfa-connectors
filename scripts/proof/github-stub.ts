@@ -36,6 +36,8 @@ export interface Repository {
   updated_at: string;
   /** Answers 404 though listed, as a repository GitHub hides does. */
   hidden?: boolean;
+  /** Issues turned off, as a repository's settings can. */
+  issuesOff?: boolean;
 }
 
 export interface Issue {
@@ -96,6 +98,9 @@ export class GitHubStub {
   manifestCode: string | undefined = "manifest-code";
   appPem = "";
   appWebhookSecret: string | null = "stub-webhook-secret-from-github";
+  /** Answers every listing with an error quoting the request's own
+   *  credentials, as a careless server might. */
+  echoCredentials = false;
   /** The App's webhook as last set. */
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
@@ -309,6 +314,7 @@ export class GitHubStub {
       description: repository.description,
       private: repository.private,
       archived: repository.archived,
+      has_issues: repository.issuesOff !== true,
       updated_at: repository.updated_at,
     };
   }
@@ -557,6 +563,10 @@ export class GitHubStub {
       method === "GET"
     ) {
       const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      if (this.echoCredentials) {
+        send(500, { message: `broken for ${req.headers.authorization ?? ""}` });
+        return;
+      }
       if (repository === undefined) {
         send(404, { message: "Not Found" });
         return;
@@ -583,6 +593,13 @@ export class GitHubStub {
 
   /** As GitHub answers an App: an issue in a private repository it is not
    *  installed on is hidden, as a relation's end too. */
+  /** GraphQL names a bot by its login without the suffix REST gives it. */
+  private author(login: string): { login: string; __typename: string } {
+    return login.endsWith("[bot]")
+      ? { login: login.slice(0, -"[bot]".length), __typename: "Bot" }
+      : { login, __typename: "User" };
+  }
+
   private graphIssue(
     issue: Issue,
     sees: (repository: Repository) => boolean,
@@ -611,7 +628,7 @@ export class GitHubStub {
       closedAt: issue.closed_at,
       createdAt: issue.created_at,
       updatedAt: issue.updated_at,
-      author: { login: issue.user },
+      author: this.author(issue.user),
       labels: { nodes: issue.labels.map((name) => ({ name })) },
       assignees: { nodes: issue.assignees.map((login) => ({ login })) },
       repository: {
@@ -621,6 +638,12 @@ export class GitHubStub {
       parent: issue.parent === null ? null : related(issue.parent),
       blockedBy: {
         nodes: issue.blocked_by.map(related).filter((one) => one !== null),
+      },
+      subIssues: {
+        nodes: this.issues
+          .filter((one) => !one.deleted && one.parent === issue.node)
+          .map((one) => related(one.node))
+          .filter((one) => one !== null),
       },
       blocking: {
         nodes: this.issues
@@ -691,7 +714,7 @@ export class GitHubStub {
             url: `${this.address(repository)}/issues/${String(issue.number)}#issuecomment-${String(comment.id)}`,
             createdAt: comment.created_at,
             updatedAt: comment.updated_at,
-            author: { login: comment.user },
+            author: this.author(comment.user),
             issue: {
               id: issue.node,
               repository: {

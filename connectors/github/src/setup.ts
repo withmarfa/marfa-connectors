@@ -182,14 +182,28 @@ export async function setUp<E extends EnvDeclaration>(
     privateKey: conversion.pem,
     base,
   };
-  let webhookSecret = conversion.webhook_secret;
-  if (webhookSecret === null) {
-    webhookSecret = await repoint(app, hook ?? made.url, signal, secret);
+  // From here the App exists on GitHub and its key is had only once: a step
+  // that fails is a warning, never the setup's failure, which loses the key.
+  let webhookSecret = conversion.webhook_secret ?? "";
+  if (webhookSecret === "") {
+    try {
+      webhookSecret = await repoint(app, hook ?? made.url, signal, secret);
+    } catch (error) {
+      webhookSecret = randomBytes(32).toString("hex");
+      secret(webhookSecret);
+      log.warn(
+        `GitHub gave the App no webhook secret and would not take one (${error instanceof Error ? error.message : String(error)}); set GITHUB_WEBHOOK_SECRET as the App's webhook secret in its settings`,
+      );
+    }
   } else {
     secret(webhookSecret);
   }
   const install = `${conversion.html_url}/installations/new`;
-  local.onward(install);
+  try {
+    local.onward(install);
+  } catch {
+    // The browser is told setup is done; the address is logged below.
+  }
   log.info(
     `GitHub made the App ${conversion.slug}; install it on the repositories to sync at ${install}`,
   );

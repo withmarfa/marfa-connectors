@@ -98,11 +98,38 @@ export function status(error: unknown): number | undefined {
 }
 
 /** A page as its ETag last answered: how many it held, and the numbers
- *  of those the connector keeps. */
+ *  of those the connector keeps, as runs such as `1-100,104`, since a
+ *  repository's state is kept whole within the instance's cap. */
 export interface Page {
   readonly etag: string;
   readonly size: number;
-  readonly numbers: number[];
+  readonly numbers: string;
+}
+
+export function runsOf(numbers: readonly number[]): string {
+  const sorted = [...new Set(numbers)].sort((a, b) => a - b);
+  const runs: string[] = [];
+  for (let at = 0; at < sorted.length;) {
+    const first = sorted[at] ?? 0;
+    let last = first;
+    while (sorted[at + 1] === last + 1) {
+      at += 1;
+      last += 1;
+    }
+    at += 1;
+    runs.push(
+      first === last ? String(first) : `${String(first)}-${String(last)}`,
+    );
+  }
+  return runs.join(",");
+}
+
+export function numbersIn(runs: string): number[] {
+  if (runs === "") return [];
+  return runs.split(",").flatMap((run) => {
+    const [first = 0, last = first] = run.split("-").map(Number);
+    return Array.from({ length: last - first + 1 }, (_, at) => first + at);
+  });
 }
 
 const perPage = 100;
@@ -142,7 +169,7 @@ export async function pagesOf<T extends { number: number }>(
       pages.push({
         etag: typeof etag === "string" ? etag : "",
         size: items.length,
-        numbers: items.filter(keep).map((item) => item.number),
+        numbers: runsOf(items.filter(keep).map((item) => item.number)),
       });
       if (items.length < perPage) break;
     } catch (error) {
