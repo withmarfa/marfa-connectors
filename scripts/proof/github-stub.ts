@@ -60,6 +60,8 @@ export interface Issue {
   pull?: boolean;
   deleted?: boolean;
   moved?: boolean;
+  /** Made through the App, as GitHub marks it. */
+  app?: boolean;
 }
 
 export interface Comment {
@@ -71,6 +73,7 @@ export interface Comment {
   created_at: string;
   updated_at: string;
   deleted?: boolean;
+  app?: boolean;
 }
 
 interface Asked {
@@ -101,11 +104,16 @@ export class GitHubStub {
   /** Answers every listing with an error quoting the request's own
    *  credentials, as a careless server might. */
   echoCredentials = false;
-  /** What each answer says is left of the hourly limit; at 0 it refuses
-   *  every repository request, as GitHub's rate limit does. */
+  /** What each answer says is left of the hourly limit. */
   rateRemaining = 4999;
   /** Refuses each repository request as over the rate limit. */
   rateLimited = false;
+  /** The App's id and the name GitHub gives what it writes. */
+  appId = 12345;
+  appSlug = "marfa-connectors";
+  /** Makes the next issue or comment asked for, then answers 502, as a
+   *  write whose answer is lost on the way back. */
+  loseNextCreate = false;
   /** The App's webhook as last set. */
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
@@ -278,6 +286,7 @@ export class GitHubStub {
         (one) => one.issue === issue.node && !one.deleted,
       ).length,
       ...(issue.pull === true && { pull_request: {} }),
+      performed_via_github_app: issue.app === true ? { id: this.appId } : null,
       issue_dependencies_summary: {
         blocked_by: issue.blocked_by.length,
         total_blocked_by: issue.blocked_by.length,
@@ -307,6 +316,8 @@ export class GitHubStub {
       created_at: comment.created_at,
       updated_at: comment.updated_at,
       user: { login: comment.user },
+      performed_via_github_app:
+        comment.app === true ? { id: this.appId } : null,
     };
   }
 
@@ -419,6 +430,10 @@ export class GitHubStub {
       return;
     }
 
+    if (method === "GET" && path === "/app") {
+      send(200, { id: this.appId, slug: this.appSlug });
+      return;
+    }
     if (method === "GET" && path === "/app/installations") {
       send(
         200,
@@ -604,7 +619,226 @@ export class GitHubStub {
       );
       return;
     }
+    if (this.write(req, method, path, body, send)) return;
     send(404, { message: `the stub knows no ${method} ${path}` });
+  }
+
+  /** The writes a run carrying Marfa's changes makes, as the App. */
+  private write(
+    req: IncomingMessage,
+    method: string,
+    path: string,
+    body: unknown,
+    send: (status: number, data?: unknown) => void,
+  ): boolean {
+    const fields = (body ?? {}) as Record<string, unknown>;
+    const bot = `${this.appSlug}[bot]`;
+    // GitHub refuses writes to an archived repository, and a label past 50.
+    const refused = (repository: Repository | undefined): boolean => {
+      if (repository?.archived === true) {
+        send(403, { message: "Repository was archived so is read-only." });
+        return true;
+      }
+      const labels = fields["labels"];
+      if (
+        Array.isArray(labels) &&
+        labels.some((name) => String(name).length > 50)
+      ) {
+        send(422, { message: "Validation Failed" });
+        return true;
+      }
+      return false;
+    };
+    const created = (made: unknown): void => {
+      if (this.loseNextCreate) {
+        this.loseNextCreate = false;
+        send(502, { message: "Server Error" });
+        return;
+      }
+      send(201, made);
+    };
+    const issueAt = (match: RegExpExecArray): Issue | undefined => {
+      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      return this.issues.find(
+        (one) =>
+          one.repository === repository?.node &&
+          one.number === Number(match[3]),
+      );
+    };
+    let match = /^\/repos\/([^/]+)\/([^/]+)\/issues$/.exec(path);
+    if (method === "POST" && match !== null) {
+      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      if (repository === undefined) {
+        send(404, { message: "Not Found" });
+        return true;
+      }
+      if (refused(repository)) return true;
+      const body = fields["body"];
+      const made = this.addIssue(repository, {
+        title: String(fields["title"]),
+        body: typeof body === "string" && body !== "" ? body : null,
+        labels: (fields["labels"] as string[] | undefined) ?? [],
+        assignees: (fields["assignees"] as string[] | undefined) ?? [],
+        user: bot,
+        app: true,
+      });
+      created(this.restIssue(made));
+      return true;
+    }
+    match = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(path);
+    if (method === "PATCH" && match !== null) {
+      const issue = issueAt(match);
+      if (issue === undefined) {
+        send(404, { message: "Not Found" });
+        return true;
+      }
+      if (issue.deleted === true) {
+        send(410, { message: "This issue was deleted" });
+        return true;
+      }
+      if (refused(this.repositoryOf(issue))) return true;
+      const next: Partial<Issue> = {};
+      if (typeof fields["title"] === "string") next.title = fields["title"];
+      if (typeof fields["body"] === "string") {
+        next.body = fields["body"] === "" ? null : fields["body"];
+      }
+      if (Array.isArray(fields["labels"])) {
+        next.labels = fields["labels"] as string[];
+      }
+      if (Array.isArray(fields["assignees"])) {
+        // GitHub drops a login it cannot assign, without a word.
+        next.assignees = (fields["assignees"] as string[]).filter(
+          (login) => login !== "nobody-here",
+        );
+      }
+      if (fields["state"] === "closed" && issue.state !== "closed") {
+        next.state = "closed";
+        next.closed_at = this.now();
+      }
+      if (fields["state"] === "open" && issue.state !== "open") {
+        next.state = "open";
+        next.closed_at = null;
+      }
+      if (typeof fields["state_reason"] === "string") {
+        next.state_reason = fields["state_reason"];
+      }
+      this.edit(issue, next);
+      send(200, this.restIssue(issue));
+      return true;
+    }
+    match = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comments$/.exec(path);
+    if (method === "POST" && match !== null) {
+      const issue = issueAt(match);
+      if (issue === undefined) {
+        send(404, { message: "Not Found" });
+        return true;
+      }
+      if (refused(this.repositoryOf(issue))) return true;
+      const made = this.addComment(issue, String(fields["body"]), bot);
+      made.app = true;
+      created(this.restComment(made));
+      return true;
+    }
+    return false;
+  }
+
+  /** GitHub's GraphQL writes the connector makes. */
+  private mutate(
+    req: IncomingMessage,
+    operation: string | undefined,
+    variables: Record<string, unknown>,
+    send: (status: number, data?: unknown) => void,
+  ): boolean {
+    const issue = (key: string): Issue | undefined => {
+      const found = this.issue(String(variables[key]));
+      return found !== undefined && this.visible(req, found.repository)
+        ? found
+        : undefined;
+    };
+    const one = issue("issueId");
+    const other = issue("other");
+    const relations = [
+      "AddSubIssue",
+      "RemoveSubIssue",
+      "AddBlockedBy",
+      "RemoveBlockedBy",
+    ];
+    if (operation !== undefined && relations.includes(operation)) {
+      if (one === undefined || other === undefined) {
+        send(200, notFound);
+        return true;
+      }
+      if (operation === "AddSubIssue") {
+        if (this.repositoryOf(one).owner !== this.repositoryOf(other).owner) {
+          send(
+            200,
+            refusal("A sub-issue must belong to the same owner as its parent"),
+          );
+          return true;
+        }
+        other.parent = one.node;
+      } else if (operation === "RemoveSubIssue") {
+        if (other.parent === one.node) other.parent = null;
+      } else if (operation === "AddBlockedBy") {
+        if (one.blocked_by.length >= 50) {
+          send(200, refusal("An issue may be blocked by at most 50 issues"));
+          return true;
+        }
+        if (!one.blocked_by.includes(other.node)) {
+          one.blocked_by.push(other.node);
+        }
+      } else {
+        one.blocked_by = one.blocked_by.filter((node) => node !== other.node);
+      }
+      send(200, { data: { [operation]: { issue: { id: one.node } } } });
+      return true;
+    }
+    if (operation !== "UpdateComment" && operation !== "DeleteComment") {
+      return false;
+    }
+    const comment = this.comments.find(
+      (found) => found.node === variables["id"] && found.deleted !== true,
+    );
+    const commentIssue =
+      comment === undefined ? undefined : this.issue(comment.issue);
+    if (
+      comment === undefined ||
+      commentIssue === undefined ||
+      !this.visible(req, commentIssue.repository)
+    ) {
+      send(200, notFound);
+      return true;
+    }
+    if (operation === "DeleteComment") {
+      comment.deleted = true;
+      send(200, { data: { deleteIssueComment: { clientMutationId: null } } });
+      return true;
+    }
+    this.editComment(comment, String(variables["body"]));
+    const repository = this.repositoryOf(commentIssue);
+    send(200, {
+      data: {
+        updateIssueComment: {
+          issueComment: {
+            __typename: "IssueComment",
+            id: comment.node,
+            body: comment.body,
+            url: `${this.address(repository)}/issues/${String(commentIssue.number)}#issuecomment-${String(comment.id)}`,
+            createdAt: comment.created_at,
+            updatedAt: comment.updated_at,
+            author: this.author(comment.user),
+            issue: {
+              id: commentIssue.node,
+              repository: {
+                id: repository.node,
+                nameWithOwner: `${repository.owner}/${repository.name}`,
+              },
+            },
+          },
+        },
+      },
+    });
+    return true;
   }
 
   /** As GitHub answers an App: an issue in a private repository it is not
@@ -767,11 +1001,23 @@ export class GitHubStub {
       });
       return;
     }
+    if (this.mutate(req, operation, body.variables, send)) return;
     send(200, {
       errors: [{ type: "UNKNOWN", message: `no ${String(operation)}` }],
     });
   }
 }
+
+function refusal(message: string): {
+  errors: { type: string; message: string }[];
+} {
+  return { errors: [{ type: "UNPROCESSABLE", message }] };
+}
+
+const notFound = {
+  data: null,
+  errors: [{ type: "NOT_FOUND", message: "Could not resolve to a node" }],
+};
 
 function isMutation(body: unknown): boolean {
   return (
