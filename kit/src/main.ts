@@ -512,8 +512,11 @@ export async function start<E extends EnvDeclaration>(
     clock,
     signal: stop.signal,
   };
+  /** Until when another process last held the connector. */
+  let heldUntil: string | undefined;
   /** A run under the hold; none where another process holds the connector. */
   const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
+    heldUntil = undefined;
     let taken;
     try {
       taken = await hold.take();
@@ -526,6 +529,7 @@ export async function start<E extends EnvDeclaration>(
       logger.warn(
         `another process holds this connector until ${taken.until}, so this one does not run`,
       );
+      heldUntil = taken.until;
       return undefined;
     }
     return runOnce(
@@ -547,7 +551,10 @@ export async function start<E extends EnvDeclaration>(
       while (!stopped()) {
         const run = await held("schedule");
         if (run === undefined) {
-          await clock.sleep(schedule.intervalMs, stop.signal);
+          await clock.sleep(
+            untilLapsed(heldUntil, clock.now().getTime(), schedule.intervalMs),
+            stop.signal,
+          );
           continue;
         }
         failures = run.succeeded ? 0 : failures + 1;
@@ -570,6 +577,22 @@ export async function start<E extends EnvDeclaration>(
     await hold.release();
   }
   return code;
+}
+
+/**
+ * How long a process refused the hold waits: until a second after the
+ * hold would lapse, since one a stopped process left lapses well within an
+ * interval; at least half a minute, so a clock ahead of the instance's does
+ * not ask every second; at most the interval.
+ */
+export function untilLapsed(
+  until: string | undefined,
+  now: number,
+  intervalMs: number,
+): number {
+  const at = until === undefined ? Number.NaN : Date.parse(until);
+  if (!Number.isFinite(at)) return intervalMs;
+  return Math.min(intervalMs, Math.max(30_000, at - now + 1000));
 }
 
 export async function main<E extends EnvDeclaration>(

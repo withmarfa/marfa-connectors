@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { start } from "../src/main.js";
+import { start, untilLapsed } from "../src/main.js";
 import { Harness, testConnector, vendor, type Vendor } from "./harness.js";
 
 let harness: Harness;
@@ -84,6 +84,23 @@ describe("the hold", () => {
     harness.stop();
     expect(await exit).toBe(0);
     expect(harness.server.rows).toHaveLength(1);
+  });
+
+  it("tries again under --every once another process's hold lapses, not a whole interval later", async () => {
+    harness.server.holder = {
+      process: "another-process",
+      until: harness.clock.now().getTime() + 3 * minute,
+    };
+    const held = vendor([one]);
+    const exit = start(testConnector(held), harness.runtime(["--every", "1h"]));
+    // A second past the lapse, rather than the hour.
+    await harness.clock.sleeping(3 * minute + 1000);
+    expect(held.runs).toBe(0);
+    harness.server.holder = undefined;
+    await harness.clock.wake(3 * minute + 1000);
+    await until(() => harness.server.runs.length === 1);
+    harness.stop();
+    expect(await exit).toBe(0);
   });
 
   it("stops a run once another process takes the hold, before it writes", async () => {
@@ -294,5 +311,25 @@ describe("the hold's window", () => {
     expect(harness.lastRun().outcome).toBe("succeeded");
     harness.stop();
     expect(await exit).toBe(0);
+  });
+});
+
+describe("the wait for another process's hold", () => {
+  const hour = 60 * minute;
+  const now = Date.parse("2026-09-26T00:00:00.000Z");
+  it("ends a second after the hold would lapse, within the interval", () => {
+    expect(untilLapsed("2026-09-26T00:03:00.000Z", now, hour)).toBe(
+      3 * minute + 1000,
+    );
+    expect(untilLapsed("2026-09-26T03:00:00.000Z", now, hour)).toBe(hour);
+  });
+
+  it("is half a minute at least, where the hold has lapsed or this clock runs ahead", () => {
+    expect(untilLapsed("2026-09-25T23:00:00.000Z", now, hour)).toBe(30_000);
+  });
+
+  it("is the interval where the hold's end cannot be read", () => {
+    expect(untilLapsed("1790676000", now, hour)).toBe(hour);
+    expect(untilLapsed(undefined, now, hour)).toBe(hour);
   });
 });
