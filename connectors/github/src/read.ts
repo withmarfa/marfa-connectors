@@ -36,6 +36,7 @@ import {
   nodesOfNumbers,
   relationsOf,
 } from "./graph.js";
+import type { Scope } from "./scope.js";
 
 /** How far back a first sync reaches for closed issues. */
 export const windowDays = 90;
@@ -54,6 +55,9 @@ export interface Kept {
    *  ETag then cannot say nothing lies past it. */
   comments?: { since: string; etag?: string; full?: boolean };
   checked?: string;
+  /** Left out by GITHUB_REPOSITORIES: its rows are left as they are, and
+   *  its cursors kept for when it is named again. */
+  paused?: boolean;
 }
 
 type Context = RunContext<EnvDeclaration>;
@@ -110,7 +114,11 @@ function linkOf(row: Item): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export async function read(context: Context, app: App): Promise<void> {
+export async function read(
+  context: Context,
+  app: App,
+  scope: Scope | undefined,
+): Promise<void> {
   const { state, log, secret, signal, upsert } = context;
   const kept = keptOf(state.get("repositories"));
   const installations = (await asApp(app, signal).paginate(
@@ -122,6 +130,9 @@ export async function read(context: Context, app: App): Promise<void> {
     { repository: RestRepository; installation: number }
   >();
   const answered = new Set<number>();
+  // Seen through the App but left out by GITHUB_REPOSITORIES.
+  const outside = new Map<string, RestRepository>();
+  const seen: string[] = [];
   for (const installation of installations) {
     const who = installation.account?.login ?? String(installation.id);
     if (installation.suspended_at) {
@@ -139,6 +150,11 @@ export async function read(context: Context, app: App): Promise<void> {
       clients.set(installation.id, octokit);
       answered.add(installation.id);
       for (const repository of repositories) {
+        seen.push(repository.full_name);
+        if (scope !== undefined && !scope.admits(repository.full_name)) {
+          outside.set(repository.node_id, repository);
+          continue;
+        }
         listed.set(repository.node_id, {
           repository,
           installation: installation.id,
@@ -152,18 +168,42 @@ export async function read(context: Context, app: App): Promise<void> {
       );
     }
   }
+  if (scope !== undefined && answered.size === installations.length) {
+    for (const one of scope.unmatched(seen)) {
+      log.condition(
+        `repositories-unmatched:${one}`,
+        `GITHUB_REPOSITORIES names ${one}, which no installation of the App shows`,
+      );
+    }
+  }
   const synced = new Set(listed.keys());
+  // Paused repositories' rows stay, so relations to them stay connections.
+  const paused = new Set(
+    [...outside.keys()].filter((node) => kept[node] !== undefined),
+  );
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
-    await readNamed(context, listed, clients);
+    await readNamed(context, listed, clients, paused);
     return;
   }
   const next: Record<string, Kept> = {};
   for (const [node, { repository, installation }] of listed) {
     next[node] = { ...kept[node], installation, name: repository.full_name };
+    Reflect.deleteProperty(next[node], "paused");
   }
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node)) continue;
+    const left = outside.get(node);
+    if (left !== undefined) {
+      if (repository.paused !== true) {
+        log.info(
+          `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are and changes made to them wait until it is named again`,
+        );
+      }
+      // Under the name its rows hold, which a rename meanwhile does not change.
+      next[node] = { ...repository, paused: true };
+      continue;
+    }
     if (answered.has(repository.installation)) {
       await takeOut(context, node, repository.name);
       continue;
@@ -193,6 +233,7 @@ export async function read(context: Context, app: App): Promise<void> {
     try {
       next[node] = await syncRepository(context, octokit, node, repository, {
         synced,
+        inside: new Set([...synced, ...paused]),
         check,
       });
     } catch (error) {
@@ -261,7 +302,11 @@ async function syncRepository(
   octokit: Client,
   node: string,
   repository: Kept,
-  options: { synced: ReadonlySet<string>; check: boolean },
+  options: {
+    synced: ReadonlySet<string>;
+    inside: ReadonlySet<string>;
+    check: boolean;
+  },
 ): Promise<Kept> {
   const { upsert } = context;
   const [owner = "", name = ""] = repository.name.split("/");
@@ -343,12 +388,12 @@ async function syncRepository(
       const found = relations.get(issue.node_id);
       // Gone between the listing and the question: the next run has it.
       if (found === undefined) return [];
-      return [issueEntry(issueOfRest(issue, at), found, options.synced)];
+      return [issueEntry(issueOfRest(issue, at), found, options.inside)];
     }),
     ...beside
       .filter(({ issue }) => options.synced.has(issue.repository.node))
       .map(({ issue, relations: known }) =>
-        issueEntry(issue, known, options.synced),
+        issueEntry(issue, known, options.inside),
       ),
   ]);
 
@@ -671,6 +716,7 @@ async function readNamed(
     { repository: RestRepository; installation: number }
   >,
   every: ReadonlyMap<number, Client>,
+  paused: ReadonlySet<string>,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(
@@ -740,7 +786,7 @@ async function readNamed(
   await upsert(
     issueType,
     [...issues.values()].map(({ issue, relations }) =>
-      issueEntry(issue, relations, synced),
+      issueEntry(issue, relations, new Set([...synced, ...paused])),
     ),
   );
   await upsert(commentType, [...comments.values()].map(commentEntry));

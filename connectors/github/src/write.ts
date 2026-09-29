@@ -143,12 +143,32 @@ async function refusedOrWaits(
   return why;
 }
 
-/** The repositories the last run read, by node. */
-function keptOf(context: Context): Record<string, Kept> {
+function allKept(context: Context): Record<string, Kept> {
   const value = context.state.get("repositories");
   return typeof value === "object" && value !== null
     ? (value as Record<string, Kept>)
     : {};
+}
+
+/** The repositories the last run synced, by node. */
+function keptOf(context: Context): Record<string, Kept> {
+  return Object.fromEntries(
+    Object.entries(allKept(context)).filter(([, one]) => one.paused !== true),
+  );
+}
+
+/** Leaves a change waiting where its repository is left out by
+ *  GITHUB_REPOSITORIES, to be carried once it is named again. */
+function unlessPaused(context: Context, item: Item, name: string | undefined) {
+  if (
+    Object.values(allKept(context)).some(
+      (one) => one.paused === true && one.name === name,
+    )
+  ) {
+    throw new Unreachable(
+      `${item.id} is in ${String(name)}, which GITHUB_REPOSITORIES leaves out, so its change waits until it is named again`,
+    );
+  }
 }
 
 /** A client for the installation holding the repository of that name, and
@@ -200,7 +220,16 @@ async function clientOfIssue(
       context.signal,
     );
     const [found] = await issuesByNode(octokit, [node]);
-    if (found !== undefined) {
+    if (
+      found !== undefined &&
+      allKept(context)[found.issue.repository.node]?.paused === true
+    ) {
+      throw new Unreachable(
+        `${item.id} is in ${found.issue.repository.name}, which GITHUB_REPOSITORIES leaves out, so its change waits until it is named again`,
+      );
+    }
+    // Only a repository in the sync, found by the node it keeps.
+    if (found !== undefined && found.issue.repository.node in keptOf(context)) {
       const [owner = "", repo = ""] = found.issue.repository.name.split("/");
       return { octokit, owner, repo };
     }
@@ -244,7 +273,7 @@ async function answerIssue(
   const entry = issueEntry(
     found.issue,
     found.relations,
-    new Set(Object.keys(keptOf(context))),
+    new Set(Object.keys(allKept(context))),
   );
   const connections: Record<string, readonly Target[]> = {
     ...entry.connections,
@@ -309,6 +338,15 @@ async function relations(
     for (const row of change.connections?.[type]?.[side] ?? []) {
       const other = text(row, "github_id");
       if (other === undefined) continue;
+      const otherIn = text(row, "repository");
+      if (
+        Object.values(allKept(context)).some(
+          (one) => one.paused === true && one.name === otherIn,
+        )
+      ) {
+        refused(what, `${String(otherIn)} is left out by GITHUB_REPOSITORIES`);
+        continue;
+      }
       // A parent holds its sub-issues; a blocked issue its blockers.
       const why = ours
         ? await relate(octokit, mutation, node, other)
@@ -473,6 +511,7 @@ async function carryIssue(
     binnedUnanswered(context, item);
     return undefined;
   }
+  unlessPaused(context, item, text(item, "repository"));
   const where = await clientOfIssue(context, app, item);
   if (where === undefined || typeof number !== "number" || node === undefined) {
     context.log.condition(
@@ -564,6 +603,7 @@ async function createIssue(
   const { item } = change;
   const repository = change.connections?.[inRepository]?.added[0];
   const name = repository === undefined ? undefined : text(repository, "name");
+  unlessPaused(context, item, name);
   const where = clientFor(context, app, name);
   if (where === undefined || name === undefined) {
     context.log.condition(
@@ -695,6 +735,7 @@ async function carryComment(
     return undefined;
   }
   const name = text(item, "repository");
+  unlessPaused(context, item, name);
   const where = clientFor(context, app, name);
   if (where === undefined || node === undefined) {
     context.log.condition(
@@ -734,6 +775,7 @@ async function createComment(
   const name = issue === undefined ? undefined : text(issue, "repository");
   const number = issue?.properties["number"];
   const issueNode = issue === undefined ? undefined : text(issue, "github_id");
+  unlessPaused(context, item, name);
   const where = clientFor(context, app, name);
   if (
     where === undefined ||
@@ -823,6 +865,7 @@ export async function remake(
 ): Promise<boolean> {
   if (change.item.type !== commentType) return false;
   const node = text(change.item, "github_id");
+  unlessPaused(context, change.item, text(change.item, "repository"));
   const where = clientFor(context, app, text(change.item, "repository"));
   if (where === undefined || node === undefined) return false;
   return waiting(change, async () => {

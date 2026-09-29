@@ -748,3 +748,63 @@ describe("what the fix review found", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("a repository GITHUB_REPOSITORIES leaves out", () => {
+  it("holds a change made in Marfa to its rows until it is named again", async () => {
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    marfa.edit(row(issue.node).id, { title: "Edited while left out" });
+    const output = await ok({ GITHUB_REPOSITORIES: "someone/other" });
+    expect(output).toContain("which GITHUB_REPOSITORIES leaves out");
+    expect(issue.title).toBe("Before");
+    await ok({ GITHUB_REPOSITORIES: "someone/tracker" });
+    expect(issue.title).toBe("Edited while left out");
+  });
+
+  it("takes no relation to its issues, and says why", async () => {
+    const elsewhere = github.addRepository("someone/elsewhere");
+    const child = github.addIssue(repository, { title: "Child" });
+    const parent = github.addIssue(elsewhere, { title: "Parent" });
+    await ok();
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await ok(only);
+    marfa.drawEdge(
+      row(child.node).id,
+      row(parent.node).id,
+      "github.sub-issue-of",
+    );
+    const output = await ok(only);
+    expect(output).toContain(
+      "someone/elsewhere is left out by GITHUB_REPOSITORIES",
+    );
+    expect(child.parent).toBeNull();
+    expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual(
+      [],
+    );
+  });
+});
+
+describe("a repository left out and then renamed on GitHub", () => {
+  it("still holds a change made in Marfa to its rows, and takes no relation to them", async () => {
+    const elsewhere = github.addRepository("someone/elsewhere");
+    const issue = github.addIssue(elsewhere, { title: "Before" });
+    const child = github.addIssue(repository, { title: "Child" });
+    await ok();
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await ok(only);
+    elsewhere.name = "renamed";
+    await ok(only);
+    marfa.edit(row(issue.node).id, { title: "Edited while left out" });
+    marfa.drawEdge(
+      row(child.node).id,
+      row(issue.node).id,
+      "github.sub-issue-of",
+    );
+    const output = await ok(only);
+    expect(output).toContain("which GITHUB_REPOSITORIES leaves out");
+    expect(issue.title).toBe("Before");
+    expect(child.parent).toBeNull();
+    await ok({ GITHUB_REPOSITORIES: "someone/tracker someone/renamed" });
+    expect(issue.title).toBe("Edited while left out");
+  });
+});

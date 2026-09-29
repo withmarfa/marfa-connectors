@@ -659,3 +659,99 @@ describe("every request to GitHub", () => {
     );
   });
 });
+
+describe("GITHUB_REPOSITORIES", () => {
+  it("keeps the sync to the repositories it names, by name or owner, in any case", async () => {
+    const kept = github.addRepository("someone/Tracker");
+    const other = github.addRepository("someone/elsewhere");
+    const theirs = github.addRepository("team/anything");
+    const mine = github.addIssue(kept, { title: "Kept" });
+    const left = github.addIssue(other, { title: "Left out" });
+    const all = github.addIssue(theirs, { title: "An owner's" });
+    const { code } = await once({
+      GITHUB_REPOSITORIES: "someone/tracker, TEAM/*",
+    });
+    expect(code).toBe(0);
+    expect(row(mine.node).state).toBe("active");
+    expect(row(all.node).state).toBe("active");
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === left.node),
+    ).toBe(false);
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === other.node),
+    ).toBe(false);
+  });
+
+  it("leaves a repository's rows as they are once it is left out, reads nothing of it, and takes it up again when it is named again", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository, { title: "Before" });
+    const comment = github.addComment(issue, "Said");
+    await ok();
+    github.edit(issue, { title: "Changed while left out" });
+    const { output } = await once({ GITHUB_REPOSITORIES: "someone/other" });
+    expect(output).toContain(
+      "someone/tracker is left out by GITHUB_REPOSITORIES, so its rows are left as they are",
+    );
+    expect(
+      [repository.node, issue.node, comment.node].map((one) => row(one).state),
+    ).toEqual(["active", "active", "active"]);
+    expect(row(issue.node).properties["title"]).toBe("Before");
+    // A typo or a rename leaves it paused, never archived.
+    await once({ GITHUB_REPOSITORIES: "someone/trakcer" });
+    expect(row(issue.node).state).toBe("active");
+    await once({ GITHUB_REPOSITORIES: "someone/tracker" });
+    expect(row(issue.node).properties["title"]).toBe("Changed while left out");
+  });
+
+  it("names an entry no installation shows", async () => {
+    github.addRepository("someone/tracker");
+    const { code, output } = await once({
+      GITHUB_REPOSITORIES: "someone/tracker someone/renamed",
+    });
+    expect(code).toBe(0);
+    expect(output).toContain(
+      "GITHUB_REPOSITORIES names someone/renamed, which no installation of the App shows",
+    );
+  });
+
+  it("refuses a malformed entry before anything runs", async () => {
+    github.addRepository("someone/tracker");
+    const { code, output } = await once({ GITHUB_REPOSITORIES: "tracker" });
+    expect(code).not.toBe(0);
+    expect(output).toContain("each is owner/repo or owner/*");
+    expect(marfa.rows).toEqual([]);
+  });
+});
+
+describe("GITHUB_REPOSITORIES entries", () => {
+  it("take owners GitHub allows, underscores and all", async () => {
+    const repository = github.addRepository("mona_octo/tracker");
+    const issue = github.addIssue(repository);
+    const { code } = await once({ GITHUB_REPOSITORIES: "mona_octo/*" });
+    expect(code).toBe(0);
+    expect(row(issue.node).state).toBe("active");
+  });
+});
+
+describe("a relation to an issue in a repository left out", () => {
+  it("stays while the other end changes, and after it is named again", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    const child = github.addIssue(tracker, { title: "Child" });
+    const parent = github.addIssue(other, { title: "Parent" });
+    child.parent = parent.node;
+    await ok();
+    const parentRow = row(parent.node).id;
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await once(only);
+    github.edit(child, { title: "Child, edited" });
+    await once(only);
+    expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual([
+      parentRow,
+    ]);
+    await ok();
+    expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual([
+      parentRow,
+    ]);
+  });
+});
