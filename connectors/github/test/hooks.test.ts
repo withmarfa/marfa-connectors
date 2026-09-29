@@ -262,12 +262,15 @@ describe("a run for deliveries", () => {
         comment: { node_id: comment.node },
         issue: { node_id: issue.node },
       });
+      // Connections are written as the run ends, after its rows.
       await until(
         () =>
           marfa.rows.some(
-            (one) => one.properties["github_id"] === comment.node,
+            (one) =>
+              one.properties["github_id"] === comment.node &&
+              marfa.targetsOf(one.id, "in-thread").length > 0,
           ),
-        "the comment being written",
+        "the comment being written in its thread",
       );
       expect(
         marfa
