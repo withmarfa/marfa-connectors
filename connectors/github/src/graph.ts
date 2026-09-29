@@ -1,4 +1,5 @@
 import type { Comment, Issue, Related, Relations } from "./entries.js";
+import { GraphqlResponseError } from "@octokit/graphql";
 import { batches, query, type Client } from "./github.js";
 
 const related = "id url repository { id }";
@@ -252,4 +253,95 @@ export async function nodesOfNumbers(
     });
   }
   return found;
+}
+
+const mutations = {
+  addSubIssue: `mutation AddSubIssue($issueId: ID!, $other: ID!) {
+    addSubIssue(input: { issueId: $issueId, subIssueId: $other, replaceParent: true }) { issue { id } }
+  }`,
+  removeSubIssue: `mutation RemoveSubIssue($issueId: ID!, $other: ID!) {
+    removeSubIssue(input: { issueId: $issueId, subIssueId: $other }) { issue { id } }
+  }`,
+  addBlockedBy: `mutation AddBlockedBy($issueId: ID!, $other: ID!) {
+    addBlockedBy(input: { issueId: $issueId, blockingIssueId: $other }) { issue { id } }
+  }`,
+  removeBlockedBy: `mutation RemoveBlockedBy($issueId: ID!, $other: ID!) {
+    removeBlockedBy(input: { issueId: $issueId, blockingIssueId: $other }) { issue { id } }
+  }`,
+};
+
+/** A relation between two issues, made or removed; answers GitHub's refusal. */
+export async function relate(
+  octokit: Client,
+  change: keyof typeof mutations,
+  issueId: string,
+  other: string,
+): Promise<string | undefined> {
+  try {
+    await octokit.graphql(mutations[change], { issueId, other });
+    return undefined;
+  } catch (error) {
+    if (error instanceof GraphqlResponseError) {
+      return (
+        error.errors?.map((one) => one.message).join("; ") ?? error.message
+      );
+    }
+    throw error;
+  }
+}
+
+const updateCommentMutation = `mutation UpdateComment($id: ID!, $body: String!) {
+  updateIssueComment(input: { id: $id, body: $body }) {
+    issueComment {
+      __typename id body url createdAt updatedAt
+      author { login __typename }
+      issue { id repository { id nameWithOwner } }
+    }
+  }
+}`;
+
+const deleteCommentMutation = `mutation DeleteComment($id: ID!) {
+  deleteIssueComment(input: { id: $id }) { clientMutationId }
+}`;
+
+export async function updateComment(
+  octokit: Client,
+  id: string,
+  body: string,
+): Promise<Comment> {
+  const answer = await octokit.graphql<{
+    updateIssueComment: { issueComment: GraphComment };
+  }>(updateCommentMutation, { id, body });
+  const node = answer.updateIssueComment.issueComment;
+  return {
+    node: node.id,
+    body: node.body,
+    url: node.url,
+    createdAt: node.createdAt,
+    updatedAt: node.updatedAt,
+    author: loginOf(node.author),
+    issue: node.issue.id,
+    repository: {
+      node: node.issue.repository.id,
+      name: node.issue.repository.nameWithOwner,
+    },
+  };
+}
+
+/** Deletes a comment; one already gone is as good. */
+export async function deleteComment(
+  octokit: Client,
+  id: string,
+): Promise<void> {
+  try {
+    await octokit.graphql(deleteCommentMutation, { id });
+  } catch (error) {
+    if (
+      error instanceof GraphqlResponseError &&
+      error.errors?.every((one) => one.type === "NOT_FOUND") === true
+    ) {
+      return;
+    }
+    throw error;
+  }
 }

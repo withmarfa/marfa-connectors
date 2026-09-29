@@ -2,9 +2,14 @@ import type { MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
+  create,
+  edit,
+  item,
   lastRun,
   moved,
+  restore,
   rowsOf,
+  trash,
   type Item,
 } from "./connector.js";
 import { appKey, GitHubStub } from "./github-stub.js";
@@ -29,6 +34,19 @@ async function targets(
   if (data === undefined)
     throw new Error(`the edges were refused: ${JSON.stringify(error)}`);
   return data.data.map((edge) => edge.target_id);
+}
+
+async function connect(
+  marfa: MarfaClient,
+  from: Item,
+  to: Item,
+  edgeType: string,
+): Promise<void> {
+  const { error, response } = await marfa.POST("/edges", {
+    body: { source_id: from.id, target_id: to.id, edge_type: edgeType },
+  });
+  if (!response.ok)
+    throw new Error(`the edge was refused: ${JSON.stringify(error)}`);
 }
 
 export async function proveGitHub(
@@ -183,6 +201,126 @@ export async function proveGitHub(
           throw new Error(`blocked by ${now.join()}, not ${expected}`);
         }
         return `the child is blocked by ${other.node} alone`;
+      },
+    );
+
+    await check(
+      "github: an edit in Marfa reaches GitHub under the App, and the run after carries nothing back",
+      async () => {
+        await edit(marfa, await row(parent.node), {
+          title: "Parent, from Marfa",
+          labels: ["bug", "p1"],
+        });
+        await runOnce();
+        const written = github.writes().length;
+        await runOnce();
+        if (
+          parent.title !== "Parent, from Marfa" ||
+          parent.labels.join() !== "bug,p1" ||
+          github.writes().length !== written
+        ) {
+          throw new Error(
+            `GitHub holds ${parent.title} ${parent.labels.join()}; ${String(github.writes().length - written)} writes after`,
+          );
+        }
+        return "GitHub holds the new title and labels; nothing sent on the run after";
+      },
+    );
+
+    await check(
+      "github: an issue and a comment made in Marfa become GitHub's, each linked, the issue given its number and placed under its parent",
+      async () => {
+        const made = await create(marfa, "github.issue", {
+          title: "Made in Marfa",
+          body: "From the proof",
+        });
+        await connect(
+          marfa,
+          made,
+          await row(repository.node),
+          "github.in-repository",
+        );
+        await connect(
+          marfa,
+          made,
+          await row(parent.node),
+          "github.sub-issue-of",
+        );
+        const said = await create(marfa, "github.comment", {
+          body: "Said in Marfa",
+          from: "the proof",
+        });
+        await connect(marfa, said, await row(parent.node), "in-thread");
+        await runOnce();
+        const issue = github.issues.find(
+          (one) => one.title === "Made in Marfa",
+        );
+        const comment = github.comments.find((one) =>
+          one.body.startsWith("Said in Marfa"),
+        );
+        const madeRow = await item(marfa, made.id);
+        const saidRow = await item(marfa, said.id);
+        if (
+          issue === undefined ||
+          comment === undefined ||
+          issue.parent !== parent.node ||
+          comment.issue !== parent.node ||
+          madeRow.properties["github_id"] !== issue.node ||
+          madeRow.properties["number"] !== issue.number ||
+          saidRow.properties["github_id"] !== comment.node ||
+          // Marked on GitHub, and read back without the mark.
+          !/^From the proof\n\n<!-- marfa:[0-9a-f]{16} -->$/.test(
+            issue.body ?? "",
+          ) ||
+          madeRow.properties["body"] !== "From the proof" ||
+          saidRow.properties["body"] !== "Said in Marfa"
+        ) {
+          throw new Error(
+            `issue ${JSON.stringify(issue)}, comment ${JSON.stringify(comment)}, rows ${JSON.stringify([madeRow.properties, saidRow.properties])}`,
+          );
+        }
+        return `${issue.node} as #${String(issue.number)} under ${parent.node}, and ${comment.node} in its thread`;
+      },
+    );
+
+    await check(
+      "github: a trash in Marfa closes the issue as not planned, a comment on GitHub brings it back as GitHub has it, a trash of it closed changes nothing on GitHub, and a restore reopens what a trash closed",
+      async () => {
+        await trash(marfa, (await row(child.node)).id);
+        await runOnce();
+        const closed = `${child.state} ${String(child.state_reason)}`;
+        const binned = (await row(child.node)).state;
+        github.addComment(child, "Still wanted");
+        await runOnce();
+        const back = await row(child.node);
+        await trash(marfa, back.id);
+        const writes = github.writes().length;
+        await runOnce();
+        const untouched = github.writes().length === writes;
+        await restore(marfa, back.id);
+        await runOnce();
+        await edit(marfa, await row(child.node), { status: "pending" });
+        await runOnce();
+        await trash(marfa, back.id);
+        await runOnce();
+        await restore(marfa, back.id);
+        await runOnce();
+        const reopened = `${child.state} ${String(child.state_reason)}`;
+        const after = await row(child.node);
+        if (
+          closed !== "closed not_planned" ||
+          binned !== "trashed" ||
+          back.state !== "active" ||
+          back.properties["status"] !== "canceled" ||
+          !untouched ||
+          reopened !== "open reopened" ||
+          after.properties["status"] !== "pending"
+        ) {
+          throw new Error(
+            `closed ${closed}, then ${binned}, back ${back.state} ${String(back.properties["status"])}, ${untouched ? "untouched" : "written"} by the second trash, reopened ${reopened}, row ${String(after.properties["status"])}`,
+          );
+        }
+        return "closed as not planned; back, canceled, on GitHub's comment; a trash of it closed wrote nothing; reopened on the restore after it was reopened and trashed, the row pending";
       },
     );
 

@@ -1,6 +1,6 @@
 # GitHub
 
-Reads the repositories a GitHub App is installed on, their issues and the issues' comments, with sub-issues and blockers, into `github.repository`, `github.issue` and `github.comment` rows at the feed tier.
+Reads the repositories a GitHub App is installed on, their issues and the issues' comments, with sub-issues and blockers, into `github.repository`, `github.issue` and `github.comment` rows at the feed tier, and carries changes made in Marfa to issues and comments back to GitHub, where they appear under the App's name.
 
 ## What syncs
 
@@ -10,6 +10,20 @@ Reads the repositories a GitHub App is installed on, their issues and the issues
 - **Relations**, as connections: `github.sub-issue-of` from an issue to its parent, `github.blocked-by` from an issue to each issue blocking it, and `github.in-repository` from each issue and comment to its repository. A parent or blocker in a public repository the App is not installed on is kept as its address, in `parent_url` or `blocked_by_urls`, until it is. GitHub shows an App nothing of a private repository it is not installed on, not even as the end of a relation, so such a relation is not known at all; nor is one between private repositories under two different installations of the App.
 
 Each row links to GitHub by `github_id`, the GitHub node id of what it is.
+
+## What travels back
+
+Every `github.issue` and `github.comment` on the instance syncs, whoever made it and under whatever source; something meant to stay in Marfa is a core task or message instead. Repositories are read only.
+
+- **Issues:** the title, body, labels and assignees, and the status: `completed` closes the issue as completed, `canceled` as not planned, and anything else reopens a closed one; a status GitHub has no word for, such as in progress, stays in Marfa on an open issue. An assignee GitHub will not assign is named in the run.
+- **An issue made in Marfa** is created in the repository its `github.in-repository` names; without one it is not sent, and the run says why. What the App makes ends with a mark, an HTML comment GitHub's page does not show and the connector leaves out of what it reads, so where a run made it and lost GitHub's answer, the next finds it by its mark rather than making another, and brings it to what the row says by then. A row trashed before that answer came cannot take the link, so what GitHub made comes in as its own row, and the run says so.
+- **Relations:** a `github.sub-issue-of` or `github.blocked-by` drawn or removed in Marfa is made or removed on GitHub; one GitHub refuses, such as a sub-issue across two owners, is taken back in Marfa and named. A repository or thread changed in Marfa is put back, since GitHub cannot move either that way.
+- **Comments:** one made in Marfa in an issue's thread, through `in-thread`, is posted there, and its edits follow; its `from` becomes the App's.
+- **A trash closes, never deletes.** Trashing an open issue closes it as not planned, and one already closed stays as it is; restoring it from the bin sets its state again as its status says, so what the trash closed reopens; a reopen, an edit or a comment on GitHub while it is in the bin brings it back, as GitHub has it; a purge is remembered, and it stays closed on GitHub. A trash that came from another row's is not carried. A comment follows the ordinary rule: a trash deletes it on GitHub, a restore makes it again, and one deleted on GitHub is archived at the daily check.
+- **What GitHub refuses**, such as a change in an archived repository or a label too long, is named in the run and left unsent; the rest of the run goes on, and relations drawn beside it are still made.
+- **Lost access** changes nothing: a change to a repository the App can no longer reach, through an uninstalled or suspended installation or a repository taken from it, or while GitHub's rate limit is spent, waits and is named in the run, and is carried once access is back.
+
+`GITHUB_READ_ONLY=true` runs it read only as a whole: nothing goes back, a change made in Marfa to a synced field or connection is put back and named, and the setup asks GitHub only to read.
 
 ## How changes are noticed
 
@@ -40,7 +54,8 @@ Without a public address the App's webhook is off, and the connector notices cha
 - `GITHUB_APP_ID`: the App's id.
 - `GITHUB_PRIVATE_KEY`: the App's private key, a secret. Installation tokens are made from it for an hour at a time and kept out of every log.
 - `GITHUB_WEBHOOK_SECRET`: the secret GitHub signs deliveries with, a secret.
-- `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_APP_NAME`, `GITHUB_READ_ONLY`: for the setup, optional.
+- `GITHUB_READ_ONLY`: `true` for a read-only connector, optional.
+- `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_APP_NAME`: for the setup, optional.
 - `GITHUB_API_URL`: optional, for a stub of the API; GitHub's otherwise. GitHub Enterprise Server is not tested.
 
 The key and the run are as `template/README.md` says.

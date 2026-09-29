@@ -12,9 +12,10 @@ import {
   repositoryType,
   subIssueOf,
 } from "./entries.js";
-import { defaultBase } from "./github.js";
+import { defaultBase, type App } from "./github.js";
 import { read } from "./read.js";
-import { setUp } from "./setup.js";
+import { readOnly, setUp } from "./setup.js";
+import { carry, remake } from "./write.js";
 import comment from "./github.comment.json" with { type: "json" };
 import issue from "./github.issue.json" with { type: "json" };
 import repository from "./github.repository.json" with { type: "json" };
@@ -29,6 +30,18 @@ const env = {
   GITHUB_ORGANIZATION: "optional",
   GITHUB_APP_NAME: "optional",
 } as const;
+
+function appOf(values: {
+  GITHUB_APP_ID: string;
+  GITHUB_PRIVATE_KEY: string;
+  GITHUB_API_URL: string | undefined;
+}): App {
+  return {
+    appId: values.GITHUB_APP_ID,
+    privateKey: values.GITHUB_PRIVATE_KEY,
+    base: values.GITHUB_API_URL ?? defaultBase,
+  };
+}
 
 const connector = defineConnector({
   name: "github",
@@ -122,15 +135,20 @@ const connector = defineConnector({
     },
   ],
   env,
+  // Read only as a whole: nothing goes back, and setup asks only to read.
+  carries: (values) =>
+    readOnly(values.GITHUB_READ_ONLY) ? [] : [issueType, commentType],
   setup(context) {
     return setUp(context, context.env);
   },
   run(context) {
-    return read(context, {
-      appId: context.env.GITHUB_APP_ID,
-      privateKey: context.env.GITHUB_PRIVATE_KEY,
-      base: context.env.GITHUB_API_URL ?? defaultBase,
-    });
+    return read(context, appOf(context.env));
+  },
+  onChange(change, context) {
+    return carry(change, context, appOf(context.env));
+  },
+  remake(change, context) {
+    return remake(change, context, appOf(context.env));
   },
 });
 
