@@ -36,11 +36,6 @@ export interface RestIssue {
   assignees?: { login: string }[] | null;
   comments: number;
   pull_request?: unknown;
-  parent_issue_url?: string | null;
-  issue_dependencies_summary?: {
-    total_blocked_by?: number;
-    total_blocking?: number;
-  };
 }
 
 /** A comment as REST lists it. */
@@ -81,17 +76,11 @@ export interface Issue {
 }
 
 export interface Relations {
+  /** GitHub shows an App no issue in a private repository it is not
+   *  installed on, so such a relation is not here at all. */
   parent: Related | null;
-  /** The parent's address where GitHub shows no node for it. */
-  parentUrl: string | null;
   blockedBy: Related[];
 }
-
-export const noRelations: Relations = {
-  parent: null,
-  parentUrl: null,
-  blockedBy: [],
-};
 
 export interface Comment {
   node: string;
@@ -102,16 +91,6 @@ export interface Comment {
   author: string | null;
   issue: string;
   repository: string;
-}
-
-/** An issue whose relations only GraphQL can name. */
-export function related(issue: RestIssue): boolean {
-  const summary = issue.issue_dependencies_summary;
-  return (
-    (issue.parent_issue_url ?? null) !== null ||
-    (summary?.total_blocked_by ?? 0) > 0 ||
-    (summary?.total_blocking ?? 0) > 0
-  );
 }
 
 export function issueOfRest(
@@ -140,14 +119,6 @@ export function issueOfRest(
     assignees: (issue.assignees ?? []).map((one) => one.login),
     repository,
   };
-}
-
-/** The web address of an issue REST names by its API address. */
-export function webAddress(api: string): string {
-  const found = /\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(api);
-  return found === null
-    ? api
-    : `https://github.com/${found[1] ?? ""}/${found[2] ?? ""}/issues/${found[3] ?? ""}`;
 }
 
 /** Marfa's status for GitHub's state and reason. */
@@ -201,12 +172,7 @@ export function issueEntry(
       assignees: issue.assignees,
       state_reason: issue.reason,
       github_updated_at: issue.updatedAt,
-      parent_url:
-        parent === null
-          ? relations.parentUrl
-          : inside(parent)
-            ? null
-            : parent.url,
+      parent_url: parent === null || inside(parent) ? null : parent.url,
       blocked_by_urls: relations.blockedBy
         .filter((one) => !inside(one))
         .map((one) => one.url),

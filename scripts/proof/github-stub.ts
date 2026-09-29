@@ -246,7 +246,6 @@ export class GitHubStub {
 
   private restIssue(issue: Issue): Record<string, unknown> {
     const repository = this.repositoryOf(issue);
-    const parent = issue.parent === null ? undefined : this.issue(issue.parent);
     const blocking = this.issues.filter(
       (one) => !one.deleted && one.blocked_by.includes(issue.node),
     ).length;
@@ -269,10 +268,6 @@ export class GitHubStub {
         (one) => one.issue === issue.node && !one.deleted,
       ).length,
       ...(issue.pull === true && { pull_request: {} }),
-      parent_issue_url:
-        parent === undefined
-          ? null
-          : `${this.url}/repos/${this.repositoryOf(parent).owner}/${this.repositoryOf(parent).name}/issues/${String(parent.number)}`,
       issue_dependencies_summary: {
         blocked_by: issue.blocked_by.length,
         total_blocked_by: issue.blocked_by.length,
@@ -586,12 +581,18 @@ export class GitHubStub {
     send(404, { message: `the stub knows no ${method} ${path}` });
   }
 
-  private graphIssue(issue: Issue): Record<string, unknown> {
+  /** As GitHub answers an App: an issue in a private repository it is not
+   *  installed on is hidden, as a relation's end too. */
+  private graphIssue(
+    issue: Issue,
+    sees: (repository: Repository) => boolean,
+  ): Record<string, unknown> {
     const repository = this.repositoryOf(issue);
     const related = (node: string): Record<string, unknown> | null => {
       const other = this.issue(node);
       if (other === undefined || other.deleted === true) return null;
       const where = this.repositoryOf(other);
+      if (!sees(where)) return null;
       return {
         id: other.node,
         url: `${this.address(where)}/issues/${String(other.number)}`,
@@ -618,7 +619,9 @@ export class GitHubStub {
         nameWithOwner: `${repository.owner}/${repository.name}`,
       },
       parent: issue.parent === null ? null : related(issue.parent),
-      blockedBy: { nodes: issue.blocked_by.map(related) },
+      blockedBy: {
+        nodes: issue.blocked_by.map(related).filter((one) => one !== null),
+      },
       blocking: {
         nodes: this.issues
           .filter((one) => !one.deleted && one.blocked_by.includes(issue.node))
@@ -656,7 +659,10 @@ export class GitHubStub {
         issue.deleted === true ||
         !this.visible(req, issue.repository)
         ? undefined
-        : this.graphIssue(issue);
+        : this.graphIssue(
+            issue,
+            (where) => !where.private || this.visible(req, where.node),
+          );
     };
     if (operation === "Issues" || operation === "Relations") {
       const data = { nodes: nodes(body.variables["ids"], issueNode) };

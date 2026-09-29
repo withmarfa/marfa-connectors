@@ -143,7 +143,6 @@ export async function issuesByNode(
         },
         relations: {
           parent: node.parent,
-          parentUrl: null,
           blockedBy: node.blockedBy.nodes.filter(
             (one): one is Related => one !== null,
           ),
@@ -167,7 +166,6 @@ export async function relationsOf(
     for (const node of known(answer.nodes, "Issue")) {
       found.set(node.id, {
         parent: node.parent,
-        parentUrl: null,
         blockedBy: node.blockedBy.nodes.filter(
           (one): one is Related => one !== null,
         ),

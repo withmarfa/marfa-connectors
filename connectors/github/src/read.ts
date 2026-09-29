@@ -6,11 +6,8 @@ import {
   issueEntry,
   issueOfRest,
   issueType,
-  noRelations,
-  related,
   repositoryEntry,
   repositoryType,
-  webAddress,
   type Comment,
   type Issue,
   type Relations,
@@ -300,11 +297,12 @@ async function syncRepository(
   const byNumber = new Map(listed.map((issue) => [issue.number, issue]));
   const at = { node, name: repository.name };
 
-  // Relations, which move no issue's time: those it names, and the issues
-  // an issue blocks, whose own list of blockers changed with it.
+  // Relations, which move no issue's time, asked of every issue that
+  // changed, since REST names no parent to an App; and the issues an issue
+  // blocks, whose own list of blockers changed with it.
   const relations = await relationsOf(
     octokit,
-    listed.filter(related).map((issue) => issue.node_id),
+    listed.map((issue) => issue.node_id),
   );
   const listedNodes = new Set(listed.map((issue) => issue.node_id));
   const around = [...relations.values()].flatMap((one) => [
@@ -323,21 +321,9 @@ async function syncRepository(
   await upsert(issueType, [
     ...listed.flatMap((issue) => {
       const found = relations.get(issue.node_id);
-      if (related(issue) && found === undefined) return [];
-      const known = found ?? noRelations;
-      return [
-        issueEntry(
-          issueOfRest(issue, at),
-          {
-            ...known,
-            parentUrl:
-              known.parent === null && issue.parent_issue_url
-                ? webAddress(issue.parent_issue_url)
-                : null,
-          },
-          options.synced,
-        ),
-      ];
+      // Gone between the listing and the question: the next run has it.
+      if (found === undefined) return [];
+      return [issueEntry(issueOfRest(issue, at), found, options.synced)];
     }),
     ...beside
       .filter(({ issue }) => options.synced.has(issue.repository.node))

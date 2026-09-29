@@ -103,8 +103,13 @@ describe("a first sync", () => {
     });
     const elsewhere = github.addRepository("someone/elsewhere", {
       installation: 99,
+      private: false,
     });
     const outside = github.addIssue(elsewhere, { title: "Outside" });
+    const hidden = github.addRepository("someone/hidden", {
+      installation: 99,
+    });
+    const secret = github.addIssue(hidden, { title: "Hidden" });
     const parent = github.addIssue(repository, {
       title: "Parent",
       body: "The whole of it",
@@ -137,7 +142,7 @@ describe("a first sync", () => {
       updated_at: github.ago(200),
     });
     github.addIssue(repository, { title: "A pull request", pull: true });
-    child.blocked_by = [blocker.node, outside.node];
+    child.blocked_by = [blocker.node, outside.node, secret.node];
     const orphan = github.addIssue(repository, {
       title: "Under an outside parent",
       parent: outside.node,
