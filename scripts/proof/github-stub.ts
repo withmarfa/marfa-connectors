@@ -101,6 +101,9 @@ export class GitHubStub {
   /** Answers every listing with an error quoting the request's own
    *  credentials, as a careless server might. */
   echoCredentials = false;
+  /** What each answer says is left of the hourly limit; at 0 it refuses
+   *  every repository request, as GitHub's rate limit does. */
+  rateRemaining = 4999;
   /** The App's webhook as last set. */
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
@@ -379,6 +382,7 @@ export class GitHubStub {
       asked.status = status;
       res.writeHead(status, {
         "content-type": "application/json",
+        "x-ratelimit-remaining": String(this.rateRemaining),
         ...headers,
       });
       res.end(data === undefined ? undefined : JSON.stringify(data));
@@ -404,6 +408,10 @@ export class GitHubStub {
     const method = req.method ?? "GET";
     const path = url.pathname;
     let match: RegExpExecArray | null;
+    if (this.rateRemaining <= 0 && path.startsWith("/repos/")) {
+      send(403, { message: "API rate limit exceeded for installation" });
+      return;
+    }
 
     if (method === "GET" && path === "/app/installations") {
       send(
@@ -543,6 +551,8 @@ export class GitHubStub {
       );
       if (repository === undefined || issue === undefined) {
         send(404, { message: "Not Found" });
+      } else if (repository.issuesOff === true) {
+        send(410, { message: "Issues are disabled for this repo" });
       } else if (issue.deleted === true) {
         send(410, { message: "This issue was deleted" });
       } else if (issue.moved === true) {
@@ -680,7 +690,9 @@ export class GitHubStub {
       const issue = this.issue(id);
       return issue === undefined ||
         issue.deleted === true ||
-        !this.visible(req, issue.repository)
+        // GitHub shows an App a public repository's issues, installed or not.
+        (!this.visible(req, issue.repository) &&
+          this.repositoryOf(issue).private)
         ? undefined
         : this.graphIssue(
             issue,

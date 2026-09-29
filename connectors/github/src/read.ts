@@ -1,5 +1,6 @@
 import type { EnvDeclaration, Item, RunContext } from "@withmarfa/connector";
 import {
+  blockedBy,
   commentEntry,
   commentType,
   inRepository,
@@ -8,6 +9,7 @@ import {
   issueType,
   repositoryEntry,
   repositoryType,
+  subIssueOf,
   type RestComment,
   type RestIssue,
   type RestRepository,
@@ -15,6 +17,7 @@ import {
 import {
   asApp,
   asInstallation,
+  remaining,
   numbersIn,
   pagesOf,
   status,
@@ -43,7 +46,9 @@ export interface Kept {
   name: string;
   open?: Page[];
   closed?: { since: string; pages: Page[] };
-  comments?: { since: string; etag?: string };
+  /** `full` where the listing's first page was full last time, whose
+   *  ETag then cannot say nothing lies past it. */
+  comments?: { since: string; etag?: string; full?: boolean };
   checked?: string;
 }
 
@@ -83,6 +88,10 @@ function keptOf(value: unknown): Record<string, Kept> {
 function numbersOf(pages: readonly Page[] | undefined): number[] {
   return (pages ?? []).flatMap((page) => numbersIn(page.numbers));
 }
+
+/** What a run leaves of an installation's hourly limit before it stops
+ *  syncing further repositories, which the next run takes up. */
+const reserve = 500;
 
 /** A comment cursor asked a little early, so one GitHub shows late under
  *  an earlier time is still read; what comes again is unchanged. */
@@ -191,11 +200,24 @@ export async function read(context: Context, app: App): Promise<void> {
     [...listed.values()].map(({ repository }) => repositoryEntry(repository)),
   );
   const now = Date.now();
-  for (const node of listed.keys()) {
+  const waiting: string[] = [];
+  for (const [node, at] of listed) {
+    const octokit = clients.get(at.installation);
+    const left = octokit === undefined ? undefined : remaining(octokit);
+    if (left !== undefined && left < reserve) {
+      waiting.push(at.repository.full_name);
+      continue;
+    }
     const checked = next[node]?.checked;
     await sync(
       node,
       checked === undefined || now - Date.parse(checked) >= checkEvery,
+    );
+  }
+  if (waiting.length > 0) {
+    log.condition(
+      "rate-limit-reserve",
+      `GitHub's hourly limit ran low, so ${waiting.join(", ")} ${waiting.length === 1 ? "waits" : "wait"} for the next run`,
     );
   }
   state.set("repositories", next);
@@ -275,17 +297,34 @@ async function syncRepository(
     listed.map((issue) => issue.node_id),
   );
   const listedNodes = new Set(listed.map((issue) => issue.node_id));
-  const around = [...relations.values()].flatMap((one) => [
-    ...one.blocking,
-    // A child names its parent; it may sit on a page that did not change.
-    ...one.children,
-    ...(one.parent !== null && options.synced.has(one.parent.repository.id)
-      ? [one.parent.id]
-      : []),
-    ...one.blockedBy
-      .filter((other) => options.synced.has(other.repository.id))
-      .map((other) => other.id),
-  ]);
+  // A child detached, or an issue no longer blocked, names nothing on
+  // GitHub's side of what changed: ask about those Marfa holds under it.
+  const held: string[] = [];
+  if (repository.comments !== undefined) {
+    for (const issue of listed) {
+      const under = { type: issueType, id: issue.node_id };
+      for (const connection of [subIssueOf, blockedBy]) {
+        for (const row of await context.linked(issueType, connection, under)) {
+          const link = linkOf(row);
+          if (link !== undefined) held.push(link);
+        }
+      }
+    }
+  }
+  const around = [
+    ...held,
+    ...[...relations.values()].flatMap((one) => [
+      ...one.blocking,
+      // A child names its parent; it may sit on a page that did not change.
+      ...one.children,
+      ...(one.parent !== null && options.synced.has(one.parent.repository.id)
+        ? [one.parent.id]
+        : []),
+      ...one.blockedBy
+        .filter((other) => options.synced.has(other.repository.id))
+        .map((other) => other.id),
+    ]),
+  ];
   const beside = await issuesByNode(
     octokit,
     around.filter((id) => !listedNodes.has(id)),
@@ -309,6 +348,7 @@ async function syncRepository(
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
   let etag = repository.comments?.etag;
+  let full = repository.comments?.full ?? false;
   if (repository.comments === undefined) {
     for (const comment of (await octokit.paginate(
       "GET /repos/{owner}/{repo}/issues/comments",
@@ -328,6 +368,7 @@ async function syncRepository(
         if (comment.updated_at > since) since = comment.updated_at;
       }
       etag = changed.etag;
+      full = changed.full;
     }
     for (const number of scope) {
       if (before.has(number)) continue;
@@ -353,7 +394,11 @@ async function syncRepository(
     name: repository.name,
     open: open.pages,
     closed: { since: windowStart, pages: closed.pages },
-    comments: { since, ...(etag !== undefined && { etag }) },
+    comments: {
+      since,
+      ...(etag !== undefined && { etag }),
+      ...(full && { full }),
+    },
     ...(repository.checked !== undefined && { checked: repository.checked }),
   };
   // A deletion or a move changes the listing, so only then is it asked.
@@ -384,8 +429,24 @@ async function writeComments(
   comments: readonly RestComment[],
   nodes: Map<number, string>,
 ): Promise<void> {
-  const inScope = comments.filter((comment) =>
-    where.scope.has(numberOf(comment)),
+  // Outside the window, only an edit to a comment Marfa already holds.
+  const outside = comments.filter(
+    (comment) => !where.scope.has(numberOf(comment)),
+  );
+  const held =
+    outside.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await context.linked(commentType, inRepository, {
+              type: repositoryType,
+              id: where.node,
+            })
+          ).flatMap((row) => linkOf(row) ?? []),
+        );
+  const inScope = comments.filter(
+    (comment) =>
+      where.scope.has(numberOf(comment)) || held.has(comment.node_id),
   );
   const missing = inScope.map(numberOf).filter((number) => !nodes.has(number));
   for (const [number, id] of await nodesOfNumbers(
@@ -429,8 +490,11 @@ function numberOf(comment: RestComment): number {
 async function changedComments(
   octokit: Client,
   where: { owner: string; repo: string },
-  last: { since: string; etag?: string },
-): Promise<{ comments: RestComment[]; etag: string | undefined } | undefined> {
+  last: { since: string; etag?: string; full?: boolean },
+): Promise<
+  | { comments: RestComment[]; etag: string | undefined; full: boolean }
+  | undefined
+> {
   const route = "GET /repos/{owner}/{repo}/issues/comments";
   const parameters = {
     ...where,
@@ -439,14 +503,20 @@ async function changedComments(
     since: new Date(Date.parse(last.since) - overlap).toISOString(),
     per_page: 100,
   };
-  const first = await unlessUnchanged(octokit, route, parameters, last.etag);
+  const first = await unlessUnchanged(
+    octokit,
+    route,
+    parameters,
+    last.full === true ? undefined : last.etag,
+  );
   if (first === undefined) return undefined;
   const comments = [...(first.data as RestComment[])];
+  const full = comments.length === 100;
   for (let page = 2; comments.length === (page - 1) * 100; page += 1) {
     const more = await octokit.request(route, { ...parameters, page });
     comments.push(...(more.data as RestComment[]));
   }
-  return { comments, etag: first.etag };
+  return { comments, etag: first.etag, full };
 }
 
 /** What a run for deliveries may archive: only what they named. */

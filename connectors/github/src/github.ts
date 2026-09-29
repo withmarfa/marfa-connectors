@@ -47,6 +47,21 @@ function client(base: string, signal: AbortSignal, auth?: object): Client {
   });
 }
 
+/** What GitHub last said is left of each client's hourly limit. */
+const budgets = new WeakMap<Client, number>();
+
+export function remaining(octokit: Client): number | undefined {
+  return budgets.get(octokit);
+}
+
+function counted(octokit: Client): Client {
+  octokit.hook.after("request", (response) => {
+    const left = Number(response.headers["x-ratelimit-remaining"]);
+    if (Number.isFinite(left)) budgets.set(octokit, left);
+  });
+  return octokit;
+}
+
 const auths = new Map<string, ReturnType<typeof createAppAuth>>();
 
 /** One per App and process, so its installation tokens are cached for
@@ -80,7 +95,7 @@ export function asInstallation(
   secret: Secret,
   signal: AbortSignal,
 ): Client {
-  const octokit = client(app.base, signal);
+  const octokit = counted(client(app.base, signal));
   octokit.hook.wrap("request", async (request, options) => {
     const { token } = await appAuth(app)({
       type: "installation",

@@ -402,7 +402,8 @@ describe("a repository", () => {
     await ok();
     repository.issuesOff = true;
     checkDue();
-    const output = await ok();
+    const { code, output } = await once();
+    expect(code).toBe(0);
     expect(output).toContain("has its issues turned off");
     expect(row(issue.node).state).toBe("active");
   });
@@ -474,6 +475,133 @@ describe("a larger repository", () => {
     expect(numbersIn("1-3,5,7-8")).toEqual([1, 2, 3, 5, 7, 8]);
     expect(numbersIn(runsOf([]))).toEqual([]);
   });
+});
+
+describe("what the adversarial review found", () => {
+  it("reads past a full first page of changed comments, so a burst never stalls the cursor", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.addComment(issue, "Hello");
+    await ok();
+    for (let at = 0; at < 150; at += 1) {
+      github.addComment(issue, `Burst ${String(at)}`);
+    }
+    await ok();
+    const after = github.addComment(issue, "After");
+    await ok();
+    await ok();
+    expect(row(after.node).properties["body"]).toBe("After");
+  }, 60_000);
+
+  it("takes a child detached on GitHub, on a page that did not change", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issues = Array.from({ length: 150 }, (_, at) =>
+      github.addIssue(repository, { title: `Issue ${String(at + 1)}` }),
+    );
+    const child = issues[2];
+    const parent = issues[139];
+    if (child === undefined || parent === undefined) throw new Error("none");
+    child.parent = parent.node;
+    await ok();
+    expect(links(child.node, "github.sub-issue-of")).toEqual([parent.node]);
+    child.parent = null;
+    await ok();
+    expect(links(child.node, "github.sub-issue-of")).toEqual([]);
+  }, 60_000);
+
+  it("takes a child detached from a parent in another repository", async () => {
+    const one = github.addRepository("someone/one");
+    const two = github.addRepository("someone/two");
+    const parent = github.addIssue(one, { title: "Parent" });
+    const child = github.addIssue(two, { title: "Child", parent: parent.node });
+    await ok();
+    child.parent = null;
+    await ok();
+    expect(links(child.node, "github.sub-issue-of")).toEqual([]);
+  }, 60_000);
+
+  it("takes an edit to a comment Marfa holds on an issue that left the window", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository, {
+      state: "closed",
+      state_reason: "completed",
+      closed_at: github.ago(5),
+      updated_at: github.ago(5),
+    });
+    const comment = github.addComment(issue, "Before");
+    comment.updated_at = github.ago(5);
+    issue.updated_at = github.ago(5);
+    await ok();
+    issue.updated_at = github.ago(120);
+    row(issue.node).properties["github_updated_at"] = issue.updated_at;
+    github.editComment(comment, "After");
+    await ok();
+    expect(row(comment.node).properties["body"]).toBe("After");
+  }, 60_000);
+
+  it("fails a run GitHub's rate limit refuses, rather than calling it lost access", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    await ok();
+    github.rateRemaining = 0;
+    const { code, output } = await once();
+    expect(code).toBe(1);
+    expect(output).not.toContain("so its rows are left as they are");
+  }, 60_000);
+
+  it("leaves repositories for the next run once the hourly limit runs low, keeping what it did", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    github.addIssue(first);
+    github.addIssue(second);
+    github.rateRemaining = 100;
+    const output = await ok();
+    expect(output).toContain("wait for the next run");
+    github.rateRemaining = 4999;
+    await ok();
+    expect(
+      marfa.rows.filter((one) => one.type === "github.issue"),
+    ).toHaveLength(2);
+    expect(Object.keys(kept())).toHaveLength(2);
+  }, 60_000);
+
+  it("brings in an old issue newly blocked by one in the window, and an old parent, connected", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const old = (title: string) =>
+      github.addIssue(repository, {
+        title,
+        state: "closed",
+        state_reason: "completed",
+        closed_at: github.ago(200),
+        updated_at: github.ago(200),
+      });
+    const blocked = old("Old, blocked");
+    const parent = old("Old parent");
+    const listed = github.addIssue(repository, { title: "Listed" });
+    blocked.blocked_by = [listed.node];
+    listed.parent = parent.node;
+    await ok();
+    expect(links(blocked.node, "github.blocked-by")).toEqual([listed.node]);
+    expect(links(listed.node, "github.sub-issue-of")).toEqual([parent.node]);
+  }, 60_000);
+
+  it("keeps a public issue outside the installation as an address, never a row", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const outside = github.addRepository("someone/public", {
+      installation: 99,
+      private: false,
+    });
+    const blocker = github.addIssue(outside, { title: "Public blocker" });
+    const listed = github.addIssue(repository, { title: "Listed" });
+    listed.blocked_by = [blocker.node];
+    await ok();
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === blocker.node),
+    ).toBe(false);
+    expect(row(listed.node).properties["blocked_by_urls"]).toEqual([
+      `https://github.com/someone/public/issues/${String(blocker.number)}`,
+    ]);
+  }, 60_000);
 });
 
 describe("a comment a run missed", () => {
