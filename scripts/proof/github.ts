@@ -1,4 +1,7 @@
-import type { MarfaClient } from "@withmarfa/client";
+import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
+import { resolve } from "node:path";
+import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
@@ -7,6 +10,7 @@ import {
   item,
   lastRun,
   moved,
+  registration,
   restore,
   rowsOf,
   trash,
@@ -15,6 +19,10 @@ import {
 import { appKey, GitHubStub } from "./github-stub.js";
 
 const source = "github";
+const entry = resolve(
+  import.meta.dirname,
+  "../../../connectors/github/dist/main.js",
+);
 const types = ["github.repository", "github.issue", "github.comment"];
 const connections = [
   "github.in-repository",
@@ -369,6 +377,135 @@ export async function proveGitHub(
           );
         }
         return `every row archived and ${String(back)} back once it was added again; the installation's refusal left ${String(still)} active and said so`;
+      },
+    );
+
+    let path = "";
+    const post = async (
+      event: string,
+      said: Record<string, unknown>,
+      signedWith = env.GITHUB_WEBHOOK_SECRET,
+    ): Promise<number> => {
+      const body = JSON.stringify(said);
+      const answer = await fetch(`${url}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-GitHub-Event": event,
+          "X-GitHub-Delivery": crypto.randomUUID(),
+          "X-Hub-Signature-256": `sha256=${createHmac("sha256", signedWith).update(body).digest("hex")}`,
+        },
+        body,
+      });
+      return answer.status;
+    };
+
+    await check(
+      "github: a delivery signed with the App's webhook secret is processed at the endpoint made for it, and one signed otherwise rejected",
+      async () => {
+        const installation = github.installations[0];
+        if (installation !== undefined) installation.lost = false;
+        const connectorId = (await registration(marfa, key.id)).id;
+        const own = createClient({ baseUrl: url, credential: key.key });
+        const { data, error } = await own.POST("/connectors/{id}/endpoints", {
+          params: { path: { id: connectorId } },
+          body: { label: "github", duplicate_header: "X-GitHub-Delivery" },
+        });
+        if (data === undefined)
+          throw new Error(`the endpoint was refused: ${JSON.stringify(error)}`);
+        path = data.path;
+        const statuses = [
+          await post("ping", { zen: "Design for failure." }),
+          await post("ping", { zen: "Forged" }, "a guess"),
+        ];
+        await runOnce();
+        const summary = String((await lastRun(marfa, key.id)).summary);
+        if (
+          statuses.join() !== "202,202" ||
+          !summary.includes("deliveries processed 1, rejected 1")
+        ) {
+          throw new Error(
+            `answered ${statuses.join()}; the run said ${summary}`,
+          );
+        }
+        return `both answered 202; the run said ${summary.slice(summary.indexOf("deliveries"))}`;
+      },
+    );
+
+    await check(
+      "github: running on a schedule, the connector takes an issue edited on GitHub within seconds of its delivery, asking GitHub's GraphQL for that issue alone and listing no repository's issues or comments",
+      async () => {
+        const child = spawn(
+          "node",
+          [entry, "--every", "1h", "--look-every", "1s"],
+          {
+            env: {
+              PATH: process.env["PATH"],
+              MARFA_URL: url,
+              MARFA_KEY: key.key,
+              ...env,
+            },
+            stdio: "ignore",
+          },
+        );
+        const exited = new Promise<void>((done) =>
+          child.once("exit", () => {
+            done();
+          }),
+        );
+        const until = async (holds: () => Promise<boolean>, what: string) => {
+          const deadline = Date.now() + 30_000;
+          while (!(await holds())) {
+            if (Date.now() > deadline)
+              throw new Error(`${what} never happened`);
+            await new Promise((done) => setTimeout(done, 200));
+          }
+        };
+        try {
+          const before = (await lastRun(marfa, key.id)).reported_at;
+          await until(
+            async () => (await lastRun(marfa, key.id)).reported_at !== before,
+            "the scheduled run",
+          );
+          const settled = (await lastRun(marfa, key.id)).reported_at;
+          await post("ping", {});
+          await until(
+            async () => (await lastRun(marfa, key.id)).reported_at !== settled,
+            "the first run for deliveries",
+          );
+          github.asked.length = 0;
+          github.edit(parent, { title: "Parent, renamed on GitHub" });
+          const sentAt = Date.now();
+          await post("issues", {
+            action: "edited",
+            issue: { node_id: parent.node },
+          });
+          await until(
+            async () =>
+              (await row(parent.node)).properties["title"] ===
+              "Parent, renamed on GitHub",
+            "the edit being written",
+          );
+          const took = Date.now() - sentAt;
+          const listed = github.asked.filter((one) =>
+            one.path.startsWith("/repos/"),
+          );
+          const asked = github.asked.flatMap((one) =>
+            one.path === "/graphql"
+              ? ((one.body as { variables?: { ids?: string[] } }).variables
+                  ?.ids ?? [])
+              : [],
+          );
+          if (listed.length > 0 || [...new Set(asked)].join() !== parent.node) {
+            throw new Error(
+              `GitHub was asked for ${listed.map((one) => one.path).join()} and ${asked.join()}`,
+            );
+          }
+          return `written ${String(took)} ms after its delivery, GitHub asked ${github.asked.map((one) => `${one.method} ${one.path}`).join(", ")}`;
+        } finally {
+          child.kill("SIGTERM");
+          await exited;
+        }
       },
     );
   } finally {

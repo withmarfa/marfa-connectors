@@ -1,6 +1,7 @@
 import {
   defineConnector,
   main,
+  verifyHmac,
   type TypeDefinition,
 } from "@withmarfa/connector";
 import {
@@ -13,6 +14,7 @@ import {
   subIssueOf,
 } from "./entries.js";
 import { defaultBase, type App } from "./github.js";
+import { hints } from "./hooks.js";
 import { read } from "./read.js";
 import { readOnly, setUp } from "./setup.js";
 import { carry, remake } from "./write.js";
@@ -149,6 +151,16 @@ const connector = defineConnector({
   },
   remake(change, context) {
     return remake(change, context, appOf(context.env));
+  },
+  inbound: {
+    verify: (delivery, values) =>
+      verifyHmac({
+        secret: values.GITHUB_WEBHOOK_SECRET,
+        body: delivery.body,
+        signature: delivery.header("x-hub-signature-256"),
+        prefix: "sha256=",
+      }),
+    hints,
   },
 });
 

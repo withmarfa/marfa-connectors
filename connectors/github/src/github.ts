@@ -248,3 +248,19 @@ export function batches<T>(values: readonly T[], size = 100): T[][] {
   }
   return out;
 }
+
+/** Whether the App still reads the repository, which tells a refusal of
+ *  the change from a repository out of the App's reach. */
+export async function reads(
+  octokit: Client,
+  owner: string,
+  repo: string,
+): Promise<boolean> {
+  try {
+    await octokit.request("GET /repos/{owner}/{repo}", { owner, repo });
+    return true;
+  } catch (error) {
+    if ([401, 403, 404, 451].includes(status(error) ?? 0)) return false;
+    throw error;
+  }
+}
