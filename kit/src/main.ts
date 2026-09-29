@@ -551,13 +551,8 @@ export async function start<E extends EnvDeclaration>(
       while (!stopped()) {
         const run = await held("schedule");
         if (run === undefined) {
-          // A hold a stopped process left lapses well within an interval.
-          const lapse =
-            heldUntil === undefined
-              ? schedule.intervalMs
-              : Date.parse(heldUntil) - clock.now().getTime() + 1000;
           await clock.sleep(
-            Math.min(schedule.intervalMs, Math.max(1000, lapse)),
+            untilLapsed(heldUntil, clock.now().getTime(), schedule.intervalMs),
             stop.signal,
           );
           continue;
@@ -582,6 +577,22 @@ export async function start<E extends EnvDeclaration>(
     await hold.release();
   }
   return code;
+}
+
+/**
+ * How long a process refused the hold waits: until a second after the
+ * hold would lapse, since one a stopped process left lapses well within an
+ * interval; at least half a minute, so a clock ahead of the instance's does
+ * not ask every second; at most the interval.
+ */
+export function untilLapsed(
+  until: string | undefined,
+  now: number,
+  intervalMs: number,
+): number {
+  const at = until === undefined ? Number.NaN : Date.parse(until);
+  if (!Number.isFinite(at)) return intervalMs;
+  return Math.min(intervalMs, Math.max(30_000, at - now + 1000));
 }
 
 export async function main<E extends EnvDeclaration>(
