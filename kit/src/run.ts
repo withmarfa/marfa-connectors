@@ -18,6 +18,7 @@ import type {
   Log,
   RunContext,
   State,
+  Target,
   WatchContext,
 } from "./define.js";
 import { Connections, connectionsKey, type Carried } from "./connections.js";
@@ -701,6 +702,18 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return next;
   };
+  /** The connections the vendor answered it holds after a carry, by row. */
+  const answeredConnections = new Map<
+    string,
+    Readonly<Record<string, readonly Target[]>>
+  >();
+  /** A connection the vendor would not take is taken back in Marfa. */
+  const answeredBack = async (): Promise<void> => {
+    if (answeredConnections.size === 0) return;
+    const answers = new Map(answeredConnections);
+    answeredConnections.clear();
+    await connections.connect(answers, []);
+  };
   const settle = (
     kind: Spec,
     item: Item,
@@ -710,6 +723,17 @@ export async function runOnce<E extends EnvDeclaration>(
     moved: Carried | undefined,
   ): void => {
     pushed += 1;
+    if (answered?.connections !== undefined && item.state !== "trashed") {
+      // Only the kind's own connection types, as an entry's are held to.
+      answeredConnections.set(
+        item.id,
+        Object.fromEntries(
+          Object.entries(answered.connections).filter(([type]) =>
+            kind.connections.has(type),
+          ),
+        ),
+      );
+    }
     const base = store.get(item.id);
     // A vendor makes a row live; a state beside the create is carried next.
     const later = changeKind === "created" && item.state !== "active";
@@ -1047,9 +1071,15 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     await connector.run(context);
     // Once the vendor's rows are written, so a target made this run is found.
-    const named = new Map(
-      [...lanes.values()].flatMap(({ rows }) => [...rows.connecting]),
-    );
+    // An answer from before the run gives way, type by type, to the
+    // vendor's entry since.
+    const named = new Map(answeredConnections);
+    for (const { rows } of lanes.values()) {
+      for (const [id, said] of rows.connecting) {
+        named.set(id, { ...named.get(id), ...said });
+      }
+    }
+    answeredConnections.clear();
     await connections.connect(
       named,
       waitingIds.filter(
@@ -1067,6 +1097,7 @@ export async function runOnce<E extends EnvDeclaration>(
         if (agreement?.waiting === undefined || found === undefined) continue;
         if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
       }
+      await answeredBack();
       for (const item of purged.values()) {
         if (setup.fenced?.() === true || setup.signal.aborted) {
           throw new Stopped();
@@ -1090,6 +1121,14 @@ export async function runOnce<E extends EnvDeclaration>(
     }
   } catch (error) {
     failure = error;
+    // What was carried before the failure is agreed, so its answers apply.
+    if (!(error instanceof Stopped) && setup.fenced?.() !== true) {
+      try {
+        await answeredBack();
+      } catch {
+        // The run has failed already; the vendor's next entry settles it.
+      }
+    }
   }
   let flushed = true;
   const fenced = setup.fenced?.() === true;

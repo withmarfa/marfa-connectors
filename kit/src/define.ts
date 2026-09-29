@@ -318,8 +318,9 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * Carries a change made in Marfa to the vendor, once per row: a `created`
    * change before `run` reads the vendor, the rest after. It may answer the
    * vendor's entry as the write left it, which the kit takes as what the
-   * vendor now holds; otherwise the carried values are taken as the
-   * vendor's. Resolving means the change landed or was abandoned with a
+   * vendor now holds, connections included, so one the vendor would not
+   * take is taken back in Marfa; otherwise the carried values are taken as
+   * the vendor's. Resolving means the change landed or was abandoned with a
    * condition; throwing fails the run, and the change waits for the next.
    * For a purge, the answer's `changed_at` keeps the purge remembered past
    * the vendor's own change, such as a close.
