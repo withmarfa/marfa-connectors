@@ -9,6 +9,7 @@ import {
   type TypeDefinition,
 } from "../src/define.js";
 import { start } from "../src/main.js";
+import { Unreachable } from "../src/rows.js";
 import { verifyHmac } from "../src/verify.js";
 import type { Clock, Runtime } from "../src/runtime.js";
 import { ScriptedServer } from "./scripted-server.js";
@@ -131,6 +132,10 @@ export interface Vendor {
   failAfter?: Error | undefined;
   /** A push that throws, the first time the named row is offered. */
   pushFail?: { id: string; error: Error } | undefined;
+  /** A remake that throws, the first time the named row is offered. */
+  remakeFail?: { id: string; error: Error } | undefined;
+  /** Rows the vendor cannot be reached for, to push or make again. */
+  unreachable?: Set<string> | undefined;
   /** The vendor's id for a row the vendor has not been told about. */
   vendorIdFor?: ((change: Change) => string | undefined) | undefined;
   /** Rows the vendor no longer has, by id, and the id it makes each under. */
@@ -229,6 +234,9 @@ function twoWayConnector(held: Vendor) {
     },
     async onChange(change, context) {
       held.changes.push(change);
+      if (held.unreachable?.has(change.item.id) === true) {
+        throw new Unreachable(`${change.item.id} cannot be reached`);
+      }
       if (held.pushFail?.id === change.item.id) {
         const { error } = held.pushFail;
         held.pushFail = undefined;
@@ -240,6 +248,14 @@ function twoWayConnector(held: Vendor) {
     },
     async remake(change, context) {
       (held.remakes ??= []).push({ change, runsBefore: held.runs });
+      if (held.unreachable?.has(change.item.id) === true) {
+        throw new Unreachable(`${change.item.id} cannot be reached`);
+      }
+      if (held.remakeFail?.id === change.item.id) {
+        const { error } = held.remakeFail;
+        held.remakeFail = undefined;
+        throw error;
+      }
       const id = held.gone?.get(change.item.id);
       if (id === undefined) return false;
       held.gone?.delete(change.item.id);

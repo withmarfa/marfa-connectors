@@ -42,6 +42,15 @@ export class LinkTaken extends Error {
   override name = "LinkTaken";
 }
 
+/**
+ * Thrown by `onChange` or `remake` where the vendor cannot take the row's
+ * change now, such as for want of access: the change waits for a later
+ * run, and this one goes on, its message raised as a condition.
+ */
+export class Unreachable extends Error {
+  override name = "Unreachable";
+}
+
 /** What the kit knows of one of the connector's types. */
 export interface Spec {
   readonly type: string;
