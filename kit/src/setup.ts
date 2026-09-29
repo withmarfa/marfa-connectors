@@ -137,7 +137,13 @@ function serve(
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
       const url = `http://127.0.0.1:${String(port)}${base}`;
-      shown = typeof page === "function" ? page(`${url}/callback`) : page;
+      try {
+        shown = typeof page === "function" ? page(`${url}/callback`) : page;
+      } catch (error) {
+        server.close();
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
       logger.info(`open ${url} in a browser`);
       resolve({ url, callback: `${url}/callback`, redirected });
     });

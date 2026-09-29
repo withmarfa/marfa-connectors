@@ -133,6 +133,24 @@ describe("--setup", () => {
     expect(await exit).toBe(0);
   });
 
+  it("fails, keeping no file, where the page cannot be made", async () => {
+    const file = join(dir, "secrets.json");
+    const exit = start(
+      withSetup({}, async (context) => {
+        await context.listen(() => {
+          throw new Error("the manifest could not be written");
+        });
+        return { TEST_APP_KEY: made };
+      }),
+      harness.runtime(["--setup", file]),
+    );
+    expect(await exit).toBe(1);
+    await expect(stat(file)).rejects.toThrow();
+    expect(harness.lines.join("\n")).toContain(
+      "the manifest could not be written",
+    );
+  });
+
   it("writes over no file, and is refused for a connector without a setup", async () => {
     const file = join(dir, "secrets.json");
     await writeFile(file, "kept");
