@@ -512,8 +512,11 @@ export async function start<E extends EnvDeclaration>(
     clock,
     signal: stop.signal,
   };
+  /** Until when another process last held the connector. */
+  let heldUntil: string | undefined;
   /** A run under the hold; none where another process holds the connector. */
   const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
+    heldUntil = undefined;
     let taken;
     try {
       taken = await hold.take();
@@ -526,6 +529,7 @@ export async function start<E extends EnvDeclaration>(
       logger.warn(
         `another process holds this connector until ${taken.until}, so this one does not run`,
       );
+      heldUntil = taken.until;
       return undefined;
     }
     return runOnce(
@@ -547,7 +551,15 @@ export async function start<E extends EnvDeclaration>(
       while (!stopped()) {
         const run = await held("schedule");
         if (run === undefined) {
-          await clock.sleep(schedule.intervalMs, stop.signal);
+          // A hold a stopped process left lapses well within an interval.
+          const lapse =
+            heldUntil === undefined
+              ? schedule.intervalMs
+              : Date.parse(heldUntil) - clock.now().getTime() + 1000;
+          await clock.sleep(
+            Math.min(schedule.intervalMs, Math.max(1000, lapse)),
+            stop.signal,
+          );
           continue;
         }
         failures = run.succeeded ? 0 : failures + 1;

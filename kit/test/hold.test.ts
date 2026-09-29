@@ -86,6 +86,23 @@ describe("the hold", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
+  it("tries again under --every once another process's hold lapses, not a whole interval later", async () => {
+    harness.server.holder = {
+      process: "another-process",
+      until: harness.clock.now().getTime() + 3 * minute,
+    };
+    const held = vendor([one]);
+    const exit = start(testConnector(held), harness.runtime(["--every", "1h"]));
+    // A second past the lapse, rather than the hour.
+    await harness.clock.sleeping(3 * minute + 1000);
+    expect(held.runs).toBe(0);
+    harness.server.holder = undefined;
+    await harness.clock.wake(3 * minute + 1000);
+    await until(() => harness.server.runs.length === 1);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("stops a run once another process takes the hold, before it writes", async () => {
     const held = vendor([one]);
     const release = gate(held);
