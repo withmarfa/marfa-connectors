@@ -545,6 +545,12 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return merged;
   };
+  const heldBack = (id: string): void => {
+    raised.set(
+      `create-held:${id}`,
+      `${id} is not sent to the vendor until the vendor has each row its read-only connections name`,
+    );
+  };
   /** Carries a row's change; answers `unplaced` for a create waiting on
    *  the vendor to have a row its mirrored connections name. */
   const carry = async (
@@ -984,10 +990,13 @@ export async function runOnce<E extends EnvDeclaration>(
             ),
             ...(Object.keys(handed).length > 0 && { connections: handed }),
           };
-          if (
-            placed?.unplaced !== true &&
-            (await connector.remake(change, watchContext))
-          ) {
+          // Placed by a row the vendor lacks: made again once it has it.
+          if (placed?.unplaced === true) {
+            heldBack(id);
+            done.add(id);
+            continue;
+          }
+          if (await connector.remake(change, watchContext)) {
             pushed += 1;
             // What was sent, never the server's answer, which can hold a
             // person's edit made meanwhile.
@@ -1034,12 +1043,7 @@ export async function runOnce<E extends EnvDeclaration>(
         progress = still.length < held.length;
         held = still;
       }
-      for (const id of held) {
-        raised.set(
-          `create-held:${id}`,
-          `${id} is not sent to the vendor until the vendor has each row its read-only connections name`,
-        );
-      }
+      for (const id of held) heldBack(id);
     }
     await connector.run(context);
     // Once the vendor's rows are written, so a target made this run is found.
@@ -1061,7 +1065,7 @@ export async function runOnce<E extends EnvDeclaration>(
         const agreement = store.get(id);
         const found = await find(id);
         if (agreement?.waiting === undefined || found === undefined) continue;
-        await carry(found.item, agreement);
+        if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
       }
       for (const item of purged.values()) {
         if (setup.fenced?.() === true || setup.signal.aborted) {

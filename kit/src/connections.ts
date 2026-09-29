@@ -269,7 +269,10 @@ export class Connections {
         kept.delete(target);
       }
       for (const target of gone) kept.delete(target);
-      this.putBackCondition(item.id, type);
+      // A target purged meanwhile is let go, which no person changed.
+      if (remove.length > 0 || add.length > gone.size) {
+        this.putBackCondition(item.id, type);
+      }
       next = this.agreeOn(next, type, kept, next.pending?.[type] ?? []);
     }
     return next;
