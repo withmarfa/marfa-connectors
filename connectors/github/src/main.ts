@@ -27,6 +27,7 @@ const env = {
   GITHUB_API_URL: "optional",
   GITHUB_PUBLIC_URL: "optional",
   GITHUB_ORGANIZATION: "optional",
+  GITHUB_APP_NAME: "optional",
 } as const;
 
 const connector = defineConnector({

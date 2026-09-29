@@ -10,7 +10,12 @@ export interface SetupEnv {
   readonly GITHUB_PUBLIC_URL?: string | undefined;
   readonly GITHUB_ORGANIZATION?: string | undefined;
   readonly GITHUB_READ_ONLY?: string | undefined;
+  readonly GITHUB_APP_NAME?: string | undefined;
 }
+
+/** The App's name unless the setup names another; GitHub holds each
+ *  name once, so a second person's setup names its own. */
+export const defaultName = "Marfa Connectors";
 
 /** What GitHub hands back for a manifest's code, once. */
 interface Conversion {
@@ -35,13 +40,14 @@ export function readOnly(value: string | undefined): boolean {
 }
 
 export function manifest(options: {
+  name: string;
   callback: string;
   hook: string;
   active: boolean;
   readOnly: boolean;
 }): Record<string, unknown> {
   return {
-    name: `Marfa sync ${randomBytes(2).toString("hex")}`,
+    name: options.name,
     url: "https://github.com/withmarfa/marfa-connectors",
     description:
       "Keeps issues, their comments and their relations in step with a Marfa instance.",
@@ -128,6 +134,7 @@ export async function setUp<E extends EnvDeclaration>(
     page(
       target,
       manifest({
+        name: env.GITHUB_APP_NAME ?? defaultName,
         callback,
         hook: hook ?? made.url,
         active: hook !== undefined,

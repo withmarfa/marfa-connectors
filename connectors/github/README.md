@@ -27,7 +27,7 @@ Once a day, a scheduled run also asks GitHub about each row it no longer lists. 
 A GitHub App, registered from the manifest the connector serves:
 
 1. Mint the connector's key, as `template/README.md` says, with `--type-permission` for the three types, `--edge-permission` for `github.in-repository`, `github.sub-issue-of`, `github.blocked-by` and `in-thread`, and `--metadata-permission types=write --metadata-permission edge_types=write`.
-2. With `MARFA_URL`, `MARFA_KEY` and, where the instance has one, its public address as `GITHUB_PUBLIC_URL`, run `node dist/main.js --setup <file>`. Open the address it logs, continue to GitHub, create the App (renaming it if the name is taken), and install it on the repositories to sync from the address the setup logs next. For an organization's App, set `GITHUB_ORGANIZATION`.
+2. With `MARFA_URL`, `MARFA_KEY` and, where the instance has one, its public address as `GITHUB_PUBLIC_URL`, run `node dist/main.js --setup <file>`. Open the address it logs, continue to GitHub, create the App, named Marfa Connectors unless `GITHUB_APP_NAME` names another (GitHub holds each name once, so a second person's App needs its own), and install it on the repositories to sync from the address the setup logs next. For an organization's App, set `GITHUB_ORGANIZATION`.
 3. Move the three secrets the file holds into the secret store and delete the file.
 
 Without a public address the App's webhook is off, and the connector notices changes by polling alone. Run the setup again with `GITHUB_PUBLIC_URL` and the App's two secrets in the environment to point the App's webhook at the instance with a new secret, as when the instance moves.
@@ -37,7 +37,7 @@ Without a public address the App's webhook is off, and the connector notices cha
 - `GITHUB_APP_ID`: the App's id.
 - `GITHUB_PRIVATE_KEY`: the App's private key, a secret. Installation tokens are made from it for an hour at a time and kept out of every log.
 - `GITHUB_WEBHOOK_SECRET`: the secret GitHub signs deliveries with, a secret.
-- `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_READ_ONLY`: for the setup, optional.
+- `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_APP_NAME`, `GITHUB_READ_ONLY`: for the setup, optional.
 - `GITHUB_API_URL`: optional, for a stub of the API; GitHub's otherwise. GitHub Enterprise Server is not tested.
 
 The key and the run are as `template/README.md` says.

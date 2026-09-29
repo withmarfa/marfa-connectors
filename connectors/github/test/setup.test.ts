@@ -104,6 +104,7 @@ describe("setup", () => {
       new RegExp(`^${github.url}/settings/apps/new\\?state=[0-9a-f-]{36}$`),
     );
     expect(seenPage.manifest).toMatchObject({
+      name: "Marfa Connectors",
       url: "https://github.com/withmarfa/marfa-connectors",
       hook_attributes: { active: true },
       public: false,
