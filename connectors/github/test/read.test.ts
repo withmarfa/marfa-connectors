@@ -732,3 +732,26 @@ describe("GITHUB_REPOSITORIES entries", () => {
     expect(row(issue.node).state).toBe("active");
   });
 });
+
+describe("a relation to an issue in a repository left out", () => {
+  it("stays while the other end changes, and after it is named again", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    const child = github.addIssue(tracker, { title: "Child" });
+    const parent = github.addIssue(other, { title: "Parent" });
+    child.parent = parent.node;
+    await ok();
+    const parentRow = row(parent.node).id;
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await once(only);
+    github.edit(child, { title: "Child, edited" });
+    await once(only);
+    expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual([
+      parentRow,
+    ]);
+    await ok();
+    expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual([
+      parentRow,
+    ]);
+  });
+});

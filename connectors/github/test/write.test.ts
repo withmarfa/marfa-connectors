@@ -783,3 +783,28 @@ describe("a repository GITHUB_REPOSITORIES leaves out", () => {
     );
   });
 });
+
+describe("a repository left out and then renamed on GitHub", () => {
+  it("still holds a change made in Marfa to its rows, and takes no relation to them", async () => {
+    const elsewhere = github.addRepository("someone/elsewhere");
+    const issue = github.addIssue(elsewhere, { title: "Before" });
+    const child = github.addIssue(repository, { title: "Child" });
+    await ok();
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await ok(only);
+    elsewhere.name = "renamed";
+    await ok(only);
+    marfa.edit(row(issue.node).id, { title: "Edited while left out" });
+    marfa.drawEdge(
+      row(child.node).id,
+      row(issue.node).id,
+      "github.sub-issue-of",
+    );
+    const output = await ok(only);
+    expect(output).toContain("which GITHUB_REPOSITORIES leaves out");
+    expect(issue.title).toBe("Before");
+    expect(child.parent).toBeNull();
+    await ok({ GITHUB_REPOSITORIES: "someone/tracker someone/renamed" });
+    expect(issue.title).toBe("Edited while left out");
+  });
+});

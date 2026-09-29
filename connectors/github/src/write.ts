@@ -220,6 +220,14 @@ async function clientOfIssue(
       context.signal,
     );
     const [found] = await issuesByNode(octokit, [node]);
+    if (
+      found !== undefined &&
+      allKept(context)[found.issue.repository.node]?.paused === true
+    ) {
+      throw new Unreachable(
+        `${item.id} is in ${found.issue.repository.name}, which GITHUB_REPOSITORIES leaves out, so its change waits until it is named again`,
+      );
+    }
     // Only a repository in the sync, found by the node it keeps.
     if (found !== undefined && found.issue.repository.node in keptOf(context)) {
       const [owner = "", repo = ""] = found.issue.repository.name.split("/");
@@ -265,7 +273,7 @@ async function answerIssue(
   const entry = issueEntry(
     found.issue,
     found.relations,
-    new Set(Object.keys(keptOf(context))),
+    new Set(Object.keys(allKept(context))),
   );
   const connections: Record<string, readonly Target[]> = {
     ...entry.connections,

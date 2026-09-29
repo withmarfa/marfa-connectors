@@ -177,9 +177,13 @@ export async function read(
     }
   }
   const synced = new Set(listed.keys());
+  // Paused repositories' rows stay, so relations to them stay connections.
+  const paused = new Set(
+    [...outside.keys()].filter((node) => kept[node] !== undefined),
+  );
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
-    await readNamed(context, listed, clients);
+    await readNamed(context, listed, clients, paused);
     return;
   }
   const next: Record<string, Kept> = {};
@@ -196,7 +200,8 @@ export async function read(
           `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are and changes made to them wait until it is named again`,
         );
       }
-      next[node] = { ...repository, name: left.full_name, paused: true };
+      // Under the name its rows hold, which a rename meanwhile does not change.
+      next[node] = { ...repository, paused: true };
       continue;
     }
     if (answered.has(repository.installation)) {
@@ -228,6 +233,7 @@ export async function read(
     try {
       next[node] = await syncRepository(context, octokit, node, repository, {
         synced,
+        inside: new Set([...synced, ...paused]),
         check,
       });
     } catch (error) {
@@ -296,7 +302,11 @@ async function syncRepository(
   octokit: Client,
   node: string,
   repository: Kept,
-  options: { synced: ReadonlySet<string>; check: boolean },
+  options: {
+    synced: ReadonlySet<string>;
+    inside: ReadonlySet<string>;
+    check: boolean;
+  },
 ): Promise<Kept> {
   const { upsert } = context;
   const [owner = "", name = ""] = repository.name.split("/");
@@ -378,12 +388,12 @@ async function syncRepository(
       const found = relations.get(issue.node_id);
       // Gone between the listing and the question: the next run has it.
       if (found === undefined) return [];
-      return [issueEntry(issueOfRest(issue, at), found, options.synced)];
+      return [issueEntry(issueOfRest(issue, at), found, options.inside)];
     }),
     ...beside
       .filter(({ issue }) => options.synced.has(issue.repository.node))
       .map(({ issue, relations: known }) =>
-        issueEntry(issue, known, options.synced),
+        issueEntry(issue, known, options.inside),
       ),
   ]);
 
@@ -706,6 +716,7 @@ async function readNamed(
     { repository: RestRepository; installation: number }
   >,
   every: ReadonlyMap<number, Client>,
+  paused: ReadonlySet<string>,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(
@@ -775,7 +786,7 @@ async function readNamed(
   await upsert(
     issueType,
     [...issues.values()].map(({ issue, relations }) =>
-      issueEntry(issue, relations, synced),
+      issueEntry(issue, relations, new Set([...synced, ...paused])),
     ),
   );
   await upsert(commentType, [...comments.values()].map(commentEntry));
