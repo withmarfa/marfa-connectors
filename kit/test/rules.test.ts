@@ -187,6 +187,41 @@ describe("a run for deliveries", () => {
     harness.stop();
     expect(await exit).toBe(0);
   });
+
+  it("fetches only what its deliveries name after a scheduled run connected more than two hundred rows", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+      metadata_permissions: { types: "write", edge_types: "write" },
+    };
+    const many: Entry[] = Array.from({ length: 202 }, (_, n) => ({
+      source_id: `a:${String(n)}`,
+      properties: { title: `Entry ${String(n)}`, vendor_id: `v${String(n)}` },
+      connections: {
+        "test.blocks": n === 0 ? [] : [{ type: "test.entry", id: "v0" }],
+      },
+    }));
+    const held = vendor(many);
+    held.connections = [
+      {
+        id: "test.blocks",
+        cardinality: "many-to-many",
+        source_type_constraints: ["test.entry"],
+        target_type_constraints: ["test.entry"],
+      },
+    ];
+    const exit = harness.inboundTwoWay(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    expect(harness.server.edges).toHaveLength(201);
+    const { signed } = await import("./harness.js");
+    const said = signed({ ids: ["v1"] });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(10_000);
+    await until(() => held.hints?.length === 2);
+    expect(held.hints?.at(-1)).toEqual(new Set(["v1"]));
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
 });
 
 async function until(holds: () => boolean): Promise<void> {
