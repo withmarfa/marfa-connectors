@@ -1393,7 +1393,8 @@ export async function runOnce<E extends EnvDeclaration>(
 }
 
 /** Whether the log past the cursor holds a change the vendor hasn't
- *  had, ignoring the connector's own echoes; answers where it read to. */
+ *  had, or an edit to put back, ignoring the connector's own echoes;
+ *  answers where it read to. */
 export async function waitingInMarfa<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   cursor: string | undefined,
@@ -1418,19 +1419,17 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   const waiting = [...read.rows].some(([id, seen]) => {
     const last = seen.frames.at(-1)?.item;
     const spec = last === undefined ? undefined : specs.get(last.type);
-    if (last === undefined || spec?.twoWay !== true) return false;
+    if (last === undefined || spec === undefined) return false;
     // A purge is carried where its row was told to the vendor.
     if (seen.purged) {
+      if (!spec.twoWay) return false;
       const link =
         spec.link === undefined ? undefined : last.properties[spec.link];
       return !cascaded(last) && typeof link === "string" && link !== "";
     }
     const agreement = store.get(id);
-    if (agreement === undefined) return last.state === "active";
-    // A read-only field is put back by the next scheduled run.
-    return Object.keys(observe(spec, seen, agreement).next.waiting ?? {}).some(
-      (key) => key !== connectKey && !spec.readOnly.has(key),
-    );
+    if (agreement === undefined) return spec.twoWay && last.state === "active";
+    return carriable(observe(spec, seen, agreement).next.waiting);
   });
   if (waiting || read.connected.size === 0) {
     return { waiting, cursor: read.cursor };

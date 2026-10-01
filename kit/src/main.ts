@@ -291,7 +291,8 @@ function looks<E extends EnvDeclaration>(
 }
 
 /** Until the next scheduled run, looks every `everyMs` for a waiting
- *  delivery or change to carry; on failure it waits, rather than retrying. */
+ *  delivery, change to carry or edit to put back; on failure it waits,
+ *  rather than retrying. */
 async function awaitChanges<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   held: (trigger: Trigger) => Promise<RunResult | undefined>,
@@ -315,7 +316,7 @@ async function awaitChanges<E extends EnvDeclaration>(
         waiting =
           (await marfa.pendingDeliveries(connectorId, 1, signal)).length > 0;
       }
-      if (!waiting && carriesBack(connector, setup.environment)) {
+      if (!waiting) {
         const log = await waitingInMarfa(setup, peeked);
         waiting = log.waiting;
         if (!waiting) peeked = log.cursor;
