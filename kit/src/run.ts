@@ -994,10 +994,21 @@ export async function runOnce<E extends EnvDeclaration>(
       if (carriable(next.waiting)) order.add(id);
     }
     // A connection of the connector's types changed in Marfa; a row
-    // nothing was agreed for is not the connector's to carry.
+    // nothing was agreed for is not the connector's to carry, nor is one
+    // whose connections are what was agreed, as the kit's own writes leave them.
+    const edges = await connections.edgesOf(
+      [...read.connected.keys()].filter((id) => store.get(id) !== undefined),
+    );
     for (const [id, since] of read.connected) {
       const agreement = store.get(id);
       if (agreement === undefined) continue;
+      const found = edges.get(id);
+      if (
+        found !== undefined &&
+        !(await connections.differ(found.item, agreement, found.edges))
+      ) {
+        continue;
+      }
       store.set(id, {
         ...agreement,
         waiting: {

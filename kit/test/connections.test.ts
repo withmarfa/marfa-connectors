@@ -1009,7 +1009,7 @@ describe("a read-only connection type on a two-way kind", () => {
         request.path === "/items/lookup" &&
         body?.include?.includes("edges") === true &&
         body.ids?.includes(one.id) === true &&
-        ++seen === 2
+        ++seen === 1
       ) {
         harness.server.drawEdge(one.id, c.id, "test.blocks");
       }

@@ -233,6 +233,28 @@ export class Connections {
     );
   }
 
+  /** Whether the row's connections differ from what was agreed, so its
+   *  edge frames are more than the kit's own writes. */
+  async differ(
+    item: Item,
+    agreement: Agreement,
+    edges: readonly Edge[],
+  ): Promise<boolean> {
+    for (const type of this.typesFrom(item.type)) {
+      const kind = this.kinds.get(type);
+      if (kind === undefined) continue;
+      const agreed = new Set(agreement.connections?.[type] ?? []);
+      const current = await this.own(edges, kind, agreed);
+      if (
+        current.size !== agreed.size ||
+        [...agreed].some((target) => !current.has(target))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Mirrored connections a person changed in Marfa, put back to what the
    *  vendor last said. */
   async putBack(
