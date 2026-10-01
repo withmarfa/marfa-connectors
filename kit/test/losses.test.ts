@@ -441,3 +441,128 @@ describe("a create that may have reached the vendor", () => {
     expect(created?.attempted).toBeDefined();
   });
 });
+
+describe("a person's change around a link the run wrote", () => {
+  it("is carried on the next run, where the run failed after writing the link", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    const remade: Entry = {
+      ...one,
+      properties: { ...one.properties, vendor_id: "v1-again" },
+    };
+    held.gone = new Map([[row.id, "v1-again"]]);
+    held.duringRemake = () => {
+      harness.server.edit(row.id, { note: "done" });
+      held.duringRemake = undefined;
+    };
+    held.entries = [remade];
+    held.failAfter = new Error("the vendor went away");
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(1);
+    // The witness: the run failed with the link written, and the completion
+    // landed after the remake was asked and before the link.
+    expect(held.remakes?.map(({ change }) => [...change.changed])).toEqual([
+      [],
+    ]);
+    expect(harness.server.row("a:1").properties).toMatchObject({
+      note: "done",
+      vendor_id: "v1-again",
+    });
+    expect(held.changes).toEqual([]);
+
+    held.failAfter = undefined;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.map((change) => [change.kind, [...change.changed]]),
+    ).toEqual([["updated", ["note"]]]);
+    expect(harness.server.row("a:1").properties["note"]).toBe("done");
+  });
+
+  it("is carried on the next run, where the run failed after linking a create", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.vendorIdFor = (change) => {
+      if (change.item.id !== theirs.id) return undefined;
+      harness.server.edit(theirs.id, { note: "done" });
+      return "v-theirs";
+    };
+    held.entries = [
+      {
+        source_id: "a:theirs",
+        properties: { title: "Theirs", vendor_id: "v-theirs" },
+      },
+    ];
+    held.failAfter = new Error("the vendor went away");
+    expect(await harness.twoWay(held)).toBe(1);
+    // The witness: created without the completion, which landed before the
+    // link, and the run failed with the link written.
+    expect(
+      held.changes.map((change) => [
+        change.kind,
+        change.item.properties["note"],
+      ]),
+    ).toEqual([["created", undefined]]);
+    expect(harness.server.byId(theirs.id).properties).toMatchObject({
+      note: "done",
+      vendor_id: "v-theirs",
+    });
+
+    held.failAfter = undefined;
+    held.vendorIdFor = undefined;
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.map((change) => [change.kind, [...change.changed]]),
+    ).toEqual([["updated", ["note"]]]);
+    expect(harness.server.byId(theirs.id).properties["note"]).toBe("done");
+  });
+});
+
+describe("a restore of a row whose trash was carried", () => {
+  it("is not archived by the vendor's close of it, where it lands after the log is read", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(kinds(held)).toEqual(["trashed"]);
+    // The vendor closed the item on the trash, and says so as an archive.
+    held.archived = ["v1"];
+    const streams = harness.server.requestsTo("GET", "/events").length;
+    let afterLog = false;
+    harness.server.beforeAnswer = (request) => {
+      if (request.path !== "/items/lookup") return;
+      afterLog = harness.server.requestsTo("GET", "/events").length > streams;
+      harness.server.restore(row.id);
+      harness.server.beforeAnswer = undefined;
+    };
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    // The witness: the restore landed after the log was read, and the
+    // vendor's word named the row for archiving.
+    expect(afterLog).toBe(true);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toMatch(/archived 0, .*skipped 1/);
+    expect(harness.server.row("a:1").state).toBe("active");
+
+    held.archived = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(kinds(held)).toEqual(["restored"]);
+    expect(harness.server.row("a:1").state).toBe("active");
+  });
+});
