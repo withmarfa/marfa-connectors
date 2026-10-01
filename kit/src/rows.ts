@@ -45,10 +45,19 @@ export class LinkTaken extends Error {
 /**
  * Thrown by `onChange` or `remake` where the vendor cannot take the row's
  * change now, such as for want of access: the change waits for a later
- * run, and this one goes on, its message raised as a condition.
+ * run, and this one goes on, its message raised as a condition. Changes
+ * thrown with one `scope`, the part of the vendor they all wait on, raise
+ * one condition between them, saying how many wait, so the message names
+ * the scope rather than the row.
  */
 export class Unreachable extends Error {
   override name = "Unreachable";
+  readonly scope: string | undefined;
+
+  constructor(message: string, options?: { scope?: string }) {
+    super(message);
+    this.scope = options?.scope;
+  }
 }
 
 /** What the kit knows of one of the connector's types. */

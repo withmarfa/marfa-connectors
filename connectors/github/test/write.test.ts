@@ -755,10 +755,31 @@ describe("a repository GITHUB_REPOSITORIES leaves out", () => {
     await ok();
     marfa.edit(row(issue.node).id, { title: "Edited while left out" });
     const output = await ok({ GITHUB_REPOSITORIES: "someone/other" });
-    expect(output).toContain("which GITHUB_REPOSITORIES leaves out");
+    expect(output).toContain(
+      "1 change waits: someone/tracker is left out by GITHUB_REPOSITORIES",
+    );
     expect(issue.title).toBe("Before");
     await ok({ GITHUB_REPOSITORIES: "someone/tracker" });
     expect(issue.title).toBe("Edited while left out");
+  });
+
+  it("says once how many changes wait on it, and stops once they are carried", async () => {
+    const first = github.addIssue(repository, { title: "First" });
+    const second = github.addIssue(repository, { title: "Second" });
+    await ok();
+    marfa.edit(row(first.node).id, { title: "First, edited" });
+    marfa.edit(row(second.node).id, { title: "Second, edited" });
+    const output = await ok({ GITHUB_REPOSITORIES: "someone/other" });
+    expect(output).toContain(
+      "2 changes wait: someone/tracker is left out by GITHUB_REPOSITORIES",
+    );
+    expect(output.match(/changes? waits?:/g)).toHaveLength(1);
+    const back = await ok({ GITHUB_REPOSITORIES: "someone/tracker" });
+    expect(back).toContain("cleared: 2 changes wait: someone/tracker");
+    expect([first.title, second.title]).toEqual([
+      "First, edited",
+      "Second, edited",
+    ]);
   });
 
   it("takes no relation to its issues, and says why", async () => {
@@ -801,7 +822,9 @@ describe("a repository left out and then renamed on GitHub", () => {
       "github.sub-issue-of",
     );
     const output = await ok(only);
-    expect(output).toContain("which GITHUB_REPOSITORIES leaves out");
+    expect(output).toContain(
+      "1 change waits: someone/elsewhere is left out by GITHUB_REPOSITORIES",
+    );
     expect(issue.title).toBe("Before");
     expect(child.parent).toBeNull();
     await ok({ GITHUB_REPOSITORIES: "someone/tracker someone/renamed" });
