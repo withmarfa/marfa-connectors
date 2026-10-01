@@ -392,7 +392,9 @@ describe("a row Todoist knows", () => {
     marfa.edit(row.id, { title: "Task a" });
     await landed();
     // Nothing differs from what was agreed, so Todoist is not even asked.
-    expect(todoist.received.filter((r) => r.method === "GET")).toHaveLength(0);
+    expect(
+      todoist.received.filter((r) => /^\/api\/v1\/tasks\/[^/]+$/.test(r.path)),
+    ).toHaveLength(0);
     expect(todoist.commands()).toEqual([]);
     expect(summary()).toMatch(/pushed 0, own 2, conflicts 0/);
   });

@@ -7,6 +7,7 @@ import {
 import { carry, remake, outboundEnv } from "./outbound.js";
 import {
   accountOf,
+  completed,
   defaultBase,
   entryOf,
   firstSync,
@@ -76,7 +77,9 @@ const connector = defineConnector({
     // changed; so the run asks for them all. A full sync lists only active
     // tasks, so the delta's deletions and completions are kept beside it.
     const newZone = timezoneOf(answer.user);
+    let fullSync = heldToken === firstSync;
     if (heldToken !== firstSync && newZone !== undefined && newZone !== kept) {
+      fullSync = true;
       const full = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
       const byId = new Map(answer.items.map((item) => [item.id, item]));
       for (const item of full.items) byId.set(item.id, item);
@@ -88,6 +91,30 @@ const connector = defineConnector({
         // rather than being skipped, and what comes back again is unchanged.
         sync_token: answer.sync_token,
       };
+    }
+    // A full sync lists only active tasks, so a task completed since it was
+    // last read, such as while the sync token was lost, or one whose due
+    // date a moved zone reads anew, is asked for apart. An open task the
+    // full sync lists wins over a completion listed for it, since the sync
+    // token predates the list and a completion landing between the two
+    // comes back in the next delta.
+    if (fullSync) {
+      const done = await completed(
+        base,
+        env.TODOIST_API_TOKEN,
+        new Date(),
+        signal,
+      );
+      if (done === "forbidden") {
+        log.condition(
+          "completed-forbidden",
+          "Todoist refused to list the account's completed tasks, so a task completed while the connector was not following is read as open until Todoist next sends it",
+        );
+      } else {
+        const byId = new Map(done.map((item) => [item.id, item]));
+        for (const item of answer.items) byId.set(item.id, item);
+        answer = { ...answer, items: [...byId.values()] };
+      }
     }
     const known = state.get("account");
     const account =
