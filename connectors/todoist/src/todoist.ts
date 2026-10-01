@@ -233,6 +233,7 @@ export function describeError(error: CommandError): string {
   return `${error.error ?? "an error without a message"}${code}`;
 }
 
+// A resent batch is safe: Todoist runs a command uuid it has seen only once.
 export async function send(
   base: string,
   token: string,
@@ -257,7 +258,8 @@ export async function send(
       );
     }
     const answer = (await response.json()) as CommandAnswer;
-    // A wait on any other refusal rides a terminal answer, which Todoist says not to resend.
+    // A wait on any other refusal rides a terminal answer, which Todoist says
+    // not to resend.
     const waits = Object.values(answer.sync_status)
       .map((status) =>
         status === "ok" || status.http_code !== 429
@@ -277,8 +279,9 @@ export async function send(
   }
 }
 
-// The door answers a completed task (`checked`) and a deleted one (`is_deleted`) as well as an
-// open one, whatever the documentation's "active task" suggests.
+// The door answers a completed task (`checked`) and a deleted one
+// (`is_deleted`) as well as an open one, whatever the documentation's "active
+// task" suggests.
 export type TaskAnswer = TodoistItem | "missing" | "forbidden";
 
 export async function getTask(
@@ -305,6 +308,7 @@ export async function getTask(
   return found.is_deleted === true ? "missing" : found;
 }
 
+// Laid out as a UUID, the form Todoist's documentation shows for command ids.
 export function uuidFor(...parts: readonly string[]): string {
   const digest = createHash("sha1").update(parts.join("\u0000")).digest("hex");
   const variant = ((parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
@@ -399,8 +403,8 @@ type Wall = [
 
 const dayMs = 86_400_000;
 
-// Temporal's "compatible" rule: a skipped time moves later by the skip, a repeated one is its
-// first showing.
+// Temporal's "compatible" rule: a skipped time moves later by the skip, a
+// repeated one is its first showing.
 function inZone(
   [year, month, day, hour, minute, second]: Wall,
   timeZone: string,

@@ -116,8 +116,9 @@ function isCompleted(item: Item): boolean {
   return item.properties["status"] === "completed";
 }
 
-// The row's moment is in the id because a transition moves no version: a restore
-// carried as an edit must not reuse the edit before it.
+// The row's moment is in the id because a transition moves no version: a
+// restore carried as an edit must not reuse the edit before it. A run replayed
+// after a failure shows the same row, so it sends the same command.
 function commandId(item: Item, type: string): string {
   return uuidFor(item.id, String(item.version), item.updated_at, type);
 }
@@ -142,9 +143,9 @@ export async function carry(
   }
 
   if (kind === "trashed" || kind === "purged") {
-    // A trash deletes: closing a recurring task would move it to its next occurrence.
-    // The id is per row and task so a purge resends the same delete, while a task made
-    // again after a restore gets its own.
+    // A trash deletes: closing a recurring task would move it to its next
+    // occurrence. The id is per row and task so a purge resends the same
+    // delete, while a task made again after a restore gets its own.
     const answer = await todoist.one(
       "item_delete",
       uuidFor(item.id, taskId, "item_delete"),
@@ -243,9 +244,11 @@ async function add(
 ): Promise<string | undefined> {
   const { log } = context;
   const again = replacing === undefined ? [] : [replacing];
+  // `again` makes a restore a new create, not the first create's answer again.
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
-  // An edit does not carry project, section and labels; they are the row's from Todoist.
+  // An edit does not carry project, section and labels; they are the row's from
+  // Todoist.
   const p = item.properties;
   const where =
     replacing === undefined

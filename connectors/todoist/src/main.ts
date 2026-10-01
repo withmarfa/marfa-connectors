@@ -48,6 +48,8 @@ const connector = defineConnector({
     const base = env.TODOIST_API_URL ?? defaultBase;
     const keptAccount = state.get("account");
     if (hints !== undefined && typeof keptAccount === "string") {
+      // A run for named tasks does not save the sync token: the rest was not
+      // read.
       const zone = state.get("timezone");
       const found: Entry[] = [];
       const gone: string[] = [];
@@ -69,9 +71,11 @@ const connector = defineConnector({
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
     const knownZone = state.get("timezone");
     const kept = typeof knownZone === "string" ? knownZone : undefined;
-    // A full sync lists only active tasks, so the delta's deletions and completions are kept beside it.
     const newZone = timezoneOf(answer.user);
     let fullSync = heldToken === firstSync;
+    // A moved zone reads every whole-day and floating due date differently, so
+    // the run asks for all tasks. A full sync lists only active tasks, so the
+    // delta's deletions and completions are kept beside it.
     if (heldToken !== firstSync && newZone !== undefined && newZone !== kept) {
       fullSync = true;
       const full = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
@@ -83,11 +87,12 @@ const connector = defineConnector({
         // The delta's token, older than the full sync's: a change that
         // landed between the two requests comes back in the next delta
         // rather than being skipped, and what comes back again is unchanged.
+        // A completion landing between the two comes back in the next delta.
         sync_token: answer.sync_token,
       };
     }
-    // An open task the full sync lists wins over a completion listed for it: the sync
-    // token predates the list.
+    // An open task the full sync lists wins over a completion listed for it:
+    // the sync token predates the list.
     if (fullSync) {
       const done = await completed(
         base,
@@ -129,7 +134,8 @@ const connector = defineConnector({
       );
     }
 
-    // A full sync lists only active tasks: a task it leaves out is left as it is.
+    // A full sync lists only active tasks: a task it leaves out is left as it
+    // is.
     await upsert(
       taskType,
       answer.items

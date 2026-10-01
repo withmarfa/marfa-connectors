@@ -116,6 +116,7 @@ export function status(error: unknown): number | undefined {
 export interface Page {
   readonly etag: string;
   readonly size: number;
+  // Run-length coded: a repository's state must fit the instance's 512 KiB cap.
   readonly numbers: string;
 }
 

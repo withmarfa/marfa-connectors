@@ -5,6 +5,8 @@ import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 
 const fetchTimeoutMs = 60_000;
 
+// Two spellings of one feed would write the same rows and rewrite each other's
+// `feed_origin` and `feed_hash`.
 export function feedList(value: string): string[] {
   const parts = value.split(/[\s,]+/).filter((part) => part !== "");
   const bad = parts.filter((feed) => {
@@ -88,6 +90,8 @@ function sniffed(bytes: Uint8Array): string | undefined {
   return undefined;
 }
 
+// Precedence per XML's media types (RFC 7303): byte order mark, Content-Type
+// charset, XML declaration, then UTF-8.
 export function decodeFeed(
   bytes: Uint8Array,
   contentType: string | null,
@@ -169,11 +173,13 @@ function isoOf(value: string | undefined): string | undefined {
 
 interface Base {
   href: string;
-  // From the fetch address, which may carry a private feed's token, not a declared `xml:base`.
+  // From the fetch address, which may carry a private feed's token, not a
+  // declared `xml:base`.
   fromAddress: boolean;
 }
 
-// Asked of the resolver: `https:item` is absolute alone and relative against a base of the same scheme.
+// Asked of the resolver: `https:item` is absolute alone and relative against a
+// base of the same scheme.
 function keepsPath(reference: string, base: string): boolean {
   const origin = new URL(base);
   origin.pathname = "/";
@@ -186,6 +192,7 @@ function keepsPath(reference: string, base: string): boolean {
   }
 }
 
+// The parser reads no `xml:base` on an Atom link itself.
 function baseOf(parent: Base, declared: string | undefined): Base {
   const base = declared?.trim();
   if (base === undefined || base === "") return parent;

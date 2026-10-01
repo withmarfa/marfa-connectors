@@ -44,6 +44,8 @@ beforeEach(async () => {
 afterEach(async () => {
   const sent = todoist.commands();
   for (const command of sent) expect(command.uuid).toMatch(uuidShape);
+  // Args are left out: a create replayed after a failed run carries the row as
+  // it is by then.
   const what = (c: (typeof sent)[number]): string =>
     JSON.stringify([c.type, c.temp_id, c.args["id"]]);
   const byUuid = new Map(sent.map((c) => [c.uuid, what(c)]));

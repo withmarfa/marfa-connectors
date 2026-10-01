@@ -454,7 +454,8 @@ async function commentsMadeSince(
   );
 }
 
-// A row in the bin cannot take a link, so what GitHub may have made comes in as its own row.
+// A row in the bin cannot take a link, so what GitHub may have made comes in
+// as its own row.
 function binnedUnanswered(context: Context, item: Item): void {
   context.log.condition(
     `unanswered-create-trashed:${item.id}`,
