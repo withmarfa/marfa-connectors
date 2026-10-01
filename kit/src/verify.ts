@@ -10,8 +10,7 @@ export interface HmacCheck {
   readonly prefix?: string;
 }
 
-/** Whether a body carries its sender's HMAC signature, compared in
- *  constant time; malformed input is `false`; hex ignores case. */
+/** Malformed input is `false`; hex ignores case. */
 export function verifyHmac(check: HmacCheck): boolean {
   const { signature, prefix = "", encoding = "hex" } = check;
   if (check.secret === "") return false;

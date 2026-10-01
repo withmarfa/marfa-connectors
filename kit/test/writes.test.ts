@@ -468,8 +468,7 @@ describe("the state", () => {
     held.token = "t2";
     held.entries = [{ ...entry, properties: { title: "One" } }];
     expect(await harness.once(held)).toBe(0);
-    // Cleared as any other property is, and never taken from what every
-    // object answers for the name.
+    // Never taken from what every object answers for the name.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, by another writer",
     });

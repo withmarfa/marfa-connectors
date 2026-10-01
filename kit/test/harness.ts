@@ -96,8 +96,7 @@ export const linkedType: TypeDefinition = {
   link_field: "vendor_id",
 };
 
-/** Every property the test vendor holds; `toString` is a name
- *  every object answers. */
+/** `toString` is a name every object answers. */
 export const testFields = ["title", "note", "link", "vendor_id", "toString"];
 
 export interface Vendor {
@@ -238,8 +237,6 @@ function twoWayConnector(held: Vendor) {
 
 export const hung: AbortSignal[] = [];
 
-/** How the test connectors read deliveries: signed by `X-Signature`,
- *  `X-Throw` throws, `X-Hang` waits, and a non-JSON body throws in hints. */
 const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
   verify: (delivery, env, signal) => {
     if (delivery.header("x-hang") !== undefined) {

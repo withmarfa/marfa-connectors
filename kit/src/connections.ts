@@ -63,8 +63,7 @@ export class Connections {
     return this.marfa.edgesFrom(type, ids, new Set(this.kinds.keys()));
   }
 
-  /** Writes the connections named, plus targets earlier runs missed.
-   *  Removals go first, so a target with one source moves, not refused. */
+  /** Removals go first, so a target with one source moves, not refused. */
   async connect(
     named: ReadonlyMap<string, Readonly<Record<string, readonly Target[]>>>,
     retry: readonly string[],
@@ -198,8 +197,7 @@ export class Connections {
     };
   }
 
-  /** The row's edges of the type to the connector's own rows of the target
-   *  types: another's, e.g. a note's attached file, isn't the connector's. */
+  /** Another's, e.g. a note's attached file, isn't the connector's. */
   private async own(
     edges: readonly Edge[],
     kind: ConnectionDefinition,
@@ -253,9 +251,9 @@ export class Connections {
     let next = agreement;
     for (const type of this.typesFrom(item.type)) {
       const agreedList = agreement.connections?.[type];
+      if (!this.mirrored(spec, type)) continue;
       // Nothing agreed on a two-way kind: the vendor's set is taken when it
       // next names one.
-      if (!this.mirrored(spec, type)) continue;
       if (spec.twoWay && agreedList === undefined) continue;
       const kind = this.kinds.get(type);
       if (kind === undefined) continue;

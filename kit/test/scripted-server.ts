@@ -160,6 +160,7 @@ export class ScriptedServer {
   ]);
   readonly blobs = new Map<string, { bytes: Buffer; mime_type: string }>();
   uploads = 0;
+  /** Mirrors the server's cap of 50 edges per type in a lookup. */
   edgePageCap = 50;
   types = new Map<string, Record<string, unknown>>();
   runs: Run[] = [];

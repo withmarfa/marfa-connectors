@@ -40,8 +40,7 @@ const heartbeatMs = 60_000;
 
 const beatTimeoutMs = 15_000;
 
-/** Worth another attempt: the server was unreachable, overloaded, failing
- *  or slow; any TypeError besides `fetch failed` is a bug no retry mends. */
+/** Any TypeError besides `fetch failed` is a bug no retry mends. */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
     return (

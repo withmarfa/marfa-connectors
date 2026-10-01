@@ -438,8 +438,8 @@ export async function runOnce<E extends EnvDeclaration>(
   let own = 0;
   let collected: Collected | undefined;
   const whole = trigger === "schedule";
-  // On a whole run the deliveries are extra: a failure reading them is a
-  // condition, and the vendor is still read whole.
+  // A failure reading deliveries is a condition, and the vendor is still read
+  // whole.
   const bookkeeping = async <T>(
     key: string,
     message: string,
@@ -665,7 +665,6 @@ export async function runOnce<E extends EnvDeclaration>(
       store.set(current.id, settledConnections(next, moved));
       return;
     }
-    // Changes go only over a vendor state this run read; they wait otherwise.
     if (
       hints !== undefined &&
       changeKind !== "created" &&
@@ -709,8 +708,7 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     settle(kind, current, changeKind, changed, answered, moved);
-    // What the vendor answered for a field the change did not carry is the
-    // row's, such as a number it gave; a carried field keeps its value.
+    // A carried field keeps its value over the answer's.
     if (answered !== undefined && current.state !== "trashed") {
       await rows.adoptAnswer(current.id, answered, new Set(changed));
     }
@@ -957,9 +955,8 @@ export async function runOnce<E extends EnvDeclaration>(
       store.set(id, next);
       if (carriable(next.waiting)) order.add(id);
     }
-    // A connection of the connector's types changed in Marfa; a row
-    // nothing was agreed for is not the connector's to carry, nor is one
-    // whose connections are what was agreed, as the kit's own writes leave them.
+    // Not the connector's to carry: a row nothing was agreed for, or one whose
+    // connections are what was agreed, as the kit's own writes leave them.
     const edges = await connections.edgesOf(
       [...read.connected.keys()].filter((id) => store.get(id) !== undefined),
     );
@@ -1333,7 +1330,6 @@ export async function runOnce<E extends EnvDeclaration>(
       await store.save({
         state: landed ? draft : stored.state,
         conditions,
-        // Past the log only once what it named is kept on the instance.
         ...(pastLog && read?.cursor !== undefined
           ? { cursor: read.cursor }
           : stored.cursor !== undefined && { cursor: stored.cursor }),
@@ -1401,8 +1397,7 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
           ),
           connectionTypes(setup.connector),
         );
-  // A change where Marfa added a connection to one of the connector's own
-  // rows, or removed one whose target is still there: a purge's never counts.
+  // A purge's never counts.
   const kinds = new Map(
     (setup.connector.connections ?? []).map((kind) => [kind.id, kind]),
   );

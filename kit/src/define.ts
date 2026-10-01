@@ -1,24 +1,20 @@
 import type { components } from "@withmarfa/client";
 
 /**
- * A type as `POST /types` takes it. The check on start compares it with the
- * server's in the form the server stores: a format that is a field type of
- * its own, such as `url`, counts as that type, and a `required` list as
- * per-field flags.
+ * The start check compares it in the form the server stores: a format that is
+ * a field type of its own, such as `url`, counts as that type, and a
+ * `required` list as per-field flags.
  */
 export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 
 export type Item = components["schemas"]["Item"];
 
-/**
- * A kind of connection between the connector's own rows, as `POST
- * /edge-types` takes it: both ends constrained to the connector's types, and
- * nothing cascading, so a trash in Marfa never takes a vendor's row with it.
- */
+/** Nothing cascades, so a trash in Marfa never takes a vendor's row with it. */
 export type ConnectionDefinition = components["schemas"]["EdgeTypeRequest"];
 
 export interface Target {
   readonly type: string;
+  /** The row's link, or its natural key where the type names none. */
   readonly id: string;
 }
 
@@ -50,8 +46,12 @@ export type EnvValues<E extends EnvDeclaration> = {
 };
 
 export interface Entry {
+  /** Unique within the connector's source, the vendor account included. */
   source_id: string;
-  /** A property that is absent or `null` is cleared from the row. */
+  /**
+   * A property absent or `null` is cleared on a write; an `onChange` answer
+   * changes only the fields it names.
+   */
   properties: Readonly<Record<string, unknown>>;
   occurred_at?: string | undefined;
   /**
@@ -92,11 +92,15 @@ export interface Log {
   /**
    * Something that lasts across runs, such as a feed that stopped answering.
    * A connector raises it on every run it holds; it is reported on the first
-   * and said to be cleared on the first run that does not raise it.
+   * and cleared only on a scheduled run that succeeds and reports without it.
    */
   condition(key: string, message: string): void;
 }
 
+/**
+ * Keeps a value made at run time out of every log line and report; throws for
+ * one shorter than 8 characters, which cannot be redacted.
+ */
 export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
@@ -114,18 +118,13 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
   /**
-   * Archives the named rows of the type that are active: by link value where
-   * the type names a `link_field`, by source id where it does not. A trashed
-   * row is left alone, and one archived here comes back when the vendor
-   * sends it again.
+   * A trashed row is left alone, and one archived here comes back when the
+   * vendor sends it again.
    */
   readonly archive: (type: string, keys: readonly string[]) => Promise<void>;
   /**
-   * The active rows of the type that hold a connection of the kind to the
-   * target: what Marfa has under something, such as a repository's issues,
-   * to find what the vendor no longer lists: only rows of the type itself
-   * the vendor has been told about. Empty where Marfa lacks the target.
-   * Connections a run names are written once it ends, so a row this run's
+   * Only rows the vendor has been told about; empty where Marfa lacks the
+   * target. Connections a run names are written once it ends, so a row this run's
    * entries connect shows from the next, and one they or an answer move
    * elsewhere is left out now. A target in the bin still answers its rows.
    */
@@ -149,9 +148,9 @@ export interface Change {
   readonly changed: ReadonlySet<string>;
   /**
    * For a create, the trash of a row whose create got no link, or a remake:
-   * when it was first sent, so the vendor may hold what it made; look for
-   * it there before making another. It can be long ago, for a create abandoned then
-   * sent again, so a match may belong to another row, which `setLink`
+   * when it was first sent, so the vendor may hold what it made; look for it
+   * there before making another. It can be long ago, for a create abandoned
+   * then sent again, so a match may belong to another row, which `setLink`
    * refuses.
    */
   readonly attempted?: string;
@@ -184,10 +183,9 @@ export interface LocalCallback {
   readonly callback: string;
   readonly redirected: Promise<URLSearchParams>;
   /**
-   * Sends the browser, held at the callback, on to a web address, such as
-   * the page where the vendor asks for the next step; asked before the
-   * browser arrives, it throws. A browser not sent on is told when setup
-   * ends that it is done, or that it failed. The callback answers once.
+   * Throws when asked before the browser arrives. A browser not sent on is
+   * told when setup ends that it is done, or that it failed. The callback
+   * answers once.
    */
   readonly onward: (address: string) => void;
 }
@@ -198,8 +196,8 @@ export interface SetupContext<E extends EnvDeclaration> {
   readonly log: Pick<Log, "info" | "warn">;
   readonly secret: Secret;
   /**
-   * Serves `page` at a local address, and waits for the vendor's redirect.
-   * A page that must name where the vendor sends the browser back, such
+   * Resolves once the local server listens; the `redirected` promise it
+   * returns waits for the vendor's redirect. A page that must name where the vendor sends the browser back, such
    * as a manifest's `redirect_url`, is made from that address.
    */
   readonly listen: (
@@ -220,7 +218,9 @@ export interface Delivery {
   readonly id: string;
   readonly endpointId: string;
   readonly receivedAt: string;
+  /** In the order and case they arrived. */
   readonly headers: readonly (readonly [string, string])[];
+  /** The first value, whatever its case. */
   header(name: string): string | undefined;
   readonly query: string;
   readonly body: Uint8Array;
@@ -246,9 +246,8 @@ export interface Inbound<E extends EnvDeclaration> {
     signal: AbortSignal,
   ): boolean | Promise<boolean>;
   /**
-   * What the delivery says changed, as the type and id of each thing the
-   * run can fetch, or `"everything"`, which a throw also means. A delivery
-   * is a hint, never the vendor's state.
+   * The type and id of each thing the run can fetch, or `"everything"`, which
+   * a throw also means.
    */
   hints(delivery: Delivery): readonly Hint[] | "everything";
 }
@@ -288,7 +287,7 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly name: string;
   readonly description?: string;
   readonly source: string;
-  /** The kinds of item the connector writes, at most ten. */
+  /** At most ten. */
   readonly types: readonly Kind[];
   readonly connections?: readonly ConnectionDefinition[];
   /**
@@ -341,9 +340,9 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**
-   * Reads what the vendor posts to the connector's webhook endpoints. Each
-   * run first collects what arrived, and under `--look-every` the kit looks
-   * between runs and starts one for what waits, handing `run` the hints.
+   * Each run first collects what arrived. Under `--every` the kit also looks
+   * between runs, every 10 s by default (`--look-every` changes it), and
+   * starts one for what waits, handing `run` the hints.
    */
   readonly inbound?: Inbound<E>;
 }

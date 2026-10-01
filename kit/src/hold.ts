@@ -3,6 +3,7 @@ import type { Marfa } from "./marfa.js";
 import { describe } from "./run.js";
 import type { Clock } from "./runtime.js";
 
+/** Two thirds of the server's default three-minute hold. */
 const defaultTrustMs = 120_000;
 
 const renewalMs = 15_000;
@@ -36,8 +37,8 @@ export class Hold {
     return { held: true };
   }
 
-  /** Renews it; time since the last renewal landed, not a count of
-   *  failures, decides when to stop. */
+  /** Time since the last renewal landed, not a count of failures, decides
+   *  when to stop. */
   async renew(): Promise<void> {
     if (!this.holding || this.fence.signal.aborted) return;
     const asked = this.clock.now().getTime();

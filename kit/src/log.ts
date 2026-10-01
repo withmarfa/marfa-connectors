@@ -65,8 +65,7 @@ export class Logger {
   }
 }
 
-/** A value made at run time kept out of every line from now on; one too
- *  short to find without redacting ordinary words is refused. */
+/** One too short to find without redacting ordinary words is refused. */
 export function keepSecret(logger: Logger, value: string): void {
   if (value.length < shortestSecret) {
     throw new Error(

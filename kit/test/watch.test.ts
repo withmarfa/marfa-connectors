@@ -288,9 +288,8 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The head is another type's frame, which this reader is never sent.
-    // The marker names it all the same, so the read ends there and the
-    // next run resumes past it.
+    // The head is another type's frame, never sent to this reader; the marker
+    // names it all the same, so the next run resumes past it.
     harness.server.insert(
       undefined,
       { title: "Other" },
@@ -839,8 +838,6 @@ describe("a tie between the two sides", () => {
 });
 
 describe("what echoes after a conflict", () => {
-  // Each case ends with a quiet run: the connector's own last write is
-  // read back, and it is nobody else's.
   it("is nothing, where the vendor won a field both sides changed", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);

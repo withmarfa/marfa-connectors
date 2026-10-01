@@ -58,8 +58,7 @@ function furthest(...cursors: (string | undefined)[]): string | undefined {
   return best;
 }
 
-/** The log for the connector's types from the cursor to the
- *  stream's live marker, whose position covers frames never sent. */
+/** The stream's live marker position covers frames never sent. */
 export class Watch {
   private readonly types: ReadonlySet<string>;
 

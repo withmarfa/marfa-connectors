@@ -53,7 +53,7 @@ export function sideOf(
   return side;
 }
 
-/** Which time is later; not naming one loses, and a tie counts as not later. */
+/** Not naming a time loses, and a tie counts as not later. */
 export function laterThan(
   candidate: string | undefined,
   other: string | undefined,
@@ -106,7 +106,7 @@ export interface Row {
   readonly state?: string | undefined;
 }
 
-/** A row's state as the two sides agree on it; revoked counts as trashed. */
+/** Revoked counts as trashed. */
 export function agreedState(state: string): AgreedState {
   return state === "active" || state === "archived" ? state : "trashed";
 }

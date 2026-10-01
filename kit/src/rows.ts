@@ -91,8 +91,6 @@ const raced = new Set([
   "invalid_transition",
 ]);
 
-/** Codes about the row itself: its contents, size, or a natural key
- *  another type holds. Other codes are the kit's own fault, and end the run. */
 const refusedUpdate = new Set([
   "invalid_properties",
   "request_too_large",
@@ -328,8 +326,8 @@ export class Rows {
     return { entry: withFile, fresh: false };
   }
 
-  /** The entry with its bytes loaded and uploaded within the run that
-   *  writes it, since an unnamed blob is swept; unfetchable, it waits. */
+  /** Loaded and uploaded within the run that writes it, since an unnamed
+   *  blob is swept. */
   private async uploaded(entry: Entry): Promise<Entry | undefined> {
     const source = entry.file;
     if (source === undefined) return entry;
@@ -737,7 +735,6 @@ export class Rows {
   ): Promise<void> {
     const said = cleaned(answered.properties);
     const agreed = this.store.get(id)?.marfa ?? {};
-    // A null the answer states is a clear; a field it leaves out, nothing.
     const fields = this.kind.fields.filter(
       (field) =>
         field !== this.kind.link &&
@@ -972,8 +969,7 @@ export class Rows {
     );
   }
 
-  /** A refusal that concerns one row is counted and holds the state;
-   *  any other ends the run, since it refuses every row after it too. */
+  /** Any other refusal ends the run, since it refuses every row after it too. */
   private absorb(
     error: unknown,
     sourceId: string,

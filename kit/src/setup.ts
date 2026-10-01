@@ -23,8 +23,8 @@ interface Served {
   release(succeeded: boolean): void;
 }
 
-/** Runs the connector's setup once and writes what it answers to a
- *  new, owner-only file, made first since a vendor may hand a secret once. */
+/** The file is new and owner-only, made first since a vendor may hand a
+ *  secret once. */
 export async function setUp<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,

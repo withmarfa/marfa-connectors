@@ -86,6 +86,8 @@ export function readEnvironment<E extends EnvDeclaration>(
   return { url, key, values, secrets: [...secrets.values()] };
 }
 
+/** The 200, 2000 and 200 limits are the server's bounds on a registration and
+ *  a source. */
 export function checkDefinition<E extends EnvDeclaration>(
   connector: Connector<E>,
 ): void {

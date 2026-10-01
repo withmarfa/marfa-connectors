@@ -199,9 +199,8 @@ describe("a row the vendor has not been told about", () => {
       harness.server.byId(theirs.id).properties["vendor_id"],
     ).toBeUndefined();
 
-    // The vendor now lists what it made. Read first, that would be a new
-    // entry and a second row; carried first, the row is linked and the
-    // entry finds it.
+    // Read first, that would be a new entry and a second row; carried first,
+    // the row is linked and the entry finds it.
     held.entries = [
       {
         source_id: "v-theirs",
@@ -471,9 +470,6 @@ describe("what the two sides agree on, after each kind of agreement", () => {
   });
 
   it("is the vendor's entry as found unchanged, which a row made in Marfa gains once the vendor lists it", async () => {
-    // Made in Marfa and carried: what was agreed on is the row without
-    // its link, until the vendor's listing of it, link and all, is found
-    // unchanged and becomes the agreement.
     const theirs = harness.server.insert(
       undefined,
       { title: "Theirs" },

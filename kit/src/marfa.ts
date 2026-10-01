@@ -22,13 +22,14 @@ export type EdgeType = components["schemas"]["EdgeType"];
 /** Edges one bulk request carries, well inside the door's 5000. */
 const edgePage = 1000;
 
+/** The server's cap on the keys one lookup names. */
 const lookupCap = 500;
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
 
-/** The server said no, in its own envelope. `status` is absent on one
- *  entry of a bulk answer, which the page's own status does not describe. */
+/** `status` is absent on one entry of a bulk answer, which the page's own
+ *  status does not describe. */
 export class Refusal extends Error {
   override name = "Refusal";
 
@@ -101,8 +102,6 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** The key this client bears, as the server holds it, or `undefined`
-   *  from a server with no door for a key to read itself. */
   async currentKey(): Promise<Key | undefined> {
     const { data, error, response } = await this.client.GET("/keys/current");
     if (response.status === 404) return undefined;
@@ -271,6 +270,7 @@ export class Marfa {
     throw refusal(response, error);
   }
 
+  /** `/items?type=` matches subtypes, so callers filter by exact type. */
   async ownRows(type: string): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -538,7 +538,7 @@ export class Marfa {
     return new Uint8Array(data);
   }
 
-  /** Marks deliveries, two hundred to a request; the first mark stands. */
+  /** The first mark stands. */
   async handled(
     id: string,
     ids: readonly string[],
