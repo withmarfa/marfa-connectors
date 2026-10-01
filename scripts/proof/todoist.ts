@@ -442,7 +442,7 @@ export async function proveTodoist(
         const before = await row("a");
         await edit(marfa, before, { title: "Buy everything, from Marfa" });
         // Earlier than the server's clock, so the edit made in Marfa is the later
-    // one.
+        // one.
         todoist.now = "2026-09-24T12:30:00.000000Z";
         todoist.edit("a", { content: "Buy everything, from Todoist" });
         await runOnce();
