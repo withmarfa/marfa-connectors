@@ -16,7 +16,6 @@ export interface SetupEnv {
  *  name once, so a second person's setup names its own. */
 export const defaultName = "Marfa Connectors";
 
-/** What GitHub hands back for a manifest's code, once. */
 interface Conversion {
   id: number;
   slug: string;
@@ -69,7 +68,6 @@ function escaped(text: string): string {
     .replaceAll(">", "&gt;");
 }
 
-/** A page that posts the manifest to GitHub, as its manifest flow asks. */
 export function page(target: string, body: Record<string, unknown>): string {
   const name = typeof body["name"] === "string" ? body["name"] : "the App";
   return `<!doctype html>
@@ -104,11 +102,6 @@ export function page(target: string, body: Record<string, unknown>): string {
 `;
 }
 
-/**
- * Registers a GitHub App from a manifest and answers its secrets; or, for
- * an App already in the environment, points its webhook at this instance
- * with a new secret.
- */
 export async function setUp<E extends EnvDeclaration>(
   context: SetupContext<E>,
   env: SetupEnv,
@@ -168,7 +161,6 @@ export async function setUp<E extends EnvDeclaration>(
   if (code === null || code === "") {
     throw new Error("GitHub's redirect carried no code");
   }
-  // Needs no authentication: the code, good for an hour, is the proof.
   const conversion = (
     await anonymous(base, signal).request(
       "POST /app-manifests/{code}/conversions",

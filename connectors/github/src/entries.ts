@@ -8,7 +8,6 @@ export function markOf(rowId: string): string {
   return `<!-- marfa:${digest.slice(0, 16)} -->`;
 }
 
-/** A body as the person wrote it, without the App's mark. */
 export function unmarked(body: string): string {
   return body.replace(/\s*<!-- marfa:[0-9a-f]{16} -->\s*$/, "");
 }
@@ -26,7 +25,6 @@ export const subIssueOf = "github.sub-issue-of";
 export const blockedBy = "github.blocked-by";
 export const inThread = "in-thread";
 
-/** A repository as the installation lists it. */
 export interface RestRepository {
   node_id: string;
   full_name: string;
@@ -38,7 +36,6 @@ export interface RestRepository {
   updated_at: string;
 }
 
-/** An issue as REST lists it; a pull request carries `pull_request`. */
 export interface RestIssue {
   node_id: string;
   number: number;
@@ -57,7 +54,6 @@ export interface RestIssue {
   pull_request?: unknown;
 }
 
-/** A comment as REST lists it. */
 export interface RestComment {
   node_id: string;
   body: string | null;
@@ -68,21 +64,18 @@ export interface RestComment {
   user: { login: string } | null;
 }
 
-/** An issue at the other end of a relation. */
 export interface Related {
   id: string;
   url: string;
   repository: { id: string };
 }
 
-/** An issue as the connector writes it, from REST or GraphQL. */
 export interface Issue {
   node: string;
   number: number;
   title: string;
   body: string | null;
   open: boolean;
-  /** As REST names it: completed, not_planned, duplicate, reopened. */
   reason: string | null;
   url: string;
   closedAt: string | null;
@@ -142,7 +135,6 @@ export function issueOfRest(
   };
 }
 
-/** Marfa's status for GitHub's state and reason. */
 export function statusOf(open: boolean, reason: string | null): string {
   if (open) return "pending";
   return reason === "not_planned" || reason === "duplicate"
@@ -165,10 +157,6 @@ export function repositoryEntry(repository: RestRepository): Entry {
   };
 }
 
-/**
- * An issue as an entry: its relations to issues in synced repositories are
- * connections, and to the rest their addresses.
- */
 export function issueEntry(
   issue: Issue,
   relations: Relations,

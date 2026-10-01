@@ -5,11 +5,6 @@ import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 
 const fetchTimeoutMs = 60_000;
 
-/**
- * The addresses in `RSS_FEEDS`, one per line or separated by commas or
- * spaces, each feed once however many ways it is spelled: two spellings
- * would write the same rows, each rewriting the other's `feed_origin`.
- */
 export function feedList(value: string): string[] {
   const parts = value.split(/[\s,]+/).filter((part) => part !== "");
   const bad = parts.filter((feed) => {
@@ -35,11 +30,7 @@ export function feedList(value: string): string[] {
   return [...byFeed.values()];
 }
 
-/**
- * A feed as a log line, a condition or a report names it: its origin and
- * the hash of its address, never its path or query, since a private feed
- * carries its token in either.
- */
+// Never the path or query: a private feed carries its token in either.
 export function feedName(feedUrl: string): string {
   return `${new URL(feedUrl).origin} (${feedHash(feedUrl)})`;
 }
@@ -48,36 +39,20 @@ function hashed(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 32);
 }
 
-/**
- * The hash of a feed's canonical address, which stands for the address
- * wherever the address may not go: each row's `feed_hash`, the name in
- * every log line and report, and the key the state keeps the feed under.
- */
 export function feedHash(feedUrl: string): string {
   return hashed(`feed-url:${canonicalFeedUrl(feedUrl)}`);
 }
 
-/**
- * The address as its host, path and query, so its scheme, credentials and
- * fragment fall away, with `www.` and trailing slashes removed: two
- * spellings of one feed are one feed, and a changed password is not a new
- * one. A port names another server and stays. Only the host is lowercased,
- * since a path is case-sensitive and two feeds differing in case are two
- * feeds.
- */
+// A port names another server and stays. Only the host is lowercased: a path is
+// case-sensitive.
 export function canonicalFeedUrl(feedUrl: string): string {
   const url = new URL(feedUrl.trim());
   const host = url.host.replace(/^www\./, "");
   return `${host}${url.pathname.replace(/\/+$/, "")}${url.search}`;
 }
 
-/**
- * The feed's part of every entry's `source_id`. An Atom feed's own `<id>`
- * names it wherever it moves; an RSS 2.0 feed has none, so its address does.
- * Hashed, because an Atom id is an IRI whose colons would make
- * `<feed>:<entry>` read two ways, and the two arms are prefixed apart so an
- * id and an address never hash alike.
- */
+// Hashed because an Atom id is an IRI whose colons would make `<feed>:<entry>`
+// read two ways.
 export function feedKey(
   feedUrl: string,
   declaredId: string | undefined,
@@ -99,15 +74,10 @@ export type Fetched =
       status: 200;
       text: string;
       validators: Validators;
-      /** Where the document came from, after any redirect. */
       url: string;
     }
   | { status: number };
 
-/**
- * The encoding a document's first bytes show: a byte order mark, or, with
- * none, the zero bytes of `<?` written in UTF-16 (XML 1.0, appendix F).
- */
 function sniffed(bytes: Uint8Array): string | undefined {
   const [a, b, c, d] = bytes;
   if (a === 0xef && b === 0xbb && c === 0xbf) return "utf-8";
@@ -118,12 +88,6 @@ function sniffed(bytes: Uint8Array): string | undefined {
   return undefined;
 }
 
-/**
- * A feed's bytes as text, in the encoding XML's media types give it: what
- * its first bytes show, then the Content-Type's charset, then the XML
- * declaration's, then UTF-8. A name the platform does not know gives way
- * to the next.
- */
 export function decodeFeed(
   bytes: Uint8Array,
   contentType: string | null,
@@ -205,19 +169,11 @@ function isoOf(value: string | undefined): string | undefined {
 
 interface Base {
   href: string;
-  /**
-   * Taken from the address the feed was fetched at, whose path may carry a
-   * private feed's token, rather than from an `xml:base` the feed declares.
-   */
+  // From the fetch address, which may carry a private feed's token, not a declared `xml:base`.
   fromAddress: boolean;
 }
 
-/**
- * Whether a reference takes something of its base's path or query: it
- * resolves one way against the base and another against the base's origin
- * alone. Asked of the resolver, since a spelling such as `https:item` is
- * absolute on its own and relative against a base of the same scheme.
- */
+// Asked of the resolver: `https:item` is absolute alone and relative against a base of the same scheme.
 function keepsPath(reference: string, base: string): boolean {
   const origin = new URL(base);
   origin.pathname = "/";
@@ -230,11 +186,6 @@ function keepsPath(reference: string, base: string): boolean {
   }
 }
 
-/**
- * The base a feed's or an entry's links resolve against: its own
- * `xml:base`, itself resolved against its parent's, else its parent's. The
- * parser reads no `xml:base` on an Atom link itself.
- */
 function baseOf(parent: Base, declared: string | undefined): Base {
   const base = declared?.trim();
   if (base === undefined || base === "") return parent;
@@ -248,12 +199,7 @@ function baseOf(parent: Base, declared: string | undefined): Base {
   }
 }
 
-/**
- * A link resolved against its base, when it is an http or https address,
- * and without credentials, which a row never carries. A link relative to
- * the path the feed was fetched at is not written, since it would carry
- * that path.
- */
+// A link relative to the fetch path is not written: it would carry that path.
 function linkOf(value: string | undefined, base: Base): string | undefined {
   const reference = value?.trim();
   if (reference === undefined || reference === "") return undefined;
@@ -269,7 +215,6 @@ function linkOf(value: string | undefined, base: Base): string | undefined {
   }
 }
 
-/** A BCP 47 tag, as feeds often spell one with an underscore. */
 function languageOf(value: string | undefined): string | undefined {
   const tag = value?.trim().replace(/_/g, "-");
   return tag !== undefined && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(tag)
@@ -282,7 +227,6 @@ function textOf(value: string | undefined): string | undefined {
   return text === undefined || text === "" ? undefined : text;
 }
 
-/** Elements that break a line, whose tags read as a space. */
 const blockElements = new Set([
   "address",
   "article",
@@ -320,7 +264,6 @@ const blockElements = new Set([
 
 type Markup = ReturnType<typeof parseDocument>["children"];
 
-/** The text a reader sees: scripts, styles and comments are not read. */
 function readText(nodes: Markup): string {
   let text = "";
   for (const node of nodes) {
@@ -336,14 +279,12 @@ function readText(nodes: Markup): string {
   return text;
 }
 
-/** Markup as plain text, its entities decoded and its whitespace run together. */
 function plainOf(markup: string | undefined): string | undefined {
   if (markup === undefined) return undefined;
   const document = parseDocument(markup, { recognizeCDATA: true });
   return textOf(readText(document.children).replace(/\s+/g, " "));
 }
 
-/** An Atom text construct as plain text, whichever of its three types it is. */
 function atomTextOf(
   text: { value?: string; type?: string } | undefined,
 ): string | undefined {
@@ -353,14 +294,11 @@ function atomTextOf(
 }
 
 export interface Read {
-  /** The feed's part of its entries' `source_id`s. */
   key: string;
   entries: Entry[];
-  /** Entries with neither an id nor a link, which nothing can key. */
   unkeyed: number;
 }
 
-/** Every property an entry carries. */
 export const entryFields = [
   "url",
   "title",
@@ -386,11 +324,6 @@ function channelBaseOf(text: string): string | undefined {
   return channel?.attribs["xml:base"];
 }
 
-/**
- * Reads an Atom or RSS 2.0 document into entries, or throws if it is
- * neither. Its links resolve against where the document came from, which
- * a redirect can move away from the address the connector was given.
- */
 export function readFeed(
   feedUrl: string,
   text: string,

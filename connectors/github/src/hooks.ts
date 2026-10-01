@@ -16,11 +16,6 @@ function named(type: string, ...values: unknown[]): Hint[] {
   });
 }
 
-/**
- * What a delivery from GitHub names, by the node id each row is linked by.
- * A change to an installation or a repository changes what is synced, so
- * it has the connector read everything.
- */
 export function hints(delivery: Delivery): readonly Hint[] | "everything" {
   const event = delivery.header("x-github-event");
   if (

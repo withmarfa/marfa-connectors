@@ -38,14 +38,10 @@ import {
 } from "./graph.js";
 import type { Scope } from "./scope.js";
 
-/** How far back a first sync reaches for closed issues. */
 export const windowDays = 90;
 
-/** How often a scheduled run asks GitHub about every comment it no longer
- *  lists; issues are asked about whenever their listing changed. */
 const checkEvery = 24 * 60 * 60 * 1000;
 
-/** What a run keeps of a repository between runs. */
 export interface Kept {
   installation: number;
   name: string;
@@ -55,8 +51,6 @@ export interface Kept {
    *  ETag then cannot say nothing lies past it. */
   comments?: { since: string; etag?: string; full?: boolean };
   checked?: string;
-  /** Left out by GITHUB_REPOSITORIES: its rows are left as they are, and
-   *  its cursors kept for when it is named again. */
   paused?: boolean;
 }
 
@@ -68,8 +62,6 @@ interface Installation {
   account?: { login?: string } | null;
 }
 
-/** Refused for want of access, rather than for a passing reason such as a
- *  rate limit, which fails the run for the next to take up. */
 function lostAccess(error: unknown): boolean {
   const code = status(error);
   if (code === 403) {
@@ -97,8 +89,6 @@ function numbersOf(pages: readonly Page[] | undefined): number[] {
   return (pages ?? []).flatMap((page) => numbersIn(page.numbers));
 }
 
-/** What a run leaves of an installation's hourly limit before it stops
- *  syncing further repositories, which the next run takes up. */
 const reserve = 500;
 
 /** A comment cursor asked a little early, so one GitHub shows late under
@@ -130,7 +120,6 @@ export async function read(
     { repository: RestRepository; installation: number }
   >();
   const answered = new Set<number>();
-  // Seen through the App but left out by GITHUB_REPOSITORIES.
   const outside = new Map<string, RestRepository>();
   const seen: string[] = [];
   for (const installation of installations) {
@@ -177,7 +166,6 @@ export async function read(
     }
   }
   const synced = new Set(listed.keys());
-  // Paused repositories' rows stay, so relations to them stay connections.
   const paused = new Set(
     [...outside.keys()].filter((node) => kept[node] !== undefined),
   );
@@ -273,8 +261,6 @@ export async function read(
   state.set("repositories", next);
 }
 
-/** A repository taken out of the App's installation: its rows archived,
- *  back again if it is added again. */
 async function takeOut(context: Context, node: string, name: string) {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
@@ -291,12 +277,6 @@ async function takeOut(context: Context, node: string, name: string) {
   );
 }
 
-/**
- * One repository: its issues listed whole, each page asked with its ETag
- * so an unchanged one costs nothing; the comments changed since the last
- * run; and the relations of what changed. A check asks GitHub about each
- * row it no longer lists.
- */
 async function syncRepository(
   context: Context,
   octokit: Client,
@@ -369,7 +349,6 @@ async function syncRepository(
     ...held,
     ...[...relations.values()].flatMap((one) => [
       ...one.blocking,
-      // A child names its parent; it may sit on a page that did not change.
       ...one.children,
       ...(one.parent !== null && options.synced.has(one.parent.repository.id)
         ? [one.parent.id]
@@ -386,7 +365,6 @@ async function syncRepository(
   await upsert(issueType, [
     ...listed.flatMap((issue) => {
       const found = relations.get(issue.node_id);
-      // Gone between the listing and the question: the next run has it.
       if (found === undefined) return [];
       return [issueEntry(issueOfRest(issue, at), found, options.inside)];
     }),
@@ -397,8 +375,6 @@ async function syncRepository(
       ),
   ]);
 
-  // Comments: on the first sync the repository's whole, then those changed
-  // since, and all of each issue new to the sync.
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
   let etag = repository.comments?.etag;
@@ -455,7 +431,6 @@ async function syncRepository(
     },
     ...(repository.checked !== undefined && { checked: repository.checked }),
   };
-  // A deletion or a move changes the listing, so only then is it asked.
   if (options.check || open.fresh || closed.fresh) {
     await checkIssues(context, octokit, {
       node,
@@ -470,7 +445,6 @@ async function syncRepository(
   return { ...kept, checked: started.toISOString() };
 }
 
-/** Comments on issues in the sync, each in its issue's thread. */
 async function writeComments(
   context: Context,
   octokit: Client,
@@ -483,7 +457,6 @@ async function writeComments(
   comments: readonly RestComment[],
   nodes: Map<number, string>,
 ): Promise<void> {
-  // Outside the window, only an edit to a comment Marfa already holds.
   const outside = comments.filter(
     (comment) => !where.scope.has(numberOf(comment)),
   );
@@ -540,7 +513,6 @@ function numberOf(comment: RestComment): number {
   return Number(/\/issues\/(\d+)$/.exec(comment.issue_url)?.[1] ?? Number.NaN);
 }
 
-/** The comments changed since the last run, `undefined` where none did. */
 async function changedComments(
   octokit: Client,
   where: { owner: string; repo: string },
@@ -573,12 +545,7 @@ async function changedComments(
   return { comments, etag: first.etag, full };
 }
 
-/**
- * The issues Marfa holds under the repository that GitHub no longer lists,
- * each asked of GitHub and archived only where it says the issue was
- * deleted or moved away. A closed issue quiet since before the window is
- * outside it, not gone.
- */
+// A closed issue quiet since before the window is outside it, not gone.
 async function checkIssues(
   context: Context,
   octokit: Client,
@@ -606,8 +573,6 @@ async function checkIssues(
   await archiveGone(context, octokit, where, unlisted);
 }
 
-/** The issues of the rows GitHub says were deleted or moved away,
- *  archived; one answering 404 while its repository reads is left. */
 async function archiveGone(
   context: Context,
   octokit: Client,
@@ -638,9 +603,6 @@ async function archiveGone(
   await context.archive(issueType, gone);
 }
 
-/** The comments Marfa holds under the repository that GitHub no longer
- *  lists, archived where GitHub, still reading the repository, says so;
- *  and those in the sync Marfa lacks, which a run missed, written. */
 async function checkComments(
   context: Context,
   octokit: Client,
@@ -703,12 +665,6 @@ async function askIssue(
   }
 }
 
-/**
- * A run for deliveries: what they named, and the rows with a change
- * waiting, each asked of GitHub by its node id, with the issues at the
- * other end of each relation so it lands. One GitHub no longer shows, in a
- * repository the App still reads, is asked after as the check-up asks.
- */
 async function readNamed(
   context: Context,
   listed: ReadonlyMap<
@@ -771,7 +727,6 @@ async function readNamed(
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),
   );
-  // A repository added since the last whole read comes with its issues.
   const touched = new Set([
     ...[...issues.values()].map(({ issue }) => issue.repository.node),
     ...[...comments.values()].map((comment) => comment.repository.node),
@@ -827,7 +782,6 @@ async function readNamed(
       continue;
     }
     await archiveGone(context, octokit, { owner, name }, issueRows);
-    // Every installation was asked, and none shows it: deleted.
     await context.archive(
       commentType,
       commentRows.flatMap((row) => linkOf(row) ?? []),

@@ -32,7 +32,6 @@ const connector = defineConnector({
       // `string` here; the check on start holds the file to the server's.
       type: todoistTask as TypeDefinition,
       fields: taskFields,
-      // What the connector never sends to Todoist.
       readOnly: [
         "url",
         "project_id",
@@ -49,8 +48,6 @@ const connector = defineConnector({
     const base = env.TODOIST_API_URL ?? defaultBase;
     const keptAccount = state.get("account");
     if (hints !== undefined && typeof keptAccount === "string") {
-      // What waits, fetched task by task; the sync token stays where it was,
-      // since the rest was not read.
       const zone = state.get("timezone");
       const found: Entry[] = [];
       const gone: string[] = [];
@@ -72,10 +69,7 @@ const connector = defineConnector({
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
     const knownZone = state.get("timezone");
     const kept = typeof knownZone === "string" ? knownZone : undefined;
-    // A timezone that moved, or first became known, reads every floating
-    // and whole-day due date anew, and a delta carries only the tasks that
-    // changed; so the run asks for them all. A full sync lists only active
-    // tasks, so the delta's deletions and completions are kept beside it.
+    // A full sync lists only active tasks, so the delta's deletions and completions are kept beside it.
     const newZone = timezoneOf(answer.user);
     let fullSync = heldToken === firstSync;
     if (heldToken !== firstSync && newZone !== undefined && newZone !== kept) {
@@ -92,12 +86,8 @@ const connector = defineConnector({
         sync_token: answer.sync_token,
       };
     }
-    // A full sync lists only active tasks, so a task completed since it was
-    // last read, such as while the sync token was lost, or one whose due
-    // date a moved zone reads anew, is asked for apart. An open task the
-    // full sync lists wins over a completion listed for it, since the sync
-    // token predates the list and a completion landing between the two
-    // comes back in the next delta.
+    // An open task the full sync lists wins over a completion listed for it: the sync
+    // token predates the list.
     if (fullSync) {
       const done = await completed(
         base,
@@ -126,7 +116,6 @@ const connector = defineConnector({
     }
     const named = timezoneOf(answer.user) ?? kept;
     const timeZone = named ?? "UTC";
-    // Keyed by what they say, so a changed one is reported as it changes.
     const unknown = namedZoneOf(answer.user);
     if (unknown !== undefined && timezoneOf(answer.user) === undefined) {
       log.condition(
@@ -140,16 +129,13 @@ const connector = defineConnector({
       );
     }
 
-    // A deleted task is archived, and a completed one stays active with its
-    // status and completion set. A full sync lists only active tasks, so a
-    // task it leaves out is left as it is.
+    // A full sync lists only active tasks: a task it leaves out is left as it is.
     await upsert(
       taskType,
       answer.items
         .filter((item) => item.is_deleted !== true)
         .map((item) => entryOf(account, timeZone, item)),
     );
-    // By the link: a row is archived by the task it is, whoever created it.
     await archive(
       taskType,
       answer.items

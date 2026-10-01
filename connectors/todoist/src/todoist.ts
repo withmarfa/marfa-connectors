@@ -34,13 +34,10 @@ export interface SyncAnswer {
 export const firstSync = "*";
 export const defaultBase = "https://api.todoist.com";
 const requestTimeoutMs = 60_000;
-/** The longest wait a `Retry-After` is honored for; a longer one fails the run instead. */
 const longestWaitMs = 60_000;
 const serverErrorRetries = 3;
-/** How many times a batch is sent again on a command's own rate limit. */
 const commandResends = 5;
 
-/** Resolves after `ms`, or rejects the moment the signal aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -59,21 +56,12 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** The wait a 429 or a command's `retry_after` names, in milliseconds. */
 function waitOf(value: string | number | null | undefined): number | undefined {
   if (value === null || value === undefined) return undefined;
   const seconds = typeof value === "number" ? value : Number(value);
   return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
 }
 
-/**
- * One request to Todoist, with what every door shares: the token, the
- * timeout, a wait on a 429 as told, three more tries on a server error,
- * and a refused token failing the run by name so a token that cannot
- * write is a failed run rather than a quiet one. A 403 is the token
- * refused on the sync door; on a task's door it is that one task closed
- * to the token, which a caller says it will take as an answer.
- */
 async function request(
   base: string,
   token: string,
@@ -100,8 +88,6 @@ async function request(
       throw new Error(`Todoist refused the token: ${String(response.status)}`);
     }
     if (response.status === 429) {
-      // Named in the header, or in the body as a command's refusal names
-      // it; one that names neither is not waited for blind.
       let wait = waitOf(response.headers.get("Retry-After"));
       if (wait === undefined) {
         try {
@@ -153,7 +139,6 @@ export async function sync(
   return (await response.json()) as SyncAnswer;
 }
 
-/** The account's `user` alone, for a run that needs its timezone before it has synced. */
 export async function user(
   base: string,
   token: string,
@@ -184,10 +169,6 @@ export async function user(
  */
 const completedWindowMs = 84 * 86_400_000;
 
-/**
- * The tasks completed in the twelve weeks to `now`, every page, or
- * `forbidden` where Todoist will not list them for the token.
- */
 export async function completed(
   base: string,
   token: string,
@@ -226,7 +207,6 @@ export async function completed(
   }
 }
 
-/** A command as the Sync API takes it. */
 export interface Command {
   type: string;
   uuid: string;
@@ -234,7 +214,6 @@ export interface Command {
   args: Record<string, unknown>;
 }
 
-/** How the Sync API refuses one command; `error_extra` may name a wait. */
 export interface CommandError {
   error_code?: number;
   error?: string;
@@ -248,18 +227,12 @@ export interface CommandAnswer {
   temp_id_mapping?: Record<string, string>;
 }
 
-/** A refusal's text, for a condition to carry. */
 export function describeError(error: CommandError): string {
   const code =
     error.error_code === undefined ? "" : ` (${String(error.error_code)})`;
   return `${error.error ?? "an error without a message"}${code}`;
 }
 
-/**
- * Sends commands, waiting as a command's own `retry_after` asks and
- * sending the batch again; every command carries a `uuid`, so a resend
- * is the same command to Todoist.
- */
 export async function send(
   base: string,
   token: string,
@@ -284,10 +257,7 @@ export async function send(
       );
     }
     const answer = (await response.json()) as CommandAnswer;
-    // Only a refusal that is itself a rate limit is waited out and sent
-    // again: a wait named on any other refusal rides a terminal answer,
-    // which Todoist says not to send again. A limit that holds through
-    // every resend is handed back as the refusal it is.
+    // A wait on any other refusal rides a terminal answer, which Todoist says not to resend.
     const waits = Object.values(answer.sync_status)
       .map((status) =>
         status === "ok" || status.http_code !== 429
@@ -307,14 +277,8 @@ export async function send(
   }
 }
 
-/**
- * What the task door answers: the task, open or completed (the door
- * answers a completed one too, `checked`, whatever the documentation's
- * "active task" suggests), `missing` for one deleted or never there, or
- * `forbidden` for one the token cannot reach, such as another person's in
- * a shared project. The door answers a deleted task too, `is_deleted`, as
- * a real account showed.
- */
+// The door answers a completed task (`checked`) and a deleted one (`is_deleted`) as well as an
+// open one, whatever the documentation's "active task" suggests.
 export type TaskAnswer = TodoistItem | "missing" | "forbidden";
 
 export async function getTask(
@@ -341,11 +305,6 @@ export async function getTask(
   return found.is_deleted === true ? "missing" : found;
 }
 
-/**
- * A command's id from what it does, so a replayed run sends Todoist the
- * same command rather than a second one. Laid out as a UUID, the form the
- * documentation's examples use, though any unique string is taken.
- */
 export function uuidFor(...parts: readonly string[]): string {
   const digest = createHash("sha1").update(parts.join("\u0000")).digest("hex");
   const variant = ((parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
@@ -353,7 +312,6 @@ export function uuidFor(...parts: readonly string[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The core's priority as Todoist's 1 to 4; a row naming none is Todoist's 1. */
 export function priorityFor(priority: unknown): number {
   const found = Object.entries(priorities).find(
     ([, name]) => name === priority,
@@ -361,13 +319,6 @@ export function priorityFor(priority: unknown): number {
   return found === undefined ? 1 : Number(found[0]);
 }
 
-/**
- * A row's due date as Todoist takes it: a whole day as the date it is in
- * the account's timezone, a timed one fixed in UTC, and none as null so a
- * due date the row lost is cleared. A floating time Todoist held becomes
- * fixed once the row is written back, which is the one shape the core
- * task can name.
- */
 export function dueFor(
   dueAt: unknown,
   precision: unknown,
@@ -406,13 +357,11 @@ export function accountOf(user: SyncAnswer["user"]): string | undefined {
   return account === "" || account.includes(":") ? undefined : account;
 }
 
-/** The timezone the Sync API's `user` names, known to this platform or not. */
 export function namedZoneOf(user: SyncAnswer["user"]): string | undefined {
   const zone = user?.tz_info?.timezone;
   return typeof zone === "string" && zone !== "" ? zone : undefined;
 }
 
-/** The account's IANA timezone, from the Sync API's `user`, if it names one this platform knows. */
 export function timezoneOf(user: SyncAnswer["user"]): string | undefined {
   const zone = namedZoneOf(user);
   if (zone === undefined) return undefined;
@@ -432,7 +381,6 @@ function present<T>(value: T | null | undefined): T | undefined {
   return value ?? undefined;
 }
 
-/** Todoist's priority, 1 to 4, as the core task's, as ruled. */
 const priorities: Readonly<Record<number, string>> = {
   1: "low",
   2: "medium",
@@ -451,13 +399,8 @@ type Wall = [
 
 const dayMs = 86_400_000;
 
-/**
- * The UTC instant a wall-clock time in a zone names, by the rule Temporal
- * calls "compatible": a time the clocks skipped moves later by the length
- * of the skip, and a time they showed twice is its first showing. So a
- * whole day whose midnight is skipped begins at its first real instant,
- * still on that day.
- */
+// Temporal's "compatible" rule: a skipped time moves later by the skip, a repeated one is its
+// first showing.
 function inZone(
   [year, month, day, hour, minute, second]: Wall,
   timeZone: string,
@@ -489,8 +432,6 @@ function inZone(
       ]) - at
     );
   };
-  // The offsets either side of the wall time; a change of offset inside
-  // the day is a daylight-saving change or a zone moving its clocks.
   const before = offset(wall - dayMs);
   const after = offset(wall + dayMs);
   const shown = [before, after]
@@ -500,15 +441,6 @@ function inZone(
   return new Date(shown[0] ?? wall - before);
 }
 
-/**
- * A Todoist due date as the core task's `due_at` and `precision`. Todoist
- * writes three kinds: a whole day (`2026-09-30`), a floating time in the
- * account's timezone (`2026-09-30T12:00:00`), and a fixed time in UTC,
- * ending in `Z`. The core task has no whole-day form, so a whole day is the
- * instant it begins in the account's timezone, at `day` precision. A date
- * or time the calendar does not have, such as 30 February or 24:00, is no
- * due date, in any of the three kinds.
- */
 export function dueOf(
   due: TodoistItem["due"],
   timeZone: string,
@@ -531,11 +463,7 @@ function utcOf([year, month, day, hour, minute, second]: Wall): number {
   return at.getTime();
 }
 
-/**
- * A Todoist date or time, read strictly: `YYYY-MM-DD`, optionally with
- * `THH:MM:SS`, a fraction and a `Z`. `Date.parse` would roll 30 February
- * into March and read far looser text, so it is not used.
- */
+// `Date.parse` would roll 30 February into March.
 function timeOf(
   text: unknown,
 ): { wall: Wall; millis: number; timed: boolean; utc: boolean } | undefined {
@@ -574,7 +502,6 @@ function timeOf(
   };
 }
 
-/** A completion time, which Todoist writes in UTC. */
 function instantOf(value: string | null | undefined): string | undefined {
   const read = timeOf(value);
   return read?.utc === true
@@ -582,7 +509,6 @@ function instantOf(value: string | null | undefined): string | undefined {
     : undefined;
 }
 
-/** Every property an entry carries. */
 export const taskFields = [
   "todoist_id",
   "title",

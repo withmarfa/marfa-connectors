@@ -13,7 +13,6 @@ const token = "todoist-test-token-value";
 const uuidShape =
   /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-/** `todoist.task` as the connector carries it, which the scripted server answers as it was registered. */
 const served = {
   id: "todoist.task",
   label: "Todoist Task",
@@ -43,10 +42,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Whatever the case sent, every command carried a uuid laid out as one,
-  // and no two different commands shared it: one type, one task. A create
-  // sent again after a failed run carries the row as it is by then, so
-  // its arguments may differ under the same uuid.
   const sent = todoist.commands();
   for (const command of sent) expect(command.uuid).toMatch(uuidShape);
   const what = (c: (typeof sent)[number]): string =>
@@ -87,12 +82,10 @@ function summary(): string {
   return marfa.runs.at(-1)?.summary ?? "";
 }
 
-/** A person makes a todoist.task in Marfa, under their own source. */
 function personsRow(properties: Record<string, unknown>): Row {
   return marfa.insert(undefined, properties, "todoist.task", "person");
 }
 
-/** The account's task `id` synced into Marfa, and the row it made. */
 async function synced(id: string, content = `Task ${id}`): Promise<Row> {
   todoist.put(todoist.task(id, { content }));
   await landed();
@@ -107,7 +100,6 @@ describe("the mapping back", () => {
   });
 
   it("writes a whole day as its date in the account's timezone, a time fixed in UTC, and none as null", () => {
-    // Midnight of 30 September in London, at day precision, is 30 September.
     expect(dueFor("2026-09-29T23:00:00.000Z", "day", "Europe/London")).toEqual({
       date: "2026-09-30",
     });
@@ -144,7 +136,6 @@ describe("the mapping back", () => {
       priority: 3,
       due: { date: "2026-09-30T11:00:00Z" },
     });
-    // The task holds the same due date as a floating noon in London.
     const same = todoist.task("t", {
       content: "Buy milk",
       description: "Organic",
@@ -176,8 +167,6 @@ describe("the mapping back", () => {
 
 describe("a row Todoist has not been told about", () => {
   it("is created there with every traveling field, linked to the task it made, and closed if completed", async () => {
-    // The rows are carried before the first sync, so the zone a whole-day
-    // date is written in is asked of Todoist, once for both.
     todoist.put(todoist.task("seed"));
     const timed = personsRow({
       title: "Write the note",
@@ -224,17 +213,12 @@ describe("a row Todoist has not been told about", () => {
       "made-2",
     ]);
     expect(summary()).toMatch(/pushed 2, own 0, conflicts 0/);
-    // The zone was asked for once for both rows, then the run's own first
-    // sync: two full syncs, not one per row.
     expect(todoist.received.filter((r) => r.syncToken === "*")).toHaveLength(2);
   });
 
   it("sends the same create again after a run that failed, and Todoist makes one task", async () => {
     todoist.put(todoist.task("seed"));
     const one = personsRow({ title: "One", status: "pending" });
-    // Todoist makes the task, then the write of its id onto the row is
-    // refused, so the run fails before the push is remembered and the
-    // create is offered again next run.
     marfa.refuseNext(`PATCH /items/${one.id}`, 503, "unavailable");
     const failed = await once();
     expect(failed.code).not.toBe(0);
@@ -244,8 +228,6 @@ describe("a row Todoist has not been told about", () => {
     await landed();
     const adds = todoist.commands("item_add");
     expect(adds.map((c) => c.args["content"])).toEqual(["One", "One"]);
-    // The replayed create carries the uuid and temp_id of the first, and
-    // Todoist answers it as it did rather than making another task.
     expect(adds[1]?.uuid).toBe(adds[0]?.uuid);
     expect(adds[1]?.temp_id).toBe(adds[0]?.temp_id);
     expect([...todoist.tasks.keys()]).toEqual(["seed", "made-1"]);
@@ -301,8 +283,6 @@ describe("a row Todoist knows", () => {
       precision: "day",
     });
     await landed();
-    // A whole day as its date in the account's zone: London midnight on
-    // 1 October is 23:00 UTC the day before.
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       {
         id: "a",
@@ -315,7 +295,6 @@ describe("a row Todoist knows", () => {
     expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
     expect(todoist.tasks.get("a")?.priority).toBe(4);
 
-    // The row as the person leaves it, whole: no description, no due date.
     const current = marfa.byId(row.id);
     const { description, due_at, precision, ...rest } = current.properties;
     expect(description).toBe("Now with details");
@@ -388,10 +367,8 @@ describe("a row Todoist knows", () => {
 
   it("sends nothing when the task already matches the row", async () => {
     const row = await synced("a");
-    // A write that changes no value still moves the version.
     marfa.edit(row.id, { title: "Task a" });
     await landed();
-    // Nothing differs from what was agreed, so Todoist is not even asked.
     expect(
       todoist.received.filter((r) => /^\/api\/v1\/tasks\/[^/]+$/.test(r.path)),
     ).toHaveLength(0);
@@ -401,8 +378,6 @@ describe("a row Todoist knows", () => {
 
   it("names a task Todoist no longer has as a condition, and the run lands", async () => {
     const row = await synced("a");
-    // Gone from the account without a delta saying so: nothing is asked
-    // of a task the door does not answer.
     todoist.tasks.delete("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
     await landed();
@@ -417,9 +392,6 @@ describe("an echo", () => {
   it("is not carried back: a push then a sync moves nothing, and a sync's write is read as the connector's own", async () => {
     todoist.put(todoist.task("seed"));
     const row = personsRow({ title: "Made in Marfa", status: "pending" });
-    // The row is carried before the sync, so the same run's sync already
-    // carries the task the push made, with Todoist's own fields: the row
-    // is linked, then gains them.
     await landed();
     expect(marfa.byId(row.id).properties["todoist_id"]).toBe("made-1");
     expect(marfa.byId(row.id).properties["url"]).toBe(
@@ -431,15 +403,11 @@ describe("an echo", () => {
       /^created 1, updated 1, .*pushed 1, own 0, conflicts 0/,
     );
 
-    // The next run reads the seed's create and the row's last write as
-    // the connector's own, Todoist sends nothing new, and nothing goes
-    // back.
     await landed();
     expect(marfa.byId(row.id).version).toBe(3);
     expect(todoist.commands()).toHaveLength(1);
     expect(summary()).toMatch(/pushed 0, own 2, conflicts 0/);
 
-    // And the run after moves nothing either way.
     await landed();
     expect(marfa.byId(row.id).version).toBe(3);
     expect(todoist.commands()).toHaveLength(1);
@@ -450,8 +418,6 @@ describe("an echo", () => {
 describe("a conflict", () => {
   it("is won by Marfa when its change is later, and the row's value is carried to Todoist", async () => {
     const row = await synced("a");
-    // The scripted server's clock stands on 25 September; Todoist's
-    // change is stamped the day before.
     todoist.now = "2026-09-24T12:00:00.000000Z";
     todoist.edit("a", { content: "Task a, from Todoist" });
     marfa.edit(row.id, { title: "Task a, from Marfa" });
@@ -576,8 +542,6 @@ describe("the connector's state", () => {
     const row = await synced("a");
     const kept = (): Record<string, unknown> =>
       marfa.states.get("todoist") ?? {};
-    // The log is read before the run writes, so the first run's cursor
-    // stands before its own create, and the create is agreed.
     expect(kept()["state"]).toMatchObject({ timezone: "Europe/London" });
     expect(kept()["cursor"]).toBe("0");
     expect(marfa.agreements.get(row.id)).toMatchObject({
@@ -596,8 +560,6 @@ describe("transitions over runs", () => {
     await landed();
     marfa.purgeById(row.id);
     await landed();
-    // The purge repeats the trash's delete under the trash's own command
-    // id, which Todoist answers without acting again.
     const deletes = todoist.commands("item_delete");
     expect(deletes.map((c) => c.args["id"])).toEqual(["a", "a"]);
     expect(deletes[0]?.uuid).toBe(deletes[1]?.uuid);
@@ -624,8 +586,6 @@ describe("transitions over runs", () => {
     marfa.trash(row.id);
     await landed();
     expect(todoist.tasks.get("a")?.is_deleted).toBe(true);
-    // The next sync carries the deletion, stamped before the restore: the
-    // echo is not written over the restored row.
     marfa.restore(row.id);
     await landed();
     expect(todoist.commands().map((c) => [c.type, c.args["id"]])).toEqual([
@@ -644,7 +604,6 @@ describe("transitions over runs", () => {
     expect(marfa.byId(row.id).state).toBe("active");
     expect(summary()).toMatch(/conflicts 0/);
 
-    // The task made comes back as the row's own, and nothing moves.
     await landed();
     expect(todoist.commands()).toHaveLength(2);
     expect(marfa.byId(row.id).state).toBe("active");
@@ -685,8 +644,6 @@ describe("transitions over runs", () => {
 
   it("takes a task Todoist does not have as deleted, with no condition", async () => {
     const row = await synced("a");
-    // Gone from the account without a trace, which Todoist answers
-    // ITEM_NOT_FOUND.
     todoist.tasks.delete("a");
     marfa.trash(row.id);
     await landed();
@@ -882,7 +839,6 @@ describe("transitions over runs", () => {
     );
     expect(todoist.tasks.get("a")?.checked).toBe(true);
 
-    // Gone from the account: a completed row asks nothing more of it.
     todoist.tasks.delete("a");
     marfa.edit(row.id, { title: "Task a, edited again" });
     await landed();
@@ -962,8 +918,6 @@ describe("Todoist's answers, continued", () => {
   it("does not send a refused command again on the wait it names, unless the refusal is a rate limit", async () => {
     const row = await synced("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
-    // A terminal refusal that names a wait all the same: sent once and
-    // recorded, not sent again and again.
     todoist.scriptCommand(
       "item_update",
       {
@@ -1089,8 +1043,6 @@ describe("one change, two commands", () => {
       completed_at: null,
     });
     await landed();
-    // The closed task is read, checked: what differs travels first, then
-    // the reopen.
     expect(todoist.commands().map((c) => c.type)).toEqual([
       "item_close",
       "item_update",
@@ -1141,7 +1093,6 @@ describe("the account's zone", () => {
   });
 
   it("is not kept by the carry, so the sync still reads every whole-day date anew when it first learns the zone", async () => {
-    // A state with a token and no zone: a sync that named none.
     todoist.timezone = null;
     todoist.put(
       todoist.task("a", { content: "Whole day", due: { date: "2026-09-30" } }),
@@ -1151,8 +1102,6 @@ describe("the account's zone", () => {
     expect(row.properties["due_at"]).toBe("2026-09-30T00:00:00.000Z");
     expect(summary()).toContain("named no timezone");
 
-    // Todoist now names a zone; a create is carried first and learns it,
-    // and the delta carries the account changed.
     todoist.renameZone("Europe/London");
     personsRow({
       title: "Made",
@@ -1164,8 +1113,6 @@ describe("the account's zone", () => {
     expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
       date: "2026-09-30",
     });
-    // The sync saw the zone move from none to London and read every task
-    // again, through a full sync beside the delta.
     const tokens = todoist.received
       .filter((r) => r.syncToken !== undefined)
       .map((r) => r.syncToken);
@@ -1178,8 +1125,6 @@ describe("the account's zone", () => {
   it("raises the sync's own condition when a create finds no zone named", async () => {
     todoist.timezone = null;
     todoist.put(todoist.task("seed"));
-    // An instant that is one date in UTC and the next in London, so the
-    // zone the date was written in is what the assertion sees.
     personsRow({
       title: "Whole day",
       status: "pending",

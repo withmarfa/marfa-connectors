@@ -46,8 +46,6 @@ type Context = WatchContext<EnvDeclaration>;
 /** A try's time asked a little early, as GitHub's clock is not ours. */
 const margin = 5 * 60 * 1000;
 
-/** The issue states Marfa's status names: closed as completed or not
- *  planned, or open for anything else. */
 function wanted(value: unknown): {
   state: "open" | "closed";
   state_reason: "completed" | "not_planned" | "reopened";
@@ -73,10 +71,6 @@ function list(item: Item, field: string): string[] {
     : [];
 }
 
-/**
- * GitHub's refusal of one row, which is a condition rather than the run's
- * failure: forbidden (an archived repository), gone, or invalid.
- */
 function refusal(error: unknown): string | undefined {
   if (error instanceof RequestError) {
     return [403, 404, 410, 422].includes(error.status)
@@ -94,10 +88,6 @@ function refusal(error: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Why GitHub cannot take a change now, where it is for want of access or a
- * passing limit rather than a refusal of the change itself.
- */
 function unreachable(error: unknown): string | undefined {
   // The throttling plugin answers GraphQL's limit with a plain error.
   const said = (error as { response?: { data?: { errors?: unknown } } })
@@ -122,8 +112,6 @@ function unreachable(error: unknown): string | undefined {
   return undefined;
 }
 
-/** A refusal of the change, or a throw that leaves it waiting where the
- *  repository is out of the App's reach. */
 async function refusedOrWaits(
   error: unknown,
   octokit: Client,
@@ -150,15 +138,12 @@ function allKept(context: Context): Record<string, Kept> {
     : {};
 }
 
-/** The repositories the last run synced, by node. */
 function keptOf(context: Context): Record<string, Kept> {
   return Object.fromEntries(
     Object.entries(allKept(context)).filter(([, one]) => one.paused !== true),
   );
 }
 
-/** Leaves a change waiting where its repository is left out by
- *  GITHUB_REPOSITORIES, to be carried once it is named again. */
 function unlessPaused(context: Context, name: string | undefined) {
   const found = Object.entries(allKept(context)).find(
     ([, one]) => one.paused === true && one.name === name,
@@ -166,7 +151,6 @@ function unlessPaused(context: Context, name: string | undefined) {
   if (found !== undefined) throw paused(...found);
 }
 
-/** Changes waiting on a paused repository are said once between them. */
 function paused(node: string, kept: Kept): Unreachable {
   return new Unreachable(
     `${kept.name} is left out by GITHUB_REPOSITORIES until it is named again`,
@@ -174,8 +158,6 @@ function paused(node: string, kept: Kept): Unreachable {
   );
 }
 
-/** A client for the installation holding the repository of that name, and
- *  the repository's node. */
 function clientFor(
   context: Context,
   app: App,
@@ -197,8 +179,6 @@ function clientFor(
       };
 }
 
-/** A client that reads the issue, where its row may name its repository by
- *  a name since changed: then asked of each installation by the node. */
 async function clientOfIssue(
   context: Context,
   app: App,
@@ -230,7 +210,6 @@ async function clientOfIssue(
     if (found !== undefined && kept?.paused === true) {
       throw paused(found.issue.repository.node, kept);
     }
-    // Only a repository in the sync, found by the node it keeps.
     if (found !== undefined && found.issue.repository.node in keptOf(context)) {
       const [owner = "", repo = ""] = found.issue.repository.name.split("/");
       return { octokit, owner, repo };
@@ -241,7 +220,6 @@ async function clientOfIssue(
 
 const slugs = new Map<string, string>();
 
-/** The login GitHub gives what the App writes, such as `marfa-connectors[bot]`. */
 async function botOf(app: App, signal: AbortSignal): Promise<string> {
   let slug = slugs.get(app.appId);
   if (slug === undefined) {
@@ -252,7 +230,6 @@ async function botOf(app: App, signal: AbortSignal): Promise<string> {
   return `${slug}[bot]`;
 }
 
-/** Relations the change made or removed that GitHub took, by type. */
 interface Related {
   readonly added: Map<string, Set<string>>;
   readonly removed: Map<string, Set<string>>;
@@ -262,8 +239,7 @@ function none(): Related {
   return { added: new Map(), removed: new Map() };
 }
 
-/** The issue as GitHub now has it, which the kit takes for GitHub's side,
- *  with the relations this carry made as made, whatever a lagging read says. */
+/** Includes the relations this carry made, whatever a lagging read says. */
 async function answerIssue(
   context: Context,
   octokit: Client,
@@ -294,13 +270,10 @@ async function answerIssue(
   return { ...entry, connections };
 }
 
-/** Whether the row says GitHub has the issue closed, as its close time does. */
 function closedAt(item: Item): boolean {
   return typeof item.properties["completed_at"] === "string";
 }
 
-/** Makes or removes each relation the change names; one GitHub refuses is
- *  named, and the answer then shows GitHub's own. */
 async function relations(
   context: Context,
   octokit: Client,
@@ -349,7 +322,6 @@ async function relations(
         refused(what, `${String(otherIn)} is left out by GITHUB_REPOSITORIES`);
         continue;
       }
-      // A parent holds its sub-issues; a blocked issue its blockers.
       const why = ours
         ? await relate(octokit, mutation, node, other)
         : await relate(octokit, mutation, other, node);
@@ -389,7 +361,6 @@ function dropped(
   }
 }
 
-/** Carries a change made in Marfa to GitHub, as the App. */
 export async function carry(
   change: Change,
   context: Context,
@@ -406,7 +377,6 @@ export async function carry(
   });
 }
 
-/** Runs a carry, leaving its change waiting where GitHub cannot be asked. */
 async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
   try {
     return await act();
@@ -417,13 +387,11 @@ async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The row's body, marked as the App's making of it. */
 function marked(item: Item): string {
   const body = text(item, "body") ?? "";
   return body === "" ? markOf(item.id) : `${body}\n\n${markOf(item.id)}`;
 }
 
-/** What a first try made, found by the row's mark, linked to the row. */
 async function linkMade<T extends { node_id: string; body?: string | null }>(
   context: Context,
   item: Item,
@@ -442,7 +410,6 @@ async function linkMade<T extends { node_id: string; body?: string | null }>(
   return undefined;
 }
 
-/** The App's own issues in the repository since a first try. */
 async function issuesMadeSince(
   octokit: Client,
   app: App,
@@ -469,7 +436,6 @@ async function issuesMadeSince(
   );
 }
 
-/** The App's own comments on the issue since a first try. */
 async function commentsMadeSince(
   octokit: Client,
   app: App,
@@ -488,11 +454,7 @@ async function commentsMadeSince(
   );
 }
 
-/**
- * The trash of a row whose create got no answer: a row in the bin cannot
- * take a link, so what GitHub may have made is left to come in as its own
- * row, which a trash then closes or deletes.
- */
+// A row in the bin cannot take a link, so what GitHub may have made comes in as its own row.
 function binnedUnanswered(context: Context, item: Item): void {
   context.log.condition(
     `unanswered-create-trashed:${item.id}`,
@@ -530,10 +492,7 @@ async function carryIssue(
   for (const field of ["labels", "assignees"] as const) {
     if (change.changed.has(field)) patch[field] = list(item, field);
   }
-  // A state is sent only where it moves: an open issue stays open for a
-  // status GitHub has no word for, such as in progress.
   const binned = change.kind === "trashed" || change.kind === "purged";
-  // Out of the bin, the status is set again over whatever the trash did.
   const fromBin = change.kind === "restored" && change.was === "trashed";
   if (change.changed.has("status") || fromBin) {
     const state = wanted(item.properties["status"]);
@@ -673,8 +632,6 @@ async function createIssue(
   return placeIssue(change, context, octokit, { owner, repo }, posted, false);
 }
 
-/** A linked issue the row made: brought to what the row now says where a
- *  first try made it, its state set, and its relations drawn. */
 async function placeIssue(
   change: Change,
   context: Context,
@@ -747,7 +704,6 @@ async function carryComment(
     return undefined;
   }
   try {
-    // Comments follow the ordinary rule: a trash deletes on GitHub.
     if (change.kind === "trashed" || change.kind === "purged") {
       await deleteComment(where.octokit, node);
       return undefined;
@@ -838,7 +794,6 @@ async function createComment(
       return undefined;
     }
   }
-  // Found from a first try, it takes what the row says now.
   if (unmarked(made.body ?? "") !== body) {
     return commentEntry(await updateComment(octokit, made.node_id, body));
   }
@@ -855,11 +810,6 @@ async function createComment(
   });
 }
 
-/**
- * Makes a restored comment again where GitHub no longer has it, in its
- * issue's thread; an issue is never deleted by a trash, so it is reopened
- * by `carry` instead.
- */
 export async function remake(
   change: Change,
   context: Context,

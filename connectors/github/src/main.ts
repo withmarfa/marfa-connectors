@@ -139,7 +139,6 @@ const connector = defineConnector({
     },
   ],
   env,
-  // Read only as a whole: nothing goes back, and setup asks only to read.
   carries: (values) =>
     readOnly(values.GITHUB_READ_ONLY) ? [] : [issueType, commentType],
   checkEnv(values) {

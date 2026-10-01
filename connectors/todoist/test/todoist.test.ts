@@ -18,7 +18,6 @@ const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const token = "todoist-test-token-value";
 
-/** `todoist.task` as the connector carries it, which the scripted server answers as it was registered. */
 const served = {
   id: "todoist.task",
   label: "Todoist Task",
@@ -36,7 +35,6 @@ const served = {
   display_hints: { title_field: "title", body_field: "description" },
 };
 
-/** Due dates as Todoist sends them, with the fields the connector does not read. */
 const wholeDaySent = {
   date: "2026-09-30",
   is_recurring: false,
@@ -77,7 +75,6 @@ let todoist: Server;
 let todoistUrl: string;
 let answer: (syncToken: string) => SyncAnswer | number;
 let received: { syncToken: string; resources: string; authorized: boolean }[];
-/** The completed-tasks door's answer to one page, or a status in place of it. */
 let completedAnswer: (
   query: URLSearchParams,
 ) => { items: TodoistItem[]; next_cursor: string | null } | number;
@@ -233,7 +230,6 @@ describe("the mapping", () => {
       due_at: "2026-12-06T13:00:00.000Z",
       precision: "time",
     });
-    // Either side of the clocks going forward in New York, 8 March 2026.
     expect(dueOf({ date: "2026-03-08T01:30:00" }, zone)?.due_at).toBe(
       "2026-03-08T06:30:00.000Z",
     );
@@ -247,7 +243,6 @@ describe("the mapping", () => {
   it("moves a time the clocks skipped later, and takes a time shown twice at its first showing, on either side of UTC", () => {
     const at = (date: string, zone: string): string | undefined =>
       dueOf({ date }, zone)?.due_at;
-    // Skipped: New York, London, Sydney.
     expect(at("2026-03-08T02:30:00", "America/New_York")).toBe(
       "2026-03-08T07:30:00.000Z",
     );
@@ -257,7 +252,6 @@ describe("the mapping", () => {
     expect(at("2026-10-04T02:30:00", "Australia/Sydney")).toBe(
       "2026-10-03T16:30:00.000Z",
     );
-    // Shown twice: the earlier instant, in daylight time.
     expect(at("2026-11-01T01:30:00", "America/New_York")).toBe(
       "2026-11-01T05:30:00.000Z",
     );
@@ -460,7 +454,6 @@ describe("the connector, run as a process", () => {
       ["2671355:b", "feed", "Two", "2026-09-01T10:00:00.000Z"],
     ]);
     expect(marfa.requestsTo("POST", "/types")).toEqual([]);
-    // With the account's zone named, no timezone condition rides the report.
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 2, updated 0, archived 0, unchanged 0, skipped 0, pushed 0, own 0, conflicts 0",
     );
@@ -509,8 +502,6 @@ describe("the connector, run as a process", () => {
     expect(marfa.row("2671355:b").state).toBe("active");
     expect(marfa.row("2671355:c").state).toBe("archived");
     expect(marfa.row("2671355:d").version).toBe(1);
-    // The four creates of the first run are read back as the connector's
-    // own, and nothing is carried to Todoist.
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 0, updated 2, archived 1, unchanged 0, skipped 0, pushed 0, own 4, conflicts 0",
     );
@@ -532,7 +523,6 @@ describe("the connector, run as a process", () => {
       due_at: "2026-09-29T23:00:00.000Z",
       precision: "day",
     });
-    // A delta names no user; the timezone kept from the full sync reads it.
     answer = () => ({
       sync_token: "t2",
       items: [task("a", { due: { date: "2026-10-01T09:00:00" } })],
@@ -608,8 +598,6 @@ describe("the connector, run as a process", () => {
     });
     expect(code).toBe(1);
     expect(marfa.runs.at(-1)?.error).toContain("refused the token");
-    // The output carries the failure, so the token's absence is not an
-    // empty stream's.
     expect(output).toContain("refused the token");
     expect(output).not.toContain("a-wrong-token-value");
   });
@@ -639,7 +627,6 @@ describe("the connector, run as a process", () => {
     expect(marfa.row("2671355:a").properties["due_at"]).toBe(
       "2026-10-01T08:00:00.000Z",
     );
-    // The same zone again: a delta, and nothing more.
     expect((await once()).code).toBe(0);
     zone = "America/New_York";
     expect((await once()).code).toBe(0);
@@ -733,8 +720,6 @@ describe("the connector, run as a process", () => {
         fulls += 1;
         return {
           sync_token: `t-full-${String(fulls)}`,
-          // The second full sync is served after the delta, and holds a
-          // newer title for a than the delta did.
           items: [task("a", { content: fulls === 1 ? "One" : "One, newer" })],
           user,
         };
@@ -742,8 +727,6 @@ describe("the connector, run as a process", () => {
       deltas += 1;
       return {
         sync_token: `t-delta-${String(deltas)}`,
-        // The first delta carries an older a; the next, a completion that
-        // landed between the first delta and the full sync.
         items:
           deltas === 1
             ? [task("a", { content: "One, older" })]
@@ -928,8 +911,6 @@ describe("the connector, run as a process", () => {
       items: syncToken === "*" ? [] : [done],
       user: { id: "2671355", tz_info: { timezone: zone } },
     });
-    // The first run's full sync is told nothing of a; the delta after it
-    // brings a completed, read in London.
     expect((await once()).code).toBe(0);
     expect((await once()).code).toBe(0);
     expect(marfa.row("2671355:a").properties["due_at"]).toBe(

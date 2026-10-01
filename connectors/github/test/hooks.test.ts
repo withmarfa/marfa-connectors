@@ -60,7 +60,6 @@ async function once(): Promise<void> {
   await run("node", [built, "--once"], { env: env() });
 }
 
-/** A delivery as GitHub posts one, signed with `signedWith`. */
 function deliver(
   event: string,
   payload: Record<string, unknown>,
@@ -92,8 +91,6 @@ async function until(holds: () => boolean, what: string): Promise<void> {
   }
 }
 
-/** Runs the connector on its schedule, taking deliveries every second,
- *  while `body` acts, from the end of its first run. */
 async function watching(
   body: () => Promise<void>,
   extra: Record<string, string> = {},
@@ -234,7 +231,6 @@ describe("a run for deliveries", () => {
     const issue = github.addIssue(repository, { title: "Before" });
     const other = github.addIssue(repository, { title: "Untouched" });
     await watching(async () => {
-      // The first run for deliveries also reads what the scheduled run wrote.
       deliver("ping", {});
       await until(() => marfa.runs.length > 1, "the first run for deliveries");
       const before = kept();
@@ -262,7 +258,6 @@ describe("a run for deliveries", () => {
         comment: { node_id: comment.node },
         issue: { node_id: issue.node },
       });
-      // Connections are written as the run ends, after its rows.
       await until(
         () =>
           marfa.rows.some(
