@@ -277,6 +277,19 @@ export async function runOnce<E extends EnvDeclaration>(
   const specs = specsOf(connector, env);
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
+  const waiting = new Map<string, { message: string; ids: Set<string> }>();
+  const unreached = (id: string, error: Unreachable): void => {
+    if (error.scope === undefined) {
+      raised.set(`unreachable:${id}`, error.message);
+      return;
+    }
+    const scope = waiting.get(error.scope);
+    if (scope === undefined) {
+      waiting.set(error.scope, { message: error.message, ids: new Set([id]) });
+    } else {
+      scope.ids.add(id);
+    }
+  };
   const startedAt = clock.now();
   let failure: unknown;
   let loaded;
@@ -733,7 +746,7 @@ export async function runOnce<E extends EnvDeclaration>(
       );
     } catch (error) {
       if (!(error instanceof Unreachable)) throw error;
-      raised.set(`unreachable:${current.id}`, error.message);
+      unreached(current.id, error);
       return;
     }
     settle(kind, current, changeKind, changed, answered, moved);
@@ -1112,7 +1125,7 @@ export async function runOnce<E extends EnvDeclaration>(
             remade = await connector.remake(change, watchContext);
           } catch (error) {
             if (!(error instanceof Unreachable)) throw error;
-            raised.set(`unreachable:${id}`, error.message);
+            unreached(id, error);
             done.add(id);
             continue;
           }
@@ -1221,7 +1234,7 @@ export async function runOnce<E extends EnvDeclaration>(
         } catch (error) {
           if (!(error instanceof Unreachable)) throw error;
           // Kept among the purges, for a later run to carry.
-          raised.set(`unreachable:${item.id}`, error.message);
+          unreached(item.id, error);
           continue;
         }
         pushed += 1;
@@ -1263,6 +1276,12 @@ export async function runOnce<E extends EnvDeclaration>(
     raised.set(
       `oversized:${id}`,
       `what was agreed for ${id} outgrew the instance's cap and was dropped, so the row takes the vendor's values when next sent`,
+    );
+  }
+  for (const [scope, { message, ids }] of waiting) {
+    raised.set(
+      `unreachable-in:${scope}`,
+      `${String(ids.size)} ${ids.size === 1 ? "change waits" : "changes wait"}: ${message}`,
     );
   }
   const remembered = all.reduce((sum, rows) => sum + rows.remembered, 0);

@@ -166,3 +166,46 @@ describe("a remake the vendor could not be reached for", () => {
     ]);
   });
 });
+
+describe("changes waiting on one scope", () => {
+  it("raise one condition, saying how many wait, cleared once they are carried", async () => {
+    const three = {
+      source_id: "a:3",
+      properties: { title: "Three", vendor_id: "v3" },
+    };
+    const held = vendor([one, two, three]);
+    await harness.twoWay(held);
+    const ids = ["a:1", "a:2", "a:3"].map((id) => harness.server.row(id).id);
+    for (const id of ids) harness.server.edit(id, { title: "Edited" });
+    const [first = "", second = "", third = ""] = ids;
+    held.unreachableIn = new Map([
+      [first, "the shelf"],
+      [second, "the shelf"],
+    ]);
+    held.unreachable = new Set([third]);
+    expect(await harness.twoWay(held)).toBe(0);
+    const summary = harness.lastRun().summary ?? "";
+    expect(summary).toContain("2 changes wait: the shelf cannot be reached");
+    expect(summary.match(/the shelf/g)).toHaveLength(1);
+    expect(summary).toContain(`${third} cannot be reached`);
+    const raised = () =>
+      Object.keys(harness.kept()["conditions"] as Record<string, string>);
+    expect(raised().sort()).toEqual(
+      ["unreachable-in:the shelf", `unreachable:${third}`].sort(),
+    );
+
+    held.unreachableIn = undefined;
+    held.unreachable = undefined;
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.item.id).sort()).toEqual(
+      [...ids].sort(),
+    );
+    expect(raised()).toEqual([]);
+    expect(
+      harness.lines.some((line) =>
+        line.includes("cleared: 2 changes wait: the shelf"),
+      ),
+    ).toBe(true);
+  });
+});

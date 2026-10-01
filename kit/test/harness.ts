@@ -136,6 +136,8 @@ export interface Vendor {
   remakeFail?: { id: string; error: Error } | undefined;
   /** Rows the vendor cannot be reached for, to push or make again. */
   unreachable?: Set<string> | undefined;
+  /** Rows the vendor cannot be reached for, by the scope each waits on. */
+  unreachableIn?: Map<string, string> | undefined;
   /** The vendor's id for a row the vendor has not been told about. */
   vendorIdFor?: ((change: Change) => string | undefined) | undefined;
   /** Rows the vendor no longer has, by id, and the id it makes each under. */
@@ -236,6 +238,10 @@ function twoWayConnector(held: Vendor) {
       held.changes.push(change);
       if (held.unreachable?.has(change.item.id) === true) {
         throw new Unreachable(`${change.item.id} cannot be reached`);
+      }
+      const scope = held.unreachableIn?.get(change.item.id);
+      if (scope !== undefined) {
+        throw new Unreachable(`${scope} cannot be reached`, { scope });
       }
       if (held.pushFail?.id === change.item.id) {
         const { error } = held.pushFail;
