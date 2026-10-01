@@ -10,7 +10,8 @@ const run = promisify(execFile);
 export const monorepo = resolve(import.meta.dirname, "../../../vendor/marfa");
 
 // Choices the boot script reads on purpose; one inherited from the shell
-// would make two proofs share a port or an instance.
+// would make two proofs share a port or an instance. MARFA_AUTH_SECRET and
+// API_KEY_SALT are listed so a boot never takes a secret nobody chose for it.
 const bootChoices = [
   "PORT",
   "MARFA_SERVER_KEEP",

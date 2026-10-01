@@ -5,6 +5,8 @@ export function interrupt(): void {
   signaled = true;
 }
 
+// A function so `check` re-reads `signaled` after each await; TypeScript
+// would otherwise narrow it to false.
 export function interrupted(): boolean {
   return signaled;
 }

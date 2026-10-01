@@ -70,6 +70,8 @@ export class Tracker {
     });
   }
 
+  // Real time, because the instance weighs it against purges and edits it
+  // stamps by its own clock.
   touch(): string {
     this.clock = Math.max(Date.now(), this.clock + 1);
     return new Date(this.clock).toISOString();

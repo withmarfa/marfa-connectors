@@ -1,5 +1,7 @@
 import type { Reporter, TestModule, Vitest } from "vitest/node";
 
+// Vitest reports filtered-out tests as skipped, so a name-filtered run is
+// exempt.
 export class NoSkippedTests implements Reporter {
   private filtered = false;
 

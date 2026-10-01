@@ -9,6 +9,6 @@ packages:
 overrides:
   "@withmarfa/client": "file:vendor/withmarfa-client.tar"
 
-# The lockfile holds the tar's integrity, so a checkout of another pin would
-# otherwise keep the client already in node_modules.
+# The optimistic repeat-install check trusts node_modules when the lockfile
+# looks unchanged, which would keep the client of another pin's checkout.
 optimisticRepeatInstall: false

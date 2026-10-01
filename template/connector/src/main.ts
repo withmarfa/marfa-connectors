@@ -23,8 +23,6 @@ class Refused extends Error {
   }
 }
 
-// A refused token throws a plain Error and fails the run; any other refusal
-// throws `Refused`, for the caller to handle.
 async function call(
   env: { EXAMPLE_URL: string; EXAMPLE_TOKEN: string },
   signal: AbortSignal,
@@ -109,6 +107,9 @@ const connector = defineConnector({
         changed_at: item.updated,
       }));
     await upsert(exampleItem.id, entries);
+    // Archive matches the link value when the type has a `link_field`, else
+    // the source id: a read-only copy that drops `link_field` must archive by
+    // `key(item)`.
     await archive(
       exampleItem.id,
       items.filter((item) => item.deleted === true).map((item) => item.id),
@@ -129,9 +130,9 @@ const connector = defineConnector({
     };
     try {
       if (linked === undefined) {
+        if (kind === "trashed" || kind === "purged") return;
         // The row's id is the idempotency key, so a run that fails between
         // the vendor's answer and the link makes one item when it retries.
-        if (kind === "trashed" || kind === "purged") return;
         const made = (await (
           await call(env, signal, "POST", "items", body, {
             "Idempotency-Key": item.id,
@@ -143,7 +144,8 @@ const connector = defineConnector({
       const path = `items/${encodeURIComponent(linked)}`;
       if (kind === "trashed" || kind === "purged") {
         // A trash and a purge can reach the connector together, as the
-        // purge alone, so the purge must delete too. A 404 is what either asked for.
+        // purge alone, so the purge must delete too. A 404 is what either
+        // asked for.
         await call(env, signal, "DELETE", path).catch((error: unknown) => {
           if (!(error instanceof Refused) || error.status !== 404) throw error;
         });

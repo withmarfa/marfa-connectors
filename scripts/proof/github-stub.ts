@@ -32,6 +32,7 @@ export interface Repository {
   private: boolean;
   archived: boolean;
   updated_at: string;
+  // Answers 404 though listed, as a repository GitHub hides does.
   hidden?: boolean;
   issuesOff?: boolean;
 }
@@ -97,7 +98,8 @@ export class GitHubStub {
   appId = 12345;
   appSlug = "marfa-connectors";
   loseNextCreate = false;
-  // GitHub answers its secondary limit with 403 and its primary one with 429.
+  // GitHub answers either limit with 403 or 429; the stub pairs each status
+  // with one limit's message.
   writesLimited:
     { left: number; status: 403 | 429; title?: string } | undefined;
   mutationsLimited = 0;

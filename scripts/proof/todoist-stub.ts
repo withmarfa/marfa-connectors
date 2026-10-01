@@ -44,8 +44,9 @@ interface Refusal {
 
 type CommandStatus = "ok" | Record<string, unknown>;
 
-// Todoist remembers a command's `uuid` with its answer: a replayed command is
-// answered as before and changes nothing (seen with `item_add` in the real run).
+// Todoist remembers a command's `uuid` with its answer: a replayed command
+// is answered as before and changes nothing (seen with `item_add` in the real
+// run).
 // Deltas are by a sequence each change moves, so the connector's own change
 // comes back on the next sync.
 export class TodoistStub {
@@ -252,7 +253,7 @@ export class TodoistStub {
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
-      // A completed task answers `checked`, a deleted one `is_deleted`; only
+      // Todoist answers a completed or deleted task with 200, flagged; only
       // one never made is a 404.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
       if (found === undefined) {
@@ -273,8 +274,8 @@ export class TodoistStub {
     reply(404, { error: "no such door" });
   }
 
-  // A full sync lists active tasks only; a delta lists every change since the
-  // token, completions and deletions included.
+  // Todoist's full sync lists active tasks only; a delta lists every change
+  // since the token, completions and deletions included.
   private delta(syncToken: string): unknown {
     const since =
       syncToken === "*" ? 0 : Number(syncToken.replace("token-", ""));

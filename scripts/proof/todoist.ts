@@ -81,7 +81,8 @@ export async function proveTodoist(
       parent_id: "a",
     });
     const c = todoist.task("c", { content: "Call back" });
-    // A full sync lists active tasks only, so it is completed later, by a delta.
+    // A full sync lists active tasks only, so it is completed later, by a
+    // delta.
     const d = todoist.task("d", { content: "Post the letter" });
     const e = todoist.task("e", { content: "Book the room" });
     const all = [a, b, c, d, e];
@@ -440,7 +441,8 @@ export async function proveTodoist(
       async () => {
         const before = await row("a");
         await edit(marfa, before, { title: "Buy everything, from Marfa" });
-        // The day before the server's clock, so the edit made in Marfa is the later one.
+        // Earlier than the server's clock, so the edit made in Marfa is the later
+    // one.
         todoist.now = "2026-09-24T12:30:00.000000Z";
         todoist.edit("a", { content: "Buy everything, from Todoist" });
         await runOnce();
@@ -619,6 +621,7 @@ export async function proveTodoist(
       },
     );
 
+    // The connector asks its completion window by the real clock.
     const lately = (): string =>
       new Date(Date.now() - 60 * 60_000).toISOString();
     const completedDoor = "/api/v1/tasks/completed/by_completion_date";
