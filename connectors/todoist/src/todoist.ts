@@ -178,6 +178,54 @@ export async function user(
   return ((await response.json()) as SyncAnswer).user;
 }
 
+/**
+ * Todoist takes a window of up to three months on its completed tasks;
+ * twelve weeks fits inside any three months.
+ */
+const completedWindowMs = 84 * 86_400_000;
+
+/**
+ * The tasks completed in the twelve weeks to `now`, every page, or
+ * `forbidden` where Todoist will not list them for the token.
+ */
+export async function completed(
+  base: string,
+  token: string,
+  now: Date,
+  signal: AbortSignal,
+): Promise<TodoistItem[] | "forbidden"> {
+  const instant = (at: number): string =>
+    new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const query = new URLSearchParams({
+    since: instant(now.getTime() - completedWindowMs),
+    until: instant(now.getTime()),
+    limit: "200",
+  });
+  const items: TodoistItem[] = [];
+  for (;;) {
+    const response = await request(
+      base,
+      token,
+      `/api/v1/tasks/completed/by_completion_date?${query.toString()}`,
+      { method: "GET", forbiddenIsAnswer: true },
+      signal,
+    );
+    if (response.status === 403) return "forbidden";
+    if (!response.ok) {
+      throw new Error(
+        `Todoist answered ${String(response.status)} for the completed tasks`,
+      );
+    }
+    const page = (await response.json()) as {
+      items: TodoistItem[];
+      next_cursor?: string | null;
+    };
+    items.push(...page.items);
+    if (typeof page.next_cursor !== "string") return items;
+    query.set("cursor", page.next_cursor);
+  }
+}
+
 /** A command as the Sync API takes it. */
 export interface Command {
   type: string;

@@ -56,8 +56,9 @@ type CommandStatus = "ok" | Record<string, unknown>;
 /**
  * Todoist, as far as the connector can tell: a stateful account whose
  * tasks the Sync API lists whole and by delta, whose commands change them
- * and answer under `sync_status` and `temp_id_mapping`, and whose REST
- * door answers a task open or completed and 404 for one deleted.
+ * and answer under `sync_status` and `temp_id_mapping`, whose REST
+ * door answers a task open or completed and 404 for one deleted, and
+ * which lists the tasks completed in a window.
  *
  * A command's `uuid` is remembered with its answer, so a command sent
  * again is answered as it was and changes nothing, which is what Todoist
@@ -254,7 +255,8 @@ export class TodoistStub {
       headers?: Record<string, string>,
     ) => void,
   ): void {
-    const path = new URL(url, "http://stub").pathname;
+    const asked = new URL(url, "http://stub");
+    const path = asked.pathname;
     const record: ReceivedRequest = { method, path, at: Date.now() };
     if (method === "POST" && path === "/api/v1/sync") {
       const form = new URLSearchParams(body);
@@ -276,6 +278,14 @@ export class TodoistStub {
     }
     if (!authorized) {
       reply(401, { error: "Unauthorized" });
+      return;
+    }
+    if (
+      method === "GET" &&
+      path === "/api/v1/tasks/completed/by_completion_date"
+    ) {
+      const [status, page] = this.completedPage(asked.searchParams);
+      reply(status, page);
       return;
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
@@ -325,6 +335,51 @@ export class TodoistStub {
         },
       }),
     };
+  }
+
+  /**
+   * The tasks completed between `since` and `until`, both required and at
+   * most three months apart, newest completion first, `limit` to a page
+   * (50 unless named, at most 200) and the next page by `next_cursor`.
+   */
+  private completedPage(query: URLSearchParams): [number, unknown] {
+    const since = Date.parse(query.get("since") ?? "");
+    const until = Date.parse(query.get("until") ?? "");
+    const limit = Number(query.get("limit") ?? "50");
+    const offset = Number(query.get("cursor") ?? "0");
+    const furthest = new Date(since);
+    furthest.setUTCMonth(furthest.getUTCMonth() + 3);
+    if (
+      Number.isNaN(since) ||
+      Number.isNaN(until) ||
+      until < since ||
+      until > furthest.getTime() ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 200 ||
+      !Number.isInteger(offset) ||
+      offset < 0
+    ) {
+      return [400, { error: "Invalid argument value" }];
+    }
+    const done = [...this.tasks.values()]
+      .filter((task) => {
+        const at = Date.parse(task.completed_at ?? "");
+        return task.checked && !task.is_deleted && at >= since && at <= until;
+      })
+      .sort(
+        (a, b) =>
+          Date.parse(b.completed_at ?? "") - Date.parse(a.completed_at ?? ""),
+      );
+    const items = done.slice(offset, offset + limit);
+    return [
+      200,
+      {
+        items,
+        next_cursor:
+          offset + limit < done.length ? String(offset + limit) : null,
+      },
+    ];
   }
 
   private run(commands: ReceivedCommand[]): unknown {

@@ -77,6 +77,11 @@ let todoist: Server;
 let todoistUrl: string;
 let answer: (syncToken: string) => SyncAnswer | number;
 let received: { syncToken: string; resources: string; authorized: boolean }[];
+/** The completed-tasks door's answer to one page, or a status in place of it. */
+let completedAnswer: (
+  query: URLSearchParams,
+) => { items: TodoistItem[]; next_cursor: string | null } | number;
+let completedAsked: URLSearchParams[];
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("todoist", {
@@ -84,6 +89,8 @@ beforeEach(async () => {
   }).start();
   marfa.types.set("todoist.task", served);
   received = [];
+  completedAsked = [];
+  completedAnswer = () => ({ items: [], next_cursor: null });
   answer = () => ({
     sync_token: "t1",
     items: [],
@@ -95,6 +102,18 @@ beforeEach(async () => {
     req.on("end", () => {
       const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
       const authorized = req.headers.authorization === `Bearer ${token}`;
+      const asked = new URL(req.url ?? "/", "http://todoist");
+      if (asked.pathname === "/api/v1/tasks/completed/by_completion_date") {
+        completedAsked.push(asked.searchParams);
+        const page = authorized ? completedAnswer(asked.searchParams) : 401;
+        if (typeof page === "number") {
+          res.writeHead(page).end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(page));
+        return;
+      }
       const syncToken = form.get("sync_token") ?? "";
       received.push({
         syncToken,
@@ -813,6 +832,159 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toContain(
       "named the timezone Mars/Olympus for the account, which this platform does not know",
     );
+  });
+
+  it("reads the tasks completed in the last twelve weeks after a full sync, page by page, and never after a delta", async () => {
+    answer = (syncToken) => ({
+      sync_token: syncToken === "*" ? "t-full" : "t-delta",
+      items: syncToken === "*" ? [task("a")] : [],
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
+    });
+    completedAnswer = (query) =>
+      query.get("cursor") === null
+        ? {
+            items: [
+              task("b", {
+                checked: true,
+                completed_at: "2026-09-28T10:00:00.000000Z",
+              }),
+            ],
+            next_cursor: "page-2",
+          }
+        : {
+            items: [
+              task("c", {
+                checked: true,
+                completed_at: "2026-09-27T10:00:00.000000Z",
+              }),
+            ],
+            next_cursor: null,
+          };
+    expect((await once()).code).toBe(0);
+    expect(completedAsked.map((query) => query.get("cursor"))).toEqual([
+      null,
+      "page-2",
+    ]);
+    const [first] = completedAsked;
+    const since = Date.parse(first?.get("since") ?? "");
+    const until = Date.parse(first?.get("until") ?? "");
+    expect(first?.get("since")).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+    );
+    expect(first?.get("until")).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+    );
+    expect(until - since).toBe(84 * 86_400_000);
+    expect(Math.abs(until - Date.now())).toBeLessThan(60_000);
+    expect(first?.get("limit")).toBe("200");
+    expect(marfa.row("2671355:a").properties["status"]).toBe("pending");
+    expect(marfa.row("2671355:b").properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-09-28T10:00:00.000Z",
+    });
+    expect(marfa.row("2671355:c").properties["status"]).toBe("completed");
+    expect((await once()).code).toBe(0);
+    expect(completedAsked).toHaveLength(2);
+  });
+
+  it("reads a task completed while the state was lost as completed", async () => {
+    let completed = false;
+    answer = () => ({
+      sync_token: "t1",
+      items: completed ? [] : [task("a"), task("b")],
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["status"]).toBe("pending");
+    marfa.states.delete("todoist");
+    completed = true;
+    completedAnswer = () => ({
+      items: [
+        task("a", {
+          checked: true,
+          completed_at: "2026-09-28T10:00:00.000000Z",
+        }),
+      ],
+      next_cursor: null,
+    });
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual(["*", "*"]);
+    expect(marfa.row("2671355:a").properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-09-28T10:00:00.000Z",
+    });
+    expect(marfa.row("2671355:a").state).toBe("active");
+  });
+
+  it("reads a completed task's due date anew when the account's timezone moves", async () => {
+    const done = task("a", {
+      due: wholeDaySent,
+      checked: true,
+      completed_at: "2026-09-28T10:00:00.000000Z",
+    });
+    let zone = "Europe/London";
+    answer = (syncToken) => ({
+      sync_token: syncToken === "*" ? "t-full" : "t-delta",
+      items: syncToken === "*" ? [] : [done],
+      user: { id: "2671355", tz_info: { timezone: zone } },
+    });
+    // The first run's full sync is told nothing of a; the delta after it
+    // brings a completed, read in London.
+    expect((await once()).code).toBe(0);
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["due_at"]).toBe(
+      "2026-09-29T23:00:00.000Z",
+    );
+    answer = (syncToken) => ({
+      sync_token: syncToken === "*" ? "t-full" : "t-delta",
+      items: [],
+      user: { id: "2671355", tz_info: { timezone: zone } },
+    });
+    completedAnswer = () => ({ items: [done], next_cursor: null });
+    zone = "America/New_York";
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties).toMatchObject({
+      due_at: "2026-09-30T04:00:00.000Z",
+      status: "completed",
+    });
+  });
+
+  it("lets a full sync's open task win over a completion the completed tasks list for it", async () => {
+    answer = () => ({
+      sync_token: "t1",
+      items: [task("r", { content: "Water the plants" })],
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
+    });
+    completedAnswer = () => ({
+      items: [
+        task("r", {
+          content: "Water the plants, an older copy",
+          checked: true,
+          completed_at: "2026-09-28T10:00:00.000000Z",
+        }),
+      ],
+      next_cursor: null,
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:r").properties).toMatchObject({
+      title: "Water the plants",
+      status: "pending",
+    });
+  });
+
+  it("goes on without the completed tasks when Todoist closes their list to the token, and says so", async () => {
+    answer = () => ({
+      sync_token: "t1",
+      items: [task("a")],
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
+    });
+    completedAnswer = () => 403;
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["status"]).toBe("pending");
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "Todoist refused to list the account's completed tasks",
+    );
+    expect(state()).toMatchObject({ sync_token: "t1" });
   });
 
   it("registers its type on an instance that has none", async () => {

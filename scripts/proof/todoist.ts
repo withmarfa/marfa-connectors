@@ -1,4 +1,4 @@
-import type { MarfaClient } from "@withmarfa/client";
+import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
@@ -626,6 +626,84 @@ export async function proveTodoist(
           throw new Error(`task r ${JSON.stringify(task)}`);
         }
         return `item_delete sent for r; the task is deleted and its due date still ${task.due["date"]}`;
+      },
+    );
+
+    // Completions the stub lists by when they happened, so these are
+    // stamped by the clock the connector asks its window by.
+    const lately = (): string =>
+      new Date(Date.now() - 60 * 60_000).toISOString();
+    const completedDoor = "/api/v1/tasks/completed/by_completion_date";
+
+    await check(
+      "todoist: a task completed in Todoist while the connector's state was lost reads as completed after the full sync that follows",
+      async () => {
+        todoist.put(todoist.task("l", { content: "Renew the passport" }));
+        await runOnce();
+        const open = await row("l");
+        const connectorId = (await registration(marfa, key.id)).id;
+        const cleared = await createClient({
+          baseUrl: url,
+          credential: key.key,
+        }).DELETE("/connectors/{id}/state", {
+          params: { path: { id: connectorId } },
+        });
+        if (!cleared.response.ok) {
+          throw new Error(
+            `the clear was refused: ${JSON.stringify(cleared.error)}`,
+          );
+        }
+        const at = lately();
+        todoist.edit("l", { checked: true, completed_at: at });
+        const asked = todoist.received.length;
+        const sent = todoist.commands().length;
+        await runOnce();
+        const done = await row("l");
+        const requests = todoist.received.slice(asked);
+        if (
+          open.properties["status"] !== "pending" ||
+          done.properties["status"] !== "completed" ||
+          done.properties["completed_at"] !== at ||
+          done.state !== "active" ||
+          !requests.some((r) => r.syncToken === "*") ||
+          !requests.some((r) => r.path === completedDoor) ||
+          todoist.commands().length !== sent
+        ) {
+          throw new Error(
+            `l was ${String(open.properties["status"])}, is ${String(done.properties["status"])} at ${String(done.properties["completed_at"])}, ${done.state}; asked ${requests.map((r) => r.syncToken ?? r.path).join(", ")}; ${String(todoist.commands().length - sent)} commands`,
+          );
+        }
+        return `with the state cleared the run synced in full and read the completed tasks: l ${open.properties["status"]} → ${done.properties["status"]} at ${done.properties["completed_at"]}`;
+      },
+    );
+
+    await check(
+      "todoist: a task completed before the account's timezone moved has its due date read in the new zone",
+      async () => {
+        todoist.put(
+          todoist.task("z", {
+            content: "File the return",
+            due: { date: "2026-10-05", is_recurring: false },
+          }),
+        );
+        await runOnce();
+        todoist.edit("z", { checked: true, completed_at: lately() });
+        await runOnce();
+        const before = await row("z");
+        todoist.renameZone("America/New_York");
+        await runOnce();
+        const after = await row("z");
+        if (
+          before.properties["due_at"] !== "2026-10-04T23:00:00.000Z" ||
+          before.properties["status"] !== "completed" ||
+          after.properties["due_at"] !== "2026-10-05T04:00:00.000Z" ||
+          after.properties["status"] !== "completed"
+        ) {
+          throw new Error(
+            `z was due ${String(before.properties["due_at"])}, ${String(before.properties["status"])}; is due ${String(after.properties["due_at"])}, ${String(after.properties["status"])}`,
+          );
+        }
+        return `z, completed, due ${before.properties["due_at"]} in London → ${after.properties["due_at"]} in New York`;
       },
     );
 
