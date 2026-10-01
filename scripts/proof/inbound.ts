@@ -7,6 +7,7 @@ import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
+  edit,
   lastRun,
   mintAsReadmeSays,
   registration,
@@ -265,7 +266,7 @@ export async function proveInbound(
     );
 
     await check(
-      "inbound: running on a schedule, the connector takes a delivery within seconds and fetches only the thing it named",
+      "inbound: running on a schedule, the connector takes a delivery within seconds and fetches only the thing it named, and puts back a thing edited in Marfa within a look, asking the vendor nothing",
       async () => {
         const child = spawn(
           "node",
@@ -308,7 +309,31 @@ export async function proveInbound(
           if (vendor.asked.join() !== "/things/t3") {
             throw new Error(`the vendor was asked for ${vendor.asked.join()}`);
           }
-          return `t3 was written ${String(took)} ms after its delivery, and the vendor was asked for ${vendor.asked.join()} alone`;
+          const fetched = vendor.asked.join();
+          vendor.asked.length = 0;
+          const second = (
+            await rowsOf(marfa, "proof.thing", "proof-inbound")
+          ).get("t2");
+          if (second === undefined) throw new Error("t2 is not held");
+          await edit(marfa, second, { title: "Edited in Marfa" });
+          const editedAt = Date.now();
+          await until(async () => {
+            const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
+            return rows.get("t2")?.properties["title"] === "Second";
+          }, "t2 being put back");
+          const putBack = Date.now() - editedAt;
+          const summary = (await lastRun(marfa, key.id)).summary ?? "";
+          if (
+            !summary.includes(
+              `title on ${second.id} was changed in Marfa and put back`,
+            ) ||
+            vendor.asked.length > 0
+          ) {
+            throw new Error(
+              `the vendor was asked for ${vendor.asked.join()}; the run said ${summary}`,
+            );
+          }
+          return `t3 was written ${String(took)} ms after its delivery, and the vendor was asked for ${fetched} alone; t2 was put back ${String(putBack)} ms after its edit, and the run named it`;
         } finally {
           child.kill("SIGTERM");
           await exited;

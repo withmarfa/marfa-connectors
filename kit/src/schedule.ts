@@ -8,7 +8,7 @@ export type Schedule =
       mode: "every";
       intervalMs: number;
       /** How often, between runs, the connector looks for a waiting
-       *  delivery or a change in Marfa to carry back. */
+       *  delivery, or a change in Marfa to carry back or put back. */
       lookMs: number;
       /** `--look-every` was given, which only a looking connector
        *  may take. */

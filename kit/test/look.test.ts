@@ -107,6 +107,54 @@ describe("the look between runs, for a connector that carries changes back", () 
   });
 });
 
+describe("the look between runs, for what Marfa mirrors", () => {
+  it("puts back an edit to a kind that only reads within a look, and names it", async () => {
+    const held = vendor([one]);
+    const exit = harness.inbound(held, [
+      "--every",
+      "1h",
+      "--look-every",
+      "10s",
+    ]);
+    await harness.clock.sleeping(10_000);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "Edited" });
+    await harness.clock.wake(10_000);
+    await until(() => harness.server.runs.length === 2);
+    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    expect(harness.lastRun().summary).toContain(
+      `title on ${row.id} was changed in Marfa and put back`,
+    );
+    // Its own put back starts no run.
+    for (let look = 0; look < 3; look += 1) {
+      await harness.clock.sleeping(10_000);
+      await harness.clock.wake(10_000);
+    }
+    await harness.clock.sleeping(10_000);
+    expect(harness.server.runs.length).toBe(2);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("puts back an edit to a read-only field of a two-way kind within a look", async () => {
+    const held = vendor([one]);
+    held.readOnly = ["title"];
+    const exit = harness.twoWayRunning(held, ["--every", "1h"]);
+    await harness.clock.sleeping(10_000);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "Edited" });
+    await harness.clock.wake(10_000);
+    await until(() => harness.server.runs.length === 2);
+    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    expect(harness.lastRun().summary).toContain(
+      `title on ${row.id} was changed in Marfa and put back`,
+    );
+    expect(held.changes).toEqual([]);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+});
+
 describe("the look, for connections", () => {
   const blocks = {
     id: "test.blocks",
