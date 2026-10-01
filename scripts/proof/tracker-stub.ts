@@ -17,30 +17,22 @@ export interface Attachment {
   mime_type: string;
 }
 
-/** A request the stub answered: its method, path and body. */
 export interface Asked {
   method: string;
   path: string;
   body: unknown;
 }
 
-/** The smallest PNG there is, one pixel, so the instance reads its size. */
 export const pixel = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
 );
 
-/** The tracker the proof's connector reads and writes, shaped as
- *  GitHub's: sub-issues, etag attachments, closing instead of deleting. */
 export class Tracker {
   readonly issues = new Map<string, Issue>();
   readonly attachments = new Map<string, Attachment>();
   readonly asked: Asked[] = [];
-  /** Issues the tracker does not show yet, as one in a repository
-   *  not yet read. */
   readonly hidden = new Set<string>();
-  /** Held before answering the listing, so a run stays open while
-   *  a second starts. */
   slowList = 0;
   url = "";
   private next = 100;
@@ -78,8 +70,8 @@ export class Tracker {
     });
   }
 
-  /** A change at the vendor, later than any before it, by real time: the
-   *  instance weighs it against purges and edits it stamps by its own. */
+  // Real time, because the instance weighs it against purges and edits it
+  // stamps by its own clock.
   touch(): string {
     this.clock = Math.max(Date.now(), this.clock + 1);
     return new Date(this.clock).toISOString();
@@ -101,7 +93,6 @@ export class Tracker {
     return issue;
   }
 
-  /** A file on the issue, whose etag moves only with its bytes. */
   attach(issue: Issue, bytes: Buffer, mimeType: string): Attachment {
     this.next += 1;
     const attachment = {
@@ -118,7 +109,6 @@ export class Tracker {
     return attachment;
   }
 
-  /** The requests that changed something, as `METHOD path`. */
   writes(): string[] {
     return this.asked
       .filter((asked) => asked.method !== "GET")

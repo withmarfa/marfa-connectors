@@ -17,7 +17,6 @@ import {
 const entry = resolve(import.meta.dirname, "inbound-connector.js");
 const secret = "proof-webhook-secret-value";
 
-/** The stub vendor: things by id, and every path it was asked for. */
 async function serveThings(): Promise<{
   url: string;
   things: Map<string, string>;
@@ -63,7 +62,6 @@ async function serveThings(): Promise<{
   };
 }
 
-/** A delivery as GitHub sends one: signed over the raw body, with its id. */
 function signed(
   said: Record<string, unknown>,
   delivery: string,

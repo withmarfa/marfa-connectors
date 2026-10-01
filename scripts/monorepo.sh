@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Fetches the monorepo at the commit in scripts/monorepo.commit into
-# vendor/marfa and installs it. The client and the proof's server both come
-# from that checkout.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

@@ -6,8 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# A newer push to the same branch, `main` included, supersedes the run before
-# it: the newest commit's run validates everything that came before it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,13 +13,9 @@ concurrency:
 permissions:
   contents: read
 
-# Both jobs fetch and build the pinned monorepo on every run: the client is
-# packed from it and the proof boots its server.
 jobs:
-  # A pull request that touches only top-level documentation skips both jobs.
   # A skipped job satisfies a required check; a workflow filtered out by
-  # `paths` would leave it pending, which is why this is a job and not a
-  # filter. An unreadable diff runs everything.
+  # `paths` would leave it pending, hence a job and not a filter.
   changes:
     name: Classify changes
     runs-on: ubuntu-latest

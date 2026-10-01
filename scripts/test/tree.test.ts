@@ -6,11 +6,6 @@ import { parse } from "yaml";
 
 const root = resolve(import.meta.dirname, "../..");
 
-/**
- * Every file git would commit, tracked or untracked and not ignored, that
- * is still on disk, with what git would store for it: a file's contents,
- * or a link's target.
- */
 function tree(): { path: string; text: string }[] {
   return execFileSync(
     "git",
@@ -37,7 +32,6 @@ function declaresVersion(manifest: string): boolean {
   return Object.hasOwn(JSON.parse(manifest) as object, "version");
 }
 
-/** A file that exists to hold a version, or a manifest pnpm reads that is not JSON. */
 function versionFile(path: string): boolean {
   const name = basename(path).toLowerCase();
   return (
@@ -77,7 +71,6 @@ function buildOutput(path: string): boolean {
   return path.split("/").includes("dist") || path.endsWith(".tsbuildinfo");
 }
 
-/** Every job that runs anywhere but standard hosted Linux, or hands its work to another workflow. */
 function offHosted(workflow: string): string[] {
   const document = parse(workflow) as {
     jobs?: Record<string, Record<string, unknown>>;

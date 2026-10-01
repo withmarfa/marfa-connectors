@@ -27,7 +27,6 @@ interface Minted {
   key: string;
 }
 
-/** The key the README's command mints for a connector with connections. */
 async function mintWithConnections(
   marfa: MarfaClient,
   label: string,

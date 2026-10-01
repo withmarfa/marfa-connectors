@@ -31,7 +31,6 @@ interface Feed {
   etag: string;
 }
 
-/** Two feeds, Atom and RSS 2.0, served with ETags and honoring them. */
 async function serveFeeds(): Promise<{
   url: string;
   feeds: Record<string, Feed>;
@@ -257,7 +256,6 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
       "rss: a promoted core.bookmark sits in the library with a derived-from edge",
       async () => {
         const source = await entry("https://example.org/beta");
-        // The copy takes the fields the entry inherits, as they stand.
         const { fields } = await fieldsOf(marfa, "core.bookmark");
         const properties = Object.fromEntries(
           fields

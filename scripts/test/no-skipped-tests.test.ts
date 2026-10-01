@@ -8,7 +8,6 @@ interface Entry {
   state: "passed" | "skipped";
 }
 
-/** A finished test file as the reporter is handed it, with only what it reads. */
 function module(suites: Entry[], tests: Entry[]): TestModule {
   return {
     moduleId: "kit/test/example.test.ts",

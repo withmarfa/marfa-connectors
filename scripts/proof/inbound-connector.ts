@@ -5,11 +5,6 @@ interface Thing {
   title: string;
 }
 
-/**
- * The connector the inbound proof runs as a process: it reads the stub
- * vendor's things, and a delivery signed as GitHub signs one names the
- * thing that changed, which the run fetches alone.
- */
 const connector = defineConnector({
   name: "proof-inbound",
   description: "Things from the proof's stub vendor, and its webhooks.",

@@ -9,7 +9,6 @@ const root = resolve(import.meta.dirname, "../../..");
 
 export type Item = components["schemas"]["Item"];
 
-/** The body `marfa keys create` sends for the flags the template's README names. */
 export interface KeyFlags {
   label: string;
   source: string;
@@ -26,7 +25,6 @@ export function keyBody(flags: KeyFlags) {
   };
 }
 
-/** One connector, as a person would run it: its own key, `--once`, its state on the instance. */
 export class ConnectorUnderProof {
   constructor(
     readonly name: string,
@@ -66,11 +64,6 @@ async function mint(marfa: MarfaClient, flags: KeyFlags) {
 
 export type Minted = Awaited<ReturnType<typeof mint>>;
 
-/**
- * The connector's key, minted as the README's command mints it, and held to
- * what that command asks for: its source, write on its type and nothing
- * else, types write to register its type, no permission, and the feed tier.
- */
 export async function mintAsReadmeSays(
   marfa: MarfaClient,
   flags: KeyFlags,
@@ -108,7 +101,6 @@ export async function mintAsReadmeSays(
   return minted;
 }
 
-/** A type as the server answers it: its fields, its parent's merged in. */
 export async function fieldsOf(marfa: MarfaClient, id: string) {
   const { data, error } = await marfa.GET("/types/{id}", {
     params: { path: { id } },
@@ -122,11 +114,6 @@ export async function fieldsOf(marfa: MarfaClient, id: string) {
   };
 }
 
-/**
- * The witness for what a connector's type is held to: a type registered
- * with a parent and a `compatible_with` is answered with both, its parent's
- * fields merged in, so their absence on a connector's type is the type's.
- */
 export async function witnessTypeAnswers(marfa: MarfaClient): Promise<string> {
   const id = "proof.witness";
   const { error, response } = await marfa.POST("/types", {
@@ -156,7 +143,6 @@ export async function witnessTypeAnswers(marfa: MarfaClient): Promise<string> {
   return `${id} answers parent ${served.parent}, compatible_with ${JSON.stringify(served.compatible_with)}, and its own witness field beside its parent's ${String(bookmark.fields.length)}`;
 }
 
-/** Whether the server holds a type, telling its absence from a refusal. */
 export async function typeHeld(marfa: MarfaClient, id: string) {
   const { data, error, response } = await marfa.GET("/types/{id}", {
     params: { path: { id } },
@@ -166,12 +152,6 @@ export async function typeHeld(marfa: MarfaClient, id: string) {
   throw new Error(`the type ${id} was refused: ${JSON.stringify(error)}`);
 }
 
-/**
- * A connector's type as the first run registered it: absent before, then
- * held with its parent, every field its parent has, and its own beside
- * them, no `compatible_with`, and every property the rows carry one of its
- * fields. Answers its own fields, sorted, and its parent's field count.
- */
 export async function registeredAsKindOf(
   marfa: MarfaClient,
   type: string,
@@ -204,14 +184,12 @@ export async function registeredAsKindOf(
   };
 }
 
-/** The last run the connector reported, as its registration shows it. */
 export async function lastRun(marfa: MarfaClient, keyId: string) {
   const found = await registration(marfa, keyId);
   if (found.last_run === null) throw new Error("no run is reported");
   return found.last_run;
 }
 
-/** Every row under the type and source, in every state, by `source_id`. */
 export async function rowsOf(
   marfa: MarfaClient,
   type: string,
@@ -242,10 +220,7 @@ export async function rowsOf(
   return rows;
 }
 
-/**
- * The rows whose version or state is not what it was. A state is changed
- * by a transition, which moves no version.
- */
+// A transition changes state without moving the version, so both are compared.
 export function moved(
   before: Map<string, Item>,
   after: Map<string, Item>,
@@ -271,7 +246,6 @@ export async function registration(marfa: MarfaClient, keyId: string) {
   return found;
 }
 
-/** A person's edit of a row: the properties laid over its own, at the version they saw. */
 export async function edit(
   marfa: MarfaClient,
   row: Item,
@@ -286,7 +260,6 @@ export async function edit(
   return data.item;
 }
 
-/** A person's row of a type, under the working key's own source. */
 export async function create(
   marfa: MarfaClient,
   type: string,
@@ -324,11 +297,6 @@ export async function purge(marfa: MarfaClient, id: string): Promise<void> {
     throw new Error(`the purge was refused: ${JSON.stringify(error)}`);
 }
 
-/**
- * A person's promotion: a core-typed copy in the library, pointing back at
- * the feed row with a `derived-from` edge. Without a row to point at, an
- * item of the same type and tier holding no edge.
- */
 export async function promote(
   marfa: MarfaClient,
   type: string,
@@ -348,12 +316,6 @@ export async function promote(
   return data.item;
 }
 
-/**
- * A promoted copy, as the edge filter finds it: the one item of its type
- * holding a `derived-from` edge to the feed row, with two decoys beside it
- * that the filter must leave out, one holding no edge and one pointing at
- * another row.
- */
 export async function promoteAndFind(
   marfa: MarfaClient,
   type: string,
@@ -380,7 +342,6 @@ export async function promoteAndFind(
   return { copy, found };
 }
 
-/** The items of a type holding a `derived-from` edge to the feed row. */
 export async function derivedFrom(
   marfa: MarfaClient,
   type: string,

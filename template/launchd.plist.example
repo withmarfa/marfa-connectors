@@ -1,10 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  One run every fifteen minutes. The secrets tool puts MARFA_KEY and the
-  vendor's token into the connector's environment, so neither is written
-  here. Replace every path, the label and the secrets tool's arguments.
--->
+<!-- The secrets tool puts MARFA_KEY and the vendor's token into the environment, so neither is written here. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>

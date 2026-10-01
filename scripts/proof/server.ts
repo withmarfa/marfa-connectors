@@ -7,15 +7,11 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
-/** The checkout scripts/monorepo.sh made, at the pinned commit. */
 export const monorepo = resolve(import.meta.dirname, "../../../vendor/marfa");
 
-/**
- * Read by the boot script as choices a caller makes on purpose: a port, an
- * instance to reuse, the auth secret and the key salt. One inherited from
- * the shell would have two proofs on one machine share a port or an
- * instance, or boot this one with a secret nobody chose for it.
- */
+// Choices the boot script reads on purpose; one inherited from the shell
+// would make two proofs share a port or an instance. MARFA_AUTH_SECRET and
+// API_KEY_SALT are listed so a boot never takes a secret nobody chose for it.
 const bootChoices = [
   "PORT",
   "MARFA_SERVER_KEEP",
@@ -25,12 +21,10 @@ const bootChoices = [
 
 export interface Booted {
   url: string;
-  /** The working key the boot script mints, which holds every permission. */
   key: string;
   commit: string;
 }
 
-/** Reads the `export NAME='value'` lines the boot script writes. */
 function parseEnv(text: string): Map<string, string> {
   const vars = new Map<string, string>();
   for (const line of text.split("\n")) {
@@ -42,7 +36,6 @@ function parseEnv(text: string): Map<string, string> {
   return vars;
 }
 
-/** The monorepo server on SQLite, booted and stopped by its own scripts. */
 export class ProofServer {
   private dir: string | undefined;
   private stopped: Promise<void> | undefined;

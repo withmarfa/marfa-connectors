@@ -7,7 +7,6 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 
-/** A key the stub never checks, but in the form a GitHub App's is. */
 export function appKey(): string {
   return generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -20,7 +19,6 @@ export interface Installation {
   id: number;
   login: string;
   suspended?: boolean;
-  /** Refuses its tokens, as an uninstalled App's installation does. */
   lost?: boolean;
 }
 
@@ -34,9 +32,8 @@ export interface Repository {
   private: boolean;
   archived: boolean;
   updated_at: string;
-  /** Answers 404 though listed, as a repository GitHub hides does. */
+  // Answers 404 though listed, as a repository GitHub hides does.
   hidden?: boolean;
-  /** Issues turned off, as a repository's settings can. */
   issuesOff?: boolean;
 }
 
@@ -60,7 +57,6 @@ export interface Issue {
   pull?: boolean;
   deleted?: boolean;
   moved?: boolean;
-  /** Made through the App, as GitHub marks it. */
   app?: boolean;
 }
 
@@ -82,16 +78,10 @@ interface Asked {
   query: string;
   body?: unknown;
   status: number;
-  /** The REST version the request named, where it named one. */
   version: string | undefined;
 }
 
-/**
- * GitHub, as far as the connector reads and writes it: an App's
- * installations and their tokens, repositories, issues listed with ETags,
- * comments, relations through GraphQL, and the writes a two-way run makes.
- * Its clock moves a second at every write, so `updated_at` orders them.
- */
+// The clock moves a second at every write, so `updated_at` orders them.
 export class GitHubStub {
   url = "";
   installations: Installation[] = [{ id: 1, login: "someone" }];
@@ -99,31 +89,20 @@ export class GitHubStub {
   issues: Issue[] = [];
   comments: Comment[] = [];
   asked: Asked[] = [];
-  /** The code GitHub's redirect carries, good once. */
   manifestCode: string | undefined = "manifest-code";
   appPem = "";
   appWebhookSecret: string | null = "stub-webhook-secret-from-github";
-  /** Answers every listing with an error quoting the request's own
-   *  credentials, as a careless server might. */
   echoCredentials = false;
-  /** What each answer says is left of the hourly limit. */
   rateRemaining = 4999;
-  /** Refuses each repository request as over the rate limit. */
   rateLimited = false;
-  /** The App's id and the name GitHub gives what it writes. */
   appId = 12345;
   appSlug = "marfa-connectors";
-  /** Makes the next issue or comment asked for, then answers 502, as a
-   *  write whose answer is lost on the way back. */
   loseNextCreate = false;
-  /** Refuses this many repository writes as over a limit: GitHub's
-   *  secondary limit answers 403, its primary one 429; with a title,
-   *  only writes sending it. */
+  // GitHub answers either limit with 403 or 429; the stub pairs each status
+  // with one limit's message.
   writesLimited:
     { left: number; status: 403 | 429; title?: string } | undefined;
-  /** Answers this many GraphQL writes as over GitHub's GraphQL limit. */
   mutationsLimited = 0;
-  /** The App's webhook as last set. */
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
@@ -156,7 +135,6 @@ export class GitHubStub {
     return new Date(this.clock).toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
-  /** A time this many days before the stub's clock, as GitHub writes one. */
   ago(days: number): string {
     return new Date(this.clock - days * 86_400_000)
       .toISOString()
@@ -235,7 +213,6 @@ export class GitHubStub {
     return made;
   }
 
-  /** Changes an issue as a person on GitHub does. */
   edit(issue: Issue, fields: Partial<Issue>): void {
     Object.assign(issue, fields, { updated_at: this.now() });
   }
@@ -344,7 +321,6 @@ export class GitHubStub {
     };
   }
 
-  /** The installation a request's token speaks for. */
   private installationOf(req: IncomingMessage): Installation | undefined {
     const token = /^token ghs_stub_(\d+)_/.exec(
       req.headers.authorization ?? "",
@@ -353,7 +329,6 @@ export class GitHubStub {
     return this.installations.find((one) => one.id === id && one.lost !== true);
   }
 
-  /** The repository a path names, where the token may read it. */
   private readable(
     req: IncomingMessage,
     owner: string,
@@ -410,7 +385,6 @@ export class GitHubStub {
       });
       res.end(data === undefined ? undefined : JSON.stringify(data));
     };
-    /** A listing's page, answered 304 where its ETag still holds. */
     const page = (all: unknown[]): void => {
       const size = Number(url.searchParams.get("per_page") ?? "30");
       const at = Number(url.searchParams.get("page") ?? "1");
@@ -664,7 +638,6 @@ export class GitHubStub {
     send(404, { message: `the stub knows no ${method} ${path}` });
   }
 
-  /** The writes a run carrying Marfa's changes makes, as the App. */
   private write(
     req: IncomingMessage,
     method: string,
@@ -783,7 +756,6 @@ export class GitHubStub {
     return false;
   }
 
-  /** GitHub's GraphQL writes the connector makes. */
   private mutate(
     req: IncomingMessage,
     operation: string | undefined,
@@ -890,8 +862,6 @@ export class GitHubStub {
     return true;
   }
 
-  /** As GitHub answers an App: an issue in a private repository it is not
-   *  installed on is hidden, as a relation's end too. */
   /** GraphQL names a bot by its login without the suffix REST gives it. */
   private author(login: string): { login: string; __typename: string } {
     return login.endsWith("[bot]")
