@@ -31,8 +31,6 @@ function issueEntry(issue: Issue): Entry {
   };
 }
 
-/** The connector the tracker proof runs: GitHub's shape on a stub,
- *  sub-issues and attachments; a Marfa trash closes it, reopened later. */
 const connector = defineConnector({
   name: "proof-tracker",
   description: "Issues and attachments from the proof's stub tracker.",
@@ -188,7 +186,6 @@ const connector = defineConnector({
         ...(change.kind === "restored" && { state: "open" }),
       };
       const path = `issues/${encodeURIComponent(linkOf(item))}`;
-      // A change of connections alone writes nothing to the issue itself.
       issue =
         Object.keys(patch).length > 0
           ? await send("PATCH", path, patch)

@@ -17,18 +17,14 @@ interface VendorItem {
   deleted?: boolean;
 }
 
-/** What the example vendor answered a write with, when it did not do it. */
 class Refused extends Error {
   constructor(readonly status: number) {
     super(`the example vendor answered ${String(status)}`);
   }
 }
 
-/**
- * One call to the example vendor, with the token and the stop signal. A
- * refused token fails the run by throwing; any other refusal is thrown
- * as `Refused`, for the caller to take as it sees fit.
- */
+// A refused token throws a plain Error and fails the run; any other refusal
+// throws `Refused`, for the caller to handle.
 async function call(
   env: { EXAMPLE_URL: string; EXAMPLE_TOKEN: string },
   signal: AbortSignal,
@@ -56,13 +52,9 @@ async function call(
   return response;
 }
 
-/**
- * A connector reading a vendor's JSON list of items and carrying changes
- * made in Marfa back to it. Replace the type file, the environment, the
- * body of `run` and, for a connector that writes back, `onChange` with
- * your vendor's; the kit does the rest. Leave the type's `link_field` and
- * `onChange` out for a connector that only reads.
- */
+// Replace the type file, the environment, `run` and `onChange` with your
+// vendor's. A connector that only reads leaves out `onChange` and the type's
+// `link_field`.
 const connector = defineConnector({
   name: "example",
   description:
@@ -73,7 +65,6 @@ const connector = defineConnector({
       // Imported JSON widens every string, so its field types read as
       // `string` here; the check on start holds the file to the server's.
       type: exampleItem as TypeDefinition,
-      // What the vendor holds; the rest of a row's properties are Marfa's.
       fields: ["example_id", "title", "url", "note"],
     },
   ],
@@ -114,11 +105,10 @@ const connector = defineConnector({
           note: item.note,
         },
         occurred_at: item.created,
-        // When the vendor last changed it, for the conflict rule.
+        // For the conflict rule.
         changed_at: item.updated,
       }));
     await upsert(exampleItem.id, entries);
-    // By the link: a row is archived by the vendor's id it carries.
     await archive(
       exampleItem.id,
       items.filter((item) => item.deleted === true).map((item) => item.id),
@@ -139,10 +129,8 @@ const connector = defineConnector({
     };
     try {
       if (linked === undefined) {
-        // A row the vendor has not been told about: made there and linked,
-        // unless it is already gone. The row's id as the idempotency key,
-        // so a run that fails between the vendor's answer and the link
-        // makes one item when the create is sent again.
+        // The row's id is the idempotency key, so a run that fails between
+        // the vendor's answer and the link makes one item when it retries.
         if (kind === "trashed" || kind === "purged") return;
         const made = (await (
           await call(env, signal, "POST", "items", body, {
@@ -154,16 +142,13 @@ const connector = defineConnector({
       }
       const path = `items/${encodeURIComponent(linked)}`;
       if (kind === "trashed" || kind === "purged") {
-        // A trash deletes the item. A purge sends the same delete, which
-        // changes nothing at a vendor that already took it, and deletes
-        // the item where a trash and a purge reach the connector together,
-        // as the purge alone. An item already gone is what either asked for.
+        // A trash and a purge can reach the connector together, as the
+        // purge alone, so the purge must delete too. A 404 is what either asked for.
         await call(env, signal, "DELETE", path).catch((error: unknown) => {
           if (!(error instanceof Refused) || error.status !== 404) throw error;
         });
         return;
       }
-      // An update, or a restore, which brings a deleted item back.
       await call(env, signal, "PUT", path, {
         ...body,
         ...(kind === "restored" && { deleted: false }),
@@ -183,7 +168,6 @@ const connector = defineConnector({
     if (typeof id !== "string" || id === "") return false;
     try {
       await call(env, signal, "GET", `items/${encodeURIComponent(id)}`);
-      // The vendor still has it: the restore is carried after the read.
       return false;
     } catch (error) {
       if (!(error instanceof Refused) || error.status !== 404) throw error;

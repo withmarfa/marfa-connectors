@@ -16,10 +16,6 @@ import { proveTodoist } from "./todoist.js";
 import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
-/**
- * Every statement the proof makes, so one dropped or skipped leaves the
- * proof short, and a short proof fails.
- */
 const statements = 68;
 
 const server = new ProofServer();
@@ -95,7 +91,6 @@ try {
   }
   console.log(`ok   all ${String(statements)} statements held`);
 } catch (error) {
-  // A statement that failed has said so; anything else has not.
   if (!(error instanceof Failed) && !interrupted()) {
     console.log(
       `FAIL the proof: ${error instanceof Error ? error.message : String(error)}`,

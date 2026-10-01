@@ -4,16 +4,11 @@ packages:
   - "connectors/*"
   - "scripts"
 
-# Every package names the client as `*` and this line says where it comes
-# from: the tar scripts/vendor-client.sh packs from the pinned monorepo
-# commit, until the client is on the registry and this line names its
-# version. A catalog would read better and refuses the `file:` protocol.
+# A tarball, not the registry: the published client is older than the pinned
+# monorepo commit. A catalog would read better but refuses the `file:` protocol.
 overrides:
   "@withmarfa/client": "file:vendor/withmarfa-client.tar"
 
-# The lockfile holds the tar's integrity, so each pin has its own lockfile
-# and a checkout of another pin's branch installs from other bytes; an
-# install that trusted node_modules because a lockfile looked unchanged
-# would keep the client it had. A repacked tar under an unchanged lockfile
-# is still kept, which is why moving the pin updates the lockfile.
+# The lockfile holds the tar's integrity, so a checkout of another pin would
+# otherwise keep the client already in node_modules.
 optimisticRepeatInstall: false

@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-# Builds and packs @withmarfa/client from the checkout scripts/monorepo.sh
-# made, into vendor/withmarfa-client.tar, the file the override in
-# pnpm-workspace.yaml names. Once the client is on the registry, the
-# override names its version, and this script goes with the CI steps that
-# run it.
-#
-# Unzipped, because the packed files are the same on every machine but the
-# gzip stream around them differs with the Node version that wrote it, and
+# Unzipped: the gzip stream differs with the Node version that wrote it, and
 # pnpm locks the checksum of the bytes it is given.
 set -euo pipefail
 

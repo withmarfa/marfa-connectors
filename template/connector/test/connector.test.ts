@@ -20,7 +20,6 @@ interface VendorItem {
   deleted?: boolean;
 }
 
-/** A write the stub vendor received, for a test to assert on. */
 interface VendorWrite {
   method: string;
   path: string;
@@ -28,7 +27,6 @@ interface VendorWrite {
   idempotencyKey: string | undefined;
 }
 
-/** A body as the vendor stores it: a null is a key it does not keep. */
 function withoutNulls(
   body: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
@@ -42,7 +40,6 @@ let vendor: Server;
 let vendorUrl: string;
 let items: VendorItem[];
 let writes: VendorWrite[];
-/** The next write is answered with this status in place of the door. */
 let refuseNextWrite: number | undefined;
 
 beforeEach(async () => {
@@ -54,9 +51,8 @@ beforeEach(async () => {
   refuseNextWrite = undefined;
   let made = 0;
   const madeByKey = new Map<string, string>();
-  // A clock of the vendor's own, moving a second per write and standing
-  // the day before the scripted server's, so a change in Marfa is later
-  // than the vendor's, as it is with real clocks.
+  // A day behind the scripted server's clock, so a change in Marfa is later
+  // than the vendor's.
   let vendorClock = Date.parse("2026-09-24T00:00:00.000Z");
   const stamp = (): string => {
     vendorClock += 1000;
@@ -109,7 +105,6 @@ beforeEach(async () => {
       const id = decodeURIComponent(path.replace(/^\/items\/?/, ""));
       const ok = { "Content-Type": "application/json" };
       if (method === "POST") {
-        // A create sent again under its key answers the item it made.
         const known =
           idempotencyKey === undefined
             ? undefined
@@ -141,7 +136,6 @@ beforeEach(async () => {
       if (method === "DELETE") {
         found.deleted = true;
       } else {
-        // A null clears the key, as the example vendor's door does.
         for (const [key, value] of Object.entries(body ?? {})) {
           if (value === null) Reflect.deleteProperty(found, key);
           else Reflect.set(found, key, value);
@@ -214,8 +208,6 @@ describe("the template, run as a process", () => {
       "created 2, updated 0, archived 0, unchanged 0, skipped 0, pushed 0, own 0, conflicts 0",
     );
 
-    // The two creates are read back as the connector's own, and nothing
-    // is carried to the vendor.
     expect((await once()).code).toBe(0);
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 0, updated 0, archived 0, unchanged 2, skipped 0, pushed 0, own 2, conflicts 0",
@@ -252,7 +244,6 @@ describe("the template, run as a process", () => {
       },
     ]);
     expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
-    // The vendor's list now carries the item too, and it is the same row.
     expect(marfa.rows).toHaveLength(2);
 
     const mine = marfa.row("acct:1");
@@ -290,8 +281,6 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(items[0]?.deleted).toBe(true);
 
-    // The vendor lists the item deleted, as the trash asked; the row is
-    // restored and stays active, and the item comes back.
     marfa.restore(mine.id);
     writes.length = 0;
     expect((await once()).code).toBe(0);
@@ -342,15 +331,11 @@ describe("the template, run as a process", () => {
     const mine = marfa.row("acct:1");
     marfa.trash(mine.id);
     expect((await once()).code).toBe(0);
-    // Gone from the vendor for good, as a vendor that deletes outright
-    // leaves it.
     items = items.filter((item) => item.id !== "1");
 
     marfa.restore(mine.id);
     writes.length = 0;
     expect((await once()).code).toBe(0);
-    // Asked for first, answered 404, and made again before the vendor is
-    // read.
     expect(writes.map((write) => [write.method, write.path])).toEqual([
       ["POST", "/items"],
     ]);
@@ -372,7 +357,6 @@ describe("the template, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toContain(
       `${mine.id}: the example vendor answered 422`,
     );
-    // The witness: the same change lands when the vendor takes it.
     marfa.edit(mine.id, { title: "One, taken" });
     expect((await once()).code).toBe(0);
     expect(items[0]?.title).toBe("One, taken");
@@ -383,8 +367,6 @@ describe("the template, run as a process", () => {
     expect(code).toBe(1);
     expect(marfa.runs.at(-1)?.outcome).toBe("failed");
     expect(marfa.runs.at(-1)?.error).toContain("401");
-    // The output carries the failure, so the token's absence is not an
-    // empty stream's.
     expect(output).toContain("refused the token: 401");
     expect(output).not.toContain("wrong-token-value");
   });
@@ -420,8 +402,6 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(writes[0]?.body).toEqual({ title: "One", url: null, note: null });
     expect(items[0]).not.toHaveProperty("note");
-    // The run after reads the vendor's copy without the note and writes
-    // nothing back.
     expect((await once()).code).toBe(0);
     expect(marfa.byId(mine.id).properties).toEqual({
       example_id: "1",
@@ -469,7 +449,6 @@ describe("the template, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toBe(
       "created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 1, own 0, conflicts 0",
     );
-    // And a run with nothing changed on either side moves nothing.
     expect((await once()).code).toBe(0);
     expect(marfa.runs.at(-1)?.summary).toMatch(
       /^created 0, updated 0, archived 0, unchanged 1, skipped 0, pushed 0, own 0, conflicts 0$/,
@@ -482,11 +461,8 @@ describe("the template, run as a process", () => {
     marfa.trash(marfa.row("acct:1").id);
     refuseNextWrite = 404;
     expect((await once()).code).toBe(0);
-    // The 404 counted as landed: no condition rides the summary.
     expect(marfa.runs.at(-1)?.summary).toMatch(/pushed 1, own 1, conflicts 0$/);
 
-    // The create's answer landed but the link's write was refused, so the
-    // create is sent again under the same key and the vendor makes one.
     const theirs = marfa.insert(
       undefined,
       { title: "Theirs" },
@@ -500,7 +476,6 @@ describe("the template, run as a process", () => {
     expect(items.filter((item) => item.title === "Theirs")).toHaveLength(1);
     expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
 
-    // A create the vendor answers with an id another row carries.
     const holder = marfa.insert(
       undefined,
       { title: "Holder", example_id: "made-2" },

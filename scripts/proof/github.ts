@@ -276,7 +276,6 @@ export async function proveGitHub(
           madeRow.properties["github_id"] !== issue.node ||
           madeRow.properties["number"] !== issue.number ||
           saidRow.properties["github_id"] !== comment.node ||
-          // Marked on GitHub, and read back without the mark.
           !/^From the proof\n\n<!-- marfa:[0-9a-f]{16} -->$/.test(
             issue.body ?? "",
           ) ||

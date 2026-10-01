@@ -23,10 +23,6 @@ import {
 } from "./connector.js";
 import { TodoistStub } from "./todoist-stub.js";
 
-/**
- * A person's core.task from a Todoist row. The row is a kind of core task
- * and carries the core's values already, so promoting maps nothing.
- */
 async function asTask(
   marfa: MarfaClient,
   row: Item,
@@ -85,8 +81,7 @@ export async function proveTodoist(
       parent_id: "a",
     });
     const c = todoist.task("c", { content: "Call back" });
-    // Open, since a full sync lists active tasks only; completed later,
-    // through a delta.
+    // A full sync lists active tasks only, so it is completed later, by a delta.
     const d = todoist.task("d", { content: "Post the letter" });
     const e = todoist.task("e", { content: "Book the room" });
     const all = [a, b, c, d, e];
@@ -445,10 +440,7 @@ export async function proveTodoist(
       async () => {
         const before = await row("a");
         await edit(marfa, before, { title: "Buy everything, from Marfa" });
-        // Stamped the day before the server's clock, so the edit made in
-        // Marfa is the later one; the content differs from what the two
-        // sides last agreed on, so it is a change of the vendor's and a
-        // conflict, not a listing of the same entry again.
+        // The day before the server's clock, so the edit made in Marfa is the later one.
         todoist.now = "2026-09-24T12:30:00.000000Z";
         todoist.edit("a", { content: "Buy everything, from Todoist" });
         await runOnce();
@@ -549,8 +541,6 @@ export async function proveTodoist(
             `row c ${back.state}, linked to ${madeId}; task ${JSON.stringify(task)}; last add ${JSON.stringify(add?.args)}; reported ${reported}`,
           );
         }
-        // Todoist's copy of the task made comes back once, with what only
-        // Todoist gives it, such as its url; then nothing moves.
         await runOnce();
         const synced = await item(marfa, target.id);
         await runOnce();
@@ -629,8 +619,6 @@ export async function proveTodoist(
       },
     );
 
-    // Completions the stub lists by when they happened, so these are
-    // stamped by the clock the connector asks its window by.
     const lately = (): string =>
       new Date(Date.now() - 60 * 60_000).toISOString();
     const completedDoor = "/api/v1/tasks/completed/by_completion_date";
@@ -710,9 +698,6 @@ export async function proveTodoist(
     await check(
       "todoist: a key holding permissions beside its type is refused at start, before it registers the type or writes a row",
       async () => {
-        // The README's maps with every permission beside them: the key an
-        // instance gave the README's command before a key named with maps
-        // held no permission it did not name.
         const { data: wide, error } = await marfa.POST("/keys", {
           body: {
             ...keyBody({

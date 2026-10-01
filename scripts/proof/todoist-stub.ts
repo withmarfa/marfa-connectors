@@ -1,11 +1,6 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-/**
- * A task as the stub holds it and as both doors answer it: the Sync API's
- * item and the REST door's task carry the same fields for what the
- * connector reads.
- */
 export interface StubTask {
   id: string;
   content: string;
@@ -25,7 +20,6 @@ export interface StubTask {
   updated_at: string;
 }
 
-/** One command as it arrived, for a test to assert on. */
 export interface ReceivedCommand {
   type: string;
   uuid: string;
@@ -36,52 +30,33 @@ export interface ReceivedCommand {
 export interface ReceivedRequest {
   method: string;
   path: string;
-  /** When it arrived, in milliseconds, so a wait between two can be measured. */
   at: number;
   syncToken?: string;
   commands?: ReceivedCommand[];
 }
 
-/** A refusal the next request is answered with, in place of the door. */
 interface Refusal {
   status: number;
   headers?: Record<string, string>;
   body?: unknown;
-  /** Only a request this admits is refused; the rest are answered as usual. */
   when?: (request: ReceivedRequest) => boolean;
 }
 
 type CommandStatus = "ok" | Record<string, unknown>;
 
-/**
- * Todoist, as far as the connector can tell: a stateful account whose
- * tasks the Sync API lists whole and by delta, whose commands change them
- * and answer under `sync_status` and `temp_id_mapping`, whose REST
- * door answers a task open or completed and 404 for one deleted, and
- * which lists the tasks completed in a window.
- *
- * A command's `uuid` is remembered with its answer, so a command sent
- * again is answered as it was and changes nothing, which is what Todoist
- * was seen to do with a replayed `item_add` in the real run. Deltas are by a
- * sequence each change moves, so a change the connector made comes back
- * to it on the next sync, as Todoist's does.
- */
+// Todoist remembers a command's `uuid` with its answer: a replayed command is
+// answered as before and changes nothing (seen with `item_add` in the real run).
+// Deltas are by a sequence each change moves, so the connector's own change
+// comes back on the next sync.
 export class TodoistStub {
-  /** The account's projects, where a test names them; any project otherwise. */
   projects: Set<string> | undefined;
   readonly tasks = new Map<string, StubTask>();
   readonly received: ReceivedRequest[] = [];
   account = "1001";
   timezone: string | null = "Europe/London";
-  /** The sequence at which the account itself last changed, for a delta to carry it. */
   private userSeq = 0;
-  /**
-   * The moment a change is stamped with, the connector's own commands
-   * included; a test moves it to place a change in time. It starts a day
-   * before the scripted server's clock, so a command the connector sends
-   * is earlier than any change a person then makes in Marfa, as it is
-   * with real clocks.
-   */
+  // A day before the scripted server's clock, so a command the connector
+  // sends is earlier than a person's later change in Marfa.
   now = "2026-09-24T12:00:00.000000Z";
   url = "";
   private seq = 0;
@@ -91,7 +66,6 @@ export class TodoistStub {
     { status: CommandStatus; mapped?: [string, string] }
   >();
   private readonly refusals: Refusal[] = [];
-  /** Answers scripted for the next commands of a type: a status, or none at all. */
   private readonly scripted = new Map<
     string,
     { status: CommandStatus | "nothing"; times: number }
@@ -136,7 +110,6 @@ export class TodoistStub {
     });
   }
 
-  /** A task with every field, as a test starts one. */
   task(id: string, overrides: Partial<StubTask> = {}): StubTask {
     return {
       id,
@@ -159,7 +132,6 @@ export class TodoistStub {
     };
   }
 
-  /** Puts tasks in the account, each as a change the next delta carries. */
   put(...tasks: StubTask[]): void {
     for (const task of tasks) {
       this.tasks.set(task.id, task);
@@ -167,7 +139,6 @@ export class TodoistStub {
     }
   }
 
-  /** A person changes a task in Todoist, at the stub's moment. */
   edit(id: string, patch: Partial<StubTask>): StubTask {
     const task = this.get(id);
     Object.assign(task, patch);
@@ -187,18 +158,12 @@ export class TodoistStub {
     return this.edit(id, { is_deleted: true });
   }
 
-  /** The account's zone moves, which the next delta carries as the account changed. */
   renameZone(zone: string | null): void {
     this.timezone = zone;
     this.seq += 1;
     this.userSeq = this.seq;
   }
 
-  /**
-   * The next request is answered with this status in place of the door,
-   * or the next one `when` admits, so a test can refuse one command and
-   * let the rest through.
-   */
   refuseNext(
     status: number,
     options: {
@@ -215,17 +180,14 @@ export class TodoistStub {
     });
   }
 
-  /** The next command of this type is answered with this status instead of run. */
   scriptCommand(type: string, status: CommandStatus, times = 1): void {
     this.scripted.set(type, { status, times });
   }
 
-  /** The next command of this type gets no entry under `sync_status` at all. */
   answerNothing(type: string): void {
     this.scripted.set(type, { status: "nothing", times: 1 });
   }
 
-  /** The commands received, in order, of one type or all. */
   commands(type?: string): ReceivedCommand[] {
     return this.received
       .flatMap((request) => request.commands ?? [])
@@ -290,9 +252,8 @@ export class TodoistStub {
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
-      // A completed task is answered, checked, and a deleted one,
-      // `is_deleted`, as the real door answers them; only one never made
-      // is not found.
+      // A completed task answers `checked`, a deleted one `is_deleted`; only
+      // one never made is a 404.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
       if (found === undefined) {
         reply(404, { error: "Task not found" });
@@ -312,11 +273,8 @@ export class TodoistStub {
     reply(404, { error: "no such door" });
   }
 
-  /**
-   * A full sync lists the account's active tasks, completed and deleted
-   * ones left out, and names the account; a delta lists what changed
-   * since the token, completions and deletions included.
-   */
+  // A full sync lists active tasks only; a delta lists every change since the
+  // token, completions and deletions included.
   private delta(syncToken: string): unknown {
     const since =
       syncToken === "*" ? 0 : Number(syncToken.replace("token-", ""));
@@ -420,7 +378,6 @@ export class TodoistStub {
     return { sync_status, temp_id_mapping };
   }
 
-  /** Runs one command: its status, and the id of a task `item_add` made. */
   private apply(command: ReceivedCommand): {
     status: CommandStatus;
     made?: string;
@@ -516,7 +473,6 @@ export class TodoistStub {
     }
   }
 
-  /** The task fields a command carries, as Todoist stores them. */
   private fields(args: Record<string, unknown>): Partial<StubTask> {
     const out: Partial<StubTask> = {};
     if (typeof args["content"] === "string") out.content = args["content"];
@@ -547,7 +503,6 @@ export class TodoistStub {
   }
 }
 
-/** A daily recurring due date, a day on. */
 function nextOccurrence(due: Record<string, unknown>): Record<string, unknown> {
   const date = typeof due["date"] === "string" ? due["date"] : "";
   const next = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
