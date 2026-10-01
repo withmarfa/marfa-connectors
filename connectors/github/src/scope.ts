@@ -1,18 +1,11 @@
-/** Which of the repositories the App sees the connector syncs. */
 export interface Scope {
   admits(fullName: string): boolean;
-  /** The entries no repository of those given answers to. */
   unmatched(fullNames: Iterable<string>): string[];
 }
 
 // Loose on purpose: a typo is named as unmatched rather than refused.
 const entry = /^[a-z0-9_.-]+\/(?:\*|[a-z0-9_.-]+)$/;
 
-/**
- * `GITHUB_REPOSITORIES`: `owner/repo` or `owner/*`, set apart by commas or
- * whitespace, in any case, as GitHub's names are. Unset, every repository
- * the App sees is synced. A malformed entry is refused.
- */
 export function scopeOf(value: string | undefined): Scope | undefined {
   if (value === undefined) return undefined;
   const entries = value

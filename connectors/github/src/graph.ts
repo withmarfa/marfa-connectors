@@ -125,7 +125,6 @@ export function reasonOf(value: string | null): string | null {
   return value === null ? null : value.toLowerCase();
 }
 
-/** Issues by node id, with their relations; one gone or hidden is left out. */
 export async function issuesByNode(
   octokit: Client,
   ids: readonly string[],
@@ -168,8 +167,6 @@ export async function issuesByNode(
   return found;
 }
 
-/** The relations of issues by node id, and the issues each one blocks and
- *  holds beneath it, whose own relations changed with it. */
 export async function relationsOf(
   octokit: Client,
   ids: readonly string[],
@@ -202,7 +199,6 @@ export async function relationsOf(
   return found;
 }
 
-/** Comments by node id; one gone is left out. */
 export async function commentsByNode(
   octokit: Client,
   ids: readonly string[],
@@ -231,7 +227,6 @@ export async function commentsByNode(
   return found;
 }
 
-/** The node ids of a repository's issues by number, fifty to a query. */
 export async function nodesOfNumbers(
   octokit: Client,
   owner: string,
@@ -270,7 +265,6 @@ const mutations = {
   }`,
 };
 
-/** A relation between two issues, made or removed; answers GitHub's refusal. */
 export async function relate(
   octokit: Client,
   change: keyof typeof mutations,
@@ -328,7 +322,6 @@ export async function updateComment(
   };
 }
 
-/** Deletes a comment; one already gone is as good. */
 export async function deleteComment(
   octokit: Client,
   id: string,

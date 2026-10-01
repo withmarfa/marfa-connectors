@@ -20,7 +20,6 @@ import {
 } from "../../../scripts/proof/github-stub.js";
 
 const run = promisify(execFile);
-// Each test runs the connector several times over.
 vi.setConfig({ testTimeout: 30_000 });
 const built = resolve(import.meta.dirname, "../dist/main.js");
 
@@ -96,8 +95,6 @@ function written(): string[] {
     );
 }
 
-/** A run, then another that must carry nothing: the first's writes are
- *  its own on the second. */
 async function settled(env: Record<string, string> = {}): Promise<string> {
   const output = await ok(env);
   const before = github.writes().length;
@@ -182,11 +179,8 @@ describe("a trash", () => {
     const output = await ok();
     expect(row(issue.node).state).toBe("active");
     expect(output).toContain("brought back");
-    // Brought back by GitHub: its close stands, which the row says.
     expect(row(issue.node).properties["status"]).toBe("canceled");
 
-    // Reopened in Marfa, then trashed: the trash closes it, the restore
-    // reopens what the trash closed.
     marfa.edit(row(issue.node).id, { status: "pending" });
     await ok();
     expect(issue.state).toBe("open");
@@ -235,7 +229,6 @@ describe("a row made in Marfa", () => {
     marfa.drawEdge(made.id, row(blocker.node).id, "github.blocked-by");
     await settled();
     const issue = github.issues.find((one) => one.title === "Made in Marfa");
-    // Marked, unseen on GitHub's page, so a retry finds what it made.
     expect(issue).toMatchObject({
       body: `From an agent\n\n${markOf(made.id)}`,
       labels: ["idea"],

@@ -37,7 +37,6 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-/** Runs the setup, handing each line it logs to `seen` as it comes. */
 function setup(
   file: string,
   env: Record<string, string>,
@@ -95,7 +94,6 @@ describe("setup", () => {
             decoded(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? ""),
           ) as Record<string, unknown>;
           const state = new URL(seenPage.action).searchParams.get("state");
-          // GitHub sends the browser back with its code and the state.
           const back = await fetch(
             `${String(seenPage.manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
             { redirect: "manual" },
@@ -139,7 +137,6 @@ describe("setup", () => {
     expect(finished.output).toContain(
       "install it on the repositories to sync at https://github.com/apps/marfa-sync-test/installations/new",
     );
-    // The browser goes straight on to installing it.
     expect(seenPage.onward).toBe(
       "https://github.com/apps/marfa-sync-test/installations/new",
     );

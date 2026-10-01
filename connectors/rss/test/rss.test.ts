@@ -312,7 +312,6 @@ describe("reading a feed", () => {
     expect(decodeFeed(utf16, "application/xml; charset=utf-8")).toContain(
       "Résumé",
     );
-    // The header's charset is read before the declaration's.
     const latinDeclaredUtf8 = Buffer.from(
       '<?xml version="1.0" encoding="utf-8"?><t>Résumé</t>',
       "latin1",
@@ -320,7 +319,6 @@ describe("reading a feed", () => {
     expect(
       decodeFeed(latinDeclaredUtf8, "text/xml; charset=ISO-8859-1"),
     ).toContain("Résumé");
-    // A UTF-8 byte order mark outranks the header.
     const markedUtf8 = Buffer.concat([
       Buffer.from([0xef, 0xbb, 0xbf]),
       Buffer.from("<?xml version='1.0'?><t>Résumé</t>", "utf8"),
@@ -328,7 +326,6 @@ describe("reading a feed", () => {
     expect(decodeFeed(markedUtf8, "text/xml; charset=ISO-8859-1")).toContain(
       "Résumé",
     );
-    // UTF-16 with no mark shows itself by its zero bytes.
     const unmarked16 = Buffer.from(
       "<?xml version='1.0'?><t>Résumé</t>",
       "utf16le",
@@ -529,7 +526,6 @@ describe("reading a feed", () => {
 
 interface Served {
   body: string | Buffer;
-  /** Answered 401 without this Authorization header. */
   authorization?: string;
   redirect?: string;
   contentType?: string;
@@ -624,8 +620,6 @@ describe("the connector, run as a process", () => {
           MARFA_KEY: marfa.key,
           RSS_FEEDS: feedList,
         },
-        // A process that should have refused its start runs on under
-        // --every; this ends it, and its exit code shows it ran.
         timeout: 15_000,
       });
       return { code: 0, output: stderr };
@@ -722,7 +716,6 @@ describe("the connector, run as a process", () => {
     );
     atom.etag = '"atom-3"';
     expect((await once()).code).toBe(0);
-    // The second run read the feed whole, without the entry.
     expect(asked.map((request) => [request.path, request.answered])).toEqual([
       ["/atom.xml", 200],
       ["/rss.xml", 200],
@@ -959,7 +952,6 @@ describe("the connector, run as a process", () => {
       code: "invalid_properties",
       message: "too long",
     });
-    // A refused entry is the run's condition, and holds the state.
     expect((await once(["/atom.xml"])).code).toBe(0);
     expect(marfa.runs.at(-1)?.summary).toContain("the server refused");
     marfa.entryRefusals.delete(entryKey);

@@ -15,22 +15,15 @@ import {
 } from "./feeds.js";
 import rssEntry from "./rss.entry.json" with { type: "json" };
 
-/** What a run keeps of a feed, from the last time it was read. */
 interface FeedState {
   validators?: Validators;
-  /** The feed's part of its entries' `source_id`s. */
   key?: string;
-  /** How many entries it left out, carrying neither an id nor a link. */
   unkeyed?: number;
-  /** The feed it turned out to be, read under another address. */
   sameAs?: string;
 }
 
-/**
- * The conditions a feed holds from its last read. A feed not read this
- * run, answering 304 or failing, raises them again, since the kit would
- * otherwise take them as cleared and report them anew once it is next read.
- */
+// A feed not read this run (304 or failed) raises its conditions again; the
+// kit would otherwise take them as cleared.
 function raiseHeld(log: Log, id: string, name: string, feed: FeedState): void {
   const count = feed.unkeyed ?? 0;
   if (count > 0) {
@@ -72,14 +65,8 @@ const connector = defineConnector({
     const feeds = feedList(env.RSS_FEEDS);
     const known = (state.get("feeds") ?? {}) as Record<string, FeedState>;
     const kept: Record<string, FeedState> = {};
-    // Feeds by the key their entries are written under, so a feed reached
-    // at two addresses is written once, and does not rewrite its rows'
-    // `feed_hash` back and forth.
     const read = new Map<string, string>();
 
-    // A feed that fails is a condition of that feed alone, and the others
-    // are read. What it kept stays as it was, so it is next asked with the
-    // validators of its last good read.
     for (const feedUrl of feeds) {
       const name = feedName(feedUrl);
       const id = feedHash(feedUrl);

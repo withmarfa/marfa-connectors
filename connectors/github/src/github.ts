@@ -9,8 +9,6 @@ import type { Secret } from "@withmarfa/connector";
 
 export const defaultBase = "https://api.github.com";
 
-/** The REST version the connector is written against, pinned so a
- *  removal lands as a choice rather than a surprise. */
 export const apiVersion = "2026-03-10";
 
 const Client = Octokit.plugin(paginateRest, throttling, retry);
@@ -22,8 +20,6 @@ export interface App {
   readonly base: string;
 }
 
-/** A client that waits out a short rate limit, and fails the run on a
- *  long one, which the next run picks up. */
 function client(base: string, signal: AbortSignal, auth?: object): Client {
   const octokit = new Client({
     baseUrl: base,
@@ -51,7 +47,6 @@ function client(base: string, signal: AbortSignal, auth?: object): Client {
   return octokit;
 }
 
-/** What GitHub last said is left of each client's hourly limit. */
 const budgets = new WeakMap<Client, number>();
 
 export function remaining(octokit: Client): number | undefined {
@@ -84,8 +79,6 @@ function appAuth(app: App): ReturnType<typeof createAppAuth> {
   return auth;
 }
 
-/** As the App itself, for its installations and its webhook. */
-/** A client with no credentials, for what GitHub proves otherwise. */
 export function anonymous(base: string, signal: AbortSignal): Client {
   return client(base, signal);
 }
@@ -97,7 +90,6 @@ export function asApp(app: App, signal: AbortSignal): Client {
   });
 }
 
-/** As one installation, each token it is given kept out of every log. */
 export function asInstallation(
   app: App,
   installationId: number,
@@ -121,12 +113,10 @@ export function status(error: unknown): number | undefined {
   return error instanceof RequestError ? error.status : undefined;
 }
 
-/** A page as its ETag last answered: how many it held, and the numbers
- *  of those the connector keeps, as runs such as `1-100,104`, since a
- *  repository's state is kept whole within the instance's cap. */
 export interface Page {
   readonly etag: string;
   readonly size: number;
+  // Run-length coded: a repository's state must fit the instance's 512 KiB cap.
   readonly numbers: string;
 }
 
@@ -158,12 +148,6 @@ export function numbersIn(runs: string): number[] {
 
 const perPage = 100;
 
-/**
- * Every page of a listing, each asked with the ETag it last answered: a
- * page that did not change answers 304, free against the rate limit, and
- * its numbers are the ones kept. What changed comes back whole, and
- * `fresh` says whether anything did.
- */
 export async function pagesOf<T extends { number: number }>(
   octokit: Client,
   route: string,
@@ -205,8 +189,6 @@ export async function pagesOf<T extends { number: number }>(
   return { changed, pages, fresh };
 }
 
-/** One request asked with the ETag it last answered: `undefined` where
- *  nothing changed. */
 export async function unlessUnchanged(
   octokit: Client,
   route: string,
@@ -249,7 +231,6 @@ export async function query(
   }
 }
 
-/** In batches GitHub's node lookup takes. */
 export function batches<T>(values: readonly T[], size = 100): T[][] {
   const out: T[][] = [];
   for (let at = 0; at < values.length; at += size) {
@@ -258,8 +239,6 @@ export function batches<T>(values: readonly T[], size = 100): T[][] {
   return out;
 }
 
-/** Whether the App still reads the repository, which tells a refusal of
- *  the change from a repository out of the App's reach. */
 export async function reads(
   octokit: Client,
   owner: string,

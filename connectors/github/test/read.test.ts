@@ -87,7 +87,6 @@ function kept(): Record<string, Record<string, unknown>> {
   return state?.repositories ?? {};
 }
 
-/** Makes the next run ask GitHub about what it no longer lists. */
 function checkDue(): void {
   const document = marfa.states.get("github");
   const state = document?.["state"] as
@@ -222,7 +221,6 @@ describe("a run after", () => {
     const issue = github.addIssue(repository);
     github.addComment(issue, "Hello");
     await ok();
-    // The run after a first sync learns the comment listing's ETag.
     await ok();
     const before = marfa.rows.map((one) => one.version);
     const asked = github.asked.length;
@@ -303,7 +301,6 @@ describe("what GitHub no longer lists", () => {
     goes.deleted = true;
     comment.deleted = true;
     await ok();
-    // The deletion changed the listing: the issue is asked about at once.
     expect(row(goes.node).state).toBe("archived");
     expect(row(comment.node).state).toBe("active");
     checkDue();
@@ -336,8 +333,6 @@ describe("what GitHub no longer lists", () => {
       updated_at: github.ago(5),
     });
     await ok();
-    // Four months pass: the row as last written, and GitHub's listing
-    // no longer reaching back to it.
     issue.updated_at = github.ago(120);
     row(issue.node).properties["github_updated_at"] = issue.updated_at;
     checkDue();
@@ -611,7 +606,6 @@ describe("a comment a run missed", () => {
     github.addComment(issue, "Seen");
     await ok();
     await ok();
-    // Shown late by GitHub, under a time before the run's cursor.
     const late = github.addComment(issue, "Late");
     late.updated_at = github.ago(1);
     late.created_at = late.updated_at;
@@ -696,7 +690,6 @@ describe("GITHUB_REPOSITORIES", () => {
       [repository.node, issue.node, comment.node].map((one) => row(one).state),
     ).toEqual(["active", "active", "active"]);
     expect(row(issue.node).properties["title"]).toBe("Before");
-    // A typo or a rename leaves it paused, never archived.
     await once({ GITHUB_REPOSITORIES: "someone/trakcer" });
     expect(row(issue.node).state).toBe("active");
     await once({ GITHUB_REPOSITORIES: "someone/tracker" });

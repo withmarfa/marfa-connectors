@@ -25,7 +25,6 @@ import {
 } from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
 
-/** The environment the connector declares, as `main.ts` passes it on. */
 export const outboundEnv = {
   TODOIST_API_TOKEN: "secret",
   TODOIST_API_URL: "optional",
@@ -33,10 +32,8 @@ export const outboundEnv = {
 
 export type OutboundEnv = typeof outboundEnv;
 
-/** The property that holds the Todoist task a row is. */
 export const linkField = todoistTask.link_field;
 
-/** What of a row travels, as `item_add` and `item_update` take it. */
 export interface TaskArgs {
   content: string;
   description: string;
@@ -56,12 +53,6 @@ export function argsOf(item: Item, timeZone: string): TaskArgs {
   };
 }
 
-/**
- * The arguments that differ from the task as Todoist has it, so only a
- * change travels and a task that already matches gets nothing. Due dates
- * are compared as the instants they name, so a floating time Todoist
- * holds and the fixed one the row would write are one date.
- */
 export function differing(
   wanted: TaskArgs,
   task: TodoistItem,
@@ -79,13 +70,6 @@ export function differing(
   return out;
 }
 
-/**
- * The account's timezone this run, which a whole-day due date is written
- * in. The sync keeps it in the state, and only the sync writes it there,
- * since it reads every whole-day date anew when the zone it kept moves. A
- * change carried before the first sync, or after the state was lost,
- * asks Todoist for the account alone, once for the run.
- */
 const zones = new WeakMap<object, Promise<string>>();
 
 function timeZoneFor(
@@ -100,9 +84,6 @@ function timeZoneFor(
       const account = await todoist.user();
       const zone = timezoneOf(account);
       if (zone !== undefined) return zone;
-      // The conditions the sync raises, under the same keys, so a zone
-      // Todoist does not name or this platform does not know is reported
-      // once however it was found missing.
       const unknown = namedZoneOf(account);
       if (unknown === undefined) {
         context.log.condition(
@@ -127,7 +108,6 @@ function linkOf(item: Item): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-/** Todoist's refusal of a command naming a task it does not have. */
 function isNotFound(answer: CommandError): boolean {
   return answer.error_code === 22 || answer.error_tag === "ITEM_NOT_FOUND";
 }
@@ -136,22 +116,13 @@ function isCompleted(item: Item): boolean {
   return item.properties["status"] === "completed";
 }
 
-/**
- * A command's id from the row as the change showed it and what the
- * command does. The row's moment is in it because a transition moves no
- * version: a restore carried as an edit is a command of its own, not the
- * edit before it sent again. A run replayed after a failure shows the
- * same row, so it sends the same command.
- */
+// The row's moment is in the id because a transition moves no version: a
+// restore carried as an edit must not reuse the edit before it. A run replayed
+// after a failure shows the same row, so it sends the same command.
 function commandId(item: Item, type: string): string {
   return uuidFor(item.id, String(item.version), item.updated_at, type);
 }
 
-/**
- * Carries one change made in Marfa to Todoist. Resolving means the change
- * landed or was abandoned with a condition naming the row; a throw fails
- * the run, and the change waits for the next.
- */
 export async function carry(
   change: Change,
   context: WatchContext<OutboundEnv>,
@@ -163,36 +134,23 @@ export async function carry(
   const timeZone = await timeZoneFor(context, todoist);
   let taskId = linkOf(item);
 
-  // Archiving keeps a task; Todoist has no state for a task set aside, so
-  // only the fields changed beside it travel.
   if (kind === "archived" && change.changed.size === 0) return;
 
   if (taskId === undefined) {
-    // A row Todoist was never told about and that is gone has nothing to
-    // carry: adding a task only to delete it would be work for nothing.
     if (kind === "trashed" || kind === "purged") return;
     taskId = await add(item, timeZone, todoist, context);
     if (taskId === undefined) return;
-    // The create carried the row as it was; what the row holds now, after
-    // a run that failed between the create and the link, is compared
-    // against the task like any change, and a completed row closes it.
   }
 
   if (kind === "trashed" || kind === "purged") {
-    // A trash deletes the task: closing a recurring one would move it to
-    // its next occurrence and leave it live. The command is named by the
-    // row and the task, since a task is deleted once: a purge sends the
-    // trash's delete again under the same id, which Todoist answers
-    // without acting twice, and a trash and a purge that reach the watch
-    // together, as the purge alone, still delete it. A task made again
-    // after a restore has an id of its own, and so does its delete.
+    // A trash deletes: closing a recurring task would move it to its next
+    // occurrence. The id is per row and task so a purge resends the same
+    // delete, while a task made again after a restore gets its own.
     const answer = await todoist.one(
       "item_delete",
       uuidFor(item.id, taskId, "item_delete"),
       { id: taskId },
     );
-    // A task Todoist no longer has, whether the trash's delete landed
-    // before or a person deleted it there, is what the delete asked for.
     if (answer !== "ok" && !isNotFound(answer)) {
       context.log.condition(
         `todoist-refused:${item.id}`,
@@ -205,12 +163,6 @@ export async function carry(
   await sync(item, taskId, timeZone, todoist, context);
 }
 
-/**
- * Makes a restored row's task again where Todoist no longer has it: the
- * trash that deleted it was carried, or a person deleted it there and the
- * row, archived for it, was brought back. Answers whether it made one; a
- * task Todoist still has is carried after the read like any change.
- */
 export async function remake(
   change: Change,
   context: WatchContext<OutboundEnv>,
@@ -223,18 +175,11 @@ export async function remake(
   if ((await todoist.task(taskId)) !== "missing") return false;
   const timeZone = await timeZoneFor(context, todoist);
   const made = await add(item, timeZone, todoist, context, taskId);
-  // Abandoned with a condition: the change is done all the same.
   if (made === undefined) return true;
-  // Held to the row like any other, so a completed row's task is closed.
   await sync(item, made, timeZone, todoist, context);
   return true;
 }
 
-/**
- * The task as Todoist has it first, so only what differs travels and the
- * round after a lost state is a round of reads; then completion, which
- * `item_update` does not carry.
- */
 async function sync(
   item: Item,
   taskId: string,
@@ -290,14 +235,6 @@ async function sync(
   }
 }
 
-/**
- * A row Todoist has not been told about becomes a task, and the task's id
- * is written back onto the row. The command's ids come from the row and
- * the task it replaces, if any, so a run replayed after a failure sends
- * Todoist the same create, and a task made again after a restore is a
- * create of its own rather than the first one answered again. Answers the
- * task's id, or nothing where the row was abandoned with a condition.
- */
 async function add(
   item: Item,
   timeZone: string,
@@ -307,10 +244,11 @@ async function add(
 ): Promise<string | undefined> {
   const { log } = context;
   const again = replacing === undefined ? [] : [replacing];
+  // `again` makes a restore a new create, not the first create's answer again.
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
-  // A task made again goes back where it was: its project, section and
-  // labels, which an edit does not carry, are the row's from Todoist.
+  // An edit does not carry project, section and labels; they are the row's from
+  // Todoist.
   const p = item.properties;
   const where =
     replacing === undefined
@@ -375,7 +313,6 @@ async function add(
   return taskId;
 }
 
-/** The Todoist doors the carry uses, bound to a token and a signal. */
 class Door {
   constructor(
     private readonly base: string,
@@ -387,7 +324,6 @@ class Door {
     return send(this.base, this.token, commands, this.signal);
   }
 
-  /** One command, answered as Todoist did or as a missing answer. */
   async one(
     type: string,
     uuid: string,
