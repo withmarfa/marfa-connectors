@@ -1,7 +1,8 @@
 node_modules/
 dist/
 /vendor
-.claude/
+.claude/*
+!.claude/settings.json
 _trash/
 _archive/
 .env
