@@ -1,6 +1,5 @@
 import type { Connector, EnvDeclaration } from "./define.js";
 
-/** A start refused before anything reached the server. */
 export class ConfigurationError extends Error {
   override name = "ConfigurationError";
 }
@@ -9,7 +8,6 @@ export interface Environment {
   url: string;
   key: string;
   values: Record<string, string | undefined>;
-  /** Every value that is never to be printed, the key included. */
   secrets: string[];
 }
 
@@ -19,7 +17,6 @@ const reservedSourcePrefixes = ["oauth:", "connector:"];
  *  showing where each character falls in ordinary text. */
 export const shortestSecret = 8;
 
-/** An address a request can be sent to: no credentials, query or fragment. */
 function isServerUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -89,8 +86,6 @@ export function readEnvironment<E extends EnvDeclaration>(
   return { url, key, values, secrets: [...secrets.values()] };
 }
 
-/** The kit's own rules for a connector's definition: the server's bounds
- *  on a registration and a source. */
 export function checkDefinition<E extends EnvDeclaration>(
   connector: Connector<E>,
 ): void {

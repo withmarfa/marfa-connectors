@@ -67,7 +67,6 @@ describe("a change in Marfa", () => {
     held.fail = undefined;
     expect(await harness.twoWay(held)).toBe(0);
     expect(kinds(held)).toEqual(["purged"]);
-    // Once only.
     expect(await harness.twoWay(held)).toBe(0);
     expect(kinds(held)).toEqual(["purged"]);
   });
@@ -209,7 +208,6 @@ describe("the state a row is in", () => {
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
-    // Settled at once, not left waiting on a log that may never show it.
     const agreed = harness.agreement(row.id);
     expect(agreed?.["state"]).toBe("active");
     expect(agreed?.["stateBy"]).toBeUndefined();
@@ -246,7 +244,6 @@ describe("the state a row is in", () => {
     harness.server.transition(row.id, "archived");
     held.archived = [];
     await harness.twoWay(held);
-    // The vendor sends it again: a person's archive stays.
     held.entries = [one];
     expect(await harness.twoWay(held)).toBe(0);
     expect(harness.server.row("a:1").state).toBe("archived");
@@ -270,7 +267,6 @@ describe("what another row's trash, a lost store and a create leave", () => {
     expect(kinds(held)).toEqual([]);
     harness.server.restore(row.id);
     expect(await harness.twoWay(held)).toBe(0);
-    // Back from the bin, the edit made before it is carried, and no restore.
     expect(kinds(held)).toEqual(["updated"]);
   });
 
@@ -465,8 +461,6 @@ describe("a person's change around a link the run wrote", () => {
     held.failAfter = new Error("the vendor went away");
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(1);
-    // The witness: the run failed with the link written, and the completion
-    // landed after the remake was asked and before the link.
     expect(held.remakes?.map(({ change }) => [...change.changed])).toEqual([
       [],
     ]);
@@ -506,8 +500,6 @@ describe("a person's change around a link the run wrote", () => {
     ];
     held.failAfter = new Error("the vendor went away");
     expect(await harness.twoWay(held)).toBe(1);
-    // The witness: created without the completion, which landed before the
-    // link, and the run failed with the link written.
     expect(
       held.changes.map((change) => [
         change.kind,
@@ -541,7 +533,6 @@ describe("a restore of a row whose trash was carried", () => {
     held.changes.length = 0;
     await harness.twoWay(held);
     expect(kinds(held)).toEqual(["trashed"]);
-    // The vendor closed the item on the trash, and says so as an archive.
     held.archived = ["v1"];
     const streams = harness.server.requestsTo("GET", "/events").length;
     let afterLog = false;
@@ -553,8 +544,6 @@ describe("a restore of a row whose trash was carried", () => {
     };
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
-    // The witness: the restore landed after the log was read, and the
-    // vendor's word named the row for archiving.
     expect(afterLog).toBe(true);
     expect(held.changes).toEqual([]);
     expect(harness.lastRun().summary).toMatch(/archived 0, .*skipped 1/);

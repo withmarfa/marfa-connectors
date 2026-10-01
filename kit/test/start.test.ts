@@ -231,7 +231,6 @@ describe("the key check on start", () => {
         { enforcement_override: { strict_mode: { types: ["test.entry"] } } },
         "an enforcement override of strict_mode",
       ],
-      // Registering connection types is for a connector that declares them.
       [
         {
           type_permissions: { "test.entry": "write" },

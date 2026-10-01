@@ -2,33 +2,20 @@ import type { Item } from "./define.js";
 import type { Edge, Marfa } from "./marfa.js";
 import { frames } from "./sse.js";
 
-/** One frame the log holds for a row: the row as it then stood. */
 export interface Frame {
   readonly item: Item;
 }
 
-/** A row the log named since the cursor, with every frame it holds for it. */
 export interface Seen {
-  /** In log order; the last is the row as the log last showed it. */
   readonly frames: Frame[];
-  /** The row is gone from the instance. */
   readonly purged: boolean;
 }
 
-/** What the read of the log came back with. */
 export interface LogRead {
-  /** By row id, in the order of each row's latest frame. */
   readonly rows: Map<string, Seen>;
-  /** Rows whose connections of the connector's types changed, by
-   *  source row id, with when first seen; a purge's take is left out. */
   readonly connected: Map<string, string>;
-  /** Where the read reached, to resume from; unchanged where
-   *  nothing was read. */
   readonly cursor: string | undefined;
-  /** The cursor was older than the log keeps, so every row was
-   *  listed instead. */
   readonly resync: boolean;
-  /** Why the read ended before the head, where it did. */
   readonly incomplete: string | undefined;
 }
 
@@ -54,7 +41,6 @@ const itemEvents = new Set([
   "item.state_changed",
 ]);
 
-/** A read cut short by a signal or the request timeout. */
 function endedEarly(error: unknown): boolean {
   return (
     (error instanceof DOMException &&
@@ -147,7 +133,6 @@ export class Watch {
           if (item === undefined || !this.types.has(item.type)) continue;
           const seen = rows.get(item.id) ?? { frames: [], purged: false };
           seen.frames.push({ item });
-          // In the order of each row's latest frame.
           rows.delete(item.id);
           rows.set(item.id, {
             frames: seen.frames,
@@ -196,7 +181,6 @@ export class Watch {
     };
   }
 
-  /** The head the log stands at now, from a fresh stream's first frame. */
   private async head(): Promise<string | undefined> {
     const closing = new AbortController();
     const signal = AbortSignal.any([this.signal, closing.signal]);

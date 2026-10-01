@@ -15,10 +15,8 @@ import {
 } from "./rows.js";
 import type { Store } from "./store.js";
 
-/** Marfa's connections of a row changed since the vendor last had them. */
 export const connectionsKey = "@connections";
 
-/** A target as the agreement keeps one the vendor named and Marfa lacks. */
 function keyOf(target: Target): string {
   return `${target.type} ${target.id}`;
 }
@@ -28,13 +26,10 @@ function targetOf(key: string): Target {
   return { type: key.slice(0, at), id: key.slice(at + 1) };
 }
 
-/** A connection type's changes in Marfa, and agreement once carried. */
 export interface Carried {
   readonly connections: Record<string, Connected>;
   readonly agreed: Record<string, string[]>;
-  /** A target the vendor has not been told about kept a change back. */
   readonly deferred: boolean;
-  /** A create's mirrored connection names a row the vendor lacks. */
   readonly unplaced: boolean;
 }
 
@@ -50,7 +45,6 @@ export class Connections {
     private readonly signal: AbortSignal,
   ) {}
 
-  /** Whether Marfa mirrors the kind's connections of the type. */
   mirrored(spec: Spec, type: string): boolean {
     return !spec.twoWay || spec.readOnly.has(type);
   }
@@ -144,8 +138,6 @@ export class Connections {
     }
   }
 
-  /** What one row's connections of one type need, against what was agreed:
-   *  nothing agreed or read-only takes the vendor's; two-way keeps Marfa's. */
   private async plan(
     found: { item: Item; spec: Spec },
     agreement: Agreement,
@@ -202,7 +194,6 @@ export class Connections {
       kept: new Set(wanted),
       unresolved,
       putBack: this.mirrored(spec, type) && !seeding && diverged,
-      // A new row has nothing agreed either; only what Marfa held differs.
       seeded: seeding && remove.length > 0,
     };
   }
@@ -233,8 +224,6 @@ export class Connections {
     );
   }
 
-  /** Whether the row's connections differ from what was agreed, so its
-   *  edge frames are more than the kit's own writes. */
   async differ(
     item: Item,
     agreement: Agreement,
@@ -255,8 +244,6 @@ export class Connections {
     return false;
   }
 
-  /** Mirrored connections a person changed in Marfa, put back to what the
-   *  vendor last said. */
   async putBack(
     item: Item,
     spec: Spec,
@@ -300,9 +287,6 @@ export class Connections {
     return next;
   }
 
-  /** What changed in Marfa against what was agreed: nothing agreed carries
-   *  nothing unless created, nor does a mirrored type; a purged target
-   *  drops, an untold one waits. */
   async changes(
     item: Item,
     spec: Spec,
@@ -348,7 +332,6 @@ export class Connections {
       unplaced ||= untold && this.mirrored(spec, type);
       const next = new Set(was);
       for (const row of carried.added) next.add(row.id);
-      // Removed and carried, or gone, or never at the vendor: agreed no more.
       for (const target of removed) next.delete(target);
       agreed[type] = [...next].sort();
       if (carried.added.length > 0 || carried.removed.length > 0) {
@@ -390,7 +373,6 @@ export class Connections {
     return next;
   }
 
-  /** The rows the targets name, by `<type> <id>`, where Marfa holds them. */
   private async resolve(
     targets: readonly Target[],
   ): Promise<Map<string, Item>> {
@@ -414,7 +396,6 @@ export class Connections {
     return found;
   }
 
-  /** The rows by id, in any state, that still exist. */
   private async rows(ids: readonly string[]): Promise<Map<string, Item>> {
     const [type] = this.lanes.keys();
     if (ids.length === 0 || type === undefined) return new Map();
@@ -423,13 +404,11 @@ export class Connections {
     return new Map(found.data.map((item) => [item.id, item]));
   }
 
-  /** The ids no row answers for any more. */
   private async absent(ids: readonly string[]): Promise<Set<string>> {
     const rows = await this.rows(ids);
     return new Set(ids.filter((id) => !rows.has(id)));
   }
 
-  /** Whether the vendor knows the row: a kind with a link holds one on it. */
   private linked(row: Item): boolean {
     const lane = this.lanes.get(row.type);
     if (lane === undefined) return false;
@@ -502,13 +481,11 @@ export class Connections {
   }
 }
 
-/** One row's connections of one type, as the run will change them. */
 interface Plan {
   readonly item: Item;
   readonly type: string;
   readonly add: readonly string[];
   readonly remove: readonly [string, string][];
-  /** The targets agreed once the writes land. */
   readonly kept: Set<string>;
   readonly unresolved: readonly string[];
   readonly putBack: boolean;

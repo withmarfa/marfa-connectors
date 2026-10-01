@@ -2,21 +2,13 @@ import type { Agreement } from "./agreement.js";
 import type { Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
-/** What the kit keeps for the connector on the instance, beside
- *  the agreements. */
 export interface Kept {
-  /** The connector's own, such as a sync token. */
   state: Record<string, unknown>;
-  /** Lasting conditions by key, as last reported. */
   conditions: Record<string, string>;
-  /** Where the read of the log reached. */
   cursor?: string;
-  /** Purges read from the log and not yet carried, as the log
-   *  last showed each row. */
   purges?: Item[];
 }
 
-/** How many agreements one request reads or writes. */
 const perRequest = 500;
 
 /** The instance's cap on one agreement, serialized. */
@@ -58,14 +50,9 @@ function agreementOf(value: unknown): Agreement | undefined {
   return value as unknown as Agreement;
 }
 
-/** The connector's state and each row's agreement, kept on the
- *  instance under the key's own source. */
 export class Store {
-  /** Read this run; `null` where the instance holds none. */
   private readonly read = new Map<string, Agreement | null>();
-  /** Written this run and not yet sent; `null` clears. */
   private readonly pending = new Map<string, Agreement | null>();
-  /** Rows whose agreement outgrew the instance's cap and was dropped. */
   readonly oversized = new Set<string>();
 
   constructor(

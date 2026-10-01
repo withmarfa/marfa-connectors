@@ -4,39 +4,26 @@ import { cleaned, fingerprint, instant } from "./values.js";
 /** A row's own time, beside its properties; no property starts with `@`. */
 export const occurredKey = "@occurred_at";
 
-/** The state a row is agreed at: a state the log shows, or none yet. */
 export type AgreedState = "active" | "archived" | "trashed";
 
 /** What the two sides last held for one row, apart since they can rightly
  *  differ: a read-only field edited, or a value the vendor normalizes. */
 export interface Agreement {
-  /** The vendor's last values, field by field, by {@link mark}. */
   vendor: Record<string, string>;
-  /** The values the kit last wrote to Marfa or carried from it. */
   marfa: Record<string, string>;
   state: AgreedState;
-  /** What put the row in this state where no Marfa change did: the
-   *  connector's archive, or another row's trash pulling it into the bin. */
   stateBy?: "vendor" | "cascade";
   /** When that happened, so a replayed frame from before it cannot undo it. */
   stateAt?: string;
-  /** The vendor's own id for the row, which is the connector's to keep. */
   link?: string;
-  /** The vendor's time on the entry last agreed. */
   changedAt?: string;
-  /** Changes in Marfa not yet carried, each with when it was first seen. */
   waiting?: Record<string, string>;
-  /** When a create was first sent to the vendor and no link came back. */
   attempted?: string;
-  /** Each connection type's targets both sides last agreed on, by row id. */
   connections?: Record<string, string[]>;
-  /** Targets the vendor named with no row in Marfa yet, as `<type> <id>`. */
   pending?: Record<string, string[]>;
-  /** The vendor's key for the row's bytes, and blob they were uploaded as. */
   file?: { key: string; ref: string; mime: string };
 }
 
-/** A short name for a value; empty string for one the side does not hold. */
 export function mark(value: unknown): string {
   return value === undefined || value === null
     ? ""
@@ -78,7 +65,6 @@ export function laterThan(
   return !Number.isNaN(a) && (Number.isNaN(b) || a > b);
 }
 
-/** Whether the entry holds what the vendor last held, field by field. */
 export function unchangedAtVendor(
   agreement: Agreement,
   fields: readonly string[],
@@ -100,8 +86,6 @@ export function changedInMarfa(
   );
 }
 
-/** The waiting fields as the log now shows them: each keeps when first
- *  seen, and one back where it was agreed waits no more. */
 export function noteWaiting(
   agreement: Agreement,
   fields: readonly string[],
@@ -119,7 +103,6 @@ export interface Row {
   readonly properties: Readonly<Record<string, unknown>>;
   readonly occurred_at: string | undefined;
   readonly updated_at: string | undefined;
-  /** Where nothing is agreed, the state it is taken in. */
   readonly state?: string | undefined;
 }
 
@@ -129,9 +112,7 @@ export function agreedState(state: string): AgreedState {
 }
 
 export interface MergeInput {
-  /** The fields the vendor holds for this type. */
   readonly fields: readonly string[];
-  /** A field the connector never carries back, which Marfa mirrors. */
   readonly readOnly: (field: string) => boolean;
   readonly agreement: Agreement | undefined;
   readonly row: Row;
@@ -139,26 +120,16 @@ export interface MergeInput {
 }
 
 export interface Merged {
-  /** The row's properties as they should stand. */
   readonly properties: Record<string, unknown>;
-  /** The row's own time to write, where the vendor moved it. */
   readonly occurredAt: string | undefined;
-  /** Whether the row must be written. */
   readonly write: boolean;
-  /** The agreement once the write lands. */
   readonly agreement: Agreement;
-  /** Fields both sides changed where the vendor's later change won. */
   readonly lost: readonly string[];
-  /** Fields both sides changed where the change in Marfa won. */
   readonly kept: readonly string[];
-  /** Read-only fields a change in Marfa was put back on. */
   readonly putBack: readonly string[];
-  /** Fields that took the vendor's value because nothing was agreed yet. */
   readonly seeded: readonly string[];
 }
 
-/** The entry merged into the row field by field: one side's change wins,
- *  both sides' goes to the later; a tie or nothing agreed follows below. */
 export function merge(input: MergeInput): Merged {
   const { fields, readOnly, agreement, row, entry } = input;
   const theirs = cleaned(entry.properties);
@@ -283,17 +254,12 @@ export function merge(input: MergeInput): Merged {
 export interface CarriedInput {
   readonly fields: readonly string[];
   readonly agreement: Agreement | undefined;
-  /** The row as it was carried. */
   readonly properties: Readonly<Record<string, unknown>>;
   readonly state: AgreedState;
-  /** The fields carried; a field left out stays as it was agreed. */
   readonly changed: readonly string[];
-  /** The vendor's entry after the carry, where the connector answered one. */
   readonly answered: Entry | undefined;
 }
 
-/** The agreement once a change reached the vendor, with no waiting marks:
- *  Marfa's side takes what was carried, the vendor's its answer, else that. */
 export function carried(input: CarriedInput): Agreement {
   const { fields, agreement, properties, state, changed, answered } = input;
   const marfa = { ...agreement?.marfa };

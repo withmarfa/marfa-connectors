@@ -9,33 +9,20 @@ import type { InboundDeliveryRow, Marfa } from "./marfa.js";
 import { Stopped } from "./rows.js";
 import type { Clock } from "./runtime.js";
 
-/** The most deliveries one run takes; what waits past them goes to the
- *  next run, or under `--every`, starts one as soon as it is found. */
 export const deliveriesPerRun = 500;
 
-/** How long a delivery's `verify` may run before it is left waiting. */
 export const verifyLimitMs = 10_000;
 
 export interface Collected {
-  /** Verified, and not a repeat of one handled: processed once the run
-   *  succeeds. */
   readonly fresh: readonly string[];
-  /** What the fresh deliveries named, by type, or `undefined` for
-   *  everything. */
   readonly hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly rejected: number;
   readonly duplicate: number;
-  /** Verified deliveries whose hints could not be read, so everything
-   *  is read for them. */
   readonly unreadable: number;
-  /** Deliveries whose body could not be fetched, left for a later run. */
   readonly unfetched: number;
-  /** Deliveries whose `verify` ran past its limit, left for a later run. */
   readonly unverified: number;
 }
 
-/** The delivery's `verify`, bounded: `late` once it runs past the
- *  limit, so a hang holds neither the run nor the deliveries behind it. */
 async function bounded<E extends EnvDeclaration>(
   inbound: Inbound<E>,
   delivery: Delivery,
@@ -82,8 +69,6 @@ function delivery(row: InboundDeliveryRow, body: Uint8Array): Delivery {
   };
 }
 
-/** Takes what waits at the connector's endpoints and sorts it: no delivery
- *  unfetched, unverified in time, or unread for hints blocks the rest. */
 export async function collect<E extends EnvDeclaration>(
   marfa: Marfa,
   connectorId: string,

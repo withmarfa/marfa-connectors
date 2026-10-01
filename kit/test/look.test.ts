@@ -47,7 +47,6 @@ describe("the look between runs, for a connector that carries changes back", () 
       await harness.clock.sleeping(10_000);
     }
     expect(held.runs).toBe(1);
-    // The witness: an edit of a person's does start one.
     harness.server.edit(harness.server.row("a:1").id, { title: "Edited" });
     await harness.clock.wake(10_000);
     await until(() => held.runs === 2);
@@ -61,7 +60,6 @@ describe("the look between runs, for a connector that carries changes back", () 
     await harness.clock.sleeping(10_000);
     await harness.clock.wake(10_000);
     await harness.clock.sleeping(10_000);
-    // Made, trashed and purged between two looks.
     const theirs = harness.server.insert(
       undefined,
       { title: "Theirs" },
@@ -89,7 +87,6 @@ describe("the look between runs, for a connector that carries changes back", () 
     await harness.clock.wake(10_000);
     await harness.clock.sleeping(10_000);
     expect(held.runs).toBe(1);
-    // The witness: a purge of the row's own does start one.
     held.entries = [];
     harness.server.insert(
       "a:2",
@@ -125,7 +122,6 @@ describe("the look between runs, for what Marfa mirrors", () => {
     expect(harness.lastRun().summary).toContain(
       `title on ${row.id} was changed in Marfa and put back`,
     );
-    // Its own put back starts no run.
     for (let look = 0; look < 3; look += 1) {
       await harness.clock.sleeping(10_000);
       await harness.clock.wake(10_000);
@@ -184,14 +180,12 @@ describe("the look, for connections", () => {
     const held = blocking();
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
-    // A cascade's trash and purge start no run of their own.
     const two = harness.server.row("a:2");
     harness.server.cascadeTrash(two.id, "root-1");
     harness.server.purgeById(two.id);
     await harness.clock.wake(10_000);
     await harness.clock.sleeping(10_000);
     expect(held.runs).toBe(1);
-    // The witness: a person's connection starts one.
     harness.server.insert(
       "a:3",
       { title: "Three", vendor_id: "v3" },
@@ -290,7 +284,6 @@ describe("the look, for connections", () => {
     const held = blocking();
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
-    // Past the run's own edge frame first.
     await harness.clock.wake(10_000);
     await harness.clock.sleeping(10_000);
     const two = harness.server.row("a:2");
@@ -320,7 +313,6 @@ describe("--look-every", () => {
       "--look-every is for a connector that receives webhooks or carries changes back",
     );
     expect(harness.server.requests).toEqual([]);
-    // The witness: the two-way connector takes it.
     const held = vendor([]);
     const exit = harness.twoWayRunning(held, [
       "--every",

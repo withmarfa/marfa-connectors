@@ -7,26 +7,6 @@ import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { CONTRACT_VERSION } from "@withmarfa/client";
 
-/**
- * The doors a connector uses, answering as the real server does for the
- * cases the kit's rules turn on:
- * - a create at version 0 over an existing row answers `ancestor_unavailable`;
- * - a bulk upsert over a trashed row skips it;
- * - an update on the current version replaces or merges as asked;
- * - an update on a stale version merges its changes with what landed since,
- *   and under `replace` a field the ancestor had and the body leaves out is
- *   one of them, cleared, unless the row no longer holds it; a field or the
- *   own time it changes that also changed there answers `version_conflict`,
- *   and a value echoed from the version named is not a change;
- * - every write reaches a log the stream replays from a cursor, ids in the
- *   order the writes were made, each frame carrying the row as it then was,
- *   narrowed to a type and its subtree, the first frame naming the head and
- *   a marker after the replay naming where the stream has reached.
- * It lets a test script what the real server cannot be asked for: another
- * writer between a read and a write, a refusal, a delay, a cursor the log
- * no longer holds, a stream that ends early or whose replay never finishes.
- */
-
 export interface Row {
   id: string;
   type: string;
@@ -39,10 +19,7 @@ export interface Row {
   occurred_at: string;
   created_at: string;
   updated_at: string;
-  /** The row whose trash took this one through a cascade, while in the bin. */
   trashed_with?: string;
-  /** Told to every key that reads the row; `trashed_with` only to
-   *  one reading the root. */
   trashed_by_cascade?: true;
 }
 
@@ -62,7 +39,6 @@ export interface Request {
   body: unknown;
 }
 
-/** A delivery as the server stores it, the body beside it. */
 export interface Delivery {
   id: string;
   endpoint_id: string;
@@ -76,14 +52,12 @@ export interface Delivery {
   outcome: string | null;
 }
 
-/** An agreement as the instance keeps it. */
 interface Held {
   waiting: boolean;
   record: Record<string, unknown>;
   updated_at: string;
 }
 
-/** One event as the log holds it. */
 export interface EdgeRow {
   id: string;
   source_id: string;
@@ -140,10 +114,7 @@ function changedKeys(
 export class ScriptedServer {
   readonly key = "marfa_k1_scripted";
   readonly source: string;
-  /** The calling key's own source, the connector's unless a test says not. */
   keySource: string;
-  /** What the calling key holds beside its source, over the write
-   *  on its minted types and connections: a test widens or narrows it. */
   grants: {
     sources?: string[];
     permissions?: string[];
@@ -157,10 +128,7 @@ export class ScriptedServer {
   } = {};
   url = "";
   rows: Row[] = [];
-  /** Every edge, in the order made. */
   edges: EdgeRow[] = [];
-  /** Edge types the instance holds, by id: the shipped `attached-to` and
-   *  `in-thread`, and what is registered. */
   readonly edgeTypes = new Map<string, Record<string, unknown>>([
     [
       "attached-to",
@@ -190,70 +158,43 @@ export class ScriptedServer {
       },
     ],
   ]);
-  /** Blobs stored, by hash. */
   readonly blobs = new Map<string, { bytes: Buffer; mime_type: string }>();
-  /** Every upload, repeats included. */
   uploads = 0;
-  /** Edges a lookup answers per type before its cursor, as the real
-   *  cap of 50. */
   edgePageCap = 50;
   types = new Map<string, Record<string, unknown>>();
   runs: Run[] = [];
   heartbeats = 0;
   registrations = 0;
   requests: Request[] = [];
-  /** Every write, in the order made. */
   readonly log: Event[] = [];
-  /** Bulk entries refused by `source_id`, as the server refuses one entry. */
   readonly entryRefusals = new Map<string, Refusal>();
-  /** Called after a read of rows is answered, a listing or a
-   *  lookup, before the next request. */
   afterRead: ((request: Request) => void) | undefined;
-  /** Awaited before a request is answered, with the request as it arrived. */
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
-  /** A body over this many bytes is refused whole, as the server's cap refuses it. */
   bodyCap: number | undefined;
-  /** The stream answers `catchup_too_old` to any cursor. */
   tooOld = false;
-  /** The stream ends with `stream_incomplete` after this many frames. */
   incompleteAfter: number | undefined;
-  /** The stream never says it is live, and stays open: a replay that never finishes. */
   withholdLive = false;
-  /** The stream stops writing after this many frames and stays open, as a slow server does. */
   stallAfter: number | undefined;
-  /** The marker names no position, as the server's does when its head read outran its budget. */
   liveCursorNull = false;
-  /** The marker names this position in place of the head, as a server whose log was reset would. */
   liveCursor: string | undefined;
-  /** The registration's webhook endpoints: one live unless a test says not. */
   endpoints: { id: string; retired_at: string | null }[] = [
     { id: "endpoint-1", retired_at: null },
   ];
-  /** What arrived at them, oldest first. */
   readonly deliveries: Delivery[] = [];
-  /** Who holds the registration, and until when, by the server's clock. */
   holder: { process: string; until: number } | undefined;
-  /** How long a hold lasts past its last renewal. */
   holdMs = 180_000;
-  /** Every hold taken or renewed, and every release, in order. */
   readonly holds: { process: string; released: boolean }[] = [];
-  /** Tombstones by `type`, then `link:<value>` or
-   *  `key:<source>:<source_id>`. */
   readonly tombstones = new Map<
     string,
     { purged_at: string; settled_at: string }
   >();
-  /** The state document kept for each key's own source. */
   readonly states = new Map<string, Record<string, unknown>>();
-  /** Each row's agreement, by source and then by item id. */
   private readonly agreementsBySource = new Map<string, Map<string, Held>>();
 
-  /** The state document kept for the calling key's own source. */
   get connectorState(): Record<string, unknown> | undefined {
     return this.states.get(this.keySource);
   }
 
-  /** The agreements kept for the calling key's own source. */
   get agreements(): Map<string, Held> {
     let held = this.agreementsBySource.get(this.keySource);
     if (held === undefined) {
@@ -262,19 +203,15 @@ export class ScriptedServer {
     }
     return held;
   }
-  /** Keyed `METHOD /path`, answered once each in place of the door. */
   private readonly refusals = new Map<string, Refusal[]>();
-  /** Each row's properties and own time at every version it has had. */
   private readonly snapshots = new Map<string, Snapshot[]>();
   private readonly http = createServer((req, res) => {
     void this.answer(req, res);
   });
   private sequence = 0;
   private clock = Date.parse("2026-09-25T00:00:00.000Z");
-  /** Moves only with `advance`: a hold lapses with time, not with writes. */
   private wall = this.clock;
 
-  /** The key a connector's README mints: write on its types and connections. */
   private readonly minted: {
     type_permissions: Record<string, string>;
     edge_permissions: Record<string, string>;
@@ -314,7 +251,6 @@ export class ScriptedServer {
     });
   }
 
-  /** The next request to `route` is answered with this refusal. */
   refuseNext(
     route: string,
     status: number,
@@ -326,7 +262,6 @@ export class ScriptedServer {
     this.refusals.set(route, queue);
   }
 
-  /** A sender's request, stored as the receiving door stores it. */
   deliver(
     body: string | Buffer,
     headers: [string, string][] = [],
@@ -385,16 +320,11 @@ export class ScriptedServer {
     return row;
   }
 
-  /** Another writer changes a row, moving its version. */
   touch(sourceId: string, properties: Record<string, unknown>): void {
     const row = this.row(sourceId);
     this.write(row, { ...row.properties, ...properties });
   }
 
-  /**
-   * Another writer replaces a row's properties whole, or moves its own
-   * time, moving its version: what a person's edit or a folder's write does.
-   */
   rewrite(
     sourceId: string,
     properties: Record<string, unknown>,
@@ -404,14 +334,12 @@ export class ScriptedServer {
     this.write(row, properties, occurredAt);
   }
 
-  /** A person edits a row, by its id, laying properties over its own. */
   edit(id: string, properties: Record<string, unknown>): Row {
     const row = this.byId(id);
     this.write(row, { ...row.properties, ...properties });
     return row;
   }
 
-  /** A person moves a row to a state, as the transition door does. */
   transition(id: string, state: Row["state"]): Row {
     const row = this.byId(id);
     this.snapshot(row);
@@ -437,7 +365,6 @@ export class ScriptedServer {
     return row;
   }
 
-  /** A cascade from `root`'s trash takes the row with it. */
   cascadeTrash(id: string, root: string): Row {
     const row = this.byId(id);
     // Announced as it was before the trash, as `trash` is.
@@ -455,7 +382,6 @@ export class ScriptedServer {
     return row;
   }
 
-  /** A person brings a row back from the bin. */
   restore(id: string): Row {
     const row = this.byId(id);
     this.snapshot(row);
@@ -471,13 +397,11 @@ export class ScriptedServer {
     Reflect.deleteProperty(row, "trashed_by_cascade");
   }
 
-  /** A person empties the bin of this row. */
   purge(sourceId: string): void {
     const row = this.row(sourceId);
     this.purgeById(row.id);
   }
 
-  /** The value the row holds in the link its type names, if any. */
   linkOf(row: Pick<Row, "type" | "properties">): string | undefined {
     const field = this.types.get(row.type)?.["link_field"];
     if (typeof field !== "string") return undefined;
@@ -485,8 +409,6 @@ export class ScriptedServer {
     return typeof value === "string" && value !== "" ? value : undefined;
   }
 
-  /** Another row of the type already holding the link these
-   *  properties would. */
   private linkHolder(
     type: string,
     properties: Record<string, unknown>,
@@ -500,7 +422,6 @@ export class ScriptedServer {
     );
   }
 
-  /** A row claiming a link or a natural key takes it back from a tombstone. */
   private reclaim(row: Row): void {
     const link = this.linkOf(row);
     if (link !== undefined)
@@ -542,10 +463,6 @@ export class ScriptedServer {
     this.announce("item.purged", row);
   }
 
-  /**
-   * A row created by another process holding the same key, or, under
-   * another source, by a person.
-   */
   insert(
     sourceId: string | undefined,
     properties: Record<string, unknown>,
@@ -571,7 +488,6 @@ export class ScriptedServer {
     );
   }
 
-  /** The log's head: the id of the last event, or 0 with none. */
   get head(): number {
     return this.log[this.log.length - 1]?.id ?? 0;
   }
@@ -581,7 +497,6 @@ export class ScriptedServer {
     return new Date(this.clock).toISOString();
   }
 
-  /** Moves the server's clock on, so a later write is later by that much. */
   advance(ms: number): void {
     this.clock += ms;
     this.wall += ms;
@@ -604,7 +519,6 @@ export class ScriptedServer {
     });
   }
 
-  /** Whether a live hold belongs to a process other than this one. */
   private heldElsewhere(process: unknown): boolean {
     return (
       this.holder !== undefined &&
@@ -613,7 +527,6 @@ export class ScriptedServer {
     );
   }
 
-  /** State and agreement writes are taken only from the live holder. */
   private heldBy(process: unknown): boolean {
     return (
       this.holder !== undefined &&
@@ -642,7 +555,6 @@ export class ScriptedServer {
     );
   }
 
-  /** A person connects two rows, as the edge door does. */
   drawEdge(sourceId: string, targetId: string, edgeType: string): EdgeRow {
     const at = this.now();
     this.sequence += 1;
@@ -661,7 +573,6 @@ export class ScriptedServer {
     return edge;
   }
 
-  /** A person removes a connection, as the edge door does. */
   removeEdge(id: string): void {
     const edge = this.edges.find((candidate) => candidate.id === id);
     if (edge === undefined) throw new Error(`no scripted edge ${id}`);
@@ -669,8 +580,6 @@ export class ScriptedServer {
     this.announceEdge("edge.deleted", edge);
   }
 
-  /** The row's outbound edges of the type, as `<target id>` in
-   *  the order made. */
   targetsOf(sourceId: string, edgeType: string): string[] {
     return this.edges
       .filter(
@@ -679,7 +588,6 @@ export class ScriptedServer {
       .map((edge) => edge.target_id);
   }
 
-  /** A snapshot of the row as it stands, at this moment. */
   private snapshot(row: Row): void {
     this.snapshots.get(row.id)?.push({
       version: row.version,
@@ -745,7 +653,6 @@ export class ScriptedServer {
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const raw = Buffer.concat(chunks);
     const text = raw.toString("utf8");
-    // Bytes to the blob door, JSON to every other.
     const body: unknown =
       text === "" || req.url?.startsWith("/blobs") === true
         ? undefined
@@ -990,7 +897,6 @@ export class ScriptedServer {
         this.holder?.process === process && this.holder.until > now;
       this.holder = { process, until: now + this.holdMs };
       this.holds.push({ process, released: false });
-      // By the server's own clock, as the real answer's header is.
       res.setHeader("Date", new Date(now).toUTCString());
       send(200, {
         expires_at: new Date(this.holder.until).toISOString(),
@@ -1279,8 +1185,6 @@ export class ScriptedServer {
           refuse(404, "item_not_found");
           return;
         }
-        // The snapshots of what each update left behind: every version but
-        // the current one.
         const data = (this.snapshots.get(id) ?? []).map((snapshot, at) => ({
           id: `${id}-${String(at)}`,
           item_id: id,
@@ -1354,7 +1258,6 @@ export class ScriptedServer {
     refuse(404, "not_found", `no scripted door for ${route}`);
   }
 
-  /** Whether a row's type is the one named or inherits from it. */
   private ofType(row: Row, type: string | null): boolean {
     return (
       type === null ||
@@ -1366,7 +1269,6 @@ export class ScriptedServer {
   private listItems(query: URLSearchParams, send: Send): void {
     const state = query.get("state") ?? "active";
     const type = query.get("type");
-    // The one filter the kit sends: an outbound edge of a kind to a target.
     const filter = /^edge\[([^\]]+)\] eq "([^"]+)"$/.exec(
       query.get("filter") ?? "",
     );
@@ -1511,7 +1413,6 @@ export class ScriptedServer {
     });
   }
 
-  /** One bulk edge entry, upserted on its ends and type as the door does. */
   private upsertEdge(
     entry: Record<string, string>,
     index: number,
@@ -1592,7 +1493,6 @@ export class ScriptedServer {
     return { index, outcome: "created", id: made.id };
   }
 
-  /** A row's outbound edges by type, each cut at the page cap with a cursor. */
   private hydrated(id: string): Record<string, unknown> {
     const byType = new Map<string, EdgeRow[]>();
     for (const edge of this.edges.filter((edge) => edge.source_id === id)) {
@@ -1610,7 +1510,6 @@ export class ScriptedServer {
     );
   }
 
-  /** Rows in any state by link, natural key or id, with their tombstones. */
   private lookup(input: Record<string, unknown>): unknown {
     const type = String(input["type"]);
     const links = input["links"] as string[] | undefined;

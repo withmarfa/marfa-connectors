@@ -8,7 +8,6 @@ import type { components } from "@withmarfa/client";
  */
 export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 
-/** A row as the server answers it. */
 export type Item = components["schemas"]["Item"];
 
 /**
@@ -18,22 +17,18 @@ export type Item = components["schemas"]["Item"];
  */
 export type ConnectionDefinition = components["schemas"]["EdgeTypeRequest"];
 
-/** A row a connection points at: its type, and its link, or its natural key where the type names none. */
 export interface Target {
   readonly type: string;
   readonly id: string;
 }
 
-/** The bytes of a file row, fetched from the vendor only when they changed. */
 export interface FileSource {
-  /** The vendor's own key for the bytes, such as an etag or asset id. */
   readonly key: string;
   readonly load: (
     signal: AbortSignal,
   ) => Promise<{ bytes: Uint8Array; mime_type: string }>;
 }
 
-/** A connection type's changes in Marfa, as the rows at the other end. */
 export interface Connected {
   readonly added: readonly Item[];
   readonly removed: readonly Item[];
@@ -54,9 +49,7 @@ export type EnvValues<E extends EnvDeclaration> = {
     : string;
 };
 
-/** One row as the vendor has it, before it is compared with the server's. */
 export interface Entry {
-  /** Unique within the connector's source, the vendor account included. */
   source_id: string;
   /** A property that is absent or `null` is cleared from the row. */
   properties: Readonly<Record<string, unknown>>;
@@ -104,12 +97,10 @@ export interface Log {
   condition(key: string, message: string): void;
 }
 
-/** Keeps a value made at run time, such as a token, out of every log line and report. */
 export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
   readonly env: EnvValues<E>;
-  /** Aborted when the process is asked to stop. */
   readonly signal: AbortSignal;
   readonly state: State;
   readonly log: Log;
@@ -121,7 +112,6 @@ export interface RunContext<E extends EnvDeclaration> {
    * everything, as a run on the schedule does.
    */
   readonly hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
-  /** Writes what differs from the connector's own rows of the type, and nothing else. */
   readonly upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
   /**
    * Archives the named rows of the type that are active: by link value where
@@ -146,17 +136,11 @@ export interface RunContext<E extends EnvDeclaration> {
   ) => Promise<Item[]>;
 }
 
-/**
- * What happened to a row in Marfa since the vendor last had it: created,
- * which the vendor has not been told about; updated, its fields; a
- * transition to archived or trashed, or a restore out of either; a purge.
- */
 export type ChangeKind =
   "created" | "updated" | "restored" | "archived" | "trashed" | "purged";
 
 export interface Change {
   readonly kind: ChangeKind;
-  /** The row as it stands. */
   readonly item: Item;
   /**
    * The fields changed in Marfa and not yet carried, the read-only ones and
@@ -171,8 +155,6 @@ export interface Change {
    * refuses.
    */
   readonly attempted?: string;
-  /** For a restore, to `onChange` or `remake`: where the row was restored
-   *  from, the bin or archive. */
   readonly was?: "trashed" | "archived";
   /**
    * The connections made or removed in Marfa since the vendor last had them,
@@ -197,13 +179,9 @@ export interface WatchContext<E extends EnvDeclaration> {
   readonly setLink: (item: Item, value: string) => Promise<void>;
 }
 
-/** A local address a browser opens, and the vendor sends it back to. */
 export interface LocalCallback {
-  /** Where the browser opens, which serves the page given. */
   readonly url: string;
-  /** Where the vendor redirects the browser, such as a manifest's `redirect_url`. */
   readonly callback: string;
-  /** The query the redirect carried, once the browser arrives. */
   readonly redirected: Promise<URLSearchParams>;
   /**
    * Sends the browser, held at the callback, on to a web address, such as
@@ -215,7 +193,6 @@ export interface LocalCallback {
 }
 
 export interface SetupContext<E extends EnvDeclaration> {
-  /** What the environment holds already; what setup makes is missing. */
   readonly env: { readonly [K in keyof E]?: string | undefined };
   readonly signal: AbortSignal;
   readonly log: Pick<Log, "info" | "warn">;
@@ -239,27 +216,21 @@ export interface SetupContext<E extends EnvDeclaration> {
   }) => Promise<{ path: string; url: string }>;
 }
 
-/** A request a sender made to one of the connector's webhook endpoints. */
 export interface Delivery {
   readonly id: string;
   readonly endpointId: string;
   readonly receivedAt: string;
-  /** `[name, value]` pairs in the order and case they arrived. */
   readonly headers: readonly (readonly [string, string])[];
-  /** The first value of a header, its name matched whatever its case. */
   header(name: string): string | undefined;
   readonly query: string;
-  /** The body byte for byte, which is what a signature is over. */
   readonly body: Uint8Array;
 }
 
-/** One thing a delivery names: its type, and the id `run` fetches it by. */
 export interface Hint {
   readonly type: string;
   readonly id: string;
 }
 
-/** How a connector reads what its vendor posts to it. */
 export interface Inbound<E extends EnvDeclaration> {
   /**
    * Whether the delivery came from the vendor, by its signature: one that
@@ -282,7 +253,6 @@ export interface Inbound<E extends EnvDeclaration> {
   hints(delivery: Delivery): readonly Hint[] | "everything";
 }
 
-/** One kind of item a connector writes. */
 export interface Kind {
   /**
    * Its `link_field`, where it names one, holds the vendor's own id for a
@@ -315,14 +285,11 @@ export interface Kind {
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
-  /** The registration's name, as the server lists it. */
   readonly name: string;
   readonly description?: string;
-  /** Named on every create and on every read of the connector's own rows. */
   readonly source: string;
   /** The kinds of item the connector writes, at most ten. */
   readonly types: readonly Kind[];
-  /** The kinds of connection it writes between its rows, from the rows at their source. */
   readonly connections?: readonly ConnectionDefinition[];
   /**
    * The types whose changes go back to the vendor, from the environment, so

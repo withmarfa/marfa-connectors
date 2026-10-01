@@ -1,15 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export interface HmacCheck {
-  /** The secret the sender signs with. */
   readonly secret: string;
   /** The body exactly as it arrived. A re-serialized copy never matches. */
   readonly body: Uint8Array;
-  /** The signature as the sender's header carries it. */
   readonly signature: string | undefined;
   readonly algorithm?: "sha256" | "sha1" | "sha512";
   readonly encoding?: "hex" | "base64";
-  /** Text before the digest in the header, such as GitHub's `sha256=`. */
   readonly prefix?: string;
 }
 

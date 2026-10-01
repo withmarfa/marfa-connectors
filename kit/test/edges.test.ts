@@ -81,7 +81,6 @@ describe("a row a person purged", () => {
     expect(harness.lastRun().summary).toContain(
       "1 entry names a row purged in Marfa and unchanged at the vendor since, so it is not written back",
     );
-    // Remembered by the instance, not the log: a later run still holds it.
     expect(await harness.once(vendor([one, two]))).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
 

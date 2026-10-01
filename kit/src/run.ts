@@ -48,40 +48,27 @@ export interface RunSetup<E extends EnvDeclaration> {
   environment: Environment;
   marfa: Marfa;
   connectorId: string;
-  /** This process, as the instance tells it from another under the same key. */
   process: string;
   logger: Logger;
   clock: Clock;
   signal: AbortSignal;
-  /** Whether the hold is lost; after it, the run carries and keeps
-   *  nothing more. */
   fenced?: () => boolean;
 }
 
-/** Why a run starts: its schedule reading the vendor whole, or a look
- *  between runs, reading only what it names, or whole if a delivery asked. */
 export type Trigger = "schedule" | "look";
 
 export interface RunResult {
-  /** No error ended the run, whatever writes it held. */
   readonly succeeded: boolean;
-  /** Where the log was kept at once the run ended. */
   readonly cursor: string | undefined;
-  /** Every delivery the run took is marked, none left unfetched or
-   *  unverified, so none waits on its account. */
   readonly settled: boolean;
 }
 
-/** A row the vendor has not been told about. */
 const createKey = "@create";
 
-/** Waiting rows past which a run for deliveries reads the vendor whole. */
 const wholeAbove = 200;
 
-/** How many deliveries one request marks. */
 const marksPerRequest = 200;
 
-/** An error's message, with the cause beneath it where there is one. */
 export function describe(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const cause: unknown = error.cause;
@@ -90,8 +77,6 @@ export function describe(error: unknown): string {
   return `${error.message} (${code ?? cause.message})`;
 }
 
-/** The counts as a run's summary opens: the two-way ones for a
- *  two-way connector, and the deliveries for one that reads them. */
 function tally(
   counts: Counts,
   outbound: { pushed: number; own: number } | undefined,
@@ -108,14 +93,11 @@ function tally(
   return summary;
 }
 
-/** Room left in a summary for saying that more conditions wait. */
 const moreNote = 80;
 
 /** The longest a single condition may be, so one never crowds out the rest. */
 const conditionCap = 500;
 
-/** The counts, then as many new conditions as the server's summary
- *  cap takes, in raised order; the rest wait for a later report. */
 function summarize(
   counts: string,
   fresh: [string, string][],
@@ -138,7 +120,6 @@ function summarize(
   return { summary, carried };
 }
 
-/** Each of the connector's types as the rows and the agreements read it. */
 export function specsOf<E extends EnvDeclaration>(
   connector: Connector<E>,
   env: EnvValues<E>,
@@ -178,8 +159,6 @@ export function specsOf<E extends EnvDeclaration>(
   );
 }
 
-/** What waits once a row's log frames are read, each field from when
- *  first differed; `own` counts echoes; a cascade waits for nothing. */
 export function observe(
   kind: Spec,
   seen: Seen,
@@ -265,8 +244,6 @@ function sumOf(counts: readonly Counts[]): Counts {
   return total;
 }
 
-/** One run: deliveries collected, the log recorded, creates and
- *  remakes carried, the vendor read, the rest carried, then reported. */
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   trigger: Trigger,
@@ -361,7 +338,6 @@ export async function runOnce<E extends EnvDeclaration>(
     await fetchRows([id]);
     return inLane(id);
   };
-  /** Keeps a purge settled past the vendor's change carrying it made. */
   const settlePurge = async (
     kind: Spec,
     item: Item,
@@ -425,7 +401,6 @@ export async function runOnce<E extends EnvDeclaration>(
       return found
         .filter((row) => {
           if (row.type !== type) return false;
-          // A row the vendor has not been told about has nothing to ask it.
           if (
             spec.link !== undefined &&
             rows.linkOf(row.properties) === undefined
@@ -433,7 +408,6 @@ export async function runOnce<E extends EnvDeclaration>(
             return false;
           if (spec.link === undefined && row.source !== spec.source)
             return false;
-          // One this run's entries or answers moved elsewhere is not under it.
           const named =
             rows.connecting.get(row.id)?.[connection] ??
             answeredConnections.get(row.id)?.[connection];
@@ -480,15 +454,10 @@ export async function runOnce<E extends EnvDeclaration>(
       return undefined;
     }
   };
-  /** Purges to carry, with the row as the log last showed it, kept
-   *  until carried. */
   const purged = new Map<string, Item>(
     (stored.purges ?? []).map((item) => [item.id, item]),
   );
-  /** The log's rows are recorded on the instance, so the cursor may
-   *  pass them. */
   let recorded = false;
-  /** Rows the log showed that nothing was agreed for, not carried. */
   let unagreed = 0;
 
   const withoutWaiting = (agreement: Agreement): Agreement => {
@@ -496,8 +465,6 @@ export async function runOnce<E extends EnvDeclaration>(
     Reflect.deleteProperty(next, "waiting");
     return next;
   };
-  /** Links and read-only fields a person changed, put back before
-   *  the vendor is read. */
   const putBack = async (id: string): Promise<void> => {
     const agreement = store.get(id);
     const found = await find(id);
@@ -572,8 +539,6 @@ export async function runOnce<E extends EnvDeclaration>(
       ...(Object.keys(waiting).length > 0 && { waiting }),
     });
   };
-  /** A run for deliveries also fetches waiting rows, so their fields
-   *  go over what the vendor holds; past a few hundred it reads whole. */
   const withWaiting = async (
     named: ReadonlyMap<string, ReadonlySet<string>>,
     ids: ReadonlySet<string>,
@@ -604,8 +569,6 @@ export async function runOnce<E extends EnvDeclaration>(
       `${id} is not sent to the vendor until the vendor has each row its read-only connections name`,
     );
   };
-  /** Carries a row's change; answers `unplaced` for a create waiting on
-   *  the vendor to have a row its mirrored connections name. */
   const carry = async (
     item: Item,
     agreement: Agreement,
@@ -635,7 +598,6 @@ export async function runOnce<E extends EnvDeclaration>(
       item.state === "trashed" &&
       agreement.attempted === undefined
     ) {
-      // Never made at the vendor, and now in the bin: nothing to carry.
       store.clear(item.id);
       return;
     }
@@ -680,14 +642,11 @@ export async function runOnce<E extends EnvDeclaration>(
             changeKind === "created",
           )
         : undefined;
-    // Placed by a row the vendor lacks: made once the vendor has that row.
     if (changeKind === "created" && moved?.unplaced === true) {
       return "unplaced";
     }
     const connected = Object.keys(moved?.connections ?? {}).length > 0;
     if (changeKind === "updated" && changed.length === 0 && !connected) {
-      // A read-only field no version could put back still waits, and a
-      // mirrored connection changed in the bin waits for the restore.
       const binned =
         current.state === "trashed" &&
         connections
@@ -756,8 +715,6 @@ export async function runOnce<E extends EnvDeclaration>(
       await rows.adoptAnswer(current.id, answered, new Set(changed));
     }
   };
-  /** The connections as carried, and a change to a target not yet
-   *  at the vendor still waiting. */
   const settledConnections = (
     agreement: Agreement,
     moved: Carried | undefined,
@@ -772,12 +729,10 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     return next;
   };
-  /** The connections the vendor answered it holds after a carry, by row. */
   const answeredConnections = new Map<
     string,
     Readonly<Record<string, readonly Target[]>>
   >();
-  /** A connection the vendor would not take is taken back in Marfa. */
   const answeredBack = async (): Promise<void> => {
     if (answeredConnections.size === 0) return;
     const answers = new Map(answeredConnections);
@@ -794,7 +749,6 @@ export async function runOnce<E extends EnvDeclaration>(
   ): void => {
     pushed += 1;
     if (answered?.connections !== undefined && item.state !== "trashed") {
-      // Only the kind's own connection types, as an entry's are held to.
       answeredConnections.set(
         item.id,
         Object.fromEntries(
@@ -823,13 +777,10 @@ export async function runOnce<E extends EnvDeclaration>(
       next.stateBy = base.stateBy;
       if (base.stateAt !== undefined) next.stateAt = base.stateAt;
     }
-    // Only a read-only field not yet put back, and a target Marfa
-    // lacks, still wait.
     const waiting: Record<string, string> = {};
     if (later) waiting[stateKey] = item.updated_at;
     const pending = base?.waiting?.[connectKey];
     if (pending !== undefined) waiting[connectKey] = pending;
-    // Connections this carry did not take, as with a trash, wait for the next.
     const connecting = base?.waiting?.[connectionsKey];
     if (moved === undefined && connecting !== undefined) {
       waiting[connectionsKey] = connecting;
@@ -1062,8 +1013,6 @@ export async function runOnce<E extends EnvDeclaration>(
           done.add(id);
           continue;
         }
-        // A row never linked has nothing at the vendor to make again: its
-        // restore is carried as the create it still is.
         const told = kind.link === undefined || agreement.link !== undefined;
         const restored =
           told && item.state === "active" && agreement.state !== "active";
@@ -1071,7 +1020,6 @@ export async function runOnce<E extends EnvDeclaration>(
           if (setup.fenced?.() === true || setup.signal.aborted) {
             throw new Stopped();
           }
-          // Its mirrored connections say where it is made again.
           const placing = new Set(
             connections
               .typesFrom(kind.type)
@@ -1108,13 +1056,11 @@ export async function runOnce<E extends EnvDeclaration>(
               attempted: agreement.attempted,
             }),
           };
-          // Placed by a row the vendor lacks: made again once it has it.
           if (placed?.unplaced === true) {
             heldBack(id);
             done.add(id);
             continue;
           }
-          // Kept before the vendor is asked, as for a create.
           store.set(id, {
             ...agreement,
             attempted: agreement.attempted ?? clock.now().toISOString(),
@@ -1130,7 +1076,6 @@ export async function runOnce<E extends EnvDeclaration>(
             continue;
           }
           if (!remade) {
-            // Nothing was made: the vendor still has it.
             const kept = { ...(store.get(id) ?? agreement) };
             Reflect.deleteProperty(kept, "attempted");
             store.set(id, kept);
@@ -1145,8 +1090,6 @@ export async function runOnce<E extends EnvDeclaration>(
               ...(kind.link !== undefined &&
                 linked !== undefined && { [kind.link]: linked }),
             });
-            // The vendor's new copy holds only what placed it: each other
-            // connection is carried.
             store.set(id, {
               vendor: side,
               marfa: side,
@@ -1233,7 +1176,6 @@ export async function runOnce<E extends EnvDeclaration>(
           );
         } catch (error) {
           if (!(error instanceof Unreachable)) throw error;
-          // Kept among the purges, for a later run to carry.
           unreached(item.id, error);
           continue;
         }
@@ -1244,7 +1186,6 @@ export async function runOnce<E extends EnvDeclaration>(
     }
   } catch (error) {
     failure = error;
-    // What was carried before the failure is agreed, so its answers apply.
     if (!(error instanceof Stopped) && setup.fenced?.() !== true) {
       try {
         await answeredBack();
@@ -1411,9 +1352,6 @@ export async function runOnce<E extends EnvDeclaration>(
   };
 }
 
-/** Whether the log past the cursor holds a change the vendor hasn't
- *  had, or an edit to put back, ignoring the connector's own echoes;
- *  answers where it read to. */
 export async function waitingInMarfa<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   cursor: string | undefined,
@@ -1439,7 +1377,6 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
     const last = seen.frames.at(-1)?.item;
     const spec = last === undefined ? undefined : specs.get(last.type);
     if (last === undefined || spec === undefined) return false;
-    // A purge is carried where its row was told to the vendor.
     if (seen.purged) {
       if (!spec.twoWay) return false;
       const link =
@@ -1453,8 +1390,6 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   if (waiting || read.connected.size === 0) {
     return { waiting, cursor: read.cursor };
   }
-  // An edge frame is the connector's own write unless the row's
-  // connections now differ from what was agreed.
   const [first] = specs.keys();
   const connected =
     first === undefined

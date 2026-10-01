@@ -207,7 +207,6 @@ describe("compare first", () => {
     expect(patches()).toHaveLength(1);
     const row = harness.server.row("a:1");
     expect(patches()[0]?.path).toBe(`/items/${row.id}`);
-    // The row's own time did not move, so it is not sent.
     expect(patches()[0]?.body).toEqual({
       version: 1,
       properties: { title: "One, renamed", note: "first" },
@@ -345,7 +344,6 @@ describe("the state", () => {
     held.token = "t1";
     await harness.once(held);
 
-    // Once the run has read what the entries name, and before it writes.
     harness.server.afterRead = (request) => {
       if (!JSON.stringify(request.body).includes("a:3")) return;
       harness.server.touch("a:1", { note: "by another writer" });
@@ -372,8 +370,6 @@ describe("the state", () => {
     expect(run.summary).toContain("held");
     expect(run.summary).toContain("note on");
     expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
-    // Marfa mirrors a vendor it only reads: the vendor cleared the note, so
-    // the other writer's note is put back to that.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, changed",
     });
@@ -415,7 +411,6 @@ describe("the state", () => {
     const held = vendor([one]);
     held.token = "t1";
     await harness.once(held);
-    // The witness: the field is there to be cleared.
     expect(harness.server.row("a:1").properties["note"]).toBe("first");
 
     harness.server.afterRead = () => {
@@ -425,14 +420,11 @@ describe("the state", () => {
     held.token = "t2";
     held.entries = [{ ...one, properties: { title: "One" } }];
     expect(await harness.once(held)).toBe(0);
-    // The server merged the clear beside the other writer's title.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, by another writer",
     });
     expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
 
-    // The next run reads the other writer's title from the log, and puts it
-    // back from the vendor, which Marfa mirrors.
     expect(await harness.once(held)).toBe(0);
     expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
     expect(harness.lastRun().summary).toContain("put back");
@@ -503,8 +495,6 @@ describe("the state", () => {
     held.token = "t2";
     held.entries = [{ ...entry, properties: { title: "One, by the vendor" } }];
     expect(await harness.once(held)).toBe(0);
-    // Judged by what the row holds: the other writer already cleared it,
-    // so the vendor's clear is nothing new and its title lands.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, by the vendor",
     });
@@ -552,8 +542,6 @@ describe("the state", () => {
     ];
     expect(await harness.once(held)).toBe(0);
 
-    // The vendor did not move the own time, so it is not sent, and the
-    // other writer's stands beside the vendor's title.
     expect(harness.server.row("a:1").occurred_at).toBe(
       "2026-09-02T10:00:00.000Z",
     );
@@ -579,7 +567,6 @@ describe("the state", () => {
     held.entries = [{ ...one, occurred_at: "2026-09-03T10:00:00.000Z" }];
     expect(await harness.once(held)).toBe(0);
 
-    // The two moves collide; the row is read again and the vendor's lands.
     expect(harness.server.row("a:1").occurred_at).toBe(
       "2026-09-03T10:00:00.000Z",
     );

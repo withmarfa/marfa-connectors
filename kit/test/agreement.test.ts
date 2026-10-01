@@ -13,7 +13,6 @@ const fields = ["title", "body", "labels"] as const;
 const never = (): boolean => false;
 const always = (): boolean => true;
 
-/** Both sides agreed on these values. */
 function agreed(values: Record<string, unknown>): Agreement {
   return {
     vendor: sideOf(fields, values),
@@ -53,7 +52,6 @@ describe("merge", () => {
     expect(merged.write).toBe(true);
     expect(merged.lost).toEqual([]);
     expect(merged.kept).toEqual([]);
-    // The title still waits to be carried, from when it was first seen.
     expect(merged.agreement.waiting).toEqual({
       title: "2026-09-28T10:05:00.000Z",
     });
@@ -77,7 +75,6 @@ describe("merge", () => {
         changed_at: "2026-09-28T10:07:00.000Z",
       },
     });
-    // The first sighting is the person's time, not the row's later one.
     expect(later.properties["title"]).toBe("Vendor's");
     expect(later.lost).toEqual(["title"]);
     expect(later.agreement.waiting).toBeUndefined();
@@ -241,7 +238,6 @@ describe("merge", () => {
         occurred_at: "2026-09-01T00:00:00.000Z",
       },
     });
-    // The vendor did not move it: Marfa's own time stands.
     expect(again.occurredAt).toBeUndefined();
     expect(again.write).toBe(false);
   });
@@ -266,7 +262,6 @@ describe("carried", () => {
     expect(next.vendor["title"]).toBe(mark("Sent"));
     expect(next.waiting).toBeUndefined();
     expect(next.changedAt).toBe("2026-09-28T12:00:00.000Z");
-    // The vendor's echo of its own answer is no change on either side.
     const echo = merge({
       fields,
       readOnly: never,

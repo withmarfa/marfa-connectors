@@ -3,21 +3,14 @@ import type { Marfa } from "./marfa.js";
 import { describe } from "./run.js";
 import type { Clock } from "./runtime.js";
 
-/** How long a hold is trusted with no window named: two thirds of the
- *  default three minutes. */
 const defaultTrustMs = 120_000;
 
-/** How long a renewal may take before it counts as failed. */
 const renewalMs = 15_000;
 
-/** This process's hold on the registration, so two under one key never
- *  run at once; its signal fences a run once the hold can't be trusted. */
 export class Hold {
   private fence = new AbortController();
   private holding = false;
-  /** When the last renewal that landed was asked for. */
   private renewedAt = 0;
-  /** Two thirds of the instance's window, a third left to renew in. */
   private trustMs = defaultTrustMs;
   private rearm = new AbortController();
 
@@ -29,12 +22,10 @@ export class Hold {
     private readonly clock: Clock,
   ) {}
 
-  /** Aborted when a run under the hold must stop. */
   get signal(): AbortSignal {
     return this.fence.signal;
   }
 
-  /** Takes it before a run; where another process holds it, says until when. */
   async take(): Promise<{ held: true } | { held: false; until: string }> {
     const asked = this.clock.now().getTime();
     const answer = await this.ask();
@@ -73,12 +64,10 @@ export class Hold {
     this.trusted(asked, answer.window);
   }
 
-  /** How often to renew: twice within the time it is trusted. */
   get renewEvery(): number {
     return this.trustMs / 2;
   }
 
-  /** Aborted when a shorter window is learned, cutting a wait to renew. */
   get rearmed(): AbortSignal {
     return this.rearm.signal;
   }
@@ -93,8 +82,6 @@ export class Hold {
     }
   }
 
-  /** Fences the run where the hold may have lapsed since last renewed;
-   *  answers whether it is fenced. */
   check(): boolean {
     if (
       this.holding &&

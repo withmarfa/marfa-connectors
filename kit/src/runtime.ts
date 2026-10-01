@@ -1,19 +1,14 @@
 export interface Clock {
   now(): Date;
-  /** Resolves after `ms`, or as soon as `signal` aborts. */
   sleep(ms: number, signal: AbortSignal): Promise<void>;
 }
 
-/** What the kit takes from the process it runs in. */
 export interface Runtime {
   readonly argv: readonly string[];
   readonly env: Readonly<Record<string, string | undefined>>;
-  /** One log line, without its newline. */
   write(line: string): void;
   readonly clock: Clock;
-  /** How long a request to the server may go unanswered. */
   readonly requestTimeoutMs: number;
-  /** Called once when the process is asked to stop. */
   onStop(listener: () => void): void;
 }
 
