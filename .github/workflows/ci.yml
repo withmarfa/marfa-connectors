@@ -6,9 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to the same branch, `main` included, supersedes the run before
+# it: the newest commit's run validates everything that came before it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,8 +18,37 @@ permissions:
 # Both jobs fetch and build the pinned monorepo on every run: the client is
 # packed from it and the proof boots its server.
 jobs:
+  # A pull request that touches only top-level documentation skips both jobs.
+  # A skipped job satisfies a required check; a workflow filtered out by
+  # `paths` would leave it pending, which is why this is a job and not a
+  # filter. An unreadable diff runs everything.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: classify
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          code=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && paths="$(git diff --name-only --no-renames "$BASE...$HEAD")"; then
+            if [ -n "$paths" ] && ! grep -qvE '^([^/]+\.md|LICENSE)$' <<<"$paths"; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   checks:
     name: Checks
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -28,6 +59,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: pnpm
       - run: scripts/monorepo.sh
       - run: scripts/vendor-client.sh
       - run: pnpm install --frozen-lockfile
@@ -39,6 +71,8 @@ jobs:
 
   proof:
     name: Proof
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -49,6 +83,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: pnpm
       - run: scripts/monorepo.sh
       - run: scripts/vendor-client.sh
       - run: pnpm install --frozen-lockfile
