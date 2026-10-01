@@ -18,7 +18,6 @@ afterEach(async () => {
 const one = { source_id: "a:1", properties: { title: "One" } };
 const minute = 60_000;
 
-/** A port nothing listens on. */
 async function closedPort(): Promise<number> {
   const server = createNetServer();
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
@@ -27,7 +26,6 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
-/** A server that takes connections and never answers. */
 async function silentServer(): Promise<{
   url: string;
   close: () => Promise<void>;

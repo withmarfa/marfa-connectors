@@ -1,7 +1,6 @@
 import type { ConnectionDefinition, TypeDefinition } from "./define.js";
 import type { EdgeType } from "./marfa.js";
 
-/** What makes a field what it is; its description and label do not. */
 const shape = [
   "type",
   "items_type",
@@ -16,7 +15,6 @@ const defaults: Partial<Record<(typeof shape)[number], unknown>> = {
   searchable: true,
 };
 
-/** Formats the server stores as a field type of their own. */
 const typeFormats = new Set(["url", "email", "datetime", "date", "thumbnail"]);
 
 function record(value: unknown): Record<string, unknown> {
@@ -32,8 +30,6 @@ function names(value: unknown): string[] {
     : [];
 }
 
-/** A field as the server stores it: a format that is a field type
- *  of its own replaces the declared type and is itself dropped. */
 function normalized(field: unknown): Record<string, unknown> {
   const out = { ...record(field) };
   const format = out["format"];
@@ -44,7 +40,6 @@ function normalized(field: unknown): Record<string, unknown> {
   return out;
 }
 
-/** A top-level list and per-field flags are two spellings of one thing. */
 function requiredSet(type: Record<string, unknown>): string[] {
   const fields = record(type["fields"]);
   const flagged = Object.entries(fields)
@@ -57,8 +52,6 @@ function show(value: unknown): string {
   return value === undefined ? "nothing" : JSON.stringify(value);
 }
 
-/** How the server's type differs from a connector's, in shape.
- *  `inherited` is the parent's merged-in fields; empty means they agree. */
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,
@@ -128,8 +121,6 @@ export function typeDifferences(
   return differences;
 }
 
-/** How the server's edge type differs from the connection a
- *  connector declares. */
 export function edgeTypeDifferences(
   carried: ConnectionDefinition,
   served: EdgeType,

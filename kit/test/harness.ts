@@ -19,10 +19,6 @@ interface Sleep {
   wake: () => void;
 }
 
-/**
- * A clock whose sleeps end only when a test ends them, so a schedule is
- * stepped through rather than waited out.
- */
 export class ManualClock implements Clock {
   readonly requested: number[] = [];
   private readonly pending: Sleep[] = [];
@@ -55,7 +51,6 @@ export class ManualClock implements Clock {
     });
   }
 
-  /** Resolves once a sleep of `ms` is pending. */
   async sleeping(ms: number): Promise<void> {
     while (!this.pending.some((sleep) => sleep.ms === ms)) {
       await new Promise<void>((resolve) => this.waiters.push(resolve));
@@ -66,12 +61,10 @@ export class ManualClock implements Clock {
     return this.pending.length;
   }
 
-  /** Moves the time on without ending any sleep, as a slow run does. */
   advance(ms: number): void {
     this.time += ms;
   }
 
-  /** Ends a pending sleep of `ms`, waiting for one to be pending. */
   async wake(ms: number): Promise<void> {
     for (;;) {
       await this.sleeping(ms);
@@ -94,67 +87,43 @@ export const testType: TypeDefinition = {
     title: { type: "string", required: true },
     note: { type: "string" },
     link: { type: "url" },
-    /** The vendor's own id for the entry, the link of the two-way connector. */
     vendor_id: { type: "string" },
   },
 };
 
-/** The test type with the vendor's id as its link, as the two-way
- *  connector declares it. */
 export const linkedType: TypeDefinition = {
   ...testType,
   link_field: "vendor_id",
 };
 
-/** Every property the test vendor holds; `toString` is a name
- *  every object answers. */
+/** `toString` is a name every object answers. */
 export const testFields = ["title", "note", "link", "vendor_id", "toString"];
 
-/** What the test vendor holds, which a test changes between runs. */
 export interface Vendor {
   entries: Entry[];
   archived: string[];
   token: string | undefined;
-  /** Awaited inside the run, so a test can hold a run open. */
   gate?: Promise<void> | undefined;
   fail?: Error | undefined;
   conditions?: [string, string][];
   logs?: string[];
   warnings?: string[];
   runs: number;
-  /** What the two-way connector was handed to carry back, in order. */
   changes: Change[];
-  /** What `onChange` answers as the vendor's entry after its write. */
   answer?: ((change: Change) => Entry | undefined) | undefined;
-  /** Called while `remake` makes the row again, before it links it. */
   duringRemake?: (() => void) | undefined;
-  /** Thrown once the run has written what the vendor sent. */
   failAfter?: Error | undefined;
-  /** A push that throws, the first time the named row is offered. */
   pushFail?: { id: string; error: Error } | undefined;
-  /** A remake that throws, the first time the named row is offered. */
   remakeFail?: { id: string; error: Error } | undefined;
-  /** Rows the vendor cannot be reached for, to push or make again. */
   unreachable?: Set<string> | undefined;
-  /** Rows the vendor cannot be reached for, by the scope each waits on. */
   unreachableIn?: Map<string, string> | undefined;
-  /** The vendor's id for a row the vendor has not been told about. */
   vendorIdFor?: ((change: Change) => string | undefined) | undefined;
-  /** Rows the vendor no longer has, by id, and the id it makes each under. */
   gone?: Map<string, string>;
-  /** What `remake` was asked, and how many runs had read the vendor then. */
   remakes?: { change: Change; runsBefore: number }[];
-  /** The ids each run was handed as hints, in order. */
   hints?: (ReadonlySet<string> | undefined)[];
-  /** The two-way connector's kind brings a trashed row back on
-   *  the vendor's change. */
   revive?: boolean;
-  /** The connection types the connector declares. */
   connections?: ConnectionDefinition[];
-  /** The two-way kind's read-only fields and connection types. */
   readOnly?: string[];
-  /** Asked of `linked` by each two-way run, after it upserts, and what
-   *  each answered. */
   ask?: { connection: string; target: Target } | undefined;
   answers?: string[][];
 }
@@ -189,12 +158,6 @@ export function testConnector(held: Vendor) {
   });
 }
 
-/**
- * The two-way connector: the same pull as the one-way one, a link on the
- * type's `vendor_id`, and a push that records what it was handed, writes
- * the vendor's id back where the test says one, and throws where the test
- * says so.
- */
 function twoWayConnector(held: Vendor) {
   return defineConnector({
     name: "test",
@@ -272,11 +235,8 @@ function twoWayConnector(held: Vendor) {
   });
 }
 
-/** The signals handed to each `verify` that hung, in the order they hung. */
 export const hung: AbortSignal[] = [];
 
-/** How the test connectors read deliveries: signed by `X-Signature`,
- *  `X-Throw` throws, `X-Hang` waits, and a non-JSON body throws in hints. */
 const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
   verify: (delivery, env, signal) => {
     if (delivery.header("x-hang") !== undefined) {
@@ -308,7 +268,6 @@ const testInbound: Inbound<{ TEST_TOKEN: "secret" }> = {
   },
 };
 
-/** The one-way connector reading deliveries. */
 export function inboundConnector(held: Vendor) {
   const base = testConnector(held);
   return defineConnector({
@@ -325,7 +284,6 @@ export function inboundConnector(held: Vendor) {
   });
 }
 
-/** The two-way connector reading deliveries. */
 function inboundTwoWayConnector(held: Vendor) {
   const base = twoWayConnector(held);
   return defineConnector({
@@ -340,7 +298,6 @@ function inboundTwoWayConnector(held: Vendor) {
         await base.run(context);
         return;
       }
-      // Fetched alone, as a vendor answers for one item at a time.
       held.runs += 1;
       await context.upsert(
         testType.id,
@@ -356,7 +313,6 @@ function inboundTwoWayConnector(held: Vendor) {
   });
 }
 
-/** A body as the test vendor posts it, with the header that signs it. */
 export function signed(
   said: { ids?: string[]; type?: string; everything?: boolean },
   secret = secretToken,
@@ -422,7 +378,6 @@ export class Harness {
     return start(testConnector(held), this.runtime(["--once"], env));
   }
 
-  /** The connector that reads deliveries, as the arguments say. */
   inbound(
     held: Vendor,
     argv: readonly string[] = ["--once"],
@@ -431,17 +386,14 @@ export class Harness {
     return start(inboundConnector(held), this.runtime(argv, env));
   }
 
-  /** The two-way connector that reads deliveries, as the arguments say. */
   inboundTwoWay(held: Vendor, argv: readonly string[]): Promise<number> {
     return start(inboundTwoWayConnector(held), this.runtime(argv));
   }
 
-  /** The two-way connector without webhooks, as the arguments say. */
   twoWayRunning(held: Vendor, argv: readonly string[]): Promise<number> {
     return start(twoWayConnector(held), this.runtime(argv));
   }
 
-  /** One run of the two-way connector. */
   twoWay(
     held: Vendor,
     env?: Record<string, string | undefined>,
@@ -449,12 +401,10 @@ export class Harness {
     return start(twoWayConnector(held), this.runtime(["--once"], env));
   }
 
-  /** The state document the instance keeps for the connector. */
   kept(): Record<string, unknown> {
     return this.server.connectorState ?? {};
   }
 
-  /** The agreement the instance keeps for a row. */
   agreement(id: string): Record<string, unknown> | undefined {
     return this.server.agreements.get(id)?.record;
   }

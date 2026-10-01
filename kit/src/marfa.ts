@@ -7,8 +7,6 @@ import {
 import type { ConnectionDefinition, Item, TypeDefinition } from "./define.js";
 
 export type BulkResult = components["schemas"]["BulkResultEntry"];
-/** A delivery as a listing answers it: the client reads each `[name, value]`
- *  header pair as a plain array. */
 export type InboundDeliveryRow = Omit<
   components["schemas"]["InboundDelivery"],
   "headers"
@@ -24,14 +22,14 @@ export type EdgeType = components["schemas"]["EdgeType"];
 /** Edges one bulk request carries, well inside the door's 5000. */
 const edgePage = 1000;
 
-/** Keys one lookup names at most. */
+/** The server's cap on the keys one lookup names. */
 const lookupCap = 500;
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
 
-/** The server said no, in its own envelope. `status` is absent on one
- *  entry of a bulk answer, which the page's own status does not describe. */
+/** `status` is absent on one entry of a bulk answer, which the page's own
+ *  status does not describe. */
 export class Refusal extends Error {
   override name = "Refusal";
 
@@ -71,11 +69,9 @@ export interface NewRow {
   occurred_at?: string;
 }
 
-/** The doors a connector uses; every refusal thrown as a {@link Refusal}. */
 export class Marfa {
   constructor(private readonly client: MarfaClient) {}
 
-  /** Registers the key, and answers its registration and its own source. */
   async register(
     name: string,
     description: string | undefined,
@@ -106,8 +102,6 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** The key this client bears, as the server holds it, or `undefined`
-   *  from a server with no door for a key to read itself. */
   async currentKey(): Promise<Key | undefined> {
     const { data, error, response } = await this.client.GET("/keys/current");
     if (response.status === 404) return undefined;
@@ -115,7 +109,6 @@ export class Marfa {
     return data;
   }
 
-  /** The type as the server answers it, or `undefined` when it has none. */
   async type(id: string): Promise<Record<string, unknown> | undefined> {
     const { data, error, response } = await this.client.GET("/types/{id}", {
       params: { path: { id } },
@@ -146,8 +139,6 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** Each row, in any state, with its outbound edges of the named
-   *  types, every page of them. */
   async edgesFrom(
     type: string,
     ids: readonly string[],
@@ -257,8 +248,6 @@ export class Marfa {
     return data;
   }
 
-  /** Stores bytes by their content, answering their `sha256:` hash;
-   *  bytes already held answer theirs. */
   async upload(
     bytes: Uint8Array,
     mimeType: string,
@@ -281,7 +270,7 @@ export class Marfa {
     throw refusal(response, error);
   }
 
-  /** Every row whose type is this one or inherits from it, in every state. */
+  /** `/items?type=` matches subtypes, so callers filter by exact type. */
   async ownRows(type: string): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -303,7 +292,6 @@ export class Marfa {
     return rows;
   }
 
-  /** The active rows of the type holding an edge of the kind to the target. */
   async connectedTo(
     type: string,
     edgeType: string,
@@ -328,8 +316,6 @@ export class Marfa {
     return rows;
   }
 
-  /** Rows in any state by link, natural key or id, with the tombstones
-   *  the type keeps for the keys named, in pages the door's cap allows. */
   async lookup(
     type: string,
     by:
@@ -365,7 +351,6 @@ export class Marfa {
     return found;
   }
 
-  /** Moves the named tombstones' `settled_at` to `at`, where that is later. */
   async settleTombstones(
     type: string,
     by:
@@ -408,7 +393,6 @@ export class Marfa {
     return data.item;
   }
 
-  /** The row's snapshots, oldest first: what it held before each update. */
   async versions(id: string): Promise<Version[]> {
     const { data, error, response } = await this.client.GET(
       "/items/{id}/versions",
@@ -418,8 +402,6 @@ export class Marfa {
     return data.data;
   }
 
-  /** Lays properties over a row's at the version it was read at, leaving
-   *  the rest as-is; the link is written this way too, as just another. */
   async merge(
     id: string,
     version: number,
@@ -501,7 +483,6 @@ export class Marfa {
     return data.item;
   }
 
-  /** The registration's webhook endpoints, retired ones included. */
   async endpoints(id: string): Promise<InboundEndpoint[]> {
     const { data, error, response } = await this.client.GET(
       "/connectors/{id}/endpoints",
@@ -511,7 +492,6 @@ export class Marfa {
     return data.data;
   }
 
-  /** The deliveries not yet handled, oldest first, at most `limit`. */
   async pendingDeliveries(
     id: string,
     limit: number,
@@ -558,7 +538,7 @@ export class Marfa {
     return new Uint8Array(data);
   }
 
-  /** Marks deliveries, two hundred to a request; the first mark stands. */
+  /** The first mark stands. */
   async handled(
     id: string,
     ids: readonly string[],
@@ -576,8 +556,6 @@ export class Marfa {
     }
   }
 
-  /** Takes or renews the registration's hold for this process: when it
-   *  expires, whether it held without a lapse, or `elsewhere` if held. */
   async hold(
     id: string,
     process: string,
@@ -623,7 +601,6 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** The state document kept for the key's own source, `{}` where none is. */
   async connectorState(id: string): Promise<unknown> {
     const { data, error, response } = await this.client.GET(
       "/connectors/{id}/state",
@@ -645,7 +622,6 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** The agreements the instance holds for the rows named, at most 500. */
   async findAgreements(
     id: string,
     itemIds: readonly string[],
@@ -658,7 +634,6 @@ export class Marfa {
     return data.data;
   }
 
-  /** Every row whose agreement is marked waiting. */
   async waitingAgreements(id: string, signal: AbortSignal): Promise<string[]> {
     const ids: string[] = [];
     const walk = pages(async (cursor) => {
@@ -683,7 +658,6 @@ export class Marfa {
     return ids;
   }
 
-  /** Writes and clears agreements, at most 500 of each to a request. */
   async writeAgreements(
     id: string,
     process: string,

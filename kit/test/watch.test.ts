@@ -28,7 +28,6 @@ function watchState(): { cursor?: string } {
   return typeof cursor === "string" ? { cursor } : {};
 }
 
-/** A run of the two-way connector whose vendor sends nothing new. */
 async function quietRun(held: Vendor): Promise<number> {
   held.changes.length = 0;
   return harness.twoWay(held);
@@ -37,16 +36,13 @@ async function quietRun(held: Vendor): Promise<number> {
 describe("the events request", () => {
   it("is sent by every connector, since what one only reads is watched too", async () => {
     await harness.once(vendor([one]));
-    // Nothing kept yet: the first read takes the log's head.
     expect(streams()).toHaveLength(1);
     expect(streams()[0]?.headers["last-event-id"]).toBeUndefined();
-    // The two-way connector's type names its link.
     harness.server.types.set(linkedType.id, { ...linkedType });
     await harness.twoWay(vendor([one]));
     expect(streams()).toHaveLength(2);
     expect(streams()[1]?.query.get("type")).toBe("test.entry");
     expect(streams()[1]?.query.get("edges")).toBe("none");
-    // Then from the head the first read kept.
     expect(streams()[1]?.headers["last-event-id"]).toMatch(/^\d+$/);
   });
 });
@@ -55,17 +51,14 @@ describe("the cursor", () => {
   it("is kept at the head read and advanced by the next run", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
-    // Nothing was in the log when the read was made: the head was 0.
     expect(watchState().cursor).toBe("0");
 
     expect(await quietRun(held)).toBe(0);
-    // The two creates were read, both the connector's own.
     expect(watchState().cursor).toBe(String(harness.server.head));
     expect(harness.lastRun().summary).toMatch(/pushed 0, own 2, conflicts 0/);
     expect(held.changes).toHaveLength(0);
     expect(streams()[1]?.headers["last-event-id"]).toBe("0");
 
-    // The next read resumes from where the last one reached.
     await quietRun(held);
     expect(streams()[2]?.headers["last-event-id"]).toBe(
       String(harness.server.head),
@@ -81,8 +74,6 @@ describe("the cursor", () => {
     harness.server.edit(first.id, { title: "One, by a person" });
     harness.server.edit(second.id, { title: "Two, by a person" });
 
-    // The vendor sends nothing while the pushes are tried, so what the
-    // runs do is the log's alone.
     held.entries = [];
     held.pushFail = { id: second.id, error: new Error("the vendor is down") };
     expect(await quietRun(held)).toBe(1);
@@ -95,8 +86,6 @@ describe("the cursor", () => {
     expect(watchState().cursor).toBe(String(harness.server.head));
     expect(harness.server.agreements.get(second.id)?.waiting).toBe(true);
 
-    // The one that did not land is offered again, though the log has moved
-    // on; the one that did is carried.
     expect(await quietRun(held)).toBe(0);
     expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
     expect(harness.server.agreements.get(second.id)?.waiting).toBe(false);
@@ -170,8 +159,6 @@ describe("what is carried back", () => {
     harness.server.trash(first.id);
 
     await quietRun(held);
-    // In the order of each row's latest frame: the second row's edit, then
-    // the first row's trash.
     expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
       [
         ["updated", second.id],
@@ -205,7 +192,6 @@ describe("what is carried back", () => {
       "2 rows the log named have nothing agreed with the vendor yet",
     );
 
-    // The vendor's entries seed what was agreed, and carry nothing back.
     held.entries = [one, two];
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
@@ -221,8 +207,6 @@ describe("what is carried back", () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
-    // Listed under the type's filter with the rest, and not the
-    // connector's to carry.
     harness.server.insert(undefined, { title: "Sub" }, "test.sub", "person");
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { title: "One, by a person" });
@@ -254,14 +238,11 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The vendor sends nothing, so what is carried back is the log's alone.
     held.entries = [];
     harness.server.incompleteAfter = 1;
     await quietRun(held);
     expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
     expect(watchState().cursor).toBe(String(harness.server.head - 1));
-    // Said in the log, with the server's reason, so a stream that keeps
-    // ending short is visible.
     expect(harness.lines).toContainEqual(
       expect.stringContaining(
         "the server ended the stream: replay_failed; the rest of the log is read next run",
@@ -282,9 +263,6 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The stream stalls after the first frame, never saying it is live,
-    // so nothing but the request's own timeout ends the read; what was
-    // read stands and the cursor is the last id received.
     held.entries = [];
     harness.server.stallAfter = 1;
     harness.requestTimeoutMs = 200;
@@ -310,9 +288,8 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
-    // The head is another type's frame, which this reader is never sent.
-    // The marker names it all the same, so the read ends there and the
-    // next run resumes past it.
+    // The head is another type's frame, never sent to this reader; the marker
+    // names it all the same, so the next run resumes past it.
     harness.server.insert(
       undefined,
       { title: "Other" },
@@ -326,7 +303,6 @@ describe("a read that ends early", () => {
       second.id,
     ]);
     expect(watchState().cursor).toBe(String(harness.server.head));
-    // The read was whole, so nothing is deferred to the next run.
     expect(harness.lines).not.toContainEqual(
       expect.stringContaining("is read next run"),
     );
@@ -344,8 +320,6 @@ describe("a read that ends early", () => {
     await quietRun(held);
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { title: "One, by a person" });
-    // A server whose head read outran its budget sends the marker with no
-    // cursor; the read still ends there, and resumes from the last frame.
     harness.server.liveCursorNull = true;
     expect(await quietRun(held)).toBe(0);
     expect(held.changes.map((change) => change.item.id)).toEqual([row.id]);
@@ -386,7 +360,6 @@ describe("a read that ends early", () => {
     expect(harness.lastRun().outcome).toBe("failed");
     expect(held.changes).toEqual([]);
     expect(watchState().cursor).toBe(before);
-    // The witness: the next run reads the change.
     expect(await quietRun(held)).toBe(0);
     expect(held.changes.map((change) => change.item.id)).toEqual([row.id]);
   });
@@ -511,7 +484,6 @@ describe("a row changed between the read and the write", () => {
     ];
     held.changes.length = 0;
     await harness.twoWay(held);
-    // The server merged the vendor's title beside the person's note.
     expect(harness.server.row("a:1").properties).toEqual({
       title: "One, by the vendor",
       note: "by a person, since the read",
@@ -591,7 +563,6 @@ describe("what was agreed", () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
-    // One write lands, one is refused: the state is held.
     harness.server.refuseNext(
       `PATCH /items/${harness.server.row("a:2").id}`,
       400,
@@ -604,8 +575,6 @@ describe("what was agreed", () => {
     await quietRun(held);
     expect(harness.lastRun().summary).toContain("held");
 
-    // The write that landed is the connector's own, and is not carried
-    // back on the run after.
     held.entries = [];
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
@@ -619,9 +588,6 @@ describe("what was agreed", () => {
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { title: "One, by a person" });
 
-    // The stream never says it is live and the request times out before
-    // the edit's frame arrives, so the read shows nothing; the row's
-    // version is past the connector's last write all the same.
     harness.server.withholdLive = true;
     harness.server.beforeAnswer = async (request) => {
       if (request.path === "/events") {
@@ -692,8 +658,6 @@ describe("what was agreed", () => {
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
 
-    // A read from the start shows the edit before the write: it waits,
-    // the write is what was agreed, and nothing is carried.
     const kept = harness.server.states.get("test");
     delete kept?.["cursor"];
     held.entries = [];
@@ -807,7 +771,6 @@ describe("a resync", () => {
     held.entries = [];
     await quietRun(held);
     harness.server.tooOld = false;
-    // The edit's event sits past the cursor the resync committed.
     await quietRun(held);
     expect(
       held.changes.map((change) => change.item.properties["title"]),
@@ -875,8 +838,6 @@ describe("a tie between the two sides", () => {
 });
 
 describe("what echoes after a conflict", () => {
-  // Each case ends with a quiet run: the connector's own last write is
-  // read back, and it is nobody else's.
   it("is nothing, where the vendor won a field both sides changed", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
@@ -932,7 +893,6 @@ describe("a purge and a transition met by what was agreed", () => {
     await harness.twoWay(held);
     harness.server.trash(theirs.id);
     harness.server.purgeById(theirs.id);
-    // The vendor still lists the entry, by the link the row carried.
     held.entries = [
       {
         source_id: "v-theirs",
@@ -953,8 +913,6 @@ describe("a purge and a transition met by what was agreed", () => {
     harness.server.trash(row.id);
     await quietRun(held);
     expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
-    // The vendor changed the item after the trash reached it and before the
-    // person's restore, which is the later change.
     const echoedAt = harness.server.row("a:1").updated_at;
     const restored = harness.server.restore(row.id);
     expect(Date.parse(restored.updated_at) > Date.parse(echoedAt)).toBe(true);
@@ -967,7 +925,6 @@ describe("a purge and a transition met by what was agreed", () => {
     ];
     held.changes.length = 0;
     await harness.twoWay(held);
-    // A field only the vendor changed is taken, and the restore still goes.
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, closed at the vendor",
     );
@@ -975,8 +932,6 @@ describe("a purge and a transition met by what was agreed", () => {
     expect(held.changes.map((change) => change.kind)).toEqual(["restored"]);
     expect(harness.lastRun().summary).toMatch(/conflicts 0/);
 
-    // The witness: a vendor change later than the restore lands, and the
-    // restore needs no carrying.
     harness.server.trash(row.id);
     await quietRun(held);
     const again = harness.server.restore(row.id);
@@ -994,7 +949,6 @@ describe("a purge and a transition met by what was agreed", () => {
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, edited at the vendor",
     );
-    // The vendor has the row, so the restore has nothing left to carry.
     expect(held.changes).toEqual([]);
     expect(harness.lastRun().summary).toMatch(/conflicts 0/);
   });
@@ -1021,8 +975,6 @@ describe("a purge and a transition met by what was agreed", () => {
     ];
     held.changes.length = 0;
     await harness.twoWay(held);
-    // A transition touches no property: the vendor's write proceeds, the
-    // archive is carried back, and nothing is a conflict.
     expect(harness.server.row("a:1").properties["title"]).toBe(
       "One, by the vendor",
     );
@@ -1074,7 +1026,6 @@ describe("a create", () => {
       return change.item.id === theirs.id ? "v-theirs" : undefined;
     };
     await quietRun(held);
-    // The link merged beside the edit, which the next run carries.
     expect(harness.server.byId(theirs.id).properties).toMatchObject({
       note: "added meanwhile",
       vendor_id: "v-theirs",
@@ -1367,7 +1318,6 @@ describe("an answered entry", () => {
     await quietRun(held);
     expect(held.changes).toHaveLength(1);
 
-    // The vendor lists what it holds; Marfa keeps what the person wrote.
     held.entries = [
       {
         ...one,

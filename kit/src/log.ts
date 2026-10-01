@@ -1,12 +1,10 @@
 import { shortestSecret } from "./environment.js";
 import type { Clock } from "./runtime.js";
 
-/** Hex escapes in lower case, as some encoders write them. */
 function lowered(text: string): string {
   return text.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
 }
 
-/** A secret as it is written, and as a URL or a form may carry it. */
 function spelledAs(secret: string): string[] {
   const encoded = encodeURIComponent(secret);
   const form = new URLSearchParams({ s: secret }).toString().slice(2);
@@ -24,7 +22,6 @@ export class Logger {
     this.keep(secrets);
   }
 
-  /** Keeps these out of every line and report from now on. */
   keep(secrets: readonly string[]): void {
     // One variable may hold several secrets, each able to appear alone.
     // Longest first, so a secret that contains another is replaced whole.
@@ -68,8 +65,7 @@ export class Logger {
   }
 }
 
-/** A value made at run time kept out of every line from now on; one too
- *  short to find without redacting ordinary words is refused. */
+/** One too short to find without redacting ordinary words is refused. */
 export function keepSecret(logger: Logger, value: string): void {
   if (value.length < shortestSecret) {
     throw new Error(

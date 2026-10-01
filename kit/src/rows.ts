@@ -27,17 +27,14 @@ export interface Counts {
   archived: number;
   unchanged: number;
   skipped: number;
-  /** Rows where both sides changed one field, decided by the later change. */
   conflicts: number;
 }
 
-/** The run was asked to stop, and made no write after it was. */
 export class Stopped extends Error {
   override name = "Stopped";
   override message = "stopped before the run finished";
 }
 
-/** A link value another row of the type already carries. */
 export class LinkTaken extends Error {
   override name = "LinkTaken";
 }
@@ -60,47 +57,33 @@ export class Unreachable extends Error {
   }
 }
 
-/** What the kit knows of one of the connector's types. */
 export interface Spec {
   readonly type: string;
   readonly source: string;
-  /** The property holding the vendor's own id, where the connector
-   *  declares one. */
   readonly link: string | undefined;
-  /** The properties the vendor holds. */
   readonly fields: readonly string[];
-  /** The fields Marfa mirrors from the vendor and never carries. */
   readonly readOnly: ReadonlySet<string>;
-  /** The connector carries changes back. */
   readonly twoWay: boolean;
-  /** A trashed row comes back on the vendor's change. */
   readonly revive: boolean;
-  /** The connection types a row of it is the source of. */
   readonly connections: ReadonlySet<string>;
 }
 
-/** In the bin because another row's trash took it there. */
 export function cascaded(item: Item): boolean {
   return item.trashed_by_cascade === true;
 }
 
-/** The fields a file's bytes are written to. */
 const fileFields = ["blob_ref", "mime_type"];
 
-/** A target the vendor named and Marfa lacks: waiting, but nothing to carry. */
 export const connectKey = "@connect";
 
-/** Whether anything waiting is Marfa's to carry. */
 export function carriable(
   waiting: Readonly<Record<string, string>> | undefined,
 ): boolean {
   return Object.keys(waiting ?? {}).some((key) => key !== connectKey);
 }
 
-/** A state change waiting to be carried, beside the fields. */
 export const stateKey = "@state";
 
-/** Another writer got there first: the row moved or left since it was read. */
 const raced = new Set([
   "version_conflict",
   "ancestor_unavailable",
@@ -108,8 +91,6 @@ const raced = new Set([
   "invalid_transition",
 ]);
 
-/** Codes about the row itself: its contents, size, or a natural key
- *  another type holds. Other codes are the kit's own fault, and end the run. */
 const refusedUpdate = new Set([
   "invalid_properties",
   "request_too_large",
@@ -149,16 +130,12 @@ function paged(creates: readonly NewRow[]): NewRow[][] {
   return pages;
 }
 
-/** The hooks a run hands the rows, to say what it met. */
 export interface Hooks {
   refused(sourceId: string, reason: string): void;
   condition(key: string, message: string): void;
-  /** Whether the hold is lost, so nothing more may be written. */
   fenced(): boolean;
 }
 
-/** The connector's rows of one type, read as entries name them, each
- *  merged against the agreement; a trashed row writes only if revived. */
 export class Rows {
   readonly counts: Counts = {
     created: 0,
@@ -168,28 +145,18 @@ export class Rows {
     skipped: 0,
     conflicts: 0,
   };
-  /** Writes that did not land, which hold the run's state where it was. */
   held = 0;
-  /** Rows that took the vendor's values with nothing agreed. */
   seeded = 0;
-  /** Entries for rows a person purged, remembered, and not written back. */
   remembered = 0;
-  /** Rows brought back from the bin by the vendor's change. */
   revived = 0;
-  /** Tombstones met this run, by `link:` and by `key:`. */
   private readonly buried = new Map<string, Tombstone>();
-  /** What this run has looked up, by `link:` and `key:`. */
   private readonly asked = new Set<string>();
-  /** Rows this run's reads left with something in Marfa to carry. */
   readonly marked = new Set<string>();
-  /** Rows the vendor's word reached this run: an entry, or an archive. */
   readonly reached = new Set<string>();
-  /** The bytes each entry this run carries were uploaded as. */
   private readonly files = new WeakMap<
     Entry,
     { key: string; ref: string; mime: string }
   >();
-  /** The connections each entry this run wrote named, by row id. */
   readonly connecting = new Map<
     string,
     Readonly<Record<string, readonly Target[]>>
@@ -218,8 +185,6 @@ export class Rows {
     if (item.type === this.kind.type) this.index(item);
   }
 
-  /** The rows the vendor's ids name, by link, or by natural key where
-   *  the type names none. */
   async named(ids: readonly string[]): Promise<Map<string, Item>> {
     const byLink = this.kind.link !== undefined;
     await this.know(byLink ? { links: ids } : { keys: ids });
@@ -342,8 +307,6 @@ export class Rows {
     }
   }
 
-  /** The entry with its row's bytes as last uploaded where the vendor's
-   *  key for them is unchanged; `fresh` where they must load again. */
   private agreedFile(
     entry: Entry,
     agreement: Agreement | undefined,
@@ -363,8 +326,8 @@ export class Rows {
     return { entry: withFile, fresh: false };
   }
 
-  /** The entry with its bytes loaded and uploaded within the run that
-   *  writes it, since an unnamed blob is swept; unfetchable, it waits. */
+  /** Loaded and uploaded within the run that writes it, since an unnamed
+   *  blob is swept. */
   private async uploaded(entry: Entry): Promise<Entry | undefined> {
     const source = entry.file;
     if (source === undefined) return entry;
@@ -399,7 +362,6 @@ export class Rows {
     return withFile;
   }
 
-  /** The vendor's entry written over the row, where it changed anything. */
   private async apply(given: Entry, found: Item): Promise<void> {
     this.reached.add(found.id);
     let agreement = this.store.get(found.id);
@@ -519,8 +481,6 @@ export class Rows {
         this.counts.updated += 1;
         return;
       } catch (error) {
-        // A field another writer changed since the read collides: read the
-        // row as it now stands and merge again, once.
         if (
           attempt === 0 &&
           error instanceof Refusal &&
@@ -539,8 +499,6 @@ export class Rows {
     }
   }
 
-  /** Whether the vendor's change brings a row back from the bin: only
-   *  for a reviving kind, once trash settles, never on an entry it held. */
   private revives(entry: Entry, agreement: Agreement | undefined): boolean {
     return (
       this.kind.revive &&
@@ -597,8 +555,6 @@ export class Rows {
     }
   }
 
-  /** Records what the two sides now agree on, the link the row is
-   *  known by, and its connections, held back until all rows are written. */
   private agree(id: string, agreement: Agreement, entry: Entry): void {
     const value = this.linkOf(cleaned(entry.properties));
     const was = this.store.get(id);
@@ -616,8 +572,6 @@ export class Rows {
     }
   }
 
-  /** The row an entry names: by its link, by the link it moved from,
-   *  then by natural key if unlinked or the same item; else `elsewhere`. */
   private find(
     value: string | undefined,
     movedFrom: string | undefined,
@@ -677,8 +631,6 @@ export class Rows {
     }
   }
 
-  /** Archives the rows the keys name that are active: link values with
-   *  a link, natural keys without. */
   async archive(keys: readonly string[]): Promise<void> {
     await this.know(this.kind.link === undefined ? { keys } : { links: keys });
     const rows = [...new Set(keys)].flatMap((key) => {
@@ -739,8 +691,6 @@ export class Rows {
     }
   }
 
-  /** Puts read-only fields a person changed back to what the kit last
-   *  wrote, found in the row's versions; unfound, it waits for a resend. */
   async putBack(id: string, fields: readonly string[]): Promise<string[]> {
     const row = this.byId.get(id);
     const agreement = this.store.get(id);
@@ -778,9 +728,6 @@ export class Rows {
     return found;
   }
 
-  /** Writes onto a live row what the vendor answered for the fields the
-   *  carry did not send and Marfa has not changed since they were agreed,
-   *  such as a number the vendor gave it, or its reopening on a restore. */
   async adoptAnswer(
     id: string,
     answered: Entry,
@@ -788,7 +735,6 @@ export class Rows {
   ): Promise<void> {
     const said = cleaned(answered.properties);
     const agreed = this.store.get(id)?.marfa ?? {};
-    // A null the answer states is a clear; a field it leaves out, nothing.
     const fields = this.kind.fields.filter(
       (field) =>
         field !== this.kind.link &&
@@ -862,8 +808,6 @@ export class Rows {
     }
   }
 
-  /** Writes the vendor's id onto the row's link at the version the
-   *  change showed, retried once at the current; a taken value refuses. */
   async setLink(item: Item, value: string): Promise<void> {
     const link = this.kind.link;
     if (link === undefined) {
@@ -921,8 +865,6 @@ export class Rows {
     this.store.set(item.id, next);
   }
 
-  /** Looks up the rows the links and natural keys name that this run
-   *  has not read or asked for, in any state, with their tombstones. */
   private async know(named: {
     links?: readonly string[];
     keys?: readonly string[];
@@ -1015,7 +957,6 @@ export class Rows {
       return;
     }
     if (result.outcome === "skipped") {
-      // A row trashed since the read: left alone like any trashed row.
       this.counts.skipped += 1;
       return;
     }
@@ -1028,8 +969,7 @@ export class Rows {
     );
   }
 
-  /** A refusal that concerns one row is counted and holds the state;
-   *  any other ends the run, since it refuses every row after it too. */
+  /** Any other refusal ends the run, since it refuses every row after it too. */
   private absorb(
     error: unknown,
     sourceId: string,

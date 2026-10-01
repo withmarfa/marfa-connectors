@@ -80,7 +80,6 @@ describe("--setup", () => {
       "<form>the manifest</form>",
     );
     expect(local.callback).toBe(`${local.url}/callback`);
-    // Only the unguessable path answers.
     const root = new URL("/", local.url).toString();
     expect((await fetch(root)).status).toBe(404);
     expect((await fetch(`${root}callback?code=forged`)).status).toBe(404);
@@ -105,7 +104,6 @@ describe("--setup", () => {
     expect(lines).toContain(`setup wrote TEST_APP_KEY to ${file}`);
     expect(lines).not.toContain(made);
     expect(lines).not.toContain(held.endpoint?.path ?? "");
-    // No run, no hold.
     expect(harness.server.runs).toEqual([]);
     expect(harness.server.holds).toEqual([]);
   });
@@ -184,7 +182,6 @@ describe("--setup", () => {
     const exit = start(
       withSetup(held, async (context) => {
         held.opened = await context.listen("<form></form>");
-        // The browser arrives as setup is already failing.
         answered = fetch(`${held.opened.callback}?code=abc`);
         await new Promise((resolve) => setImmediate(resolve));
         throw new Error("the vendor refused the code");

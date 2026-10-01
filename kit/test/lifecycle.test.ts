@@ -31,7 +31,6 @@ describe("the rows a run reads", () => {
   it("are those its entries and the log name, by one lookup each, never the type's listing", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
-    // Past the log's frames of the kit's own creates.
     await harness.twoWay(held);
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { title: "One, by a person" });
@@ -61,7 +60,6 @@ describe("a purge", () => {
     harness.server.agreements.clear();
     expect(await harness.once(vendor([plain, other]))).toBe(0);
     expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
-    // The witness: the store was lost, and the run read everything again.
     expect(harness.lastRun().summary).toContain("unchanged 1, skipped 1");
   });
 
@@ -96,7 +94,6 @@ describe("a purge", () => {
       },
     ]);
 
-    // The vendor's copy as the close left it does not bring the row back.
     held.entries = [
       {
         ...one,
@@ -106,7 +103,6 @@ describe("a purge", () => {
     ];
     expect(await harness.twoWay(held)).toBe(0);
     expect(harness.server.rows).toEqual([]);
-    // A later change does, as a new row.
     held.entries = [
       {
         ...one,
@@ -128,7 +124,6 @@ describe("a cascade", () => {
     const own = harness.server.row("a:2");
     harness.server.edit(taken.id, { title: "One, by a person" });
     harness.server.cascadeTrash(taken.id, "root-1");
-    // The witness: a trash of the row's own is carried in the same run.
     harness.server.trash(own.id);
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
@@ -141,7 +136,6 @@ describe("a cascade", () => {
     harness.server.restore(taken.id);
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
-    // Back from the bin, only the edit made before the cascade is carried.
     expect(kinds(held.changes)).toEqual(["updated a:1"]);
     expect([...(held.changes[0]?.changed ?? [])]).toEqual(["title"]);
   });
@@ -184,7 +178,6 @@ describe("a kind that revives", () => {
     await harness.twoWay(held);
     expect(kinds(held.changes)).toEqual(["trashed a:1"]);
 
-    // The vendor's copy as the close left it.
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
     expect(harness.server.row("a:1").state).toBe("trashed");
@@ -202,7 +195,6 @@ describe("a kind that revives", () => {
     expect(harness.lastRun().summary).toContain(
       `the vendor changed ${row.id} while it was in the bin, so it was brought back`,
     );
-    // Its own restore is not carried back.
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
   });
@@ -219,7 +211,6 @@ describe("a kind that revives", () => {
     const row = harness.server.row("a:1");
     harness.server.trash(row.id);
     await harness.twoWay(held);
-    // Activity at the vendor that leaves its close as it was.
     held.entries = [
       {
         ...closed,
@@ -269,7 +260,6 @@ describe("a kind that revives", () => {
     harness.server.trash(row.id);
     await harness.twoWay(held);
     harness.server.restore(row.id);
-    // Trashed again once the log is read, before the rows are.
     harness.server.beforeAnswer = (request) => {
       if (request.path !== "/items/lookup") return;
       harness.server.trash(row.id);

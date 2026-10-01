@@ -1,12 +1,9 @@
-/** One server-sent event, as the stream frames it. */
 export interface Frame {
   id: string | undefined;
   event: string;
   data: string;
 }
 
-/** Frames from a stream of bytes: fields per line, blank ending each,
- *  buffered since a frame may split or several arrive in one chunk. */
 export async function* frames(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Frame> {

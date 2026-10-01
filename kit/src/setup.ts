@@ -18,15 +18,13 @@ const done =
 const failed =
   "<!doctype html><title>Failed</title><p>Setup failed: the terminal says why.</p>";
 
-/** A local server, and the browser it holds at its callback. */
 interface Served {
   readonly server: Server;
-  /** Answers a browser still held, as setup ended. */
   release(succeeded: boolean): void;
 }
 
-/** Runs the connector's setup once and writes what it answers to a
- *  new, owner-only file, made first since a vendor may hand a secret once. */
+/** The file is new and owner-only, made first since a vendor may hand a
+ *  secret once. */
 export async function setUp<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
@@ -37,7 +35,6 @@ export async function setUp<E extends EnvDeclaration>(
   file: string,
 ): Promise<number> {
   const setup = connector.setup;
-  // The start refuses --setup for a connector without one.
   if (setup === undefined) throw new Error("the connector has no setup");
   let handle;
   try {
@@ -101,7 +98,6 @@ export async function setUp<E extends EnvDeclaration>(
     }
     return 0;
   };
-  // A browser held at the callback is told how setup ended, once it has.
   let succeeded = false;
   try {
     const code = await written();
@@ -115,8 +111,6 @@ export async function setUp<E extends EnvDeclaration>(
   }
 }
 
-/** Serves the page on a local address until the vendor's redirect
- *  arrives there. */
 function serve(
   page: string | ((callback: string) => string) | undefined,
   servers: Served[],
@@ -137,7 +131,6 @@ function serve(
   // Unguessable, so no other local process or page can answer for the vendor.
   const base = `/${randomUUID()}`;
   let shown: string | undefined;
-  // The browser the vendor sent back, held until setup says where it goes.
   let held: ServerResponse | undefined;
   const answer = (response: ServerResponse, html: string): void => {
     response

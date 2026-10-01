@@ -43,7 +43,6 @@ function twoTypes(held: Held) {
       { type: noteType, fields: ["title"] },
     ],
     env: { TEST_TOKEN: "secret" },
-    // The note has no link, so only the entry may be carried.
     carries: () => held.carries ?? ["test.entry"],
     async run(context) {
       await context.upsert(testType.id, held.entries);
@@ -91,7 +90,6 @@ describe("a connector of several types", () => {
       "test.note",
     ]);
 
-    // A change to each is judged by its own type's rules.
     harness.server.edit(harness.server.row("a:1").id, { title: "Edited" });
     harness.server.edit(harness.server.row("n:1").id, { title: "Edited" });
     held.entries = [];
@@ -100,7 +98,6 @@ describe("a connector of several types", () => {
     expect(held.changes.map((change) => change.item.type)).toEqual([
       "test.entry",
     ]);
-    // The note's kind is read only: Marfa mirrors it.
     expect(harness.server.row("n:1").properties["title"]).toBe("A note");
   });
 

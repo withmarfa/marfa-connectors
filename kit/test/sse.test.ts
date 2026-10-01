@@ -41,9 +41,6 @@ describe("the frame reader", () => {
   });
 
   it("drops comments, keeps a value without a leading space, and drops a last frame the stream ended inside", async () => {
-    // The blank line is what says the server finished the frame; one cut
-    // off before it may be cut off mid-value. The witness: the same frame
-    // ended is yielded.
     expect(await all([": keep-alive\n", "event:ping\ndata:x\n\n"])).toEqual([
       { id: undefined, event: "ping", data: "x" },
     ]);

@@ -33,7 +33,6 @@ function outcomes(): (string | null)[] {
   return harness.server.deliveries.map((delivery) => delivery.outcome);
 }
 
-/** The looks between scheduled runs, told from a run's listing by their limit. */
 function looks() {
   return harness.server
     .requestsTo("GET", "/connectors/connector-1/deliveries")
@@ -266,13 +265,11 @@ describe("deliveries a scheduled run takes", () => {
         resolve();
       };
     });
-    // The row is unchanged, so the run writes nothing the stop could cut.
     const exit = harness.inbound(held);
     await until(() => held.runs === 2);
     harness.stop();
     release();
     expect(await exit).toBe(0);
-    // The witness: the connector returned and the run succeeded.
     expect(harness.lastRun().outcome).toBe("succeeded");
     expect(outcomes()).toEqual([null]);
   });
@@ -327,7 +324,6 @@ describe("between scheduled runs", () => {
     expect(held.hints?.[1]).toEqual(new Set(["a:1", "a:7"]));
     expect(outcomes()).toEqual(["processed"]);
 
-    // Nothing waits, so the next look starts nothing.
     await harness.clock.wake(10_000);
     await harness.clock.sleeping(10_000);
     expect(held.runs).toBe(2);
@@ -375,7 +371,6 @@ describe("between scheduled runs", () => {
     const exit = harness.inbound(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
     const text = "secret-body is not JSON";
-    // The witness: the parse error quotes the body's start.
     expect((): unknown => JSON.parse(text)).toThrow(/secret-bod/);
     harness.server.deliver(text, [
       [
@@ -426,8 +421,6 @@ describe("between scheduled runs", () => {
     expect(run.summary).toContain(
       "1 delivery's signature check ran past ten seconds, so it waits for a later run",
     );
-    // Left waiting, the run is not settled, so the next is the schedule's
-    // and no look runs for the delivery in between.
     expect(looks()).toHaveLength(0);
     harness.stop();
     expect(await exit).toBe(0);
@@ -598,7 +591,6 @@ describe("between scheduled runs", () => {
     await harness.clock.wake(10_000);
     await until(() => held.runs === 2);
     await harness.clock.sleeping(10_000);
-    // The witness: the scheduled run read them once.
     expect(
       harness.server.requestsTo("GET", "/connectors/connector-1/endpoints"),
     ).toHaveLength(1);
@@ -684,7 +676,6 @@ describe("a two-way connector's run for deliveries", () => {
     return harness.kept()["cursor"];
   }
 
-  /** Two scheduled runs, so the second reads the first's writes as its own. */
   async function settledTwoWay(
     held: Vendor,
   ): Promise<{ exit: Promise<number> }> {
@@ -730,7 +721,6 @@ describe("a two-way connector's run for deliveries", () => {
       },
     ];
     const { exit } = await settledTwoWay(held);
-    // A write the connector does not track puts the row in the log.
     harness.server.edit(harness.server.row("a:1").id, { untracked: "x" });
     const said = signed({ ids: ["v2"] });
     harness.server.deliver(said.body, said.headers);
@@ -823,7 +813,6 @@ describe("a two-way connector's run for deliveries", () => {
     held.changes.length = 0;
 
     await delivered(held, 3);
-    // Merged beside the vendor's write, and read from the log next run.
     expect(harness.server.row("a:1").properties).toMatchObject({
       title: "By the vendor",
       note: "by a person, since the read",
@@ -859,8 +848,6 @@ describe("a two-way connector's run for deliveries", () => {
     );
     held.vendorIdFor = (change) =>
       change.item.id === theirs.id ? "v-theirs" : undefined;
-    // The vendor made its copy and the link's write failed, so the next run
-    // offers the create again.
     harness.server.refuseNext(`PATCH /items/${theirs.id}`, 503, "unavailable");
     harness.clock.advance(15 * minute);
     await harness.clock.wake(10_000);
@@ -937,7 +924,6 @@ describe("a two-way connector's run for what deliveries named", () => {
     const held = vendor([first, second]);
     const { exit } = await settled(held);
     harness.server.edit(harness.server.row("a:2").id, { title: "Two, edited" });
-    // The vendor no longer answers for v2 alone.
     held.entries = [first];
     held.changes.length = 0;
     await deliver(held, ["v1"], 3);
@@ -967,7 +953,6 @@ describe("a two-way connector's run for what deliveries named", () => {
     expect(harness.lastRun().summary).toContain(
       "v2 was named for archiving by a run for what deliveries named",
     );
-    // The witness: a delivery naming it archives it.
     await deliver(held, ["v2"], 4);
     expect(harness.server.row("a:2").state).toBe("archived");
     harness.stop();

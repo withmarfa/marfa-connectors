@@ -38,11 +38,9 @@ import { edgeTypeDifferences, typeDifferences } from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
-/** How long a heartbeat may take before it counts as failed. */
 const beatTimeoutMs = 15_000;
 
-/** Worth another attempt: the server was unreachable, overloaded, failing
- *  or slow; any TypeError besides `fetch failed` is a bug no retry mends. */
+/** Any TypeError besides `fetch failed` is a bug no retry mends. */
 function transient(error: unknown): boolean {
   if (error instanceof Refusal) {
     return (
@@ -56,7 +54,6 @@ function transient(error: unknown): boolean {
   );
 }
 
-/** A fetch that gives up on a request the server has not answered in `ms`. */
 function timedFetch(ms: number): typeof fetch {
   return (input, init) => {
     const request = new Request(input, init);
@@ -68,8 +65,6 @@ function timedFetch(ms: number): typeof fetch {
   };
 }
 
-/** The wait before another start attempt: a minute or the interval,
- *  whichever is shorter, doubled each time so it never delays the first run. */
 function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
 }
@@ -94,8 +89,6 @@ async function checkType(
  *  message in its thread. */
 const shippedConnections = new Set(["attached-to", "in-thread"]);
 
-/** What the key holds beyond read/write on the connector's own types,
- *  connections and their registration: nothing, for a key per the README. */
 function keyWiderThanTypes(
   key: Key,
   types: ReadonlySet<string>,
@@ -133,7 +126,6 @@ function keyWiderThanTypes(
   return wider;
 }
 
-/** The connector's types and connections the key may not write, each named. */
 function keyNarrowerThanTypes(
   key: Key,
   types: ReadonlySet<string>,
@@ -281,8 +273,6 @@ function carriesBack<E extends EnvDeclaration>(
   ].some((spec) => spec.twoWay);
 }
 
-/** Whether the connector looks between runs: for deliveries, or changes
- *  to carry back. */
 function looks<E extends EnvDeclaration>(
   connector: Connector<E>,
   environment: Environment,
@@ -290,9 +280,6 @@ function looks<E extends EnvDeclaration>(
   return connector.inbound !== undefined || carriesBack(connector, environment);
 }
 
-/** Until the next scheduled run, looks every `everyMs` for a waiting
- *  delivery, change to carry or edit to put back; on failure it waits,
- *  rather than retrying. */
 async function awaitChanges<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   held: (trigger: Trigger) => Promise<RunResult | undefined>,
@@ -341,7 +328,6 @@ async function awaitChanges<E extends EnvDeclaration>(
   }
 }
 
-/** Runs the connector as the arguments say, and answers the exit code. */
 export async function start<E extends EnvDeclaration>(
   connector: Connector<E>,
   runtime: Runtime,
@@ -513,9 +499,7 @@ export async function start<E extends EnvDeclaration>(
     clock,
     signal: stop.signal,
   };
-  /** Until when another process last held the connector. */
   let heldUntil: string | undefined;
-  /** A run under the hold; none where another process holds the connector. */
   const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
     heldUntil = undefined;
     let taken;

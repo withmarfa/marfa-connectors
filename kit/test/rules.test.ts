@@ -72,7 +72,6 @@ describe("a vendor's answer", () => {
     harness.server.edit(harness.server.row("a:1").id, { title: "Edited" });
     held.entries = [];
     await harness.twoWay(held);
-    // The vendor, as it answered: no note. Nothing is a change.
     held.entries = [
       { ...one, properties: { ...one.properties, title: "Edited" } },
     ];
@@ -144,7 +143,6 @@ describe("a vendor's answer for a field the change did not carry", () => {
     harness.server.edit(row.id, { title: "Edited" });
     held.entries = [];
     held.answer = (change) => {
-      // A person writes the note while the change is carried.
       harness.server.edit(row.id, { note: "the person's" });
       return {
         source_id: "a:1",
@@ -169,7 +167,6 @@ describe("a run for deliveries", () => {
     for (const row of harness.server.rows) {
       harness.server.edit(row.id, { note: "edited in Marfa" });
     }
-    // Carried but refused at the vendor, so each still waits.
     held.answer = () => {
       throw new Error("the vendor is down");
     };
@@ -280,7 +277,6 @@ describe("connections", () => {
       theirs.id,
       "test.blocks",
     );
-    // The create fails this run, so the target is not yet at the vendor.
     held.pushFail = { id: theirs.id, error: new Error("vendor down") };
     held.entries = [];
     held.changes.length = 0;

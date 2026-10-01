@@ -141,7 +141,6 @@ describe("connections from the vendor", () => {
       harness.server.row("a:3").id,
       "test.blocks",
     );
-    // The agreements are lost, and the vendor dropped a:2 meanwhile.
     harness.server.agreements.clear();
     held.entries = [entry(1, []), entry(2), entry(3)];
     held.changes.length = 0;
@@ -218,7 +217,6 @@ describe("connections, whatever order the rows come in", () => {
     };
     const held = parenting([child(1, [3]), child(2, []), child(3, [])]);
     await harness.twoWay(held);
-    // The new parent comes first, as a vendor may send it.
     held.entries = [child(2, [3]), child(1, [])];
     expect(await harness.twoWay(held)).toBe(0);
     expect(
@@ -266,7 +264,6 @@ describe("connections made in Marfa", () => {
     expect(
       held.changes[0]?.connections?.["test.blocks"]?.added.map((row) => row.id),
     ).toEqual([one.id]);
-    // Carried once: the next run finds nothing.
     held.changes.length = 0;
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
@@ -291,7 +288,6 @@ describe("connections made in Marfa", () => {
     held.entries = [];
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
-    // A person's change beside it carries only itself.
     const one = harness.server.row("a:1");
     const three = harness.server.row("a:3");
     harness.server.drawEdge(one.id, three.id, "test.blocks");
@@ -309,7 +305,6 @@ describe("connections made in Marfa", () => {
     const held = connected([entry(1, [2]), entry(2), entry(3)]);
     await harness.twoWay(held);
     const one = harness.server.row("a:1");
-    // The vendor changes a field and names no connections.
     held.entries = [
       {
         ...entry(1),
@@ -318,7 +313,6 @@ describe("connections made in Marfa", () => {
       },
     ];
     await harness.twoWay(held);
-    // A person changes a field, which is carried.
     harness.server.edit(one.id, { note: "by a person" });
     held.entries = [];
     held.changes.length = 0;
@@ -467,7 +461,6 @@ describe("connections the vendor answers after a carry", () => {
     const three = harness.server.row("a:3");
     harness.server.drawEdge(one.id, two.id, "test.blocks");
     harness.server.drawEdge(one.id, three.id, "test.blocks");
-    // The vendor takes the first and refuses the second.
     held.answer = (change) => ({
       ...entry(1, [2]),
       properties: change.item.properties,
@@ -504,7 +497,6 @@ describe("connections the vendor answers after a carry", () => {
       properties: { ...change.item.properties, vendor_id: "v9" },
       connections: { "test.blocks": [{ type: "test.entry", id: "v1" }] },
     });
-    // The vendor has since linked the new row to a second one too.
     held.entries = [
       {
         source_id: "a:9",
@@ -604,7 +596,6 @@ describe("connections the vendor answers after a carry", () => {
     await harness.twoWay(held);
     const one = harness.server.row("a:1");
     const three = harness.server.row("a:3");
-    // Carried in the order the log shows them: the first, then the third.
     harness.server.edit(one.id, { note: "first" });
     harness.server.drawEdge(
       one.id,
@@ -1001,7 +992,6 @@ describe("a read-only connection type on a two-way kind", () => {
     harness.server.restore(one.id);
     const c = make("C");
     let seen = 0;
-    // A person places it on C between the log's read and the remake.
     harness.server.beforeAnswer = (request) => {
       const body = request.body as
         { ids?: string[]; include?: string[] } | undefined;

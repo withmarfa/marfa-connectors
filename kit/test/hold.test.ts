@@ -32,7 +32,6 @@ function gate(held: Vendor): () => void {
   };
 }
 
-/** Another process under the same key, holding the registration for an hour. */
 function heldElsewhere(): void {
   harness.server.holder = {
     process: "another-process",
@@ -47,7 +46,6 @@ describe("the hold", () => {
     expect(taken?.released).toBe(false);
     expect(released).toEqual({ process: taken?.process, released: true });
     expect(harness.server.holder).toBeUndefined();
-    // The process names itself the same way to every door that asks.
     expect(
       harness.server.requestsTo("POST", "/connectors/connector-1/agreements")[0]
         ?.body,
@@ -62,7 +60,6 @@ describe("the hold", () => {
     expect(harness.lines.join("\n")).toContain(
       "another process holds this connector until 2026-09-26T00:00:00.000Z, so this one does not run",
     );
-    // The witness: with the hold let go, the same process runs.
     harness.server.holder = undefined;
     expect(await harness.once(vendor([one]))).toBe(0);
     expect(harness.server.rows).toHaveLength(1);
@@ -93,7 +90,6 @@ describe("the hold", () => {
     };
     const held = vendor([one]);
     const exit = start(testConnector(held), harness.runtime(["--every", "1h"]));
-    // A second past the lapse, rather than the hour.
     await harness.clock.sleeping(3 * minute + 1000);
     expect(held.runs).toBe(0);
     harness.server.holder = undefined;
@@ -109,7 +105,6 @@ describe("the hold", () => {
     const exit = harness.once(held);
     await until(() => held.runs === 1);
     heldElsewhere();
-    // The heartbeat renews the hold and finds it taken.
     await harness.clock.wake(minute);
     await until(() =>
       harness.lines.some((line) =>
@@ -129,7 +124,6 @@ describe("the hold", () => {
     const release = gate(held);
     const exit = harness.once(held);
     await until(() => held.runs === 2);
-    // Taken between renewals: only the instance's own fence stops it.
     heldElsewhere();
     release();
     expect(await exit).toBe(1);
@@ -187,7 +181,6 @@ describe("the hold", () => {
           harness.lines.filter((line) => line.includes("could not be renewed"))
             .length === beat,
       );
-      // Two minutes after the last renewal, and not before.
       expect(
         harness.lines.some((line) => line.includes("went unrenewed too long")),
       ).toBe(beat === 3);
@@ -209,7 +202,6 @@ describe("the hold", () => {
       "PUT",
       "/connectors/connector-1/state",
     ).length;
-    // The hold lapsed with nobody else taking it: the renewal takes it anew.
     harness.server.holder = undefined;
     await harness.clock.wake(minute);
     await until(() =>
@@ -267,7 +259,6 @@ describe("the hold's window", () => {
     ];
     const exit = harness.twoWay(held);
     await until(() => held.runs === 2);
-    // Five minutes with no renewal, as a laptop asleep.
     harness.clock.advance(300_000);
     harness.server.advance(300_000);
     heldElsewhere();
@@ -280,7 +271,6 @@ describe("the hold's window", () => {
     harness.server.holdMs = 45_000;
     const held = vendor([linked]);
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);
-    // A third of forty-five seconds.
     await harness.clock.sleeping(15_000);
     const renewals = harness.server.holds.length;
     await harness.clock.wake(15_000);
@@ -304,7 +294,6 @@ describe("the hold's window", () => {
     release();
     await until(() => harness.server.runs.length === 1);
     expect(harness.lastRun().outcome).toBe("failed");
-    // A failed run's next waits two intervals, looking between.
     harness.clock.advance(30 * minute);
     await harness.clock.wake(10_000);
     await until(() => harness.server.runs.length === 2);
