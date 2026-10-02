@@ -94,8 +94,8 @@ jobs:
       - run: pnpm build
       - run: pnpm proof
 
-  # Not a required check: nothing else builds the image or reads the launchd
-  # example, so a change to either, or to what the image copies, runs this.
+  # Nothing else builds the image or reads the launchd example, so a change to
+  # either, or to what the image copies, runs this.
   image:
     name: Image
     needs: changes
