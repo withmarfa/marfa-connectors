@@ -319,8 +319,8 @@ async function goneOrWaits(
       );
     }
   }
-  // Settled, unlike a refusal: GitHub dropped the target, which is no
-  // fault of the change, and the read that follows archives the row.
+  // Settled, unlike a refusal: the App can no longer find the target, which
+  // is no fault of the change, and the daily check or a delivery archives it.
   context.log.condition(
     `target-gone:${item.id}`,
     `GitHub no longer shows what ${item.id} is linked to in any repository the connector syncs, so the change to it is not sent`,
