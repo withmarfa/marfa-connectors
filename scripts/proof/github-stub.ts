@@ -72,6 +72,16 @@ export interface Comment {
   app?: boolean;
 }
 
+type Access = "read" | "write";
+
+/** What an installation token reaches: its repositories by node, or every
+ *  one of its installation's where unnarrowed, and its permissions. */
+interface Grant {
+  installation: number;
+  repositories: Set<string> | undefined;
+  permissions: Record<string, Access>;
+}
+
 interface Asked {
   method: string;
   path: string;
@@ -106,6 +116,15 @@ export class GitHubStub {
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
+  appPermissions: Record<string, Access> = {
+    issues: "write",
+    metadata: "read",
+  };
+  /** Seconds GitHub's clock runs ahead of this machine's. */
+  clockAhead = 0;
+  /** Requests the tokens answer before GitHub revokes every one of them. */
+  revokeAfter: number | undefined;
+  private grants = new Map<string, Grant>();
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
   private ids = 1000;
@@ -329,12 +348,105 @@ export class GitHubStub {
     };
   }
 
+  /** The token's installation, unless GitHub has lost it. */
   private installationOf(req: IncomingMessage): Installation | undefined {
-    const token = /^token ghs_stub_(\d+)_/.exec(
-      req.headers.authorization ?? "",
+    const grant = this.grantOf(req);
+    return this.installations.find(
+      (one) => one.id === grant?.installation && one.lost !== true,
     );
-    const id = Number(token?.[1]);
-    return this.installations.find((one) => one.id === id && one.lost !== true);
+  }
+
+  private grantOf(req: IncomingMessage): Grant | undefined {
+    const token = /^token (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
+    return token === undefined ? undefined : this.grants.get(token);
+  }
+
+  private reaches(req: IncomingMessage, repository: Repository): boolean {
+    const grant = this.grantOf(req);
+    return (
+      repository.installation === this.installationOf(req)?.id &&
+      (grant?.repositories === undefined ||
+        grant.repositories.has(repository.node))
+    );
+  }
+
+  private allows(req: IncomingMessage, wanted: Access): boolean {
+    const held = this.grantOf(req)?.permissions["issues"];
+    return held === "write" || held === wanted;
+  }
+
+  /** Why GitHub would refuse the App's JWT, if it would: it judges the
+   *  claims by its own clock. */
+  private jwtRefusal(req: IncomingMessage): string | undefined {
+    const jwt = /^bearer (\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
+    if (jwt === undefined) return "A JSON web token could not be decoded";
+    const claims = JSON.parse(
+      Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ) as { iat?: number; exp?: number };
+    const now = Math.floor(Date.now() / 1000) + this.clockAhead;
+    if ((claims.exp ?? 0) <= now) {
+      return "'Expiration time' claim ('exp') must be a numeric value representing the future time at which the assertion expires";
+    }
+    if ((claims.iat ?? 0) > now + 60) {
+      return "'Issued at' claim ('iat') must be an Integer representing the time that the assertion was issued";
+    }
+    if ((claims.exp ?? 0) > now + 600 + 60) {
+      return "'Expiration time' claim ('exp') is too far in the future";
+    }
+    return undefined;
+  }
+
+  private mint(
+    installation: Installation,
+    body: unknown,
+  ): { token: string } | { refused: string } {
+    const asked = (body ?? {}) as {
+      repositories?: string[];
+      repository_ids?: number[];
+      permissions?: Record<string, Access>;
+    };
+    const own = this.repositories.filter(
+      (one) => one.installation === installation.id,
+    );
+    let repositories: Set<string> | undefined;
+    if (
+      asked.repositories !== undefined ||
+      asked.repository_ids !== undefined
+    ) {
+      const named = [
+        ...(asked.repositories ?? []).map((name) =>
+          own.find((one) => one.name === name),
+        ),
+        ...(asked.repository_ids ?? []).map((id) =>
+          own.find((one) => one.id === id),
+        ),
+      ];
+      if (named.length > 500 || named.some((one) => one === undefined)) {
+        return {
+          refused:
+            "There is at least one repository that does not exist or is not accessible to the parent installation.",
+        };
+      }
+      repositories = new Set(named.map((one) => one?.node ?? ""));
+    }
+    const permissions = asked.permissions ?? this.appPermissions;
+    for (const [name, level] of Object.entries(permissions)) {
+      const held = this.appPermissions[name];
+      if (held === undefined || (level === "write" && held !== "write")) {
+        return {
+          refused:
+            "The permissions requested are not granted to this installation.",
+        };
+      }
+    }
+    this.tokens += 1;
+    const token = `ghs_stub_${String(installation.id)}_${String(this.tokens)}_tokenvalue`;
+    this.grants.set(token, {
+      installation: installation.id,
+      repositories,
+      permissions: { ...permissions, metadata: "read" },
+    });
+    return { token };
   }
 
   private readable(
@@ -342,22 +454,20 @@ export class GitHubStub {
     owner: string,
     name: string,
   ): Repository | undefined {
-    const installation = this.installationOf(req);
     return this.repositories.find(
       (one) =>
         one.owner === owner &&
         one.name === name &&
-        one.installation === installation?.id &&
+        this.reaches(req, one) &&
         one.hidden !== true,
     );
   }
 
   private visible(req: IncomingMessage, node: string): boolean {
-    const installation = this.installationOf(req);
     const repository = this.repositories.find((one) => one.node === node);
     return (
       repository !== undefined &&
-      repository.installation === installation?.id &&
+      this.reaches(req, repository) &&
       repository.hidden !== true
     );
   }
@@ -388,7 +498,7 @@ export class GitHubStub {
       asked.status = status;
       res.writeHead(status, {
         "content-type": "application/json",
-        date: new Date(this.clock).toUTCString(),
+        date: new Date(this.clock + this.clockAhead * 1000).toUTCString(),
         "x-ratelimit-remaining": String(this.rateRemaining),
         ...headers,
       });
@@ -414,6 +524,53 @@ export class GitHubStub {
     const method = req.method ?? "GET";
     const path = url.pathname;
     let match: RegExpExecArray | null;
+    if (/^token /i.test(req.headers.authorization ?? "")) {
+      const grant = this.grantOf(req);
+      if (grant === undefined) {
+        send(401, { message: "Bad credentials" });
+        return;
+      }
+      if (this.revokeAfter !== undefined && (this.revokeAfter -= 1) < 0) {
+        this.revokeAfter = undefined;
+        this.grants.clear();
+        send(401, { message: "Bad credentials" });
+        return;
+      }
+      const wanted: Access =
+        path === "/graphql"
+          ? isMutation(body)
+            ? "write"
+            : "read"
+          : method === "GET"
+            ? "read"
+            : "write";
+      if (
+        (path === "/graphql" || /^\/repos\/[^/]+\/[^/]+\/./.test(path)) &&
+        !this.allows(req, wanted)
+      ) {
+        if (path === "/graphql") {
+          send(200, {
+            data: null,
+            errors: [
+              {
+                type: "FORBIDDEN",
+                message: "Resource not accessible by integration",
+              },
+            ],
+          });
+        } else {
+          send(403, { message: "Resource not accessible by integration" });
+        }
+        return;
+      }
+    }
+    if (path.startsWith("/app/") || path === "/app") {
+      const refusal = this.jwtRefusal(req);
+      if (refusal !== undefined) {
+        send(401, { message: refusal });
+        return;
+      }
+    }
     if (this.rateLimited && path.startsWith("/repos/")) {
       send(
         403,
@@ -449,9 +606,13 @@ export class GitHubStub {
         send(404, { message: "Not Found" });
         return;
       }
-      this.tokens += 1;
+      const minted = this.mint(installation, body);
+      if ("refused" in minted) {
+        send(422, { message: minted.refused });
+        return;
+      }
       send(201, {
-        token: `ghs_stub_${String(installation.id)}_${String(this.tokens)}_tokenvalue`,
+        token: minted.token,
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       });
       return;
@@ -488,7 +649,7 @@ export class GitHubStub {
         return;
       }
       const repositories = this.repositories
-        .filter((one) => one.installation === installation.id)
+        .filter((one) => this.reaches(req, one))
         .map((one) => this.restRepository(one));
       send(200, { total_count: repositories.length, repositories });
       return;

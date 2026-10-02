@@ -684,6 +684,66 @@ export async function proveGitHub(
         return "GitHub's comment unchanged and kept; the row put back, binned, and restored, each named in the run";
       },
     );
+
+    await check(
+      "github: with GITHUB_REPOSITORIES naming one of the installation's repositories, the token that lists them names none, those that read name it and the paused ones but never the one left out and never synced, those that write name it alone, all by id, and a token revoked mid-run is replaced",
+      async () => {
+        const other = github.addRepository("someone/other");
+        github.addIssue(other, { title: "Left out" });
+        await edit(marfa, await row(parent.node), {
+          title: "Parent, carried narrowly",
+        });
+        github.asked.length = 0;
+        github.revokeAfter = 3;
+        const runner = new ConnectorUnderProof(source, url, key.key, {
+          ...env,
+          GITHUB_REPOSITORIES: "someone/tracker",
+        });
+        const { code, output } = await runner.once();
+        if (code !== 0 || /answered 401|refused it/.test(output)) {
+          throw new Error(`the run exited ${String(code)}: ${output}`);
+        }
+        const minted = github.asked
+          .filter(
+            (one) => one.path.endsWith("/access_tokens") && one.status === 201,
+          )
+          .map(
+            (one) =>
+              one.body as {
+                repository_ids?: number[];
+                permissions?: { issues?: string };
+              },
+          );
+        const lists = minted.filter(
+          (one) => one.permissions?.issues === undefined,
+        );
+        const reads = minted.filter(
+          (one) => one.permissions?.issues === "read",
+        );
+        const writes = minted.filter(
+          (one) => one.permissions?.issues === "write",
+        );
+        if (
+          parent.title !== "Parent, carried narrowly" ||
+          lists.some((one) => one.repository_ids !== undefined) ||
+          reads.length < 2 ||
+          reads.some(
+            (one) =>
+              !one.repository_ids?.includes(repository.id) ||
+              one.repository_ids.includes(other.id),
+          ) ||
+          writes.length === 0 ||
+          writes.some(
+            (one) => one.repository_ids?.join() !== String(repository.id),
+          )
+        ) {
+          throw new Error(
+            `GitHub holds ${parent.title}; tokens minted for ${JSON.stringify(minted)}`,
+          );
+        }
+        return `GitHub holds the edit; tokens minted for ${JSON.stringify(minted)}`;
+      },
+    );
   } finally {
     await github.stop();
   }

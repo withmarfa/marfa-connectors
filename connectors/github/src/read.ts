@@ -20,6 +20,8 @@ import {
 import {
   asApp,
   asInstallation,
+  ClockSkew,
+  namedAtMost,
   remaining,
   numbersIn,
   reads,
@@ -45,6 +47,9 @@ const checkEvery = 24 * 60 * 60 * 1000;
 export interface Kept {
   installation: number;
   name: string;
+  /** GitHub's repository id, which a token names; absent until a
+   *  scheduled run records it. */
+  id?: number;
   open?: Page[];
   closed?: { since: string; pages: Page[] };
   /** `full` where the listing's first page was full last time, whose
@@ -119,6 +124,19 @@ export async function read(
   app: App,
   scope: Scope | undefined,
 ): Promise<void> {
+  try {
+    await readAll(context, app, scope);
+  } catch (error) {
+    if (!(error instanceof ClockSkew)) throw error;
+    context.log.condition("clock-skew", error.message);
+  }
+}
+
+async function readAll(
+  context: Context,
+  app: App,
+  scope: Scope | undefined,
+): Promise<void> {
   const { state, log, secret, signal, upsert } = context;
   const kept = keptOf(state.get("repositories"));
   const installations = (await asApp(app, signal).paginate(
@@ -130,7 +148,10 @@ export async function read(
     { repository: RestRepository; installation: number }
   >();
   const answered = new Set<number>();
-  const outside = new Map<string, RestRepository>();
+  const outside = new Map<
+    string,
+    { repository: RestRepository; installation: number }
+  >();
   const seen: string[] = [];
   for (const installation of installations) {
     const who = installation.account?.login ?? String(installation.id);
@@ -141,17 +162,25 @@ export async function read(
       );
       continue;
     }
-    const octokit = asInstallation(app, installation.id, secret, signal);
+    const lister = asInstallation(
+      app,
+      installation.id,
+      { access: "list" },
+      secret,
+      signal,
+    );
     try {
-      const repositories = (await octokit.paginate(
+      const repositories = (await lister.paginate(
         "GET /installation/repositories",
       )) as RestRepository[];
-      clients.set(installation.id, octokit);
       answered.add(installation.id);
       for (const repository of repositories) {
         seen.push(repository.full_name);
         if (scope !== undefined && !scope.admits(repository.full_name)) {
-          outside.set(repository.node_id, repository);
+          outside.set(repository.node_id, {
+            repository,
+            installation: installation.id,
+          });
           continue;
         }
         listed.set(repository.node_id, {
@@ -182,6 +211,36 @@ export async function read(
   const paused = new Set(
     [...outside.keys()].filter((node) => kept[node] !== undefined),
   );
+  // A paused repository is reached for reading, so relations to its
+  // issues, which its rows still hold, stay.
+  const reached = new Map<number, number[]>();
+  for (const { repository, installation } of [
+    ...listed.values(),
+    ...[...paused].flatMap((node) => outside.get(node) ?? []),
+  ]) {
+    reached.set(installation, [
+      ...(reached.get(installation) ?? []),
+      repository.id,
+    ]);
+  }
+  for (const [installation, repositoryIds] of reached) {
+    if (repositoryIds.length > namedAtMost) {
+      log.condition(
+        `token-unnarrowed:${String(installation)}`,
+        `GitHub limits a token to ${String(namedAtMost)} named repositories, so the ${String(repositoryIds.length)} synced or paused under installation ${String(installation)} are read with a token that reaches all of its repositories`,
+      );
+    }
+    clients.set(
+      installation,
+      asInstallation(
+        app,
+        installation,
+        { access: "read", repositoryIds },
+        secret,
+        signal,
+      ),
+    );
+  }
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
     await readNamed(context, listed, clients, paused, privacy);
@@ -189,12 +248,17 @@ export async function read(
   }
   const next: Record<string, Kept> = {};
   for (const [node, { repository, installation }] of listed) {
-    next[node] = { ...kept[node], installation, name: repository.full_name };
+    next[node] = {
+      ...kept[node],
+      installation,
+      name: repository.full_name,
+      id: repository.id,
+    };
     Reflect.deleteProperty(next[node], "paused");
   }
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node)) continue;
-    const left = outside.get(node);
+    const left = outside.get(node)?.repository;
     if (left !== undefined) {
       if (repository.paused !== true) {
         log.info(
@@ -205,7 +269,7 @@ export async function read(
       next[node] = await marked(
         context,
         node,
-        { ...repository, paused: true },
+        { ...repository, paused: true, id: left.id },
         left.private,
       );
       continue;
@@ -470,6 +534,7 @@ async function syncRepository(
   const kept: Kept = {
     installation: repository.installation,
     name: repository.name,
+    ...(repository.id !== undefined && { id: repository.id }),
     open: open.pages,
     closed: { since: windowStart, pages: closed.pages },
     comments: {

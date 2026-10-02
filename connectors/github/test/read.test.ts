@@ -616,7 +616,110 @@ describe("the App's key and its tokens", () => {
     expect(output).not.toContain("BEGIN RSA PRIVATE KEY");
     expect(output).not.toContain("ghs_stub_");
     expect(JSON.stringify(marfa.runs)).not.toContain("ghs_stub_");
-  }, 30_000);
+  });
+});
+
+function mints(): unknown[] {
+  return github.asked
+    .filter((one) => one.path.endsWith("/access_tokens") && one.status === 201)
+    .map((one) => one.body);
+}
+
+describe("the installation tokens", () => {
+  it("reach only the synced repositories and only read their issues, past the one that lists the installation's repositories", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    const child = github.addIssue(tracker, { title: "Child" });
+    const parent = github.addIssue(other, { title: "Parent" });
+    child.parent = parent.node;
+    const { code, output } = await once({
+      GITHUB_REPOSITORIES: "someone/tracker",
+    });
+    expect(code, output).toBe(0);
+    expect(mints()).toEqual([
+      expect.objectContaining({ permissions: { metadata: "read" } }),
+      expect.objectContaining({
+        repository_ids: [tracker.id],
+        permissions: { issues: "read", metadata: "read" },
+      }),
+    ]);
+    expect(mints()[0]).not.toHaveProperty("repository_ids");
+    expect(row(child.node).properties["parent_url"] ?? null).toBeNull();
+    expect(links(child.node, "github.sub-issue-of")).toEqual([]);
+  });
+
+  it("reach a repository left out once synced, so relations to its issues stay, and read only", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    const child = github.addIssue(tracker, { title: "Child" });
+    const parent = github.addIssue(other, { title: "Parent" });
+    child.parent = parent.node;
+    await ok();
+    const before = mints().length;
+    const { code, output } = await once({
+      GITHUB_REPOSITORIES: "someone/tracker",
+      GITHUB_READ_ONLY: "true",
+    });
+    expect(code, output).toBe(0);
+    expect(mints().slice(before)).toEqual([
+      expect.objectContaining({ permissions: { metadata: "read" } }),
+      expect.objectContaining({
+        repository_ids: [tracker.id, other.id],
+        permissions: { issues: "read", metadata: "read" },
+      }),
+    ]);
+    expect(links(child.node, "github.sub-issue-of")).toEqual([parent.node]);
+  });
+
+  it("name a repository paused before its id was recorded, which the next run records", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    await ok();
+    for (const one of Object.values(kept())) {
+      Reflect.deleteProperty(one, "id");
+    }
+    const { code, output } = await once({
+      GITHUB_REPOSITORIES: "someone/tracker",
+    });
+    expect(code, output).toBe(0);
+    expect(kept()[other.node]).toMatchObject({ paused: true, id: other.id });
+    expect(kept()[tracker.node]?.["id"]).toBe(tracker.id);
+  });
+
+  it("are replaced when GitHub revokes one mid-run, and the request sent again", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Said");
+    github.revokeAfter = 3;
+    const { code, output } = await once();
+    expect(code, output).toBe(0);
+    expect(output).not.toContain("answered 401");
+    expect(output).not.toContain("refused it");
+    expect(row(issue.node).state).toBe("active");
+    expect(row(comment.node).state).toBe("active");
+    expect(mints()).toHaveLength(3);
+  });
+
+  it("are not asked for while this machine's clock is more than ten minutes from GitHub's, which the run names, changing nothing", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    github.clockAhead = 60 * 60;
+    const { code, output } = await once();
+    expect(code, output).toBe(0);
+    expect(output).toContain("past the 10 minutes the connector allows for");
+    expect(marfa.rows).toEqual([]);
+    expect(mints()).toEqual([]);
+  });
+
+  it("are minted though this machine's clock is out of step with GitHub's", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.clockAhead = -9 * 60;
+    const { code, output } = await once();
+    expect(code, output).toBe(0);
+    expect(output).not.toContain("refused it");
+    expect(row(issue.node).state).toBe("active");
+  });
 });
 
 describe("a larger repository", () => {
@@ -677,7 +780,7 @@ describe("what the adversarial review found", () => {
     await ok();
     await ok();
     expect(row(after.node).properties["body"]).toBe("After");
-  }, 60_000);
+  });
 
   it("takes a child detached on GitHub, on a page that did not change", async () => {
     const repository = github.addRepository("someone/tracker");
@@ -693,7 +796,7 @@ describe("what the adversarial review found", () => {
     child.parent = null;
     await ok();
     expect(links(child.node, "github.sub-issue-of")).toEqual([]);
-  }, 60_000);
+  });
 
   it("takes a child detached from a parent in another repository", async () => {
     const one = github.addRepository("someone/one");
@@ -704,7 +807,7 @@ describe("what the adversarial review found", () => {
     child.parent = null;
     await ok();
     expect(links(child.node, "github.sub-issue-of")).toEqual([]);
-  }, 60_000);
+  });
 
   it("takes an edit to a comment Marfa holds on an issue that left the window", async () => {
     const repository = github.addRepository("someone/tracker");
@@ -723,7 +826,7 @@ describe("what the adversarial review found", () => {
     github.editComment(comment, "After");
     await ok();
     expect(row(comment.node).properties["body"]).toBe("After");
-  }, 60_000);
+  });
 
   it("fails a run GitHub's rate limit refuses, rather than calling it lost access", async () => {
     const repository = github.addRepository("someone/tracker");
@@ -733,7 +836,7 @@ describe("what the adversarial review found", () => {
     const { code, output } = await once();
     expect(code).toBe(1);
     expect(output).not.toContain("so its rows are left as they are");
-  }, 60_000);
+  });
 
   it("leaves repositories for the next run once the hourly limit runs low, keeping what it did", async () => {
     const first = github.addRepository("someone/first");
@@ -749,7 +852,7 @@ describe("what the adversarial review found", () => {
       marfa.rows.filter((one) => one.type === "github.issue"),
     ).toHaveLength(2);
     expect(Object.keys(kept())).toHaveLength(2);
-  }, 60_000);
+  });
 
   it("brings in an old issue newly blocked by one in the window, and an old parent, connected", async () => {
     const repository = github.addRepository("someone/tracker");
@@ -769,7 +872,7 @@ describe("what the adversarial review found", () => {
     await ok();
     expect(links(blocked.node, "github.blocked-by")).toEqual([listed.node]);
     expect(links(listed.node, "github.sub-issue-of")).toEqual([parent.node]);
-  }, 60_000);
+  });
 
   it("keeps a public issue outside the installation as an address, never a row", async () => {
     const repository = github.addRepository("someone/tracker");
@@ -787,7 +890,7 @@ describe("what the adversarial review found", () => {
     expect(row(listed.node).properties["blocked_by_urls"]).toEqual([
       `https://github.com/someone/public/issues/${String(blocker.number)}`,
     ]);
-  }, 60_000);
+  });
 });
 
 describe("a comment a run missed", () => {

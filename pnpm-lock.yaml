@@ -62,6 +62,9 @@ importers:
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../../kit
+      universal-github-app-jwt:
+        specifier: ^2.2.2
+        version: 2.2.2
 
   connectors/rss:
     dependencies:
