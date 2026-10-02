@@ -10,7 +10,9 @@ import type { Clock } from "./runtime.js";
  *  twelfth of it to answer. A run is trusted for five sixths of it from the
  *  last ask that landed, and its signal aborts then. Every call the run
  *  makes to Marfa, its report apart, is ended by that signal, and a call to
- *  the vendor that is handed it is too, so none outlasts the trust. One renewal that times out
+ *  the vendor that is handed it is too, so nothing is waited on past the
+ *  trust; a request already received may still land, inside the sixth of
+ *  the window left before the hold lapses. One renewal that times out
  *  leaves the next asked at two thirds of the window, well inside the trust;
  *  two in a row are what fence a run. */
 const renewalShare = 3;
