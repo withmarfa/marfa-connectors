@@ -515,8 +515,9 @@ export class TodoistStub {
  * A due as Todoist answers it, seen live in October 2026: a date alone makes a
  * task due once, a recurring one included, with the date as its text; a
  * recurrence's text sent with a date keeps the recurrence and takes the date
- * as its next occurrence, whatever day it falls on; a time fixed in UTC takes
- * the account's timezone. The stub reads a text beginning "every" or "after"
+ * as its next occurrence, whatever day it falls on, and keeps a whole day or
+ * a time as sent whatever the recurrence names; a time fixed in UTC takes the
+ * zone sent with it, or the account's, and a floating one none. The stub reads a text beginning "every" or "after"
  * as a recurrence, where Todoist parses it.
  */
 function dueOf(
@@ -527,7 +528,12 @@ function dueOf(
   const text = typeof sent["string"] === "string" ? sent["string"] : date;
   return {
     date,
-    timezone: date?.endsWith("Z") === true ? zone : null,
+    timezone:
+      typeof sent["timezone"] === "string"
+        ? sent["timezone"]
+        : date?.endsWith("Z") === true
+          ? zone
+          : null,
     string: text,
     lang: typeof sent["lang"] === "string" ? sent["lang"] : "en",
     is_recurring:

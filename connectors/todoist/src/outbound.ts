@@ -19,6 +19,7 @@ import {
   Unanswered,
   user,
   uuidFor,
+  wallTime,
   type Command,
   type CommandAnswer,
   type CommandError,
@@ -48,7 +49,14 @@ export interface TaskArgs {
   content: string;
   description: string;
   priority: number;
-  due: { date: string; string?: string; lang?: string } | null;
+  due: Due | null;
+}
+
+interface Due {
+  date: string;
+  string?: string;
+  lang?: string;
+  timezone?: string;
 }
 
 export function argsOf(item: Item, timeZone: string): TaskArgs {
@@ -232,7 +240,11 @@ async function remade(
   const taskId = linkOf(item);
   if (taskId === undefined) return false;
   const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
-  if ((await todoist.task(taskId)) !== "missing") return false;
+  const found = await todoist.task(taskId);
+  if (found === "forbidden" || found === "unknown") {
+    throw new Refused(unreached(taskId, found));
+  }
+  if (found !== "deleted") return false;
   const timeZone = await timeZoneFor(context, todoist);
   const made = await add(
     item,
@@ -254,31 +266,19 @@ async function sync(
   todoist: Door,
 ): Promise<void> {
   const task = await todoist.task(taskId);
-  if (task === "forbidden") {
-    throw new Refused(`Todoist refuses access to task ${taskId}`);
+  if (task === "forbidden" || task === "unknown") {
+    throw new Refused(unreached(taskId, task));
   }
-  if (task === "missing") {
-    // An archive owes a deleted task nothing; the next sync archives the
-    // row of any other change, as Todoist deleted its task.
+  if (task === "deleted") {
+    // An archive owes a deleted task nothing; the sync that brings the
+    // deletion archives the row of any other change.
     if (kind === "archived") return;
-    throw new Refused(`Todoist no longer has task ${taskId}`);
+    throw new Refused(`Todoist deleted task ${taskId}`);
   }
 
   const diff = differing(argsOf(item, timeZone), task, timeZone);
-  // A date alone makes a recurring task due once: sent with its
-  // recurrence, the date is its next occurrence and the task still recurs.
-  const recurrence = task.due?.string;
-  if (
-    diff.due !== undefined &&
-    diff.due !== null &&
-    task.due?.is_recurring === true &&
-    typeof recurrence === "string"
-  ) {
-    diff.due = {
-      string: recurrence,
-      ...(typeof task.due.lang === "string" && { lang: task.due.lang }),
-      date: diff.due.date,
-    };
+  if (diff.due !== undefined && diff.due !== null) {
+    diff.due = moved(diff.due.date, task.due, timeZone);
   }
   if (Object.keys(diff).length > 0) {
     const answer = await todoist.one(
@@ -300,6 +300,30 @@ async function sync(
       `${completed ? "closing" : "reopening"} task ${taskId}`,
     );
   }
+}
+
+function unreached(taskId: string, answer: "forbidden" | "unknown"): string {
+  return answer === "forbidden"
+    ? `Todoist refuses access to task ${taskId}`
+    : `Todoist does not answer task ${taskId} for this token`;
+}
+
+// Todoist keeps the date sent, but a date alone ends a recurrence and moves
+// a time to the account's zone (seen live in October 2026): the recurrence
+// goes with it, and the time stays fixed in the task's zone or floating.
+function moved(date: string, have: TodoistItem["due"], timeZone: string): Due {
+  const timed = date.includes("T");
+  const zone = typeof have?.timezone === "string" ? have.timezone : undefined;
+  const floating = zone === undefined && /T[^Z]*$/.test(have?.date ?? "");
+  return {
+    ...(have?.is_recurring === true &&
+      typeof have.string === "string" && {
+        string: have.string,
+        ...(typeof have.lang === "string" && { lang: have.lang }),
+      }),
+    date: timed && floating ? wallTime(date, timeZone) : date,
+    ...(timed && zone !== undefined && { timezone: zone }),
+  };
 }
 
 async function add(

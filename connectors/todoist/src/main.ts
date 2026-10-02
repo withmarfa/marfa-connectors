@@ -18,6 +18,7 @@ import {
   sync,
   taskFields,
   timezoneOf,
+  Unanswered,
 } from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
 
@@ -58,9 +59,10 @@ const connector = defineConnector({
       const gone: string[] = [];
       for (const id of hints.get(taskType) ?? []) {
         const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
-        if (task === "missing") gone.push(id);
-        else if (task === "forbidden") forbidden(log, id);
-        else {
+        if (task === "deleted") gone.push(id);
+        else if (task === "forbidden" || task === "unknown") {
+          unanswered(log, id, task);
+        } else {
           found.push(
             entryOf(keptAccount, typeof zone === "string" ? zone : "UTC", task),
           );
@@ -138,8 +140,6 @@ const connector = defineConnector({
       );
     }
 
-    // A full sync lists only active tasks: a task it leaves out is left as it
-    // is.
     await upsert(
       taskType,
       answer.items
@@ -152,33 +152,40 @@ const connector = defineConnector({
         .filter((item) => item.is_deleted === true)
         .map((item) => item.id),
     );
-    // A full sync leaves out a task deleted since the last token, and the
-    // completed tasks only reach back twelve weeks: an open row it left out
-    // is asked about by id.
-    if (fullSync) {
-      const listed = new Set(answer.items.map((item) => item.id));
-      const found: Entry[] = [];
-      const gone: string[] = [];
-      for (const row of await held(taskType)) {
-        const id = row.properties["todoist_id"];
-        if (
-          typeof id !== "string" ||
-          listed.has(id) ||
-          row.properties["status"] === "completed" ||
-          (row.source === source && row.source_id !== sourceId(account, id))
-        ) {
-          continue;
-        }
-        const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
-        if (task === "missing") gone.push(id);
-        else if (task === "forbidden") forbidden(log, id);
-        else found.push(entryOf(account, timeZone, task));
-      }
-      await upsert(taskType, found);
-      await archive(taskType, gone);
-    }
     state.set("account", account);
     if (named !== undefined) state.set("timezone", named);
+    // A run a change started, with the state lost, archives only what it was
+    // handed: the next scheduled run syncs in full again.
+    if (hints !== undefined) return;
+    // A full sync leaves out a task deleted since the last token, and the
+    // completed tasks only reach back twelve weeks: an open row it left out
+    // is asked about by id, a share each run.
+    const listed = new Set(answer.items.map((item) => item.id));
+    const left = state.get("unasked");
+    const unasked = fullSync
+      ? (await held(taskType)).flatMap((row) => {
+          const id = row.properties["todoist_id"];
+          return typeof id !== "string" ||
+            listed.has(id) ||
+            row.properties["status"] === "completed" ||
+            (row.source === source && row.source_id !== sourceId(account, id))
+            ? []
+            : [id];
+        })
+      : (Array.isArray(left) ? left : []).filter(
+          (id): id is string => typeof id === "string" && !listed.has(id),
+        );
+    const rest = await askAbout(unasked, {
+      base,
+      token: env.TODOIST_API_TOKEN,
+      account,
+      timeZone,
+      signal,
+      log,
+      upsert,
+      archive,
+    });
+    state.set("unasked", rest.length > 0 ? rest : undefined);
     state.set("sync_token", answer.sync_token);
   },
   onChange(change, context) {
@@ -189,11 +196,69 @@ const connector = defineConnector({
   },
 });
 
-function forbidden(log: Log, id: string): void {
+function unanswered(
+  log: Log,
+  id: string,
+  answer: "forbidden" | "unknown",
+): void {
   log.condition(
-    `task-forbidden:${id}`,
-    `Todoist refuses the token access to task ${id}, so its row is left as it is`,
+    `task-unanswered:${id}`,
+    answer === "forbidden"
+      ? `Todoist refuses the token access to task ${id}, so its row is left as it is`
+      : `Todoist does not answer task ${id} for this token, so its row is left as it is`,
   );
+}
+
+/** Well inside Todoist's 1000 requests in 15 minutes. */
+const asksPerRun = 200;
+const writtenEvery = 50;
+
+/** Answers the ids not asked about, for the next run. */
+async function askAbout(
+  ids: readonly string[],
+  context: {
+    base: string;
+    token: string;
+    account: string;
+    timeZone: string;
+    signal: AbortSignal;
+    log: Log;
+    upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
+    archive: (type: string, keys: readonly string[]) => Promise<void>;
+  },
+): Promise<string[]> {
+  const { log } = context;
+  const found: Entry[] = [];
+  const gone: string[] = [];
+  const write = async (): Promise<void> => {
+    await context.upsert(taskType, found.splice(0));
+    await context.archive(taskType, gone.splice(0));
+  };
+  let at = 0;
+  try {
+    for (; at < Math.min(ids.length, asksPerRun); at += 1) {
+      const id = ids[at] ?? "";
+      const task = await getTask(
+        context.base,
+        context.token,
+        id,
+        context.signal,
+      );
+      if (task === "deleted") gone.push(id);
+      else if (task === "forbidden" || task === "unknown") {
+        unanswered(log, id, task);
+      } else found.push(entryOf(context.account, context.timeZone, task));
+      if (found.length + gone.length >= writtenEvery) await write();
+    }
+  } catch (error) {
+    if (!(error instanceof Unanswered)) throw error;
+    log.condition(
+      "unasked",
+      `${String(ids.length - at)} rows the full sync left out wait to be asked about: ${error.message}`,
+    );
+  }
+  await write();
+  return ids.slice(at);
 }
 
 await main(connector);

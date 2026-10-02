@@ -911,7 +911,7 @@ describe("the connector, run as a process", () => {
     });
     expect(marfa.row("2671355:a").state).toBe("active");
     expect(tasksAsked).toEqual(["b"]);
-    expect(marfa.row("2671355:b").state).toBe("archived");
+    expect(marfa.row("2671355:b").state).toBe("active");
   });
 
   it("takes a delta Todoist answers in full as a full sync, and asks about each open row it left out", async () => {

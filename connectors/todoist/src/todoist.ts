@@ -20,6 +20,7 @@ export interface TodoistItem {
     string?: string | null;
     lang?: string | null;
     is_recurring?: boolean;
+    timezone?: string | null;
   } | null;
   child_order?: number;
   checked?: boolean;
@@ -321,8 +322,9 @@ export async function send(
 
 // The door answers a completed task (`checked`) and a deleted one
 // (`is_deleted`) with 200, as well as an open one, though Todoist's reference
-// calls it active-only (seen live in October 2026).
-export type TaskAnswer = TodoistItem | "missing" | "forbidden";
+// calls it active-only (seen live in October 2026). A 404 is then an id the
+// token cannot reach, never a deletion.
+export type TaskAnswer = TodoistItem | "deleted" | "unknown" | "forbidden";
 
 export async function getTask(
   base: string,
@@ -337,7 +339,7 @@ export async function getTask(
     { method: "GET", forbiddenIsAnswer: true },
     signal,
   );
-  if (response.status === 404) return "missing";
+  if (response.status === 404) return "unknown";
   if (response.status === 403) return "forbidden";
   if (!response.ok) {
     throw new Error(
@@ -345,7 +347,7 @@ export async function getTask(
     );
   }
   const found = (await response.json()) as TodoistItem;
-  return found.is_deleted === true ? "missing" : found;
+  return found.is_deleted === true ? "deleted" : found;
 }
 
 // Laid out as a UUID, the form Todoist's documentation shows for command ids.
@@ -386,6 +388,24 @@ export function dueFor(
   return {
     date: `${read["year"] ?? ""}-${read["month"] ?? ""}-${read["day"] ?? ""}`,
   };
+}
+
+/** An instant as the wall time it shows in the zone, as Todoist writes a floating time. */
+export function wallTime(instant: string, timeZone: string): string {
+  const read: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(new Date(instant))) {
+    read[part.type] = part.value;
+  }
+  return `${read["year"] ?? ""}-${read["month"] ?? ""}-${read["day"] ?? ""}T${read["hour"] ?? ""}:${read["minute"] ?? ""}:${read["second"] ?? ""}`;
 }
 
 /**
