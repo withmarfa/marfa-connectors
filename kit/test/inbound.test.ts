@@ -853,7 +853,8 @@ describe("a two-way connector's run for deliveries", () => {
     await harness.clock.wake(10_000);
     await until(() => harness.server.runs.length === 2);
     expect(harness.lastRun().outcome).toBe("failed");
-    await harness.clock.sleeping(10_000);
+    // Marfa failed the write, so the connector asks it before the next run.
+    await harness.clock.sleeping(15_000);
 
     held.entries = [
       {
@@ -864,7 +865,7 @@ describe("a two-way connector's run for deliveries", () => {
     ];
     const said = signed({ ids: ["v-theirs"] });
     harness.server.deliver(said.body, said.headers);
-    await harness.clock.wake(10_000);
+    await harness.clock.wake(15_000);
     await until(() => harness.server.runs.length === 3);
     await harness.clock.sleeping(10_000);
     expect(harness.lastRun().outcome).toBe("succeeded");

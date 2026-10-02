@@ -1,6 +1,7 @@
 import { ConfigurationError } from "./environment.js";
 
 export type Schedule =
+  | { mode: "help" }
   | { mode: "once" }
   | { mode: "setup"; file: string }
   | {
@@ -12,8 +13,8 @@ export type Schedule =
 
 const units = { s: 1000, m: 60_000, h: 3_600_000 } as const;
 
-const usage =
-  "run with --once, or with --every <interval> such as 30s, 15m or 1h, and --look-every <interval> after it to change how often the connector looks between runs, or with --setup <file> to set the connector up with its vendor";
+export const usage =
+  "run with --once, or with --every <interval> such as 30s, 15m or 1h, and --look-every <interval> after it to change how often the connector looks between runs, or with --setup <file> to set the connector up with its vendor, or with --help to see this again";
 
 export const defaultLookMs = 10_000;
 
@@ -24,6 +25,9 @@ function interval(text: string | undefined): number | undefined {
 }
 
 export function readSchedule(argv: readonly string[]): Schedule {
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    return { mode: "help" };
+  }
   if (argv.length === 1 && argv[0] === "--once") return { mode: "once" };
   if (argv.length === 2 && argv[0] === "--setup" && argv[1] !== "") {
     return { mode: "setup", file: argv[1] ?? "" };
@@ -40,7 +44,11 @@ export function readSchedule(argv: readonly string[]): Schedule {
       return { mode: "every", intervalMs, lookMs, lookGiven };
     }
   }
-  throw new ConfigurationError(`${usage}; got "${argv.join(" ")}"`);
+  throw new ConfigurationError(
+    argv.length === 0
+      ? `no schedule was given: ${usage}`
+      : `${usage}; got "${argv.join(" ")}"`,
+  );
 }
 
 export function backoff(intervalMs: number, failures: number): number {

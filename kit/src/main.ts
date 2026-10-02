@@ -15,8 +15,15 @@ import {
   type Environment,
 } from "./environment.js";
 import { cap, Logger } from "./log.js";
-import { Marfa, Refusal, type Key } from "./marfa.js";
-import { Hold } from "./hold.js";
+import {
+  causeOf,
+  Marfa,
+  marfaFetch,
+  Refusal,
+  retryAfterOf,
+  type Key,
+} from "./marfa.js";
+import { Hold, type Lost } from "./hold.js";
 import {
   describe,
   runOnce,
@@ -32,6 +39,7 @@ import {
   backoff,
   describeDuration,
   readSchedule,
+  usage,
   type Schedule,
 } from "./schedule.js";
 import { edgeTypeDifferences, typeDifferences } from "./type-check.js";
@@ -40,30 +48,20 @@ const heartbeatMs = 60_000;
 
 const beatTimeoutMs = 15_000;
 
-/** Any TypeError besides `fetch failed` is a bug no retry mends. */
-function transient(error: unknown): boolean {
-  if (error instanceof Refusal) {
-    return (
-      error.status !== undefined &&
-      (error.status >= 500 || error.status === 429)
-    );
-  }
-  return (
-    (error instanceof TypeError && error.message === "fetch failed") ||
-    (error instanceof DOMException && error.name === "TimeoutError")
-  );
-}
+/** A round of heartbeat and renewal never starts closer to the last than
+ *  this, however long that one ran. */
+const minimumBeatGapMs = 1000;
 
-function timedFetch(ms: number): typeof fetch {
-  return (input, init) => {
-    const request = new Request(input, init);
-    // Handed to fetch as its own option: built into a copy of the request,
-    // the timer's signal is collected before it fires.
-    return fetch(request, {
-      signal: AbortSignal.any([request.signal, AbortSignal.timeout(ms)]),
-    });
-  };
-}
+/** A registration lost again within this long of being made again is not
+ *  made a third time. */
+const reregisterAfterMs = 300_000;
+
+/** The longest a `Retry-After` holds the start back. */
+const longestRetryAfterMs = 300_000;
+
+/** How often a connector asks whether Marfa answers again after a run it
+ *  could not finish for want of an answer. */
+const probeMs = 15_000;
 
 function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
@@ -194,7 +192,7 @@ async function ensureConnections(
         await marfa.registerEdgeType(connection);
         continue;
       } catch (error) {
-        if (transient(error)) throw error;
+        if (causeOf(error) === "marfa") throw error;
         // Another process under the key registered it first.
         if (!(error instanceof Refusal) || error.status !== 409) {
           return `the connection type ${connection.id} could not be registered: ${describe(error)}`;
@@ -224,7 +222,7 @@ async function ensureType(
     await marfa.registerType(type);
     return undefined;
   } catch (error) {
-    if (transient(error)) throw error;
+    if (causeOf(error) === "marfa") throw error;
     // Another process holding the key registered it first, which is as good
     // as registering it, if it is the same type.
     if (error instanceof Refusal && error.status === 409) {
@@ -364,6 +362,43 @@ async function awaitChanges<E extends EnvDeclaration>(
   }
 }
 
+function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
+  const named = Object.entries(connector.env ?? {}).map(
+    ([name, kind]) => `  ${name} (${kind})`,
+  );
+  return [
+    `${connector.name}: ${usage}`,
+    "It reads its settings from the environment:",
+    "  MARFA_URL (the address of the Marfa server)",
+    "  MARFA_KEY (a key minted for this connector, as the template's README says)",
+    ...named,
+  ];
+}
+
+function startProblem(error: unknown): string {
+  const cause = causeOf(error);
+  if (cause === "key") {
+    return `could not start: the server refused MARFA_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_KEY to a key minted for this connector, as the template's README says.`;
+  }
+  if (cause === "marfa") {
+    return `could not start: the server at MARFA_URL did not answer (${describe(error)}). Check MARFA_URL and that the server is up, then start the connector again.`;
+  }
+  if (error instanceof Refusal && error.status === 403) {
+    return `could not start: the server will not register this connector (${describe(error)}). MARFA_KEY must be a key minted for the connector itself, not an app's or a session's.`;
+  }
+  return `could not start: ${describe(error)}`;
+}
+
+interface Shared<E extends EnvDeclaration> {
+  readonly connector: Connector<E>;
+  readonly environment: Environment;
+  readonly schedule: Exclude<Schedule, { mode: "help" }>;
+  readonly marfa: Marfa;
+  readonly logger: Logger;
+  readonly clock: Runtime["clock"];
+  readonly stop: AbortController;
+}
+
 export async function start<E extends EnvDeclaration>(
   connector: Connector<E>,
   runtime: Runtime,
@@ -377,6 +412,10 @@ export async function start<E extends EnvDeclaration>(
   try {
     checkDefinition(connector);
     schedule = readSchedule(runtime.argv);
+    if (schedule.mode === "help") {
+      for (const line of helpOf(connector)) write(line);
+      return 0;
+    }
     if (schedule.mode === "setup") {
       if (connector.setup === undefined) {
         throw new ConfigurationError(
@@ -435,7 +474,6 @@ export async function start<E extends EnvDeclaration>(
   }
 
   const stop = new AbortController();
-  const stopped = (): boolean => stop.signal.aborted;
   runtime.onStop(() => {
     logger.info("asked to stop");
     stop.abort();
@@ -444,9 +482,47 @@ export async function start<E extends EnvDeclaration>(
     createClient({
       baseUrl: environment.url,
       credential: environment.key,
-      fetch: timedFetch(runtime.requestTimeoutMs),
+      fetch: marfaFetch(runtime.requestTimeoutMs),
     }),
   );
+  const shared: Shared<E> = {
+    connector,
+    environment,
+    schedule,
+    marfa,
+    logger,
+    clock,
+    stop,
+  };
+  let lostAt: number | undefined;
+  for (;;) {
+    const ended = await serve(shared);
+    if (ended !== "registration") return ended;
+    // A server that loses the registration as fast as it is made would
+    // have this loop register it for good.
+    const now = clock.now().getTime();
+    if (lostAt !== undefined && now - lostAt < reregisterAfterMs) {
+      logger.error(
+        "the server keeps losing this connector's registration, so the connector stops; check what removes it, then start it again",
+      );
+      return 1;
+    }
+    lostAt = now;
+    logger.warn(
+      "the server no longer holds this connector's registration, so it is registered again",
+    );
+  }
+}
+
+/** Registers, then runs, until the process is told to stop or its key or
+ *  registration is lost. Answers `registration` where registering again
+ *  would mend it. */
+async function serve<E extends EnvDeclaration>(
+  shared: Shared<E>,
+): Promise<number | "registration"> {
+  const { connector, environment, schedule, marfa, logger, clock, stop } =
+    shared;
+  const stopped = (): boolean => stop.signal.aborted;
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
   let started: Started | undefined;
@@ -454,13 +530,16 @@ export async function start<E extends EnvDeclaration>(
     try {
       started = await registerAndCheck(connector, marfa);
     } catch (error) {
-      if (schedule.mode === "once" || !transient(error)) {
-        logger.error(`could not start: ${describe(error)}`);
+      if (schedule.mode !== "every" || causeOf(error) !== "marfa") {
+        logger.error(startProblem(error));
         return 1;
       }
-      const wait = startBackoff(intervalMs, failures);
+      const wait = Math.max(
+        startBackoff(intervalMs, failures),
+        Math.min(retryAfterOf(error) ?? 0, longestRetryAfterMs),
+      );
       logger.warn(
-        `could not reach the server, trying again in ${describeDuration(wait)}: ${describe(error)}`,
+        `could not reach the server at MARFA_URL, trying again in ${describeDuration(wait)}: ${describe(error)}`,
       );
       await clock.sleep(wait, stop.signal);
       if (stopped()) return 0;
@@ -499,13 +578,26 @@ export async function start<E extends EnvDeclaration>(
     );
   }
 
+  // The key refused or the registration gone ends the session, whatever it
+  // was doing: no run mends either.
+  const halt = new AbortController();
+  let halted: Lost | undefined;
+  const end = (why: Lost): void => {
+    if (halted !== undefined) return;
+    halted = why;
+    halt.abort();
+  };
+  const lasting = AbortSignal.any([stop.signal, halt.signal]);
+  const over = (): boolean => lasting.aborted;
+
   const hold = new Hold(marfa, connectorId, randomUUID(), logger, clock);
   const beating = new AbortController();
-  const beat = AbortSignal.any([beating.signal, stop.signal]);
+  const beat = AbortSignal.any([beating.signal, lasting]);
   const beatingEnded = (): boolean => beat.aborted;
   const heartbeat = (async () => {
     let failing = false;
     while (!beatingEnded()) {
+      const began = clock.now().getTime();
       // Side by side, and neither waiting long, so a slow heartbeat never
       // leaves the hold unrenewed.
       const beating = async (): Promise<void> => {
@@ -517,16 +609,30 @@ export async function start<E extends EnvDeclaration>(
           if (failing) logger.info("the heartbeat is answered again");
           failing = false;
         } catch (error) {
+          const cause = causeOf(error);
+          if (cause === "key" || cause === "registration") {
+            end(cause);
+            return;
+          }
           // A heartbeat cut short because beating ended is not a failure.
           if (!beatingEnded() && !failing) {
-            logger.warn(`the heartbeat failed: ${describe(error)}`);
+            logger.warn(
+              `the heartbeat failed, and is tried again every minute: ${describe(error)}`,
+            );
             failing = true;
           }
         }
       };
-      await Promise.all([beating(), hold.renew()]);
+      const [, lost] = await Promise.all([beating(), hold.renew()]);
+      if (lost !== undefined) end(lost);
+      if (beatingEnded()) break;
+      // From the start of one round to the start of the next, so a round
+      // that ran long does not push the renewal past what the hold allows.
+      const left =
+        Math.min(heartbeatMs, hold.renewEvery) -
+        (clock.now().getTime() - began);
       await clock.sleep(
-        Math.min(heartbeatMs, hold.renewEvery),
+        Math.max(minimumBeatGapMs, left),
         AbortSignal.any([beat, hold.rearmed]),
       );
     }
@@ -540,7 +646,7 @@ export async function start<E extends EnvDeclaration>(
     process: hold.process,
     logger,
     clock,
-    signal: stop.signal,
+    signal: lasting,
   };
   let heldUntil: string | undefined;
   const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
@@ -549,9 +655,16 @@ export async function start<E extends EnvDeclaration>(
     try {
       taken = await hold.take();
     } catch (error) {
-      if (stopped()) return undefined;
-      logger.error(`the hold could not be taken: ${describe(error)}`);
-      return { succeeded: false, settled: false, cursor: undefined };
+      if (over()) return undefined;
+      const cause = causeOf(error);
+      if (cause === "key" || cause === "registration") {
+        end(cause);
+        return undefined;
+      }
+      logger.error(
+        `the hold could not be taken, so this run does not start: ${describe(error)}`,
+      );
+      return { succeeded: false, cause, settled: false, cursor: undefined };
     }
     if (!taken.held) {
       logger.warn(
@@ -560,40 +673,83 @@ export async function start<E extends EnvDeclaration>(
       heldUntil = taken.until;
       return undefined;
     }
-    return runOnce(
+    const run = await runOnce(
       {
         ...setup,
-        signal: AbortSignal.any([stop.signal, hold.signal]),
+        signal: AbortSignal.any([lasting, hold.signal]),
         fenced: () => hold.check(),
       },
       trigger,
     );
+    if (run.cause === "key" || run.cause === "registration") end(run.cause);
+    return run;
+  };
+  // Asks Marfa, the cheapest way it can be asked, until it answers.
+  const untilMarfaAnswers = async (): Promise<void> => {
+    const every = Math.min(intervalMs, probeMs);
+    let wait = every;
+    logger.info(
+      `Marfa did not answer, so the connector asks every ${describeDuration(every)} and runs again once it does`,
+    );
+    while (!over()) {
+      await clock.sleep(wait, lasting);
+      if (over()) return;
+      try {
+        await marfa.heartbeat(
+          connectorId,
+          AbortSignal.any([lasting, AbortSignal.timeout(beatTimeoutMs)]),
+        );
+        break;
+      } catch (error) {
+        if (over()) return;
+        const cause = causeOf(error);
+        if (cause === "key" || cause === "registration") {
+          end(cause);
+          return;
+        }
+        // Marfa answered, though it refused: the run can find out why.
+        if (cause !== "marfa") break;
+        wait = Math.max(every, Math.min(retryAfterOf(error) ?? 0, 60_000));
+      }
+    }
+    logger.info("Marfa answers again, so the connector runs now");
   };
   let code = 0;
+  let succeeded = false;
   try {
     if (schedule.mode === "once") {
       const run = await held("schedule");
+      succeeded = run?.succeeded === true;
       code = run === undefined || run.succeeded || stopped() ? 0 : 1;
     } else {
       let failures = 0;
-      while (!stopped()) {
+      // Asked for once after Marfa failed a run, so a Marfa that answers
+      // but fails again falls back to the backoff.
+      let hurried = false;
+      while (!over()) {
         const run = await held("schedule");
+        if (over()) break;
         if (run === undefined) {
           await clock.sleep(
             untilLapsed(heldUntil, clock.now().getTime(), schedule.intervalMs),
-            stop.signal,
+            lasting,
           );
           continue;
         }
         failures = run.succeeded ? 0 : failures + 1;
-        if (stopped()) break;
+        if (run.cause === "marfa" && !hurried) {
+          hurried = true;
+          await untilMarfaAnswers();
+          continue;
+        }
+        hurried = false;
         const wait = backoff(schedule.intervalMs, failures);
         if (failures > 0) {
           logger.info(`the next run is in ${describeDuration(wait)}`);
         }
         const next = clock.now().getTime() + wait;
         if (!looks(connector, environment) || !run.settled) {
-          await clock.sleep(wait, stop.signal);
+          await clock.sleep(wait, lasting);
           continue;
         }
         await awaitChanges(setup, held, schedule.lookMs, next, run.cursor);
@@ -602,9 +758,22 @@ export async function start<E extends EnvDeclaration>(
   } finally {
     beating.abort();
     await heartbeat;
-    await hold.release();
+    if (halted === undefined) await hold.release();
   }
-  return code;
+  if (halted === undefined || (succeeded && code === 0)) return code;
+  if (halted === "key") {
+    logger.error(
+      "the server refused MARFA_KEY, so the connector stops: the key is wrong or revoked. Mint another as the template's README says, set MARFA_KEY, and start the connector again.",
+    );
+    return 1;
+  }
+  if (schedule.mode === "once") {
+    logger.error(
+      "the server no longer holds this connector's registration, so this run stops; start it again to register it anew",
+    );
+    return 1;
+  }
+  return "registration";
 }
 
 /**

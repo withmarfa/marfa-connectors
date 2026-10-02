@@ -77,6 +77,7 @@ interface Refusal {
   status: number;
   code: string;
   message: string;
+  retryAfter?: string;
 }
 
 /**
@@ -174,6 +175,11 @@ export class ScriptedServer {
   readonly entryRefusals = new Map<string, Refusal>();
   afterRead: ((request: Request) => void) | undefined;
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
+  /** The key is refused as a revoked one is: 401 at every door. */
+  revoked = false;
+  /** The registration is gone: every door under it answers 404 until the
+   *  connector registers again. */
+  lost = false;
   bodyCap: number | undefined;
   tooOld = false;
   incompleteAfter: number | undefined;
@@ -260,9 +266,15 @@ export class ScriptedServer {
     status: number,
     code: string,
     message = code,
+    retryAfter?: string,
   ): void {
     const queue = this.refusals.get(route) ?? [];
-    queue.push({ status, code, message });
+    queue.push({
+      status,
+      code,
+      message,
+      ...(retryAfter !== undefined && { retryAfter }),
+    });
     this.refusals.set(route, queue);
   }
 
@@ -688,7 +700,7 @@ export class ScriptedServer {
       });
     };
 
-    if (req.headers.authorization !== `Bearer ${this.key}`) {
+    if (this.revoked || req.headers.authorization !== `Bearer ${this.key}`) {
       refuse(401, "unauthorized");
       return;
     }
@@ -700,6 +712,9 @@ export class ScriptedServer {
     const route = `${method} ${url.pathname}`;
     const scripted = this.refusals.get(route)?.shift();
     if (scripted !== undefined) {
+      if (scripted.retryAfter !== undefined) {
+        res.setHeader("Retry-After", scripted.retryAfter);
+      }
       refuse(scripted.status, scripted.code, scripted.message);
       return;
     }
@@ -727,7 +742,14 @@ export class ScriptedServer {
       });
       return;
     }
+    if (this.lost && parts[0] === "connectors" && parts[1] !== undefined) {
+      refuse(404, "connector_not_found");
+      return;
+    }
     if (method === "POST" && url.pathname === "/connectors") {
+      // A registration removed takes its hold with it.
+      if (this.lost) this.holder = undefined;
+      this.lost = false;
       this.registrations += 1;
       const at = this.now();
       send(this.registrations === 1 ? 201 : 200, {

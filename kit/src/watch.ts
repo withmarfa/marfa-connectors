@@ -1,5 +1,5 @@
 import type { Item } from "./define.js";
-import type { Edge, Marfa } from "./marfa.js";
+import { MarfaUnreachable, type Edge, type Marfa } from "./marfa.js";
 import { frames } from "./sse.js";
 
 export interface Frame {
@@ -45,6 +45,7 @@ function endedEarly(error: unknown): boolean {
   return (
     (error instanceof DOMException &&
       (error.name === "AbortError" || error.name === "TimeoutError")) ||
+    (error instanceof MarfaUnreachable && error.timedOut) ||
     (error instanceof Error && error.name === "AbortError")
   );
 }

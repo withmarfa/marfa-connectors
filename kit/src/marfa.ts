@@ -38,11 +38,112 @@ export class Refusal extends Error {
     readonly code: string,
     readonly detail: string,
     readonly details: Readonly<Record<string, unknown>> = {},
+    /** What a `Retry-After` named, where the answer carried one. */
+    readonly retryAfterMs?: number | undefined,
   ) {
     super(
       `${status === undefined ? "" : `${String(status)} `}${code}: ${detail}`,
     );
   }
+}
+
+/** A call that got no answer from Marfa: the connection was cut or refused,
+ *  or the request timed out. Its message and cause read as the error it
+ *  replaces. */
+export class MarfaUnreachable extends Error {
+  override name = "MarfaUnreachable";
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { timedOut?: boolean },
+  ) {
+    super(message, options);
+    this.timedOut = options?.timedOut === true;
+  }
+
+  /** The request ran out of time, as against being refused or cut. */
+  readonly timedOut: boolean;
+}
+
+/** The transport for every call to Marfa: a call that gets no answer fails
+ *  as `MarfaUnreachable`, and one cut short by the caller's own signal is
+ *  left as it was. */
+export function marfaFetch(ms: number): typeof fetch {
+  return async (input, init) => {
+    const request = new Request(input, init);
+    // Handed to fetch as its own option: built into a copy of the request,
+    // the timer's signal is collected before it fires.
+    try {
+      return await fetch(request, {
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(ms)]),
+      });
+    } catch (error) {
+      const timedOut =
+        error instanceof DOMException && error.name === "TimeoutError";
+      if (timedOut || error instanceof TypeError) {
+        throw new MarfaUnreachable(
+          error.message,
+          timedOut ? { timedOut } : { cause: (error as TypeError).cause },
+        );
+      }
+      throw error;
+    }
+  };
+}
+
+/** Whose failure an error is, by what it is and never by what it says.
+ *  `marfa` is no answer from Marfa, or an answer that asks for time (408,
+ *  429, 5xx); `key` is a key Marfa refuses; `registration` is a connector
+ *  Marfa no longer holds; anything else, the vendor's failure or a refusal
+ *  of what a run wrote, is `vendor`. */
+export type Cause = "marfa" | "vendor" | "key" | "registration";
+
+export function causeOf(error: unknown): Cause {
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 8;
+    at = at.cause, depth += 1
+  ) {
+    if (at instanceof MarfaUnreachable) return "marfa";
+    if (!(at instanceof Refusal)) continue;
+    if (at.status === 401) return "key";
+    if (at.status === 404 && at.code === "connector_not_found") {
+      return "registration";
+    }
+    if (
+      at.status !== undefined &&
+      (at.status >= 500 || at.status === 429 || at.status === 408)
+    ) {
+      return "marfa";
+    }
+    return "vendor";
+  }
+  return "vendor";
+}
+
+/** The wait a refusal asked for, however deep in the error it sits. */
+export function retryAfterOf(error: unknown): number | undefined {
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 8;
+    at = at.cause, depth += 1
+  ) {
+    if (at instanceof Refusal) return at.retryAfterMs;
+  }
+  return undefined;
+}
+
+function retryAfter(response: Response): number | undefined {
+  const header = response.headers.get("retry-after");
+  if (header === null) return undefined;
+  const seconds = Number(header);
+  if (header.trim() !== "" && Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  const at = Date.parse(header);
+  const date = Date.parse(response.headers.get("date") ?? "");
+  const from = Number.isFinite(date) ? date : Date.now();
+  return Number.isFinite(at) ? Math.max(0, at - from) : undefined;
 }
 
 function refusal(response: Response, error: unknown): Refusal {
@@ -60,7 +161,13 @@ function refusal(response: Response, error: unknown): Refusal {
     typeof envelope?.details === "object" && envelope.details !== null
       ? (envelope.details as Record<string, unknown>)
       : {};
-  return new Refusal(response.status, code, message, details);
+  return new Refusal(
+    response.status,
+    code,
+    message,
+    details,
+    retryAfter(response),
+  );
 }
 
 export interface NewRow {
@@ -575,8 +682,8 @@ export class Marfa {
         elsewhere: false;
         until: string;
         renewed: boolean;
-        /** How long the instance holds it, by its own clock, where it says. */
-        window: number | undefined;
+        /** How long the instance holds it, in milliseconds. */
+        ttlMs: number;
       }
     | { elsewhere: true; until: string }
   > {
@@ -585,14 +692,11 @@ export class Marfa {
       { params: { path: { id } }, body: { process }, signal },
     );
     if (data !== undefined) {
-      const window =
-        Date.parse(data.expires_at) -
-        Date.parse(response.headers.get("date") ?? "");
       return {
         elsewhere: false,
         until: data.expires_at,
         renewed: data.renewed,
-        window: Number.isFinite(window) && window > 0 ? window : undefined,
+        ttlMs: data.ttl_ms,
       };
     }
     const refused = refusal(response, error);

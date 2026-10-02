@@ -26,7 +26,7 @@ import { Connections, connectionsKey, type Carried } from "./connections.js";
 import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, keepSecret, reportCap, type Logger } from "./log.js";
-import type { Edge, Marfa } from "./marfa.js";
+import { causeOf, type Cause, type Edge, type Marfa } from "./marfa.js";
 import {
   carriable,
   cascaded,
@@ -67,6 +67,8 @@ export type Trigger = "schedule" | "look";
 
 export interface RunResult {
   readonly succeeded: boolean;
+  /** Whose failure ended a run that did not succeed. */
+  readonly cause: Cause | undefined;
   readonly cursor: string | undefined;
   readonly settled: boolean;
 }
@@ -1434,7 +1436,9 @@ export async function runOnce<E extends EnvDeclaration>(
   let conditions = stored.conditions;
   if (reported && failure === undefined && whole) {
     for (const [key, message] of Object.entries(stored.conditions)) {
-      if (!raised.has(key)) logger.info(`cleared: ${message}`);
+      if (!raised.has(key)) {
+        logger.info(`cleared: ${message} (this run did not raise it again)`);
+      }
     }
     conditions = Object.fromEntries(known);
   } else if (reported) {
@@ -1459,6 +1463,7 @@ export async function runOnce<E extends EnvDeclaration>(
   }
   return {
     succeeded: failure === undefined,
+    cause: failure === undefined ? undefined : causeOf(failure),
     settled,
     cursor: pastLog ? read?.cursor : stored.cursor,
   };

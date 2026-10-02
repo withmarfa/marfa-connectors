@@ -1,18 +1,31 @@
 import type { Logger } from "./log.js";
-import type { Marfa } from "./marfa.js";
+import { causeOf, type Marfa } from "./marfa.js";
 import { describe } from "./run.js";
 import type { Clock } from "./runtime.js";
 
-/** Two thirds of the server's default three-minute hold. */
-const defaultTrustMs = 120_000;
+/** How the instance's window, which each answer names, sets the rest: a
+ *  renewal is asked a third of it apart, measured from the start of one ask
+ *  to the start of the next, and given a twelfth of it to answer. Past five
+ *  sixths of it since the last ask that landed, a write is no longer
+ *  trusted to land inside the window. So one renewal that times out leaves
+ *  the next asked at two thirds, well inside the trust, and two in a row
+ *  are what fence a run. */
+const renewalShare = 3;
+const timeoutShare = 12;
+const trustShare = 5 / 6;
 
-const renewalMs = 15_000;
+/** The server's default window, assumed until an answer names the real one. */
+const defaultTtlMs = 180_000;
+
+/** What a failed renewal says about the connector itself: its key or its
+ *  registration is gone, which no run mends. */
+export type Lost = "key" | "registration";
 
 export class Hold {
   private fence = new AbortController();
   private holding = false;
   private renewedAt = 0;
-  private trustMs = defaultTrustMs;
+  private ttlMs = defaultTtlMs;
   private rearm = new AbortController();
 
   constructor(
@@ -33,14 +46,14 @@ export class Hold {
     if (answer.elsewhere) return { held: false, until: answer.until };
     this.holding = true;
     if (this.fence.signal.aborted) this.fence = new AbortController();
-    this.trusted(asked, answer.window);
+    this.trusted(asked, answer.ttlMs);
     return { held: true };
   }
 
   /** Time since the last renewal landed, not a count of failures, decides
    *  when to stop. */
-  async renew(): Promise<void> {
-    if (!this.holding || this.fence.signal.aborted) return;
+  async renew(): Promise<Lost | undefined> {
+    if (!this.holding || this.fence.signal.aborted) return undefined;
     const asked = this.clock.now().getTime();
     let answer;
     try {
@@ -48,36 +61,38 @@ export class Hold {
     } catch (error) {
       this.logger.warn(`the hold could not be renewed: ${describe(error)}`);
       this.check();
-      return;
+      const cause = causeOf(error);
+      return cause === "key" || cause === "registration" ? cause : undefined;
     }
     if (answer.elsewhere) {
       this.stop(
         `another process holds this connector until ${answer.until}, so this one stops`,
       );
       this.holding = false;
-      return;
+      return undefined;
     }
     // Another process may have run and written meanwhile.
     if (!answer.renewed) {
       this.stop("the hold lapsed before it was renewed, so this run stops");
-      return;
+      return undefined;
     }
-    this.trusted(asked, answer.window);
+    this.trusted(asked, answer.ttlMs);
+    return undefined;
   }
 
   get renewEvery(): number {
-    return this.trustMs / 2;
+    return this.ttlMs / renewalShare;
   }
 
   get rearmed(): AbortSignal {
     return this.rearm.signal;
   }
 
-  private trusted(asked: number, window: number | undefined): void {
+  private trusted(asked: number, ttlMs: number): void {
     this.renewedAt = asked;
-    const before = this.trustMs;
-    this.trustMs = window === undefined ? defaultTrustMs : (window * 2) / 3;
-    if (this.trustMs < before) {
+    const before = this.ttlMs;
+    this.ttlMs = ttlMs;
+    if (ttlMs < before) {
       this.rearm.abort();
       this.rearm = new AbortController();
     }
@@ -86,7 +101,7 @@ export class Hold {
   check(): boolean {
     if (
       this.holding &&
-      this.clock.now().getTime() - this.renewedAt > this.trustMs
+      this.clock.now().getTime() - this.renewedAt > this.ttlMs * trustShare
     ) {
       this.stop("the hold went unrenewed too long, so this run stops");
     }
@@ -107,7 +122,7 @@ export class Hold {
     return this.marfa.hold(
       this.connectorId,
       this.process,
-      AbortSignal.timeout(renewalMs),
+      AbortSignal.timeout(this.ttlMs / timeoutShare),
     );
   }
 

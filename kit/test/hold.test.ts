@@ -160,7 +160,7 @@ describe("the hold", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
-  it("stops a run once its hold has gone unrenewed past two minutes, and keeps nothing it read", async () => {
+  it("stops a run once its hold has gone unrenewed past five sixths of the window, and keeps nothing it read", async () => {
     const held = vendor([one]);
     const release = gate(held);
     const exit = harness.once(held);
@@ -191,6 +191,33 @@ describe("the hold", () => {
     expect(
       harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
     ).toHaveLength(saves);
+  });
+
+  it("goes on after one renewal times out, since the next is asked inside the window", async () => {
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    // A renewal that ran its fifteen seconds out before failing.
+    harness.server.beforeAnswer = (request) => {
+      if (request.path === "/connectors/connector-1/hold") {
+        harness.clock.advance(15_000);
+        harness.server.beforeAnswer = undefined;
+      }
+    };
+    harness.server.refuseNext("POST /connectors/connector-1/hold", 503, "down");
+    await harness.clock.wake(minute);
+    await until(() =>
+      harness.lines.some((line) => line.includes("could not be renewed")),
+    );
+    // Asked a minute after the last ask began, not after it ended.
+    await harness.clock.wake(45_000);
+    await until(() => harness.server.holds.length === 2);
+    harness.clock.advance(20_000);
+    release();
+    expect(await exit).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.lines.join("\n")).not.toContain("went unrenewed");
   });
 
   it("stops a run whose hold lapsed and was taken again, since another process may have written", async () => {
@@ -274,6 +301,18 @@ describe("the hold's window", () => {
     await harness.clock.sleeping(15_000);
     const renewals = harness.server.holds.length;
     await harness.clock.wake(15_000);
+    await until(() => harness.server.holds.length > renewals);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("is renewed a third of the window apart, whatever window the instance names", async () => {
+    harness.server.holdMs = 90_000;
+    const held = vendor([linked]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(30_000);
+    const renewals = harness.server.holds.length;
+    await harness.clock.wake(30_000);
     await until(() => harness.server.holds.length > renewals);
     harness.stop();
     expect(await exit).toBe(0);
