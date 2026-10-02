@@ -117,6 +117,7 @@ export class ScriptedServer {
   keySource: string;
   grants: {
     sources?: string[];
+    oauth_client_id?: string;
     permissions?: string[];
     is_operator?: boolean;
     type_permissions?: Record<string, string>;
@@ -778,7 +779,7 @@ export class ScriptedServer {
     ) {
       this.sequence += 1;
       const endpoint = {
-        id: `endpoint-${String(this.sequence)}`,
+        id: `endpoint-${String(this.endpoints.length + 1)}`,
         retired_at: null,
       };
       this.endpoints.push(endpoint);
@@ -791,6 +792,29 @@ export class ScriptedServer {
             ? input["duplicate_header"].toLowerCase()
             : null,
         path: `/inbound/in_${String(this.sequence).padStart(24, "0")}`,
+        created_at: this.now(),
+      });
+      return;
+    }
+    if (
+      method === "DELETE" &&
+      parts[0] === "connectors" &&
+      parts[2] === "endpoints"
+    ) {
+      const endpoint = this.endpoints.find(
+        (candidate) => candidate.id === parts[3],
+      );
+      if (endpoint === undefined) {
+        refuse(404, "endpoint_not_found");
+        return;
+      }
+      endpoint.retired_at ??= this.now();
+      send(200, {
+        ...endpoint,
+        connector_id: parts[1],
+        label: null,
+        duplicate_header: null,
+        path: "/inbound/****abcd",
         created_at: this.now(),
       });
       return;

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { open, rm } from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { dirname, join, resolve } from "node:path";
 import type {
   Connector,
   EnvDeclaration,
@@ -23,6 +25,24 @@ interface Served {
   release(succeeded: boolean): void;
 }
 
+/** The root of the git working tree holding `file`, a checkout's `.git`
+ *  being a directory and a worktree's a file. */
+export function workingTreeOf(file: string): string | undefined {
+  let dir = resolve(dirname(file));
+  while (!existsSync(dir)) {
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  dir = realpathSync(dir);
+  for (;;) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 /** The file is new and owner-only, made first since a vendor may hand a
  *  secret once. */
 export async function setUp<E extends EnvDeclaration>(
@@ -33,6 +53,7 @@ export async function setUp<E extends EnvDeclaration>(
   logger: Logger,
   signal: AbortSignal,
   file: string,
+  at: string,
 ): Promise<number> {
   const setup = connector.setup;
   if (setup === undefined) throw new Error("the connector has no setup");
@@ -44,6 +65,7 @@ export async function setUp<E extends EnvDeclaration>(
     return 1;
   }
   const servers: Served[] = [];
+  const made: { id: string; label: string }[] = [];
   const context: SetupContext<E> = {
     env: environment.values,
     signal,
@@ -60,12 +82,20 @@ export async function setUp<E extends EnvDeclaration>(
     },
     listen: (page) => serve(page, servers, logger, signal),
     endpoint: async (options = {}) => {
-      const made = await marfa.createEndpoint(connectorId, options);
+      // The listing shows an address by its last four characters, so the
+      // label is what tells this setup's endpoint from an earlier one's.
+      const suffix = `, set up ${at}`;
+      const label = `${(options.label ?? connector.name).slice(0, 200 - suffix.length)}${suffix}`;
+      const endpoint = await marfa.createEndpoint(connectorId, {
+        ...options,
+        label,
+      });
+      made.push({ id: endpoint.id, label });
       // Anyone holding the address can post to it.
-      logger.keep([made.path]);
+      logger.keep([endpoint.path]);
       return {
-        path: made.path,
-        url: `${environment.url.replace(/\/+$/, "")}${made.path}`,
+        path: endpoint.path,
+        url: `${environment.url.replace(/\/+$/, "")}${endpoint.path}`,
       };
     },
   };
@@ -73,21 +103,26 @@ export async function setUp<E extends EnvDeclaration>(
     let answered: Readonly<Record<string, string>>;
     try {
       answered = await setup(context);
+      await handle.writeFile(`${JSON.stringify(answered, null, 2)}\n`);
     } catch (error) {
       await handle.close();
       await rm(file, { force: true });
       logger.error(`setup failed, and ${file} was removed: ${describe(error)}`);
+      // An address handed to a vendor whose secrets are gone only takes
+      // deliveries no one can verify, and holds one of the ten places.
+      await retire(marfa, connectorId, made, logger);
       return 1;
     }
-    try {
-      await handle.writeFile(`${JSON.stringify(answered, null, 2)}\n`);
-    } finally {
-      await handle.close();
-    }
+    await handle.close();
     const names = Object.keys(answered);
     logger.info(
       `setup wrote ${names.join(", ")} to ${file}, which its owner alone may read: move them into the secret store, then delete the file`,
     );
+    for (const endpoint of made) {
+      logger.info(
+        `setup made the webhook endpoint ${endpoint.id} (${endpoint.label}); once the vendor posts to it, retire any endpoint it replaces with \`marfa connectors endpoints retire ${connectorId} <endpoint-id>\``,
+      );
+    }
     const declared = Object.keys(connector.env ?? {});
     const unknown = names.filter((name) => !declared.includes(name));
     if (unknown.length > 0) {
@@ -107,6 +142,24 @@ export async function setUp<E extends EnvDeclaration>(
     for (const served of servers) {
       served.release(succeeded);
       served.server.close();
+    }
+  }
+}
+
+async function retire(
+  marfa: Marfa,
+  connectorId: string,
+  made: readonly { id: string }[],
+  logger: Logger,
+): Promise<void> {
+  for (const { id } of made) {
+    try {
+      await marfa.retireEndpoint(connectorId, id);
+      logger.info(`the webhook endpoint ${id} it made was retired`);
+    } catch (error) {
+      logger.error(
+        `the webhook endpoint ${id} it made could not be retired, and still takes deliveries: retire it with \`marfa connectors endpoints retire ${connectorId} ${id}\`: ${describe(error)}`,
+      );
     }
   }
 }

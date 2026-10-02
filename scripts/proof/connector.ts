@@ -34,14 +34,22 @@ export class ConnectorUnderProof {
     private readonly entry = join(root, "connectors", name, "dist/main.js"),
   ) {}
 
-  async once(): Promise<{ code: number; output: string }> {
+  once(): Promise<{ code: number; output: string }> {
+    return this.run(["--once"]);
+  }
+
+  async run(
+    args: readonly string[],
+    env: Record<string, string> = {},
+  ): Promise<{ code: number; output: string }> {
     try {
-      const { stderr } = await run("node", [this.entry, "--once"], {
+      const { stderr } = await run("node", [this.entry, ...args], {
         env: {
           PATH: process.env["PATH"],
           MARFA_URL: this.url,
           MARFA_KEY: this.key,
           ...this.env,
+          ...env,
         },
       });
       return { code: 0, output: stderr };
