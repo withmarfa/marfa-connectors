@@ -587,7 +587,7 @@ describe("Todoist's answers", () => {
     await landed();
     expect(todoist.tasks.get("c")?.is_deleted).toBe(false);
     expect(summary()).toContain(
-      `the change to ${third.id} was refused, so it waits until the row changes in Marfa: Todoist refused deleting task c: Insufficient permissions (39)`,
+      `the trash of ${third.id} was refused, so it waits until the row is restored in Marfa: Todoist refused deleting task c: Insufficient permissions (39)`,
     );
     expect(marfa.agreements.get(third.id)?.waiting).toBe(true);
   });
@@ -1122,6 +1122,26 @@ describe("Todoist's answers, continued", () => {
     await landed();
     expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
     expect(todoist.commands("item_add")).toHaveLength(1);
+  });
+});
+
+describe("a create Todoist refused", () => {
+  it("is sent again under ids of its own once the row changes", async () => {
+    todoist.put(todoist.task("seed"));
+    const refused = personsRow({ title: "Refused", status: "pending" });
+    todoist.scriptCommand("item_add", {
+      error_code: 20,
+      error: "Invalid argument value",
+      http_code: 400,
+    });
+    await landed();
+    marfa.edit(refused.id, { title: "Taken" });
+    await landed();
+    const adds = todoist.commands("item_add");
+    expect(adds).toHaveLength(2);
+    expect(adds[1]?.uuid).not.toBe(adds[0]?.uuid);
+    expect(adds[1]?.temp_id).not.toBe(adds[0]?.temp_id);
+    expect(marfa.byId(refused.id).properties["todoist_id"]).toBe("made-1");
   });
 });
 

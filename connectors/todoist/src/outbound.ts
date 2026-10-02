@@ -191,7 +191,7 @@ async function carried(
 
   if (taskId === undefined) {
     if (kind === "trashed" || kind === "purged") return;
-    taskId = await add(item, timeZone, todoist, context);
+    taskId = await add(item, timeZone, todoist, context, change.refused);
   }
 
   if (kind === "trashed" || kind === "purged") {
@@ -223,7 +223,14 @@ async function remade(
   const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
   if ((await todoist.task(taskId)) !== "missing") return false;
   const timeZone = await timeZoneFor(context, todoist);
-  const made = await add(item, timeZone, todoist, context, taskId);
+  const made = await add(
+    item,
+    timeZone,
+    todoist,
+    context,
+    change.refused,
+    taskId,
+  );
   await sync(item, made, timeZone, todoist, context);
   return true;
 }
@@ -278,10 +285,16 @@ async function add(
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
+  refused: string | undefined,
   replacing?: string,
 ): Promise<string> {
-  const again = replacing === undefined ? [] : [replacing];
-  // `again` makes a restore a new create, not the first create's answer again.
+  // `again` makes a restore a new create, not the first create's answer
+  // again, and a create after a refused one a new command, since the refused
+  // one made nothing.
+  const again = [
+    ...(replacing === undefined ? [] : [replacing]),
+    ...(refused === undefined ? [] : [refused]),
+  ];
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
   // An edit does not carry project, section and labels; they are the row's from
@@ -311,7 +324,7 @@ async function add(
   if (status !== "ok" && !passing(status) && Object.keys(where).length > 0) {
     // Where the task was is gone, a project or a section deleted since:
     // it is made in the Inbox rather than not at all, under ids of its
-    // own, since Todoist remembers the refused command.
+    // own, apart from the refused command's.
     const inboxUuid = uuidFor(item.id, "item_add", ...again, "inbox");
     const inboxTemp = uuidFor(item.id, "temp_id", ...again, "inbox");
     answer = await todoist.send([
