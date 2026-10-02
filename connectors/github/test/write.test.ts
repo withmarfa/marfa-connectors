@@ -1,15 +1,7 @@
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { markOf, unmarked } from "../src/entries.js";
 import {
@@ -20,7 +12,6 @@ import {
 } from "../../../scripts/proof/github-stub.js";
 
 const run = promisify(execFile);
-vi.setConfig({ testTimeout: 30_000 });
 const built = resolve(import.meta.dirname, "../dist/main.js");
 
 let key: string;

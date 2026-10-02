@@ -12,6 +12,10 @@ export default defineConfig({
       "_trash/**",
       "_archive/**",
     ],
+    // Many tests drive real processes and a throttled GitHub client, which
+    // pass in a second or two locally and outlast the 5 s default on a loaded
+    // CI runner; a test that truly hangs still fails.
+    testTimeout: 30_000,
     reporters: ["default", new NoSkippedTests()],
   },
 });
