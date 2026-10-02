@@ -1,0 +1,51 @@
+version: 2
+updates:
+  # One entry at the workspace root: it reads `pnpm-workspace.yaml` and covers
+  # every package, so a package added later needs no change here.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Majors apart from the rest, so one that needs reading does not hold the
+    # minor and patch updates back. The first group a dependency matches wins,
+    # so the minor and patch group has to come first.
+    groups:
+      npm-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-major:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 1
+    labels:
+      - "dependencies"
+  # The template's image, whose base is pinned by digest.
+  - package-ecosystem: "docker"
+    directory: "/template"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-images:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 1
+    labels:
+      - "dependencies"
