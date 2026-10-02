@@ -487,4 +487,25 @@ describe("a purge of a row whose link a person changed before its trash", () => 
     harness.server.tooOld = false;
     expect(harness.kept()["relinked"]).toBeUndefined();
   });
+
+  it("goes by the agreed link where a put-back failed partway through the run that read the link's change", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1").id;
+    const second = harness.server.row("a:2").id;
+    harness.server.edit(first, { vendor_id: "v-first-other" });
+    harness.server.edit(second, { vendor_id: "v-second-other" });
+    harness.server.refuseNext(`PATCH /items/${first}`, 500, "internal");
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.trash(second);
+    harness.server.purge("a:2");
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(
+      held.changes
+        .filter((change) => change.item.id === second)
+        .map((change) => [change.kind, change.item.properties["vendor_id"]]),
+    ).toEqual([["purged", "v2"]]);
+  });
 });

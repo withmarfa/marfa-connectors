@@ -577,9 +577,7 @@ export async function runOnce<E extends EnvDeclaration>(
     ),
   );
   let overflowed = stored.relinked?.overflowed === true;
-  /** A row in the bin, or one whose put-back failed, keeps a link other
-   *  than the agreed one, which its purge, dropping the agreement, would
-   *  otherwise go by. */
+  let overflowing = false;
   /** A link a person changed and the row purged before a run saw it would
    *  steer the purge. The window's first frame vouches for the link it
    *  shows where it changed no field, or is the connector's own create; any
@@ -600,6 +598,10 @@ export async function runOnce<E extends EnvDeclaration>(
       ? link
       : undefined;
   };
+  /** A row holding a link other than the agreed one, as the run records
+   *  it and until its put-back writes the agreed one back, keeps the agreed
+   *  one here, which its purge, dropping the agreement, would otherwise
+   *  lose. A row in the bin cannot have it put back, so keeps it there. */
   const keepAgreedLink = (kind: Spec, item: Item, agreement: Agreement) => {
     const own = lane(kind.type).rows.linkOf(item.properties);
     if (
@@ -612,6 +614,7 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     if (!relinked.has(item.id) && relinked.size >= relinkedCap) {
       overflowed = true;
+      overflowing = true;
       raised.set(
         "relinked-full",
         `more than ${String(relinkedCap)} rows carry a link other than the one agreed, so the agreed link of ${item.id} is not kept, and a purge the kit cannot vouch for is not carried until a resync of the log finds them again`,
@@ -1141,7 +1144,6 @@ export async function runOnce<E extends EnvDeclaration>(
       for (const id of relinked.keys()) {
         if (!read.rows.has(id)) relinked.delete(id);
       }
-      overflowed = false;
     }
     const waitingIds = await store.waiting(setup.signal);
     await store.fetch([
@@ -1206,6 +1208,11 @@ export async function runOnce<E extends EnvDeclaration>(
         }
         continue;
       }
+      // Kept before the cursor passes the frames, so a put-back that fails
+      // later in the run loses nothing a purge needs.
+      if (kind.twoWay && rows.linkOf(last.properties) !== agreement.link) {
+        keepAgreedLink(kind, last, agreement);
+      }
       const observed = observe(kind, seen, agreement);
       own += observed.own;
       const next = observed.next;
@@ -1216,6 +1223,9 @@ export async function runOnce<E extends EnvDeclaration>(
       store.set(id, next);
       if (carriable(next.waiting)) order.add(id);
     }
+    // Every row is in hand after a whole read of the log: past the cap only
+    // where this one's rows overflowed it again.
+    if (read.resync && read.incomplete === undefined) overflowed = overflowing;
     // Not the connector's to carry: a row nothing was agreed for, or one whose
     // connections are what was agreed, as the kit's own writes leave them.
     const edges = await connections.edgesOf(
