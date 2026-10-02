@@ -27,6 +27,8 @@ export const RULES: readonly (readonly [RegExp, readonly Job[]])[] = [
   // What decides what runs is proven on everything it decides.
   [/^scripts\/ci-changes\.ts$/, ALL],
   [/^\.github\/workflows\/ci\.yml$/, ALL],
+  // A test pins when CodeQL runs.
+  [/^\.github\/workflows\/codeql\.yml$/, ["code"]],
   [/^\.github\//, []],
 
   // A fixture is test input, and the proof reads the RSS connector's.

@@ -39,6 +39,11 @@ describe("what a change runs beyond formatting and the scan", () => {
     ["lint settings", ["eslint.config.js"], ["code"]],
     ["a dependency", ["pnpm-lock.yaml"], ["code", "proof"]],
     ["the workflow", [".github/workflows/ci.yml"], ["code", "proof"]],
+    [
+      "the CodeQL workflow, which a test reads",
+      [".github/workflows/codeql.yml"],
+      ["code"],
+    ],
     ["the classifier", ["scripts/ci-changes.ts"], ["code", "proof"]],
     ["a path no rule names", ["tools/new.ts"], ["code", "proof"]],
     [
@@ -120,6 +125,74 @@ describe("each job reads its answer", () => {
       "pnpm lint",
       "pnpm test",
     ]);
+  });
+});
+
+/**
+ * Whether a workflow's `paths` filter pattern matches a path, as Actions reads
+ * it: `**` crosses folders, and `**` followed by a slash matches none too.
+ */
+function filterMatches(pattern: string, path: string): boolean {
+  const source = pattern
+    .split("**/")
+    .map((part) =>
+      part
+        .split("**")
+        .map((piece) =>
+          piece
+            .split("*")
+            .map((text) => text.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+            .join("[^/]*"),
+        )
+        .join(".*"),
+    )
+    .join("(?:.*/)?");
+  return new RegExp(`^${source}$`).test(path);
+}
+
+describe("CodeQL", () => {
+  const { on } = parse(
+    readFileSync(join(root, ".github", "workflows", "codeql.yml"), "utf8"),
+  ) as {
+    on: {
+      push?: unknown;
+      pull_request?: { branches?: string[]; "paths-ignore"?: string[] };
+      schedule?: { cron: string }[];
+    };
+  };
+  const ignored = on.pull_request?.["paths-ignore"] ?? [];
+  const skips = (path: string) =>
+    ignored.some((pattern) => filterMatches(pattern, path));
+
+  it("analyzes every push to main and once a week, and a pull request unless it changes only documentation or agent settings", () => {
+    expect(on.push).toEqual({ branches: ["main"] });
+    expect(on.pull_request).toEqual({
+      branches: ["main"],
+      "paths-ignore": ["**/*.md", "LICENSE", ".claude/**"],
+    });
+    expect(on.schedule).toHaveLength(1);
+    expect(on.schedule?.[0]?.cron).toMatch(/^\d{1,2} \d{1,2} \* \* [0-6]$/);
+  });
+
+  it("skips what the classifier also reads as documentation, and no code in a language it analyzes", () => {
+    for (const path of [
+      "README.md",
+      "connectors/todoist/README.md",
+      "LICENSE",
+      ".claude/settings.json",
+    ]) {
+      expect(skips(path), path).toBe(true);
+      expect(affected(path).size, path).toBe(0);
+    }
+    for (const path of [
+      ".github/workflows/ci.yml",
+      "kit/src/main.ts",
+      "connectors/rss/test/fixtures/atom.xml",
+      "eslint.config.js",
+      "pnpm-lock.yaml",
+    ]) {
+      expect(skips(path), path).toBe(false);
+    }
   });
 });
 
