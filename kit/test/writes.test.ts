@@ -643,22 +643,18 @@ describe("a row the server refuses", () => {
       "the server refused a:1: type_not_permitted",
     );
     expect(harness.server.row("a:2").type).toBe("test.entry");
-    expect(harness.kept()).toMatchObject({
-      state: { token: "t1" },
-      conditions: {
-        "refused:a:1": expect.stringContaining("type_not_permitted"),
-      },
-    });
+    const refused = () =>
+      (harness.kept()["conditions"] as Record<string, string>)["refused:a:1"];
+    expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
+    expect(refused()).toContain("type_not_permitted");
 
     held.token = "t2";
     expect(await harness.once(held)).toBe(0);
     expect(bulks().at(-1)?.body).toMatchObject({
       items: [{ source_id: "a:1" }],
     });
-    expect(harness.kept()).toMatchObject({
-      state: { token: "t2" },
-      conditions: { "refused:a:1": expect.any(String) },
-    });
+    expect(harness.kept()).toMatchObject({ state: { token: "t2" } });
+    expect(refused()).toContain("type_not_permitted");
 
     held.entries = [two];
     expect(await harness.once(held)).toBe(0);
