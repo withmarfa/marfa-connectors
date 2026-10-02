@@ -105,7 +105,8 @@ function unpinnedImages(dockerfile: string): string[] {
 /** Where `vitest.config.ts` looks for tests: under a `test/` directory. */
 function strayTest(path: string): boolean {
   return (
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(path) && !/(^|\/)test\//.test(path)
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(path) &&
+    !/(^|\/)test\/(.*\/)?[^/]+\.test\.ts$/.test(path)
   );
 }
 
@@ -276,10 +277,22 @@ describe("the tree", () => {
 
   it("keeps every test file where the test runner looks", () => {
     expect(
-      ["kit/src/a.test.ts", "kit/test/a.test.ts", "b.spec.mjs"].filter(
-        strayTest,
-      ),
-    ).toEqual(["kit/src/a.test.ts", "b.spec.mjs"]);
+      [
+        "kit/src/a.test.ts",
+        "kit/test/a.test.ts",
+        "kit/test/deep/a.test.ts",
+        "b.spec.mjs",
+        "kit/test/a.spec.ts",
+        "kit/test/a.test.tsx",
+        "kit/test/a.test.mts",
+      ].filter(strayTest),
+    ).toEqual([
+      "kit/src/a.test.ts",
+      "b.spec.mjs",
+      "kit/test/a.spec.ts",
+      "kit/test/a.test.tsx",
+      "kit/test/a.test.mts",
+    ]);
     expect(
       trackedPaths().filter((path) => path.endsWith(".ts")).length,
     ).toBeGreaterThan(0);

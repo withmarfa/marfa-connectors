@@ -9,3 +9,4 @@ _archive/
 .env.*
 *.log
 .infisical.json
+.vitest/
