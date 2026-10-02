@@ -81,7 +81,7 @@ function refusal(error: unknown): string | undefined {
     return `needs more than ${String(parseLimits.maxOldGenerationSizeMb)} MB to read, so it is skipped`;
   }
   if (error instanceof TooBig) {
-    return `reads to more than ${String(maxResultChars / 1024 / 1024)} MiB of entries, so it is skipped`;
+    return `reads to more than ${String(maxResultChars / 1024 / 1024)} Mi characters of entries, so it is skipped`;
   }
   if (error instanceof TooSlow) {
     return `takes longer than ${String(parseTimeoutMs / 1000)} seconds to read, so it is skipped`;
@@ -192,8 +192,8 @@ const connector = defineConnector({
         log.condition(
           `unkeyed:${feed.key}`,
           count === 1
-            ? `an entry in ${name} carries neither an id nor a link, and is left out`
-            : `${String(count)} entries in ${name} carry neither an id nor a link, and are left out`,
+            ? `an entry in ${name} has no id or link to be known by, or only one over 100,000 characters, and is left out`
+            : `${String(count)} entries in ${name} have no id or link to be known by, or only one over 100,000 characters, and are left out`,
         );
       }
       if ((held.shared ?? []).length > 0) {

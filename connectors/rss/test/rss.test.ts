@@ -1036,7 +1036,7 @@ describe("the connector, run as a process", () => {
       "2026-09-18T09:00:00.000Z",
     );
     expect(marfa.runs.at(-1)?.summary).toMatch(
-      /^created 4, updated 0, archived 0, unchanged 0, skipped 0\. an entry in feed 2 in RSS_FEEDS \(http:\/\/127\.0\.0\.1:\d+\) carries neither/,
+      /^created 4, updated 0, archived 0, unchanged 0, skipped 0\. an entry in feed 2 in RSS_FEEDS \(http:\/\/127\.0\.0\.1:\d+\) has no id or link to be known by/,
     );
   });
 
@@ -1112,7 +1112,9 @@ describe("the connector, run as a process", () => {
 
   it("reports an entry left out once, across a 304 and the feed's next change", async () => {
     expect((await once(["/rss.xml"])).code).toBe(0);
-    expect(marfa.runs.at(-1)?.summary).toContain("neither an id nor a link");
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "no id or link to be known by",
+    );
     expect((await once(["/rss.xml"])).code).toBe(0);
     const rss = served["/rss.xml"];
     if (typeof rss?.body !== "string") throw new Error("no rss fixture");
@@ -1124,7 +1126,7 @@ describe("the connector, run as a process", () => {
     expect((await once(["/rss.xml"])).code).toBe(0);
     expect(asked.map((request) => request.answered)).toEqual([200, 304, 200]);
     expect(marfa.runs.map((run) => run.summary)).toEqual([
-      expect.stringContaining("neither an id nor a link"),
+      expect.stringContaining("no id or link to be known by"),
       "created 0, updated 0, archived 0, unchanged 0, skipped 0",
       "created 0, updated 1, archived 0, unchanged 1, skipped 0",
     ]);
