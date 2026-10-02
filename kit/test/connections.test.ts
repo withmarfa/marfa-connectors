@@ -407,6 +407,25 @@ describe("connections made in Marfa", () => {
   });
 });
 
+describe("what a run finds held", () => {
+  it("is the active rows of the type the vendor has been told about, whatever their connections", async () => {
+    const held = connected([entry(1, [2]), entry(2), entry(3), entry(4)]);
+    await harness.twoWay(held);
+    harness.server.transition(harness.server.row("a:3").id, "archived");
+    harness.server.trash(harness.server.row("a:4").id);
+    harness.server.insert(
+      undefined,
+      { title: "Untold" },
+      "test.entry",
+      "person",
+    );
+    held.entries = [];
+    held.askHeld = true;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.heldAnswers).toEqual([["v1", "v2"]]);
+  });
+});
+
 describe("what a run finds linked", () => {
   it("is the active rows holding the connection to the target, by link", async () => {
     const held = connected([entry(1, [2]), entry(2), entry(3, [2]), entry(4)]);
