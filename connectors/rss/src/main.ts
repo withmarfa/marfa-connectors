@@ -18,6 +18,7 @@ import {
   type Validators,
 } from "./feeds.js";
 import {
+  failureOf,
   maxFeedBytes,
   maxRedirects,
   RefusedAddress,
@@ -214,6 +215,7 @@ const connector = defineConnector({
       );
     };
 
+    let read = 0;
     for (const feed of feeds) {
       const name = feedName(feed);
       const { held, id } = records.get(feed) ?? { held: {} };
@@ -252,12 +254,13 @@ const connector = defineConnector({
         const why = refusal(error);
         log.condition(
           why === undefined ? `unreachable:${feed.key}` : `refused:${feed.key}`,
-          `${name} ${why ?? "could not be fetched"}`,
+          `${name} ${why ?? `could not be fetched: ${failureOf(error)}`}`,
         );
         raise(feed, carried);
         continue;
       }
       if (fetched.status === 304) {
+        read += 1;
         raise(feed, carried);
         continue;
       }
@@ -269,9 +272,9 @@ const connector = defineConnector({
         raise(feed, carried);
         continue;
       }
-      let read;
+      let parsed;
       try {
-        read = await readBounded(
+        parsed = await readBounded(
           {
             feed,
             bytes: fetched.bytes,
@@ -296,21 +299,29 @@ const connector = defineConnector({
         key: feed.key,
         ...(was.length > 0 && { was }),
         ...(shared.length > 0 && { shared }),
-        ...(read.unkeyed > 0 && { unkeyed: read.unkeyed }),
-        ...(read.dropped > 0 && { dropped: read.dropped }),
-        ...(read.declared !== undefined && { declared: read.declared }),
+        ...(parsed.unkeyed > 0 && { unkeyed: parsed.unkeyed }),
+        ...(parsed.dropped > 0 && { dropped: parsed.dropped }),
+        ...(parsed.declared !== undefined && { declared: parsed.declared }),
       };
+      read += 1;
       kept[feed.key] = now;
       raise(feed, now);
       signal.throwIfAborted();
       await upsert(
         rssEntry.id,
         was.length === 0
-          ? read.entries
-          : read.entries.map((entry) => {
+          ? parsed.entries
+          : parsed.entries.map((entry) => {
               const id = entry.source_id.slice(feed.key.length);
               return { ...entry, movedFrom: was.map((key) => `${key}${id}`) };
             }),
+      );
+    }
+    if (feeds.length > 0 && read === 0) {
+      throw new Error(
+        feeds.length === 1
+          ? "the feed in RSS_FEEDS could not be read, so this run read nothing"
+          : `none of the ${String(feeds.length)} feeds in RSS_FEEDS could be read, so this run read nothing`,
       );
     }
     state.set("feeds", { ...kept, ...Object.fromEntries(departed) });

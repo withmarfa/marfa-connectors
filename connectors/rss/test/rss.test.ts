@@ -1055,7 +1055,7 @@ describe("the connector, run as a process", () => {
       ],
     ).toBe("Wed, 16 Sep 2026 09:00:00 GMT");
     expect(second.map((request) => request.answered)).toEqual([304, 304]);
-    expect(marfa.runs.at(-1)?.summary).toBe(
+    expect(marfa.runs.at(-1)?.summary?.split(". ")[0]).toBe(
       "created 0, updated 0, archived 0, unchanged 0, skipped 0",
     );
     expect(marfa.rows.every((candidate) => candidate.version === 1)).toBe(true);
@@ -1082,7 +1082,7 @@ describe("the connector, run as a process", () => {
     );
     expect(row("tag:example.com,2026:entry:2").version).toBe(2);
     expect(row("1").version).toBe(1);
-    expect(marfa.runs.at(-1)?.summary).toBe(
+    expect(marfa.runs.at(-1)?.summary?.split(". ")[0]).toBe(
       "created 0, updated 2, archived 0, unchanged 0, skipped 0",
     );
   });
@@ -1103,14 +1103,14 @@ describe("the connector, run as a process", () => {
       ["/atom.xml", 200],
       ["/rss.xml", 304],
     ]);
-    expect(marfa.runs.at(-1)?.summary).toBe(
+    expect(marfa.runs.at(-1)?.summary?.split(". ")[0]).toBe(
       "created 0, updated 0, archived 0, unchanged 1, skipped 0",
     );
     expect(row("tag:example.com,2026:entry:2").state).toBe("active");
     expect(row("tag:example.com,2026:entry:2").version).toBe(1);
   });
 
-  it("reports an entry left out once, across a 304 and the feed's next change", async () => {
+  it("reports an entry left out on every run, across a 304 and the feed's next change", async () => {
     expect((await once(["/rss.xml"])).code).toBe(0);
     expect(marfa.runs.at(-1)?.summary).toContain(
       "no id or link to be known by",
@@ -1126,9 +1126,13 @@ describe("the connector, run as a process", () => {
     expect((await once(["/rss.xml"])).code).toBe(0);
     expect(asked.map((request) => request.answered)).toEqual([200, 304, 200]);
     expect(marfa.runs.map((run) => run.summary)).toEqual([
-      expect.stringContaining("no id or link to be known by"),
-      "created 0, updated 0, archived 0, unchanged 0, skipped 0",
-      "created 0, updated 1, archived 0, unchanged 1, skipped 0",
+      expect.stringMatching(/^created \d+, .*no id or link to be known by/),
+      expect.stringMatching(
+        /^created 0, updated 0, archived 0, unchanged 0, skipped 0\. .*no id or link to be known by/,
+      ),
+      expect.stringMatching(
+        /^created 0, updated 1, archived 0, unchanged 1, skipped 0\. .*no id or link to be known by/,
+      ),
     ]);
   });
 
@@ -1210,7 +1214,7 @@ describe("the connector, run as a process", () => {
       `feed 3 in RSS_FEEDS (${base}) is not an Atom or RSS 2.0 feed`,
     );
     expect(reported).toContain(
-      "feed 4 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched",
+      "feed 4 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
     );
     expect(stored).toContain(`unkeyed:${hash}`);
   });
@@ -1306,17 +1310,50 @@ describe("the connector, run as a process", () => {
     });
   });
 
-  it("reads the other feeds when one fails, and reports the failing one once", async () => {
-    expect((await once(["/atom.xml", "/gone.xml", "/rss.xml"])).code).toBe(0);
-    expect(marfa.rows).toHaveLength(4);
-    expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
-    expect(marfa.runs.at(-1)?.summary).toContain(
-      `feed 2 in RSS_FEEDS (${base}) answered 404`,
+  it("reads the other feeds when some fail, and names each failing one and why on every run it fails", async () => {
+    const list = [
+      `${base}/atom.xml`,
+      `${base}/gone.xml`,
+      "http://127.0.0.1:1/private/feed.xml",
+    ].join("\n");
+    for (let run = 1; run <= 3; run += 1) {
+      const { code, output } = await once([], ["--once"], list);
+      expect(code).toBe(0);
+      expect(marfa.runs).toHaveLength(run);
+      const last = marfa.runs.at(-1);
+      expect(last?.outcome).toBe("succeeded");
+      for (const text of [last?.summary ?? "", output]) {
+        expect(text).toContain(`feed 2 in RSS_FEEDS (${base}) answered 404`);
+        expect(text).toContain(
+          "feed 3 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
+        );
+        expect(text).not.toContain("gone.xml");
+        expect(text).not.toContain("/private/");
+      }
+    }
+    expect(marfa.rows).toHaveLength(2);
+  });
+
+  it("fails a run in which every feed failed, naming each", async () => {
+    const list = [`${base}/gone.xml`, "http://127.0.0.1:1/feed.xml"].join("\n");
+    const { code, output } = await once([], ["--once"], list);
+    expect(code).toBe(1);
+    const last = marfa.runs.at(-1);
+    expect(last?.outcome).toBe("failed");
+    expect(last?.error).toContain(
+      "none of the 2 feeds in RSS_FEEDS could be read, so this run read nothing",
     );
-    expect((await once(["/atom.xml", "/gone.xml", "/rss.xml"])).code).toBe(0);
-    expect(marfa.runs).toHaveLength(2);
-    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 0, /);
-    expect(marfa.runs.at(-1)?.summary).not.toContain("gone.xml");
+    expect(last?.summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) answered 404`,
+    );
+    expect(last?.summary).toContain(
+      "feed 2 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
+    );
+    expect(output).toContain("run failed");
+    expect((await once(["/gone.xml"])).code).toBe(1);
+    expect(marfa.runs.at(-1)?.error).toContain(
+      "the feed in RSS_FEEDS could not be read, so this run read nothing",
+    );
   });
 
   it("asks a feed whose entries did not land again whole", async () => {
@@ -1376,7 +1413,7 @@ describe("the connector, run as a process", () => {
       served[`/to/${String(at)}`] = { body: "", redirect: target };
     });
     const { code } = await once(targets.map((_, at) => `/to/${String(at)}`));
-    expect(code).toBe(0);
+    expect(code).toBe(1);
     expect(marfa.rows).toHaveLength(0);
     expect(asked.map((request) => request.path)).toEqual(
       targets.map((_, at) => `/to/${String(at)}`),
@@ -1396,7 +1433,7 @@ describe("the connector, run as a process", () => {
       redirect: `http://localhost:${port}/rss.xml`,
     };
     const listed = `http://localhost:${port}/via-name`;
-    expect((await once([], ["--once"], listed)).code).toBe(0);
+    expect((await once([], ["--once"], listed)).code).toBe(1);
     expect(asked).toHaveLength(0);
     expect(marfa.runs.at(-1)?.summary).toContain(
       `feed 1 in RSS_FEEDS (http://localhost:${port}) is on this machine or a private network, which is read only when RSS_PRIVATE_HOSTS names its host`,
@@ -1446,7 +1483,7 @@ describe("the connector, run as a process", () => {
       };
     }
     served["/hop/7"] = { body: fixture("rss.xml") };
-    expect((await once(["/hop/0"])).code).toBe(0);
+    expect((await once(["/hop/0"])).code).toBe(1);
     expect(asked).toHaveLength(6);
     expect(marfa.rows).toHaveLength(0);
     expect(marfa.runs.at(-1)?.summary).toContain(
