@@ -37,11 +37,16 @@ updates:
     open-pull-requests-limit: 1
     labels:
       - "dependencies"
-  # The template's image, whose base is pinned by digest.
+  # The template's image, whose base is pinned by digest. Its Node major
+  # follows the one CI tests and `engines` names, so it moves with them.
   - package-ecosystem: "docker"
     directory: "/template"
     schedule:
       interval: "weekly"
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
     groups:
       all-images:
         patterns:
