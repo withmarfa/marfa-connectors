@@ -51,15 +51,22 @@ type Context = WatchContext<EnvDeclaration>;
 /** A try's time asked a little early, as GitHub's clock is not ours. */
 const margin = 5 * 60 * 1000;
 
-function wanted(value: unknown): {
+function wanted(
+  value: unknown,
+  was?: unknown,
+): {
   state: "open" | "closed";
-  state_reason: "completed" | "not_planned" | "reopened";
+  state_reason: "completed" | "not_planned" | "duplicate" | "reopened";
 } {
   if (value === "completed") {
     return { state: "closed", state_reason: "completed" };
   }
   if (value === "canceled") {
-    return { state: "closed", state_reason: "not_planned" };
+    // Both read as canceled, so a close already stated stays as stated.
+    return {
+      state: "closed",
+      state_reason: was === "duplicate" ? "duplicate" : "not_planned",
+    };
   }
   return { state: "open", state_reason: "reopened" };
 }
@@ -148,6 +155,15 @@ function allKept(context: Context): Record<string, Kept> {
   return typeof value === "object" && value !== null
     ? (value as Record<string, Kept>)
     : {};
+}
+
+/** An answer names every field the vendor holds, or the next read takes the
+ *  missing one for the vendor's change. */
+function answerOf(context: Context, comment: Comment): Entry {
+  return commentEntry(
+    comment,
+    allKept(context)[comment.repository.node]?.private,
+  );
 }
 
 function paused(node: string, kept: Kept): Unreachable {
@@ -361,6 +377,7 @@ async function answerIssue(
     found.issue,
     found.relations,
     new Set(Object.keys(allKept(context))),
+    allKept(context)[found.issue.repository.node]?.private,
   );
   const connections: Record<string, readonly Target[]> = {
     ...entry.connections,
@@ -614,9 +631,9 @@ async function carryIssue(
   const binned = change.kind === "trashed" || change.kind === "purged";
   const fromBin = change.kind === "restored" && change.was === "trashed";
   if (change.changed.has("status") || fromBin) {
-    const state = wanted(item.properties["status"]);
     const closed = !issue.open;
     const reason = issue.reason;
+    const state = wanted(item.properties["status"], reason);
     const moving =
       (state.state === "closed") !== closed ||
       (state.state === "closed" && reason !== state.state_reason);
@@ -817,7 +834,8 @@ async function carryComment(
       await deleteComment(octokit, node, { owner, repo });
       return undefined;
     }
-    return commentEntry(
+    return answerOf(
+      context,
       await updateComment(octokit, node, text(item, "body") ?? ""),
     );
   } catch (error) {
@@ -907,10 +925,10 @@ async function createComment(
     }
   }
   if (unmarked(made.body ?? "") !== body) {
-    return commentEntry(await updateComment(octokit, made.node_id, body));
+    return answerOf(context, await updateComment(octokit, made.node_id, body));
   }
   // GitHub's own answer, which a read straight after may not show yet.
-  return commentEntry({
+  return answerOf(context, {
     node: made.node_id,
     body: made.body ?? "",
     url: made.html_url,

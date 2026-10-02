@@ -52,6 +52,8 @@ export interface Kept {
   comments?: { since: string; etag?: string; full?: boolean };
   checked?: string;
   paused?: boolean;
+  /** The repository's visibility as its rows last said it. */
+  private?: boolean;
 }
 
 type Context = RunContext<EnvDeclaration>;
@@ -90,6 +92,14 @@ function numbersOf(pages: readonly Page[] | undefined): number[] {
 }
 
 const reserve = 500;
+
+type Privacy = ReadonlyMap<string, boolean>;
+
+/** A repository the read did not list is taken as private, so a row never
+ *  claims more openness than was seen. */
+function privateIn(privacy: Privacy, node: string): boolean {
+  return privacy.get(node) ?? true;
+}
 
 /** A comment cursor asked a little early, so one GitHub shows late under
  *  an earlier time is still read; what comes again is unchanged. */
@@ -166,12 +176,15 @@ export async function read(
     }
   }
   const synced = new Set(listed.keys());
+  const privacy: Privacy = new Map(
+    [...listed].map(([node, { repository }]) => [node, repository.private]),
+  );
   const paused = new Set(
     [...outside.keys()].filter((node) => kept[node] !== undefined),
   );
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
-    await readNamed(context, listed, clients, paused);
+    await readNamed(context, listed, clients, paused, privacy);
     return;
   }
   const next: Record<string, Kept> = {};
@@ -185,22 +198,28 @@ export async function read(
     if (left !== undefined) {
       if (repository.paused !== true) {
         log.info(
-          `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are and changes made to them wait until it is named again`,
+          `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are, bar the private marker, which follows its visibility, and changes made to them wait until it is named again`,
         );
       }
       // Under the name its rows hold, which a rename meanwhile does not change.
-      next[node] = { ...repository, paused: true };
+      next[node] = await marked(
+        context,
+        node,
+        { ...repository, paused: true },
+        left.private,
+      );
       continue;
     }
     if (answered.has(repository.installation)) {
       await takeOut(context, node, repository.name);
       continue;
     }
-    next[node] = repository;
+    // Its visibility is no longer known, so its rows say what is safe.
+    next[node] = await marked(context, node, repository, true);
     if (!answered.has(repository.installation)) {
       log.condition(
         `repository-lost:${node}`,
-        `${repository.name} can no longer be read through the App, so its rows are left as they are`,
+        `${repository.name} can no longer be read through the App, so its rows are left as they are, bar the private marker, which is set to true since its visibility is not known`,
       );
     }
   }
@@ -214,7 +233,13 @@ export async function read(
     if (at?.repository.has_issues === false) {
       log.condition(
         `issues-off:${node}`,
-        `${repository.name} has its issues turned off on GitHub, so its rows are left as they are`,
+        `${repository.name} has its issues turned off on GitHub, so its rows are left as they are, bar the private marker, which follows its visibility`,
+      );
+      next[node] = await marked(
+        context,
+        node,
+        repository,
+        privateIn(privacy, node),
       );
       return;
     }
@@ -222,14 +247,16 @@ export async function read(
       next[node] = await syncRepository(context, octokit, node, repository, {
         synced,
         inside: new Set([...synced, ...paused]),
+        privacy,
         check,
       });
     } catch (error) {
       if (!lostAccess(error)) throw error;
       log.condition(
         `repository-unreadable:${node}`,
-        `${repository.name} is listed for the App but answered ${String(status(error))}, so its rows are left as they are`,
+        `${repository.name} is listed for the App but answered ${String(status(error))}, so its rows are left as they are, bar the private marker, which is set to true since its visibility is not known`,
       );
+      next[node] = await marked(context, node, repository, true);
     }
   };
 
@@ -285,6 +312,7 @@ async function syncRepository(
   options: {
     synced: ReadonlySet<string>;
     inside: ReadonlySet<string>;
+    privacy: Privacy;
     check: boolean;
   },
 ): Promise<Kept> {
@@ -322,6 +350,7 @@ async function syncRepository(
   ]);
   const byNumber = new Map(listed.map((issue) => [issue.number, issue]));
   const at = { node, name: repository.name };
+  const hidden = privateIn(options.privacy, node);
 
   // Relations, which move no issue's time, asked of every issue that
   // changed, since REST names no parent to an App; and the issues an issue
@@ -366,12 +395,19 @@ async function syncRepository(
     ...listed.flatMap((issue) => {
       const found = relations.get(issue.node_id);
       if (found === undefined) return [];
-      return [issueEntry(issueOfRest(issue, at), found, options.inside)];
+      return [
+        issueEntry(issueOfRest(issue, at), found, options.inside, hidden),
+      ];
     }),
     ...beside
       .filter(({ issue }) => options.synced.has(issue.repository.node))
       .map(({ issue, relations: known }) =>
-        issueEntry(issue, known, options.inside),
+        issueEntry(
+          issue,
+          known,
+          options.inside,
+          privateIn(options.privacy, issue.repository.node),
+        ),
       ),
   ]);
 
@@ -380,12 +416,20 @@ async function syncRepository(
   let etag = repository.comments?.etag;
   let full = repository.comments?.full ?? false;
   if (repository.comments === undefined) {
-    for (const comment of (await octokit.paginate(
+    let began: string | undefined;
+    for (const comment of await octokit.paginate(
       "GET /repos/{owner}/{repo}/issues/comments",
       { owner, repo: name, per_page: 100 },
-    )) as RestComment[]) {
+      (response) => {
+        began ??= response.headers.date;
+        return response.data as RestComment[];
+      },
+    )) {
       comments.set(comment.node_id, comment);
     }
+    // GitHub's own clock, which this machine's may run ahead of.
+    const at = began === undefined ? Number.NaN : Date.parse(began);
+    if (!Number.isNaN(at)) since = new Date(at).toISOString();
   } else {
     const changed = await changedComments(
       octokit,
@@ -411,13 +455,17 @@ async function syncRepository(
       }
     }
   }
-  await writeComments(
+  const where = { node, owner, name, scope, hidden };
+  const wrote = await writeComments(
     context,
     octokit,
-    { node, owner, name, scope },
+    where,
     [...comments.values()],
     new Map(listed.map((issue) => [issue.number, issue.node_id])),
   );
+  if (repository.comments !== undefined && repository.private !== hidden) {
+    await markRows(context, node, hidden);
+  }
 
   const kept: Kept = {
     installation: repository.installation,
@@ -430,6 +478,7 @@ async function syncRepository(
       ...(full && { full }),
     },
     ...(repository.checked !== undefined && { checked: repository.checked }),
+    private: hidden,
   };
   if (options.check || open.fresh || closed.fresh) {
     await checkIssues(context, octokit, {
@@ -441,7 +490,7 @@ async function syncRepository(
     });
   }
   if (!options.check) return kept;
-  await checkComments(context, octokit, { node, owner, name, scope });
+  await checkComments(context, octokit, where, wrote);
   return { ...kept, checked: started.toISOString() };
 }
 
@@ -453,10 +502,11 @@ async function writeComments(
     owner: string;
     name: string;
     scope: ReadonlySet<number>;
+    hidden: boolean;
   },
   comments: readonly RestComment[],
   nodes: Map<number, string>,
-): Promise<void> {
+): Promise<Set<string>> {
   const outside = comments.filter(
     (comment) => !where.scope.has(numberOf(comment)),
   );
@@ -484,14 +534,13 @@ async function writeComments(
   )) {
     nodes.set(number, id);
   }
-  await context.upsert(
-    commentType,
-    inScope.flatMap((comment) => {
-      const issue = nodes.get(numberOf(comment));
-      return issue === undefined
-        ? []
-        : [
-            commentEntry({
+  const entries = inScope.flatMap((comment) => {
+    const issue = nodes.get(numberOf(comment));
+    return issue === undefined
+      ? []
+      : [
+          commentEntry(
+            {
               node: comment.node_id,
               body: comment.body ?? "",
               url: comment.html_url,
@@ -503,10 +552,39 @@ async function writeComments(
                 node: where.node,
                 name: `${where.owner}/${where.name}`,
               },
-            }),
-          ];
-    }),
-  );
+            },
+            where.hidden,
+          ),
+        ];
+  });
+  await context.upsert(commentType, entries);
+  return new Set(entries.map((entry) => entry.source_id));
+}
+
+async function marked(
+  context: Context,
+  node: string,
+  repository: Kept,
+  hidden: boolean,
+): Promise<Kept> {
+  if (repository.private !== hidden) await markRows(context, node, hidden);
+  return { ...repository, private: hidden };
+}
+
+/** Rows read before the field existed, or before the repository changed
+ *  its visibility, are not listed again, so each one held is told. */
+async function markRows(
+  context: Context,
+  node: string,
+  hidden: boolean,
+): Promise<void> {
+  const under = { type: repositoryType, id: node };
+  for (const type of [issueType, commentType]) {
+    const links = (await context.linked(type, inRepository, under)).flatMap(
+      (row) => linkOf(row) ?? [],
+    );
+    await context.derive(type, links, { private: hidden });
+  }
 }
 
 function numberOf(comment: RestComment): number {
@@ -611,7 +689,9 @@ async function checkComments(
     owner: string;
     name: string;
     scope: ReadonlySet<number>;
+    hidden: boolean;
   },
+  written: ReadonlySet<string>,
 ): Promise<void> {
   const { linked, archive } = context;
   const under = { type: repositoryType, id: where.node };
@@ -620,7 +700,11 @@ async function checkComments(
     "GET /repos/{owner}/{repo}/issues/comments",
     { owner: where.owner, repo: where.name, per_page: 100 },
   )) as RestComment[];
-  const held = new Set(rows.flatMap((row) => linkOf(row) ?? []));
+  // Rows this run wrote have no connection to the repository until it ends.
+  const held = new Set([
+    ...rows.flatMap((row) => linkOf(row) ?? []),
+    ...written,
+  ]);
   await writeComments(
     context,
     octokit,
@@ -673,6 +757,7 @@ async function readNamed(
   >,
   every: ReadonlyMap<number, Client>,
   paused: ReadonlySet<string>,
+  privacy: Privacy,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(
@@ -741,10 +826,20 @@ async function readNamed(
   await upsert(
     issueType,
     [...issues.values()].map(({ issue, relations }) =>
-      issueEntry(issue, relations, new Set([...synced, ...paused])),
+      issueEntry(
+        issue,
+        relations,
+        new Set([...synced, ...paused]),
+        privateIn(privacy, issue.repository.node),
+      ),
     ),
   );
-  await upsert(commentType, [...comments.values()].map(commentEntry));
+  await upsert(
+    commentType,
+    [...comments.values()].map((comment) =>
+      commentEntry(comment, privateIn(privacy, comment.repository.node)),
+    ),
+  );
 
   const unseenIssues = new Set([...namedIssues].filter((id) => !shown.has(id)));
   const unseenComments = new Set(namedComments.filter((id) => !shown.has(id)));

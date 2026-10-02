@@ -126,6 +126,14 @@ export function checkDefinition<E extends EnvDeclaration>(
       ...(kind.readOnly ?? []).filter((name) => !from.has(name)),
       ...(kind.type.link_field === undefined ? [] : [kind.type.link_field]),
     ].filter((field) => !kind.fields.includes(field));
+    const loose = (kind.derived ?? []).filter(
+      (field) => !(kind.readOnly ?? []).includes(field),
+    );
+    if (loose.length > 0) {
+      problems.push(
+        `${kind.type.id}'s derived fields among its read-only fields, where ${loose.join(", ")} ${loose.length === 1 ? "is" : "are"} not`,
+      );
+    }
     if (outside.length > 0) {
       problems.push(
         `${kind.type.id}'s link and read-only fields among its fields or the connection types from it, where ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not`,

@@ -207,6 +207,12 @@ describe("the definition", () => {
     });
     expect(await start(outside, harness.runtime(["--once"]))).toBe(2);
     expect(harness.lines.join("\n")).toContain("vendor_id is not");
+    const derived = defineConnector({
+      ...base,
+      types: [{ type: linkedType, fields: testFields, derived: ["title"] }],
+    });
+    expect(await start(derived, harness.runtime(["--once"]))).toBe(2);
+    expect(harness.lines.join("\n")).toContain("derived fields among");
     const twice = defineConnector({
       ...base,
       types: [

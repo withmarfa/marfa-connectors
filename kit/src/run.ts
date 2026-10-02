@@ -188,6 +188,7 @@ export function specsOf<E extends EnvDeclaration>(
           link,
           fields: kind.fields,
           readOnly,
+          derived: new Set(kind.derived ?? []),
           twoWay,
           revive: kind.revive === true,
           connections: new Set(
@@ -478,6 +479,7 @@ export async function runOnce<E extends EnvDeclaration>(
     },
     upsert: (type, entries) => lane(type).rows.upsert(entries),
     archive: (type, keys) => lane(type).rows.archive(keys),
+    derive: (type, keys, values) => lane(type).rows.derive(keys, values),
     linked: async (type, connection, target) => {
       const { rows } = lane(type);
       if (!specs.get(type)?.connections.has(connection)) {

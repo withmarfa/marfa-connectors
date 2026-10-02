@@ -87,6 +87,21 @@ function kept(): Record<string, Record<string, unknown>> {
   return state?.repositories ?? {};
 }
 
+function forgetPrivate(): void {
+  for (const one of marfa.rows)
+    Reflect.deleteProperty(one.properties, "private");
+  for (const held of marfa.agreements.values()) {
+    const record = held.record as {
+      vendor?: Record<string, unknown>;
+      marfa?: Record<string, unknown>;
+    };
+    Reflect.deleteProperty(record.vendor ?? {}, "private");
+    Reflect.deleteProperty(record.marfa ?? {}, "private");
+  }
+  for (const one of Object.values(kept()))
+    Reflect.deleteProperty(one, "private");
+}
+
 function checkDue(): void {
   const document = marfa.states.get("github");
   const state = document?.["state"] as
@@ -212,6 +227,182 @@ describe("a first sync", () => {
     ]);
     expect(marfa.edgeTypes.has("github.sub-issue-of")).toBe(true);
     expect(marfa.edgeTypes.get("in-thread")?.["id"]).toBe("in-thread");
+  });
+});
+
+describe("what a row says of its repository's visibility", () => {
+  it("says on each issue and comment whether its repository is private", async () => {
+    const hidden = github.addRepository("someone/hidden", { private: true });
+    const shown = github.addRepository("someone/shown", { private: false });
+    const inHidden = github.addIssue(hidden, { title: "In hidden" });
+    const inShown = github.addIssue(shown, { title: "In shown" });
+    const hiddenSaid = github.addComment(inHidden, "Quiet");
+    const shownSaid = github.addComment(inShown, "Loud");
+    await ok();
+    expect(row(inHidden.node).properties["private"]).toBe(true);
+    expect(row(hiddenSaid.node).properties["private"]).toBe(true);
+    expect(row(inShown.node).properties["private"]).toBe(false);
+    expect(row(shownSaid.node).properties["private"]).toBe(false);
+  });
+
+  it("follows a change of the repository's visibility, in rows GitHub did not change", async () => {
+    const repository = github.addRepository("someone/tracker", {
+      private: true,
+    });
+    const open = github.addIssue(repository, { title: "Open" });
+    const done = github.addIssue(repository, {
+      title: "Done",
+      state: "closed",
+      state_reason: "completed",
+      closed_at: github.ago(10),
+      updated_at: github.ago(10),
+    });
+    const comment = github.addComment(open, "Words");
+    await ok();
+    await ok();
+    repository.private = false;
+    repository.updated_at = github.now();
+    const output = await ok();
+    for (const node of [open.node, done.node, comment.node]) {
+      expect(row(node).properties["private"]).toBe(false);
+    }
+    expect(row(repository.node).properties["private"]).toBe(false);
+    expect(output).toContain("updated 4");
+    repository.private = true;
+    repository.updated_at = github.now();
+    await ok();
+    for (const node of [open.node, done.node, comment.node]) {
+      expect(row(node).properties["private"]).toBe(true);
+    }
+  });
+
+  it("reads again once only where the visibility is unchanged", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.addComment(issue, "Words");
+    await ok();
+    await ok();
+    const asked = github.asked.length;
+    await ok();
+    expect(
+      github.asked.slice(asked).some((one) => one.path === "/graphql"),
+    ).toBe(false);
+  });
+
+  it("fills rows read before the field existed, once", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Words");
+    await ok();
+    forgetPrivate();
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(true);
+    expect(row(comment.node).properties["private"]).toBe(true);
+    expect(Object.values(kept())[0]?.["private"]).toBe(true);
+  });
+
+  it("leaves a trashed issue in the bin on the first run after the field arrives, as GitHub's listing names it again", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const trashed = github.addIssue(repository, { title: "Trashed" });
+    const other = github.addIssue(repository, { title: "Other" });
+    await ok();
+    marfa.trash(row(trashed.node).id);
+    await ok();
+    forgetPrivate();
+    github.edit(other, { title: "Other, edited" });
+    await ok();
+    expect(row(trashed.node).state).toBe("trashed");
+    expect(row(other.node).properties["private"]).toBe(true);
+  });
+
+  it("leaves a trashed issue in the bin when its repository changes visibility, and marks it once it is restored", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const trashed = github.addIssue(repository, { title: "Trashed" });
+    const other = github.addIssue(repository, { title: "Other" });
+    await ok();
+    marfa.trash(row(trashed.node).id);
+    await ok();
+    repository.private = false;
+    repository.updated_at = github.now();
+    github.edit(other, { title: "Other, edited" });
+    await ok();
+    expect(row(trashed.node).state).toBe("trashed");
+    expect(row(other.node).properties["private"]).toBe(false);
+    marfa.restore(row(trashed.node).id);
+    await ok();
+    expect(row(trashed.node).state).toBe("active");
+    expect(row(trashed.node).properties["private"]).toBe(false);
+  });
+
+  it("marks the rows of a repository the App can no longer read as private", async () => {
+    const repository = github.addRepository("someone/tracker", {
+      private: false,
+    });
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Words");
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(false);
+    github.installations = [];
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(true);
+    expect(row(comment.node).properties["private"]).toBe(true);
+  });
+
+  it("marks the rows of a repository with its issues turned off from its visibility", async () => {
+    const repository = github.addRepository("someone/tracker", {
+      private: true,
+    });
+    const issue = github.addIssue(repository);
+    await ok();
+    repository.issuesOff = true;
+    repository.private = false;
+    repository.updated_at = github.now();
+    checkDue();
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(false);
+  });
+});
+
+describe("a run's report", () => {
+  it("counts each row of a first run once, the comments among them", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.addComment(issue, "One");
+    github.addComment(issue, "Two");
+    await ok();
+    expect(marfa.runs[0]?.summary).toContain(
+      "created 4, updated 0, archived 0, unchanged 0",
+    );
+  });
+
+  it("does not write a comment new in a run again at the daily check", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    github.addComment(issue, "One");
+    await ok();
+    github.addComment(issue, "Two");
+    checkDue();
+    await ok();
+    expect(marfa.runs[1]?.summary).toContain(
+      "created 1, updated 1, archived 0, unchanged 2",
+    );
+  });
+});
+
+describe("a comment cursor", () => {
+  it("starts from GitHub's clock, not the machine's", async () => {
+    github.runBehind(60 * 60 * 1000);
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Early");
+    await ok();
+    const { since } = Object.values(kept())[0]?.["comments"] as {
+      since: string;
+    };
+    expect(Date.parse(since)).toBeLessThan(Date.now() - 30 * 60 * 1000);
+    github.editComment(comment, "Edited");
+    await ok();
+    expect(row(comment.node).properties["body"]).toBe("Edited");
   });
 });
 

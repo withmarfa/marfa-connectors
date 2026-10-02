@@ -462,6 +462,25 @@ describe("the type check on start", () => {
     expect(harness.server.types.get("test.entry")).toBe(served);
   });
 
+  it("names the operator's replacement where the carried type only adds fields, and not where it differs otherwise", async () => {
+    harness.server.types.set("test.entry", {
+      ...testType,
+      fields: { title: { type: "string", required: true } },
+    });
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    expect(harness.lastRun().error).toContain('field "note" is missing');
+    expect(harness.lastRun().error).toContain(
+      "marfa types update test.entry --file",
+    );
+    harness.server.types.set("test.entry", {
+      ...testType,
+      fields: { title: { type: "integer" } },
+    });
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    expect(harness.lastRun().error).not.toContain("marfa types update");
+    expect(harness.server.requestsTo("PUT", "/types/test.entry")).toEqual([]);
+  });
+
   it("stops when the key may not register the type, saying what it lacks", async () => {
     harness.server.refuseNext(
       "POST /types",

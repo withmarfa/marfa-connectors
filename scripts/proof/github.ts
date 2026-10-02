@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createHmac } from "node:crypto";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
@@ -23,6 +24,7 @@ const entry = resolve(
   import.meta.dirname,
   "../../../connectors/github/dist/main.js",
 );
+const folder = resolve(import.meta.dirname, "../../../connectors/github/src");
 const types = ["github.repository", "github.issue", "github.comment"];
 const connections = [
   "github.in-repository",
@@ -129,9 +131,63 @@ export async function proveGitHub(
     );
 
     await check(
+      "github: the instance holds the issue and comment types as an earlier connector registered them, without private",
+      async () => {
+        for (const type of ["github.issue", "github.comment"]) {
+          const definition = JSON.parse(
+            await readFile(join(folder, `${type}.json`), "utf8"),
+          ) as { fields: Record<string, unknown> };
+          Reflect.deleteProperty(definition.fields, "private");
+          const { error, response } = await marfa.POST("/types", {
+            body: definition as never,
+          });
+          if (!response.ok)
+            throw new Error(`${type} was refused: ${JSON.stringify(error)}`);
+        }
+        return "github.issue and github.comment registered with no private field";
+      },
+    );
+
+    await check(
+      "github: a connector carrying a field its registered type lacks stops at start naming it and the operator's replacement, and starts once the operator has replaced the types",
+      async () => {
+        const runner = new ConnectorUnderProof(source, url, key.key, env);
+        const { code, output } = await runner.once();
+        if (
+          code === 0 ||
+          !output.includes('field "private" is missing on the server') ||
+          !output.includes("marfa types update github.issue --file")
+        ) {
+          throw new Error(`exit ${String(code)}: ${output}`);
+        }
+        if ((await rows()).size > 0) throw new Error("it wrote rows");
+        for (const type of ["github.issue", "github.comment"]) {
+          const { error, response } = await marfa.PUT("/types/{id}", {
+            params: { path: { id: type } },
+            body: JSON.parse(
+              await readFile(join(folder, `${type}.json`), "utf8"),
+            ) as never,
+          });
+          if (!response.ok)
+            throw new Error(`${type} was refused: ${JSON.stringify(error)}`);
+        }
+        return "the start named private and the command, wrote nothing, and went on once the operator key replaced both types";
+      },
+    );
+
+    await check(
       "github: the first run registers its types as kinds of the core's, writes the repository, the issues and the comment, and connects them, the comment in its issue's thread through the instance's in-thread",
       async () => {
         await runOnce();
+        const summary = String((await lastRun(marfa, key.id)).summary);
+        const grown = await Promise.all(
+          ["github.issue", "github.comment"].map(async (type) => {
+            const { data } = await marfa.GET("/types/{id}", {
+              params: { path: { id: type } },
+            });
+            return "private" in (data?.fields ?? {});
+          }),
+        );
         const parents = await Promise.all(
           types.map(async (type) => {
             const { data } = await marfa.GET("/types/{id}", {
@@ -163,13 +219,17 @@ export async function proveGitHub(
           blockedBy.join() !== blockerRow.id ||
           thread.join() !== top.id ||
           top.properties["status"] !== "pending" ||
+          top.properties["private"] !== true ||
+          said.properties["private"] !== true ||
+          grown.includes(false) ||
+          !summary.includes("created 5, updated 0, archived 0, unchanged 0") ||
           JSON.stringify(top.properties["labels"]) !== '["bug"]'
         ) {
           throw new Error(
-            `${parents.join(", ")}; in repository ${inRepo.join()}, sub-issue of ${subOf.join()}, blocked by ${blockedBy.join()}, in thread ${thread.join()}; ${JSON.stringify(top.properties)}`,
+            `${summary}; private on the types ${grown.join()}; ${parents.join(", ")}; in repository ${inRepo.join()}, sub-issue of ${subOf.join()}, blocked by ${blockedBy.join()}, in thread ${thread.join()}; ${JSON.stringify(top.properties)}`,
           );
         }
-        return `${parents.join(", ")}; ${registered.join(", ")}, and in-thread the instance's own; the child under its parent and blocked by the blocker, the comment in the parent's thread`;
+        return `${parents.join(", ")}; every row marked private, each of the five counted once; ${registered.join(", ")}, and in-thread the instance's own; the child under its parent and blocked by the blocker, the comment in the parent's thread`;
       },
     );
 
@@ -190,6 +250,26 @@ export async function proveGitHub(
           );
         }
         return `${String(listings.length)} listings, each 304; no row moved`;
+      },
+    );
+
+    await check(
+      "github: a repository made public on GitHub has its issues and comments say so on the next run, though GitHub changed none of them",
+      async () => {
+        repository.private = false;
+        repository.updated_at = github.now();
+        await runOnce();
+        const marked = [parent, child, blocker].map(
+          async (one) => (await row(one.node)).properties["private"],
+        );
+        marked.push(
+          row(comment.node).then((found) => found.properties["private"]),
+        );
+        const said = await Promise.all(marked);
+        if (said.some((one) => one !== false)) {
+          throw new Error(`the rows say ${said.join()}`);
+        }
+        return "three issues and a comment, none changed on GitHub, now say they are not private";
       },
     );
 

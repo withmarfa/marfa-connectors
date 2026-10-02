@@ -17,6 +17,10 @@
       "type": "string",
       "description": "The repository's full name, as owner/name."
     },
+    "private": {
+      "type": "boolean",
+      "description": "Whether the repository this row is in is private on GitHub, as of the last read: a row marked private holds what is not public, and its contents are not to be copied into a public place."
+    },
     "author": {
       "type": "string",
       "description": "The GitHub login that opened the issue."

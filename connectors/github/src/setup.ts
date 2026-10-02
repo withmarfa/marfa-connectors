@@ -33,6 +33,16 @@ export const events = [
   "repository",
 ];
 
+/** The public address's own path, a prefix the instance sits behind, kept
+ *  before the endpoint's. */
+export function hookUrl(publicUrl: string, path: string): string {
+  const address = new URL(publicUrl);
+  address.pathname = `${address.pathname.replace(/\/+$/, "")}${path}`;
+  address.search = "";
+  address.hash = "";
+  return address.toString();
+}
+
 export function readOnly(value: string | undefined): boolean {
   return value === "true";
 }
@@ -115,7 +125,7 @@ export async function setUp<E extends EnvDeclaration>(
   const hook =
     env.GITHUB_PUBLIC_URL === undefined
       ? undefined
-      : new URL(made.path, env.GITHUB_PUBLIC_URL).toString();
+      : hookUrl(env.GITHUB_PUBLIC_URL, made.path);
 
   if (env.GITHUB_APP_ID !== undefined && env.GITHUB_PRIVATE_KEY !== undefined) {
     if (hook === undefined) {

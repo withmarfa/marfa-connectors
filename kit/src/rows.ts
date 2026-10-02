@@ -95,6 +95,7 @@ export interface Spec {
   readonly link: string | undefined;
   readonly fields: readonly string[];
   readonly readOnly: ReadonlySet<string>;
+  readonly derived: ReadonlySet<string>;
   readonly twoWay: boolean;
   readonly revive: boolean;
   readonly connections: ReadonlySet<string>;
@@ -466,7 +467,7 @@ export class Rows {
         entry.changed_at,
         agreement.waiting?.[stateKey] ?? row.updated_at,
       ) &&
-      !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
+      !unchangedAtVendor(agreement, this.activity(), entry.properties)
     ) {
       // Where a trash deletes at the vendor, a change there after the restore
       // means it has the row again; where it only closes, the restore reopens.
@@ -545,8 +546,13 @@ export class Rows {
       // Another row's trash never reached the vendor.
       agreement.stateBy !== "cascade" &&
       agreement.waiting?.[stateKey] === undefined &&
-      !unchangedAtVendor(agreement, this.kind.fields, entry.properties)
+      !unchangedAtVendor(agreement, this.activity(), entry.properties)
     );
+  }
+
+  /** The fields whose change is the vendor's doing to the row. */
+  private activity(): string[] {
+    return this.kind.fields.filter((field) => !this.kind.derived.has(field));
   }
 
   private merged(
@@ -676,6 +682,72 @@ export class Rows {
       if (created === undefined) continue;
       const entry = made.get(created);
       if (entry !== undefined) this.settle(result, created, entry);
+    }
+  }
+
+  /** Sets derived fields on the rows held, apart from any entry: where the
+   *  vendor's own answer is not to hand, such as a container no longer read. */
+  async derive(
+    keys: readonly string[],
+    values: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const fields = Object.keys(values);
+    const undeclared = fields.filter((field) => !this.kind.derived.has(field));
+    if (undeclared.length > 0) {
+      throw new Error(
+        `${this.kind.type} declares no derived field ${undeclared.join(", ")}`,
+      );
+    }
+    await this.know(this.kind.link === undefined ? { keys } : { links: keys });
+    const rows = [...new Set(keys)].flatMap((key) => {
+      const id =
+        this.kind.link === undefined
+          ? this.byKey.get(key)
+          : this.byLink.get(key);
+      const row = id === undefined ? undefined : this.byId.get(id);
+      return row === undefined || row.state === "trashed" ? [] : [row];
+    });
+    await this.store.fetch(rows.map((row) => row.id));
+    for (const row of rows) {
+      const changed = fields.filter(
+        (field) =>
+          mark(held(row.properties, field)) !== mark(held(values, field)),
+      );
+      if (changed.length === 0) continue;
+      const properties: Record<string, unknown> = {
+        ...cleaned(row.properties),
+      };
+      for (const field of changed) {
+        const value = held(values, field);
+        if (value === undefined) Reflect.deleteProperty(properties, field);
+        else properties[field] = value;
+      }
+      this.checkStopped();
+      try {
+        this.index(
+          await this.marfa.update(row.id, row.version, properties, undefined),
+        );
+      } catch (error) {
+        this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+        continue;
+      }
+      const agreement = this.store.get(row.id);
+      if (agreement !== undefined) {
+        const vendor = { ...agreement.vendor };
+        const marfa = { ...agreement.marfa };
+        for (const field of changed) {
+          const value = mark(held(values, field));
+          if (value === "") {
+            Reflect.deleteProperty(vendor, field);
+            Reflect.deleteProperty(marfa, field);
+          } else {
+            vendor[field] = value;
+            marfa[field] = value;
+          }
+        }
+        this.store.set(row.id, { ...agreement, vendor, marfa });
+      }
+      this.counts.updated += 1;
     }
   }
 
