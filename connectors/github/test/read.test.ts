@@ -8,14 +8,12 @@ import {
   describe,
   expect,
   it,
-  vi,
 } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
 import { apiVersion, numbersIn, runsOf } from "../src/github.js";
 
 const run = promisify(execFile);
-vi.setConfig({ testTimeout: 30_000 });
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const types = ["github.repository", "github.issue", "github.comment"];
 const connections = [

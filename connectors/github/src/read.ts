@@ -198,7 +198,7 @@ export async function read(
     if (left !== undefined) {
       if (repository.paused !== true) {
         log.info(
-          `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are and changes made to them wait until it is named again`,
+          `${left.full_name} is left out by GITHUB_REPOSITORIES, so its rows are left as they are, bar `private`, which follows its visibility, and changes made to them wait until it is named again`,
         );
       }
       // Under the name its rows hold, which a rename meanwhile does not change.
@@ -219,7 +219,7 @@ export async function read(
     if (!answered.has(repository.installation)) {
       log.condition(
         `repository-lost:${node}`,
-        `${repository.name} can no longer be read through the App, so its rows are left as they are`,
+        `${repository.name} can no longer be read through the App, so its rows are left as they are, bar `private`, which is set to true since its visibility is not known`,
       );
     }
   }
@@ -233,7 +233,7 @@ export async function read(
     if (at?.repository.has_issues === false) {
       log.condition(
         `issues-off:${node}`,
-        `${repository.name} has its issues turned off on GitHub, so its rows are left as they are`,
+        `${repository.name} has its issues turned off on GitHub, so its rows are left as they are, bar `private`, which follows its visibility`,
       );
       next[node] = await marked(
         context,
@@ -254,7 +254,7 @@ export async function read(
       if (!lostAccess(error)) throw error;
       log.condition(
         `repository-unreadable:${node}`,
-        `${repository.name} is listed for the App but answered ${String(status(error))}, so its rows are left as they are`,
+        `${repository.name} is listed for the App but answered ${String(status(error))}, so its rows are left as they are, bar `private`, which is set to true since its visibility is not known`,
       );
       next[node] = await marked(context, node, repository, true);
     }
