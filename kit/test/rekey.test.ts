@@ -49,4 +49,51 @@ describe("a row of a type without a link, moved to another natural key", () => {
     );
     expect(harness.server.row("old:1").properties["title"]).toBe("Old");
   });
+
+  it("leaves a row in the bin under the key it was known by, and makes none under the new one, for as long as the entry names it", async () => {
+    const held = vendor([{ source_id: "old:1", properties: { title: "One" } }]);
+    expect(await harness.once(held)).toBe(0);
+    harness.server.trash(harness.server.row("old:1").id);
+    held.entries = [
+      { source_id: "new:1", properties: { title: "One" }, movedFrom: "old:1" },
+    ];
+    for (let run = 0; run < 2; run += 1) {
+      expect(await harness.once(held)).toBe(0);
+    }
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.server.row("old:1").state).toBe("trashed");
+  });
+
+  it("holds an entry back by the tombstone a purge left under the key it was known by, for as long as the entry names it", async () => {
+    const held = vendor([{ source_id: "old:1", properties: { title: "One" } }]);
+    expect(await harness.once(held)).toBe(0);
+    const { id } = harness.server.row("old:1");
+    harness.server.trash(id);
+    harness.server.purgeById(id);
+    held.entries = [
+      { source_id: "new:1", properties: { title: "One" }, movedFrom: "old:1" },
+    ];
+    for (let run = 0; run < 2; run += 1) {
+      expect(await harness.once(held)).toBe(0);
+    }
+    expect(harness.server.rows).toHaveLength(0);
+  });
+
+  it("finds a row by any of the keys it was known by", async () => {
+    const held = vendor([
+      { source_id: "first:1", properties: { title: "One" } },
+    ]);
+    expect(await harness.once(held)).toBe(0);
+    const { id } = harness.server.row("first:1");
+    held.entries = [
+      {
+        source_id: "third:1",
+        properties: { title: "One" },
+        movedFrom: ["second:1", "first:1"],
+      },
+    ];
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.server.row("third:1").id).toBe(id);
+  });
 });

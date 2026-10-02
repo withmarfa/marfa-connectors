@@ -30,6 +30,13 @@ export interface Counts {
   conflicts: number;
 }
 
+/** The links or keys an entry's row was known by, newest first. */
+function earlier(entry: Entry): string[] {
+  return [entry.movedFrom ?? []]
+    .flat()
+    .filter((before) => before !== "" && before !== entry.source_id);
+}
+
 export class Stopped extends Error {
   override name = "Stopped";
   override message = "stopped before the run finished";
@@ -214,24 +221,17 @@ export class Rows {
 
   async upsert(entries: readonly Entry[]): Promise<void> {
     // The last of a repeated key wins, as the vendor's latest word on it.
-    const latest = new Map(
-      entries.map((entry) => [
-        entry.source_id,
-        entry.movedFrom === "" ? { ...entry, movedFrom: undefined } : entry,
-      ]),
-    );
+    const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
     await this.know({
       links: [...latest.values()].flatMap((entry) => [
         ...[this.linkOf(cleaned(entry.properties))].filter(
           (value): value is string => value !== undefined,
         ),
-        ...(entry.movedFrom === undefined ? [] : [entry.movedFrom]),
+        ...earlier(entry),
       ]),
       keys: [...latest.values()].flatMap((entry) => [
         entry.source_id,
-        ...(this.kind.link === undefined && entry.movedFrom !== undefined
-          ? [entry.movedFrom]
-          : []),
+        ...(this.kind.link === undefined ? earlier(entry) : []),
       ]),
     });
     const matched: [Entry, Item][] = [];
@@ -274,7 +274,7 @@ export class Rows {
         );
         continue;
       }
-      const row = this.find(value, entry.movedFrom, entry.source_id);
+      const row = this.find(value, earlier(entry), entry.source_id);
       if (row === "elsewhere") {
         this.counts.skipped += 1;
         this.hooks.condition(
@@ -289,11 +289,13 @@ export class Rows {
       }
       const buried =
         (value === undefined ? undefined : this.buried.get(`link:${value}`)) ??
-        (entry.movedFrom === undefined
-          ? undefined
-          : this.buried.get(
-              `${this.kind.link === undefined ? "key" : "link"}:${entry.movedFrom}`,
-            )) ??
+        earlier(entry)
+          .map((before) =>
+            this.buried.get(
+              `${this.kind.link === undefined ? "key" : "link"}:${before}`,
+            ),
+          )
+          .find((tombstone) => tombstone !== undefined) ??
         this.buried.get(`key:${entry.source_id}`);
       if (
         buried !== undefined &&
@@ -602,19 +604,22 @@ export class Rows {
 
   private find(
     value: string | undefined,
-    movedFrom: string | undefined,
+    before: readonly string[],
     sourceId: string,
   ): Item | "elsewhere" | undefined {
     const byLink = (key: string | undefined): Item | undefined => {
       const id = key === undefined ? undefined : this.byLink.get(key);
       return id === undefined ? undefined : this.byId.get(id);
     };
-    const linked = byLink(value) ?? byLink(movedFrom);
+    const linked =
+      byLink(value) ?? before.map(byLink).find((row) => row !== undefined);
     if (linked !== undefined) return linked;
     const id =
       this.byKey.get(sourceId) ??
-      (this.kind.link === undefined && movedFrom !== undefined
-        ? this.byKey.get(movedFrom)
+      (this.kind.link === undefined
+        ? before
+            .map((key) => this.byKey.get(key))
+            .find((found) => found !== undefined)
         : undefined);
     const keyed = id === undefined ? undefined : this.byId.get(id);
     if (keyed === undefined) return undefined;

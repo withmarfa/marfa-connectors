@@ -63,9 +63,12 @@ export interface Entry {
   /**
    * The link the row was known by before the vendor moved it, such as an
    * issue transferred to another repository, or its `source_id` where the
-   * type names no link: the row is found by it and takes the entry's.
+   * type names no link, or several, newest first: the row is found by them
+   * and takes the entry's. A row in the bin keeps its old key, and a purged
+   * one leaves its tombstone there, so name them for as long as a row may
+   * still be held under them, or the entry makes a row anew.
    */
-  movedFrom?: string | undefined;
+  movedFrom?: string | readonly string[] | undefined;
   /**
    * Every connection of each type named, from this row, as the vendor holds
    * them; a type left out is left as it is. A target Marfa does not hold yet
