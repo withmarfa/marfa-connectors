@@ -34,7 +34,9 @@ function normalized(field: unknown): Record<string, unknown> {
   const out = { ...record(field) };
   const format = out["format"];
   if (typeof format === "string" && typeFormats.has(format)) {
-    out["type"] = format;
+    // The server folds the format into the field's type, or into `items_type`
+    // on an array of strings.
+    out[out["type"] === "array" ? "items_type" : "type"] = format;
     delete out["format"];
   }
   return out;

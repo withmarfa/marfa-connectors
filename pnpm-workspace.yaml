@@ -4,8 +4,10 @@ packages:
   - "connectors/*"
   - "scripts"
 
-# A tarball, not the registry: the published client is older than the pinned
-# monorepo commit. A catalog would read better but refuses the `file:` protocol.
+# A tarball, not the registry: the published client carries contract version 3
+# and the pinned server serves 0. Drop the tarball, and `scripts/vendor-client.sh`
+# with it, once a client is published at the version the server serves. A catalog
+# would read better but refuses the `file:` protocol.
 overrides:
   "@withmarfa/client": "file:vendor/withmarfa-client.tar"
 

@@ -1,0 +1,36 @@
+name: Pin drift
+
+# Informational, never a check: a pin that fell behind opens one issue and
+# leaves every pull request's checks alone. Moving the pin is in AGENTS.md.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  # Commits behind withmarfa/marfa main that call for moving the pin.
+  LIMIT: 50
+  TITLE: The pinned Marfa monorepo has fallen behind main
+
+jobs:
+  drift:
+    name: Distance from main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open an issue when the pin is too far behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pin="$(tr -d '[:space:]' < scripts/monorepo.commit)"
+          behind="$(gh api "repos/withmarfa/marfa/compare/${pin}...main" --jq .ahead_by)"
+          echo "The pin ${pin} is ${behind} commits behind withmarfa/marfa main."
+          if (( behind <= LIMIT )); then exit 0; fi
+          open="$(gh issue list --state open --search "\"${TITLE}\" in:title" --json number,title --jq "map(select(.title == env.TITLE)) | .[0].number // empty")"
+          if [[ -n "${open}" ]]; then exit 0; fi
+          gh issue create --title "${TITLE}" --body "The pin in \`scripts/monorepo.commit\` (${pin}) is ${behind} commits behind withmarfa/marfa main, past the limit of ${LIMIT}. Move it as AGENTS.md describes under Moving the pin."

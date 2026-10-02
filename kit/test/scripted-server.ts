@@ -141,6 +141,7 @@ export class ScriptedServer {
         property_schema: {},
         reverse_name: "has-attachment",
         written_at: "source",
+        shipped: true,
       },
     ],
     [
@@ -155,6 +156,7 @@ export class ScriptedServer {
           position: { type: "number", description: "Ordering." },
         },
         written_at: "source",
+        shipped: true,
       },
     ],
   ]);
@@ -718,6 +720,7 @@ export class ScriptedServer {
         metadata_permissions: {},
         profile_permissions: {},
         created_at: this.now(),
+        expires_at: null,
         last_used_at: null,
         ...this.grants,
       });
@@ -901,6 +904,7 @@ export class ScriptedServer {
       res.setHeader("Date", new Date(now).toUTCString());
       send(200, {
         expires_at: new Date(this.holder.until).toISOString(),
+        ttl_ms: this.holdMs,
         renewed,
       });
       return;
@@ -1093,6 +1097,7 @@ export class ScriptedServer {
         property_schema: {},
         written_at: "source",
         ...input,
+        shipped: false,
       };
       this.edgeTypes.set(id, stored);
       send(201, { edge_type: stored });

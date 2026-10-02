@@ -36,7 +36,7 @@ describe("the type check", () => {
           ...served,
           fields: {
             ...served.fields,
-            link: { type: "url", items_type: "string" },
+            link: { type: "array", items_type: "url" },
           },
         },
       ),

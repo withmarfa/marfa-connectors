@@ -75,12 +75,12 @@ export async function mintAsReadmeSays(
       const key = await mint(marfa, flags);
       minted = key;
       const types = JSON.stringify(key.type_permissions);
-      const metadata = JSON.stringify(key.metadata_permissions ?? {});
-      const permissions = JSON.stringify(key.permissions ?? []);
+      const metadata = JSON.stringify(key.metadata_permissions);
+      const permissions = JSON.stringify(key.permissions);
       const rest = JSON.stringify([
-        key.edge_permissions ?? {},
-        key.extension_permissions ?? {},
-        key.profile_permissions ?? {},
+        key.edge_permissions,
+        key.extension_permissions,
+        key.profile_permissions,
       ]);
       if (
         key.source !== flags.source ||
