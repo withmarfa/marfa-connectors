@@ -3,6 +3,7 @@ import {
   carried,
   changedInMarfa,
   laterThan,
+  mark,
   noteWaiting,
   sideOf,
   type Agreement,
@@ -31,6 +32,7 @@ import {
   cascaded,
   connectKey,
   LinkTaken,
+  Refused,
   Rows,
   stateKey,
   Stopped,
@@ -118,6 +120,29 @@ function summarize(
     summary += `. ${String(waiting)} more ${waiting === 1 ? "condition waits" : "conditions wait"} for a later report`;
   }
   return { summary, carried };
+}
+
+/** What a change sends, so the one a vendor refused is not sent again. */
+function sending(change: Change): string {
+  const ids = (items: readonly Item[]): string[] =>
+    items.map((item) => item.id).sort();
+  return mark({
+    kind: change.kind,
+    state: change.item.state,
+    was: change.was,
+    values: Object.fromEntries(
+      [...change.changed].map((field) => [
+        field,
+        change.item.properties[field] ?? null,
+      ]),
+    ),
+    connections: Object.fromEntries(
+      Object.entries(change.connections ?? {}).map(([type, connected]) => [
+        type,
+        { added: ids(connected.added), removed: ids(connected.removed) },
+      ]),
+    ),
+  });
 }
 
 export function specsOf<E extends EnvDeclaration>(
@@ -266,6 +291,33 @@ export async function runOnce<E extends EnvDeclaration>(
     } else {
       scope.ids.add(id);
     }
+  };
+  const refusedOf = (id: string, reason: string): void => {
+    raised.set(
+      `change-refused:${id}`,
+      `the change to ${id} was refused, so it waits until the row changes in Marfa: ${reason}`,
+    );
+  };
+  // What a refusal names is kept with the row, so it stands until settled.
+  const refuse = (id: string, change: Change, error: Refused): void => {
+    const reason = cap(logger.redact(error.message), conditionCap);
+    refusedOf(id, reason);
+    const agreement = store.get(id);
+    if (agreement === undefined) return;
+    store.set(id, {
+      ...agreement,
+      refused: { change: sending(change), reason },
+    });
+  };
+  const refusedBefore = (
+    id: string,
+    agreement: Agreement,
+    change: Change,
+  ): boolean => {
+    const refused = agreement.refused;
+    if (refused?.change !== sending(change)) return false;
+    refusedOf(id, refused.reason);
+    return true;
   };
   const startedAt = clock.now();
   let failure: unknown;
@@ -661,6 +713,7 @@ export async function runOnce<E extends EnvDeclaration>(
         ),
       );
       const next = withoutWaiting(agreement);
+      Reflect.deleteProperty(next, "refused");
       if (Object.keys(left).length > 0) next.waiting = left;
       store.set(current.id, settledConnections(next, moved));
       return;
@@ -674,6 +727,19 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     const attempted = unlinked ? agreement.attempted : undefined;
+    const change: Change = {
+      kind: changeKind,
+      item: current,
+      changed: new Set(changed),
+      ...(attempted !== undefined && { attempted }),
+      ...(changeKind === "restored" &&
+        (agreement.state === "trashed" || agreement.state === "archived") && {
+          was: agreement.state,
+        }),
+      ...(connected &&
+        moved !== undefined && { connections: moved.connections }),
+    };
+    if (refusedBefore(current.id, agreement, change)) return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
@@ -686,26 +752,17 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     let answered: Entry | undefined;
     try {
-      answered = await connector.onChange(
-        {
-          kind: changeKind,
-          item: current,
-          changed: new Set(changed),
-          ...(attempted !== undefined && { attempted }),
-          ...(changeKind === "restored" &&
-            (agreement.state === "trashed" ||
-              agreement.state === "archived") && {
-              was: agreement.state,
-            }),
-          ...(connected &&
-            moved !== undefined && { connections: moved.connections }),
-        },
-        watchContext,
-      );
+      answered = await connector.onChange(change, watchContext);
     } catch (error) {
-      if (!(error instanceof Unreachable)) throw error;
-      unreached(current.id, error);
-      return;
+      if (error instanceof Unreachable) {
+        unreached(current.id, error);
+        return;
+      }
+      if (error instanceof Refused) {
+        refuse(current.id, change, error);
+        return;
+      }
+      throw error;
     }
     settle(kind, current, changeKind, changed, answered, moved);
     // A carried field keeps its value over the answer's.
@@ -1058,6 +1115,10 @@ export async function runOnce<E extends EnvDeclaration>(
             done.add(id);
             continue;
           }
+          if (refusedBefore(id, agreement, change)) {
+            done.add(id);
+            continue;
+          }
           store.set(id, {
             ...agreement,
             attempted: agreement.attempted ?? clock.now().toISOString(),
@@ -1067,8 +1128,9 @@ export async function runOnce<E extends EnvDeclaration>(
           try {
             remade = await connector.remake(change, watchContext);
           } catch (error) {
-            if (!(error instanceof Unreachable)) throw error;
-            unreached(id, error);
+            if (error instanceof Unreachable) unreached(id, error);
+            else if (error instanceof Refused) refuse(id, change, error);
+            else throw error;
             done.add(id);
             continue;
           }
@@ -1172,8 +1234,13 @@ export async function runOnce<E extends EnvDeclaration>(
             watchContext,
           );
         } catch (error) {
-          if (!(error instanceof Unreachable)) throw error;
-          unreached(item.id, error);
+          if (error instanceof Unreachable) unreached(item.id, error);
+          else if (error instanceof Refused) {
+            raised.set(
+              `change-refused:${item.id}`,
+              `the purge of ${item.id} was refused, so it is asked again next run: ${error.message}`,
+            );
+          } else throw error;
           continue;
         }
         pushed += 1;
