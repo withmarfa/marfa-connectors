@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
 import {
@@ -17,7 +20,7 @@ import {
 const entry = resolve(import.meta.dirname, "inbound-connector.js");
 const secret = "proof-webhook-secret-value";
 
-async function serveThings(): Promise<{
+export async function serveThings(): Promise<{
   url: string;
   things: Map<string, string>;
   asked: string[];
@@ -363,7 +366,122 @@ export async function proveInbound(
         return `404, and the connector still holds ${String(after)} deliveries`;
       },
     );
+
+    await proveSetup(url, own, runner, connectorId);
   } finally {
     await vendor.close();
+  }
+}
+
+async function endpointsOf(own: MarfaClient, connectorId: string) {
+  const { data, error } = await own.GET("/connectors/{id}/endpoints", {
+    params: { path: { id: connectorId } },
+  });
+  if (data === undefined)
+    throw new Error(`the endpoints were refused: ${JSON.stringify(error)}`);
+  return data.data;
+}
+
+async function proveSetup(
+  url: string,
+  own: MarfaClient,
+  runner: ConnectorUnderProof,
+  connectorId: string,
+): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "marfa-connectors-setup-"));
+  try {
+    await check(
+      "setup: refuses to write its file inside a git working tree, and makes nothing",
+      async () => {
+        const file = resolve(import.meta.dirname, "../../../proof-setup.json");
+        const before = (await endpointsOf(own, connectorId)).length;
+        const { code, output } = await runner.run(["--setup", file]);
+        const after = (await endpointsOf(own, connectorId)).length;
+        if (
+          code !== 2 ||
+          existsSync(file) ||
+          after !== before ||
+          !output.includes("is inside the git working tree at")
+        ) {
+          throw new Error(
+            `exited ${String(code)}, file ${String(existsSync(file))}, endpoints ${String(before)} then ${String(after)}: ${output}`,
+          );
+        }
+        return `exited 2 without registering or making an endpoint: ${output.slice(output.indexOf("is inside")).trim()}`;
+      },
+    );
+
+    await check(
+      "setup: writes its secrets to a new file outside the checkout and leaves the endpoint it made live and labeled with when it was set up",
+      async () => {
+        const file = join(dir, "made.json");
+        const pathFile = join(dir, "made.path");
+        const { code, output } = await runner.run(["--setup", file], {
+          PROOF_SETUP_PATH_FILE: pathFile,
+        });
+        if (code !== 0) throw new Error(`exited ${String(code)}: ${output}`);
+        const written = JSON.parse(await readFile(file, "utf8")) as Record<
+          string,
+          string
+        >;
+        const path = await readFile(pathFile, "utf8");
+        const [newest] = await endpointsOf(own, connectorId);
+        const answer = await post(
+          url,
+          path,
+          signed({ id: "t1" }, "55555555-5555-5555-5555-555555555555"),
+        );
+        if (
+          Object.keys(written).join() !== "PROOF_WEBHOOK_SECRET" ||
+          newest?.retired_at !== null ||
+          !/^stub vendor, set up \d{4}-/.test(newest.label ?? "") ||
+          !output.includes(`setup made the webhook endpoint ${newest.id}`) ||
+          answer.status !== 202
+        ) {
+          throw new Error(
+            `wrote ${Object.keys(written).join()}, newest ${JSON.stringify(newest)}, delivery ${String(answer.status)}: ${output}`,
+          );
+        }
+        return `wrote ${Object.keys(written).join()}; ${newest.id} is live as "${String(newest.label)}" and took a delivery, 202`;
+      },
+    );
+
+    await check(
+      "setup: a setup that fails removes its file and retires the endpoint it made, whose address then answers 404 and stores nothing",
+      async () => {
+        const file = join(dir, "failed.json");
+        const pathFile = join(dir, "failed.path");
+        const { code, output } = await runner.run(["--setup", file], {
+          PROOF_SETUP_PATH_FILE: pathFile,
+          PROOF_SETUP_FAILS: "true",
+        });
+        const path = await readFile(pathFile, "utf8");
+        const [newest] = await endpointsOf(own, connectorId);
+        const before = (await deliveries(own, connectorId, "any")).length;
+        const answer = await post(
+          url,
+          path,
+          signed({ id: "t1" }, "66666666-6666-6666-6666-666666666666"),
+        );
+        const after = (await deliveries(own, connectorId, "any")).length;
+        if (
+          code !== 1 ||
+          existsSync(file) ||
+          newest?.retired_at == null ||
+          !output.includes(
+            `the webhook endpoint ${newest.id} it made was retired`,
+          ) ||
+          answer.status !== 404 ||
+          after !== before
+        ) {
+          throw new Error(
+            `exited ${String(code)}, file ${String(existsSync(file))}, newest ${JSON.stringify(newest)}, delivery ${String(answer.status)}, deliveries ${String(before)} then ${String(after)}: ${output}`,
+          );
+        }
+        return `exited 1 with no file; ${newest.id} was retired at ${newest.retired_at}, and its address answered 404 and stored nothing`;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }

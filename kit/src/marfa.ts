@@ -75,12 +75,12 @@ export class Marfa {
   async register(
     name: string,
     description: string | undefined,
-  ): Promise<{ id: string; source: string }> {
+  ): Promise<string> {
     const { data, error, response } = await this.client.POST("/connectors", {
       body: { name, ...(description !== undefined && { description }) },
     });
     if (data === undefined) throw refusal(response, error);
-    return { id: data.id, source: data.source };
+    return data.id;
   }
 
   async heartbeat(id: string, signal: AbortSignal): Promise<void> {
@@ -246,6 +246,14 @@ export class Marfa {
     );
     if (data === undefined) throw refusal(response, error);
     return data;
+  }
+
+  async retireEndpoint(id: string, endpointId: string): Promise<void> {
+    const { data, error, response } = await this.client.DELETE(
+      "/connectors/{id}/endpoints/{endpoint_id}",
+      { params: { path: { id, endpoint_id: endpointId } } },
+    );
+    if (data === undefined) throw refusal(response, error);
   }
 
   async upload(

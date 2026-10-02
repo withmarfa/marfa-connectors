@@ -11,12 +11,13 @@ import {
 import { witnessTypeAnswers } from "./connector.js";
 import { proveGitHub } from "./github.js";
 import { proveInbound } from "./inbound.js";
+import { proveKeys } from "./keys.js";
 import { proveRss } from "./rss.js";
 import { proveTodoist } from "./todoist.js";
 import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
-const statements = 68;
+const statements = 76;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -82,6 +83,7 @@ try {
   await proveRss(marfa, booted.url);
   await proveTodoist(marfa, booted.url);
   await proveInbound(marfa, booted.url);
+  await proveKeys(marfa, booted.url);
   await proveTracker(marfa, booted.url);
   await proveGitHub(marfa, booted.url);
   if (statementsHeld() !== statements) {

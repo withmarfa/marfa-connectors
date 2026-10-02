@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { defineConnector, main, verifyHmac } from "@withmarfa/connector";
 
 interface Thing {
@@ -20,7 +21,27 @@ const connector = defineConnector({
       fields: ["title"],
     },
   ],
-  env: { PROOF_VENDOR_URL: "required", PROOF_WEBHOOK_SECRET: "secret" },
+  env: {
+    PROOF_VENDOR_URL: "required",
+    PROOF_WEBHOOK_SECRET: "secret",
+    PROOF_SETUP_PATH_FILE: "optional",
+    PROOF_SETUP_FAILS: "optional",
+  },
+  // Hands the proof the address it made, which the kit keeps out of the
+  // log, so the proof can post to it.
+  async setup({ env, endpoint }) {
+    const made = await endpoint({
+      label: "stub vendor",
+      duplicateHeader: "X-GitHub-Delivery",
+    });
+    if (env.PROOF_SETUP_PATH_FILE !== undefined) {
+      await writeFile(env.PROOF_SETUP_PATH_FILE, made.path);
+    }
+    if (env.PROOF_SETUP_FAILS === "true") {
+      throw new Error("the stub vendor refused the setup");
+    }
+    return { PROOF_WEBHOOK_SECRET: "proof-setup-webhook-secret" };
+  },
   async run({ env, signal, hints, upsert }) {
     const fetched = async (path: string): Promise<unknown> => {
       const response = await fetch(new URL(path, env.PROOF_VENDOR_URL), {

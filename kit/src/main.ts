@@ -27,7 +27,7 @@ import {
   type Trigger,
 } from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
-import { setUp } from "./setup.js";
+import { setUp, workingTreeOf } from "./setup.js";
 import {
   backoff,
   describeDuration,
@@ -88,6 +88,25 @@ async function checkType(
  *  narrowed itself and never registered: a file attaching to its item, a
  *  message in its thread. */
 const shippedConnections = new Set(["attached-to", "in-thread"]);
+
+/** The connector's rows carry its source, so a key writes under it as its
+ *  own or as a claim, a second account's key the latter; any other claim
+ *  reaches rows that are not the connector's, and an app's key is the
+ *  app's. */
+function keySourceProblem(key: Key, source: string): string | undefined {
+  if (key.oauth_client_id !== undefined) {
+    return `the key ${key.id} is refused: an app made it, and it stays that app's. Mint the connector a key of its own as the template's README says.`;
+  }
+  const own = key.source === source;
+  const others = key.sources.filter((claim) => claim !== source);
+  if (!own && !key.sources.includes(source)) {
+    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it with \`marfa keys update ${key.id} --claim ${source}\` from the operator key, or mint a key as the template's README says.`;
+  }
+  if (others.length > 0) {
+    return `the key ${key.id} claims sources besides the connector's, ${source}, and is refused: ${others.join(", ")}. Narrow it with \`marfa keys update ${key.id} ${own ? "--no-claims" : `--claim ${source}`}\`.`;
+  }
+  return undefined;
+}
 
 function keyWiderThanTypes(
   key: Key,
@@ -219,16 +238,13 @@ async function ensureType(
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
-): Promise<{ id: string; source: string; problem: string | undefined }> {
-  const { id, source } = await marfa.register(
-    connector.name,
-    connector.description,
-  );
+): Promise<Started> {
+  const id = await marfa.register(connector.name, connector.description);
   const key = await marfa.currentKey();
   if (key === undefined) {
     return {
       id,
-      source,
+      spare: undefined,
       problem:
         "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
     };
@@ -237,31 +253,51 @@ async function registerAndCheck<E extends EnvDeclaration>(
   const connections = (connector.connections ?? []).map((kind) => kind.id);
   const named = [...types, ...connections].join(", ");
   const wider = keyWiderThanTypes(key, new Set(types), new Set(connections));
-  if (wider.length > 0) {
-    return {
-      id,
-      source,
-      problem: `the key ${key.id} holds more than read and write on ${named}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
-    };
-  }
   const narrower = keyNarrowerThanTypes(
     key,
     new Set(types),
     new Set(connections),
   );
-  if (narrower.length > 0) {
-    return {
-      id,
-      source,
-      problem: `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
-    };
+  // Every way the key is wrong at once, so one new key mends them all.
+  const problems = [
+    keySourceProblem(key, connector.source),
+    wider.length === 0
+      ? undefined
+      : `the key ${key.id} holds more than read and write on ${named}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+    narrower.length === 0
+      ? undefined
+      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
+  ].filter((problem) => problem !== undefined);
+  if (problems.length > 0) {
+    return { id, spare: undefined, problem: problems.join(" ") };
   }
   for (const kind of connector.types) {
     const problem = await ensureType(kind.type, marfa);
-    if (problem !== undefined) return { id, source, problem };
+    if (problem !== undefined) return { id, spare: undefined, problem };
   }
   const problem = await ensureConnections(connector.connections ?? [], marfa);
-  return { id, source, problem };
+  if (problem !== undefined) return { id, spare: undefined, problem };
+  // Everything is registered as declared now, and registering is all write
+  // on the two is for. Read on them gates nothing, and is the narrowing the
+  // binary can name, since it cannot name one map empty.
+  const spare = ["types", "edge_types"].filter(
+    (name) => key.metadata_permissions[name] === "write",
+  );
+  return {
+    id,
+    spare:
+      spare.length === 0
+        ? undefined
+        : `every type and connection it declares is registered, so the key no longer needs metadata ${spare.map((name) => `${name}=write`).join(" or ")}: narrow it with \`marfa keys update ${key.id} ${spare.map((name) => `--metadata-permission ${name}=read`).join(" ")}\``,
+    problem: undefined,
+  };
+}
+
+interface Started {
+  readonly id: string;
+  /** Says the key holds a registering lever it no longer uses. */
+  readonly spare: string | undefined;
+  readonly problem: string | undefined;
 }
 
 function carriesBack<E extends EnvDeclaration>(
@@ -352,6 +388,12 @@ export async function start<E extends EnvDeclaration>(
           `${schedule.file} exists already, and setup writes its secrets only to a new file`,
         );
       }
+      const tree = workingTreeOf(schedule.file);
+      if (tree !== undefined) {
+        throw new ConfigurationError(
+          `${schedule.file} is inside the git working tree at ${tree}, where a file of secrets can be committed or copied into an image: name a file outside every repository`,
+        );
+      }
     }
     environment = readEnvironment(
       connector,
@@ -407,8 +449,7 @@ export async function start<E extends EnvDeclaration>(
   );
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
-  let started:
-    { id: string; source: string; problem: string | undefined } | undefined;
+  let started: Started | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
       started = await registerAndCheck(connector, marfa);
@@ -427,6 +468,7 @@ export async function start<E extends EnvDeclaration>(
   }
   const connectorId = started.id;
   logger.info(`registered as ${connectorId}`);
+  if (started.spare !== undefined) logger.warn(started.spare);
 
   if (started.problem !== undefined) {
     const at = clock.now().toISOString();
@@ -453,6 +495,7 @@ export async function start<E extends EnvDeclaration>(
       logger,
       stop.signal,
       schedule.file,
+      clock.now().toISOString(),
     );
   }
 

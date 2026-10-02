@@ -1,4 +1,12 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -97,11 +105,19 @@ describe("--setup", () => {
     expect(
       harness.server.requestsTo("POST", "/connectors/connector-1/endpoints")[0]
         ?.body,
-    ).toEqual({ duplicate_header: "X-GitHub-Delivery" });
+    ).toEqual({
+      label: "test, set up 2026-09-25T09:00:00.000Z",
+      duplicate_header: "X-GitHub-Delivery",
+    });
     const lines = harness.lines.join("\n");
     expect(lines).toContain(`open ${local.url} in a browser`);
     expect(lines).toContain("code abc became [redacted]");
     expect(lines).toContain(`setup wrote TEST_APP_KEY to ${file}`);
+    const endpoint = harness.server.endpoints.at(-1);
+    expect(endpoint?.retired_at).toBeNull();
+    expect(lines).toContain(
+      `setup made the webhook endpoint ${endpoint?.id ?? ""} (test, set up 2026-09-25T09:00:00.000Z)`,
+    );
     expect(lines).not.toContain(made);
     expect(lines).not.toContain(held.endpoint?.path ?? "");
     expect(harness.server.runs).toEqual([]);
@@ -183,7 +199,7 @@ describe("--setup", () => {
       withSetup(held, async (context) => {
         held.opened = await context.listen("<form></form>");
         answered = fetch(`${held.opened.callback}?code=abc`);
-        await new Promise((resolve) => setImmediate(resolve));
+        await held.opened.redirected;
         throw new Error("the vendor refused the code");
       }),
       harness.runtime(["--setup", file]),
@@ -292,6 +308,80 @@ describe("--setup", () => {
     expect(harness.lines.join("\n")).toContain(
       `setup failed, and ${file} was removed: the vendor refused the manifest`,
     );
+  });
+
+  it("retires the endpoints it made where setup fails, so no address it handed out stays live", async () => {
+    const file = join(dir, "secrets.json");
+    const failing = withSetup({}, async (context) => {
+      await context.endpoint({ label: "vendor" });
+      await context.endpoint();
+      throw new Error("the vendor refused the manifest");
+    });
+    const before = harness.server.endpoints.length;
+    expect(await start(failing, harness.runtime(["--setup", file]))).toBe(1);
+    const made = harness.server.endpoints.slice(before);
+    expect(made).toHaveLength(2);
+    expect(made.every((endpoint) => endpoint.retired_at !== null)).toBe(true);
+    expect(
+      harness.server
+        .requestsTo("POST", "/connectors/connector-1/endpoints")
+        .map((request) => (request.body as { label?: string }).label),
+    ).toEqual([
+      "vendor, set up 2026-09-25T09:00:00.000Z",
+      "test, set up 2026-09-25T09:00:00.000Z",
+    ]);
+    expect(harness.server.endpoints[0]?.retired_at).toBeNull();
+    const lines = harness.lines.join("\n");
+    for (const endpoint of made) {
+      expect(lines).toContain(
+        `the webhook endpoint ${endpoint.id} it made was retired`,
+      );
+    }
+  });
+
+  it("names an endpoint it could not retire, and how to retire it by hand", async () => {
+    const file = join(dir, "secrets.json");
+    const failing = withSetup({}, async (context) => {
+      await context.endpoint();
+      throw new Error("the vendor refused the manifest");
+    });
+    harness.server.beforeAnswer = (request) => {
+      if (request.method === "DELETE") {
+        harness.server.refuseNext(
+          `DELETE ${request.path}`,
+          503,
+          "unavailable",
+          "Down for a moment",
+        );
+      }
+    };
+    expect(await start(failing, harness.runtime(["--setup", file]))).toBe(1);
+    const endpoint = harness.server.endpoints.at(-1);
+    expect(endpoint?.retired_at).toBeNull();
+    expect(harness.lines.join("\n")).toContain(
+      `marfa connectors endpoints retire connector-1 ${endpoint?.id ?? ""}`,
+    );
+  });
+
+  it("refuses to write its file inside a git working tree, before it reaches the server", async () => {
+    for (const [tree, mark] of [
+      ["repository", "directory"],
+      ["worktree", "file"],
+    ] as const) {
+      const root = join(dir, tree);
+      await mkdir(join(root, "connectors"), { recursive: true });
+      if (mark === "directory") await mkdir(join(root, ".git"));
+      else await writeFile(join(root, ".git"), "gitdir: elsewhere\n");
+      const file = join(root, "connectors", "secrets.json");
+      expect(
+        await start(withSetup({}), harness.runtime(["--setup", file])),
+      ).toBe(2);
+      await expect(stat(file)).rejects.toThrow();
+      expect(harness.lines.join("\n")).toContain(
+        `${file} is inside the git working tree at ${await realpath(root)}`,
+      );
+    }
+    expect(harness.server.requests).toEqual([]);
   });
 
   it("keeps a name the connector does not declare in the file, and says so", async () => {

@@ -247,12 +247,62 @@ describe("the key check on start", () => {
     }
   });
 
-  it("starts on a key that claims sources besides its own, as a second account's does", async () => {
+  it("starts on a second account's key, whose own source is another and which claims the connector's", async () => {
+    harness.server.keySource = "test-second";
     harness.server.grants = {
       sources: ["test"],
       type_permissions: { "test.entry": "write" },
     };
     expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.server.rows.map((row) => row.source)).toEqual(["test"]);
+  });
+
+  it("refuses a key that claims a source besides the connector's, naming it and how to narrow the key, before it registers the type or writes a row", async () => {
+    for (const [keySource, sources, narrow] of [
+      ["test", ["other.app", "test"], "marfa keys update key-1 --no-claims"],
+      [
+        "test-second",
+        ["test", "other.app"],
+        "marfa keys update key-1 --claim test",
+      ],
+    ] as const) {
+      harness.server.keySource = keySource;
+      harness.server.grants = {
+        sources: [...sources],
+        type_permissions: { "test.entry": "write" },
+      };
+      expect(await harness.once(vendor([entry]))).toBe(1);
+      const error = harness.lastRun().error ?? "";
+      expect(harness.lastRun().outcome).toBe("failed");
+      expect(error).toContain("key-1");
+      expect(error).toContain("other.app");
+      expect(error).toContain(narrow);
+      expect(harness.server.rows).toEqual([]);
+      expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
+    }
+  });
+
+  it("refuses a key whose own source is not the connector's and which does not claim it, saying how to claim it", async () => {
+    harness.server.keySource = "elsewhere";
+    harness.server.grants = { type_permissions: { "test.entry": "write" } };
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain("elsewhere");
+    expect(error).toContain("marfa keys update key-1 --claim test");
+    expect(harness.server.rows).toEqual([]);
+    expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
+  });
+
+  it("refuses a key an app made, however narrow", async () => {
+    harness.server.grants = {
+      oauth_client_id: "client-1",
+      type_permissions: { "test.entry": "write" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain("key-1");
+    expect(error).toContain("an app made it");
+    expect(harness.server.rows).toEqual([]);
   });
 
   it("stops on a server with no door for a key to read itself, saying so", async () => {
@@ -266,6 +316,54 @@ describe("the key check on start", () => {
     expect(harness.lastRun().outcome).toBe("failed");
     expect(harness.lastRun().error).toContain("GET /keys/current");
     expect(harness.server.rows).toEqual([]);
+  });
+
+  it("warns, on every start, that a key holding types=write can drop it once its types are registered", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      metadata_permissions: { types: "write" },
+    };
+    for (let start = 0; start < 2; start += 1) {
+      harness.lines.length = 0;
+      expect(await harness.once(vendor([entry]))).toBe(0);
+      const said = harness.lines.join("\n");
+      expect(said).toContain(
+        "every type and connection it declares is registered",
+      );
+      expect(said).toContain(
+        "marfa keys update key-1 --metadata-permission types=read",
+      );
+    }
+    expect(harness.server.requestsTo("POST", "/types")).toHaveLength(1);
+
+    harness.lines.length = 0;
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      metadata_permissions: { types: "read" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.lines.join("\n")).not.toContain("--metadata-permission");
+  });
+
+  it("names edge_types beside types when a key holds both past registering its connections", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+      metadata_permissions: { types: "write", edge_types: "write" },
+    };
+    const held = vendor([entry]);
+    held.connections = [
+      {
+        id: "test.blocks",
+        cardinality: "many-to-many",
+        source_type_constraints: ["test.entry"],
+        target_type_constraints: ["test.entry"],
+      },
+    ];
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.lines.join("\n")).toContain(
+      "marfa keys update key-1 --metadata-permission types=read --metadata-permission edge_types=read",
+    );
   });
 
   it("reads a level of none as holding nothing", async () => {

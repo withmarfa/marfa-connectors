@@ -208,6 +208,7 @@ describe("the connector's state", () => {
     expect(await harness.once(first)).toBe(0);
 
     harness.server.keySource = "test/account 2";
+    harness.server.grants = { sources: ["test"] };
     const second = vendor([{ source_id: "b:1", properties: { title: "B" } }]);
     second.token = "t-second";
     expect(await harness.once(second)).toBe(0);
