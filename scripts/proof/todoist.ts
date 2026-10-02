@@ -11,7 +11,7 @@ import {
   item,
   keyBody,
   lastRun,
-  mintAsReadmeSays,
+  mintWithTheReadmeKeyFlags,
   moved,
   promoteAndFind,
   purge,
@@ -42,7 +42,7 @@ export async function proveTodoist(
   const todoist = await new TodoistStub("todoist-proof-token").start();
   const account = todoist.account;
   try {
-    const key = await mintAsReadmeSays(marfa, {
+    const key = await mintWithTheReadmeKeyFlags(marfa, {
       label: "todoist",
       source: "todoist",
       typePermission: "todoist.task",

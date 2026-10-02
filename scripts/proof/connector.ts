@@ -72,13 +72,13 @@ async function mint(marfa: MarfaClient, flags: KeyFlags) {
 
 export type Minted = Awaited<ReturnType<typeof mint>>;
 
-export async function mintAsReadmeSays(
+export async function mintWithTheReadmeKeyFlags(
   marfa: MarfaClient,
   flags: KeyFlags,
 ): Promise<Minted> {
   let minted: Minted | undefined;
   await check(
-    `${flags.label}: its key is minted as the template's README says`,
+    `${flags.label}: its key is minted through the API, not by the CLI, with the permissions the template's README names`,
     async () => {
       const key = await mint(marfa, flags);
       minted = key;

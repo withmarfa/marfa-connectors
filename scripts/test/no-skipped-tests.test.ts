@@ -1,5 +1,6 @@
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TestModule, Vitest } from "vitest/node";
+import { startVitest, type TestModule, type Vitest } from "vitest/node";
 import config from "../../vitest.config.js";
 import { NoSkippedTests } from "../no-skipped-tests.js";
 
@@ -77,5 +78,25 @@ describe("the skipped-test gate", () => {
     expect(
       reporters.some((reporter) => reporter instanceof NoSkippedTests),
     ).toBe(true);
+  });
+
+  it("fails a real run that skips a test, and passes one that skips none", async () => {
+    const run = async (file: string): Promise<typeof process.exitCode> => {
+      process.exitCode = undefined;
+      const vitest = await startVitest([], {
+        root: resolve(import.meta.dirname, "gate"),
+        config: false,
+        watch: false,
+        include: [file],
+        reporters: [new NoSkippedTests()],
+      });
+      await vitest.close();
+      return process.exitCode;
+    };
+    expect(await run("passes.fixture.ts")).toBeUndefined();
+    expect(await run("skips.fixture.ts")).toBe(1);
+    expect(
+      said.map((line) => line.replace(/^.*skips\.fixture\.ts > /, "")).sort(),
+    ).toEqual(["a skipped suite", "a skipped suite > never runs", "waits"]);
   });
 });

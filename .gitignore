@@ -8,3 +8,4 @@ _archive/
 .env
 .env.*
 *.log
+.infisical.json

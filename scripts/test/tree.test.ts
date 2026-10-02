@@ -71,6 +71,44 @@ function buildOutput(path: string): boolean {
   return path.split("/").includes("dist") || path.endsWith(".tsbuildinfo");
 }
 
+/** Files that bind a checkout to one person's secrets workspace. */
+function secretsBinding(path: string): boolean {
+  return basename(path) === ".infisical.json";
+}
+
+function trackedPaths(): string[] {
+  return execFileSync("git", ["ls-files", "--cached"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter((path) => path !== "");
+}
+
+/** `uses:` references that name a tag or branch where a commit belongs. */
+function unpinnedActions(workflow: string): string[] {
+  return [...workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)(.*)$/gm)].flatMap(
+    ([, reference = "", rest = ""]) =>
+      /@[0-9a-f]{40}$/.test(reference) && /^\s+#\s*v\S+/.test(rest)
+        ? []
+        : [reference],
+  );
+}
+
+/** Base images named by a Dockerfile's `FROM` lines without a digest. */
+function unpinnedImages(dockerfile: string): string[] {
+  return [...dockerfile.matchAll(/^FROM\s+(\S+)/gm)].flatMap(
+    ([, image = ""]) => (/@sha256:[0-9a-f]{64}$/.test(image) ? [] : [image]),
+  );
+}
+
+/** Where `vitest.config.ts` looks for tests: under a `test/` directory. */
+function strayTest(path: string): boolean {
+  return (
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(path) && !/(^|\/)test\//.test(path)
+  );
+}
+
 function offHosted(workflow: string): string[] {
   const document = parse(workflow) as {
     jobs?: Record<string, Record<string, unknown>>;
@@ -195,5 +233,56 @@ describe("the tree", () => {
         offHosted(file.text).map((job) => `${file.path} ${job}`),
       ),
     ).toEqual([]);
+  });
+
+  it("tracks no secrets workspace binding", () => {
+    expect(
+      [".infisical.json", "connectors/x/.infisical.json", "README.md"].filter(
+        secretsBinding,
+      ),
+    ).toEqual([".infisical.json", "connectors/x/.infisical.json"]);
+    expect(trackedPaths().filter(secretsBinding)).toEqual([]);
+  });
+
+  it("pins every action by commit, with its tag beside it, and every base image by digest", () => {
+    const sha = "a".repeat(40);
+    expect(
+      unpinnedActions(
+        [
+          `      - uses: someone/tag@v4`,
+          `      - uses: someone/bare@${sha}`,
+          `      - uses: someone/ok@${sha} # v4.1.0`,
+        ].join("\n"),
+      ),
+    ).toEqual(["someone/tag@v4", `someone/bare@${sha}`]);
+    expect(
+      unpinnedImages(
+        `FROM node:22-slim AS build\nFROM node:22-slim@sha256:${"b".repeat(64)}\n`,
+      ),
+    ).toEqual(["node:22-slim"]);
+    const workflows = tree().filter((file) =>
+      /^\.github\/workflows\/.+\.ya?ml$/.test(file.path),
+    );
+    expect(workflows.length).toBeGreaterThan(0);
+    expect(workflows.flatMap((file) => unpinnedActions(file.text))).toEqual([]);
+    const dockerfiles = tree().filter(
+      (file) => basename(file.path) === "Dockerfile",
+    );
+    expect(dockerfiles.length).toBeGreaterThan(0);
+    expect(dockerfiles.flatMap((file) => unpinnedImages(file.text))).toEqual(
+      [],
+    );
+  });
+
+  it("keeps every test file where the test runner looks", () => {
+    expect(
+      ["kit/src/a.test.ts", "kit/test/a.test.ts", "b.spec.mjs"].filter(
+        strayTest,
+      ),
+    ).toEqual(["kit/src/a.test.ts", "b.spec.mjs"]);
+    expect(
+      trackedPaths().filter((path) => path.endsWith(".ts")).length,
+    ).toBeGreaterThan(0);
+    expect(trackedPaths().filter(strayTest)).toEqual([]);
   });
 });
