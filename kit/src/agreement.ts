@@ -22,8 +22,9 @@ export interface Agreement {
   connections?: Record<string, string[]>;
   pending?: Record<string, string[]>;
   file?: { key: string; ref: string; mime: string };
-  /** The change the vendor refused, as a mark of what it sent, and why. */
-  refused?: { change: string; reason: string };
+  /** The change the vendor refused, as a mark of what it sent, and why,
+   *  where the reason fits. */
+  refused?: { change: string; reason?: string };
 }
 
 export function mark(value: unknown): string {

@@ -2,17 +2,20 @@ import type { Agreement } from "./agreement.js";
 import type { Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
+/** A purge still to carry, with when and why the vendor last refused it. */
+export type Purge = Item & { refused?: { at: string; reason?: string } };
+
 export interface Kept {
   state: Record<string, unknown>;
   conditions: Record<string, string>;
   cursor?: string;
-  purges?: Item[];
+  purges?: Purge[];
 }
 
 const perRequest = 500;
 
 /** The instance's cap on one agreement, serialized. */
-const recordBytes = 16 * 1024;
+export const recordBytes = 16 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -30,7 +33,7 @@ function keptOf(value: unknown): Kept {
     : {};
   const cursor = kept["cursor"];
   const purges = Array.isArray(kept["purges"])
-    ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Item)
+    ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Purge)
     : [];
   return {
     state,

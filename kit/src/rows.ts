@@ -65,7 +65,7 @@ export class Unreachable extends Error {
  * change waits, the run goes on, and a condition names the row and the
  * message, the vendor's reason. The same change is not sent again; one
  * that differs, once the row changes, is. A purge, which cannot change, is
- * asked again each run.
+ * asked again a day after its refusal.
  */
 export class Refused extends Error {
   override name = "Refused";

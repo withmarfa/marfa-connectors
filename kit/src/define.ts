@@ -161,6 +161,13 @@ export interface Change {
    * until it has, and one purged is never carried.
    */
   readonly connections?: Readonly<Record<string, Connected>>;
+  /**
+   * While the vendor's refusal of an earlier change to the row stands, a
+   * mark of that change. A refused write made nothing, so a create sent
+   * again takes an idempotency key of its own from it, where one kept for
+   * a lost answer would have the vendor answer the refusal again.
+   */
+  readonly refused?: string;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {
@@ -325,7 +332,9 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * by itself, such as a rate limit, a server error or no answer at all,
    * and the change is sent again next run; `Refused` for one that will not,
    * such as a value the vendor rejects, and the same change is not sent
-   * again, though one that differs, once the row changes in Marfa, is.
+   * again, though one that differs, once the row changes in Marfa, is; a
+   * refused trash waits for the row's restore, and a refused purge is asked
+   * again a day after.
    * Either way nothing is agreed, the run goes on, and a condition says why
    * until the change lands. Any other throw fails the run, and the change
    * waits for the next.
