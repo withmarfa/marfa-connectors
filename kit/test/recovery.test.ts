@@ -62,6 +62,14 @@ describe("what failed, by its cause", () => {
     expect(causeOf(new Refusal(404, "item_not_found", "gone"))).toBe("refused");
   });
 
+  it("says registration for a type of the connector's own the server no longer holds, on a whole call or one entry of a bulk write", () => {
+    for (const status of [400, undefined]) {
+      expect(causeOf(new Refusal(status, "unknown_type", "gone"))).toBe(
+        "registration",
+      );
+    }
+  });
+
   it("does not read the text of an error", () => {
     expect(causeOf(new TypeError("fetch failed"))).toBe("run");
     expect(causeOf(new Error("503 unavailable"))).toBe("run");
@@ -325,6 +333,69 @@ describe("a registration the server lost", () => {
     expect(await exit).toBe(1);
     expect(harness.server.registrations).toBe(2);
     expect(said()).toContain("keeps losing");
+  });
+});
+
+describe("a type of the connector's the server lost", () => {
+  it("is registered again, and the connector goes on writing its rows", async () => {
+    harness.server.grants = { metadata_permissions: { types: "write" } };
+    const held = vendor([one]);
+    const exit = every(held, "15m");
+    await harness.clock.sleeping(15 * minute);
+    const registered = () => harness.server.requestsTo("POST", "/types").length;
+    expect(registered()).toBe(1);
+    harness.server.types.delete("test.entry");
+    held.entries = [one, { source_id: "a:2", properties: { title: "Two" } }];
+    await harness.clock.wake(15 * minute);
+    await until(() => registered() === 2);
+    await until(() => harness.server.rows.length === 2);
+    await until(() => harness.lastRun().outcome === "succeeded");
+    expect(said()).toContain("registered again");
+    expect(harness.server.runs.map((run) => run.outcome)).toEqual([
+      "succeeded",
+      "failed",
+      "succeeded",
+    ]);
+    expect(harness.server.runs[1]?.error).toContain("unknown_type");
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("stops the connector, saying so plainly, where the key may not register it again", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      metadata_permissions: { types: "read" },
+    };
+    const held = vendor([one]);
+    const exit = every(held, "15m");
+    await harness.clock.sleeping(15 * minute);
+    harness.server.types.delete("test.entry");
+    await harness.clock.wake(15 * minute);
+    expect(await exit).toBe(1);
+    expect(harness.lastRun().error).toBe(
+      "the type test.entry was deleted from the instance and this key may not register it again; stop the connector or mint a key with types=write",
+    );
+    expect(harness.server.requestsTo("POST", "/types")).toHaveLength(1);
+  });
+
+  it("deleted while a bulk write is on its way is registered again, not its rows held", async () => {
+    harness.server.grants = { metadata_permissions: { types: "write" } };
+    const held = vendor([one]);
+    const exit = every(held, "15m");
+    await harness.clock.sleeping(15 * minute);
+    harness.server.beforeAnswer = (request) => {
+      if (request.path === "/items/bulk") {
+        harness.server.types.delete("test.entry");
+        harness.server.beforeAnswer = undefined;
+      }
+    };
+    held.entries = [one, { source_id: "a:2", properties: { title: "Two" } }];
+    await harness.clock.wake(15 * minute);
+    await until(() => harness.server.rows.length === 2);
+    await until(() => harness.lastRun().outcome === "succeeded");
+    expect(harness.server.runs[1]?.error).toContain("unknown_type");
+    harness.stop();
+    expect(await exit).toBe(0);
   });
 });
 

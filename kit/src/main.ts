@@ -23,6 +23,7 @@ import {
   Refusal,
   retryAfterOf,
   type Cause,
+  keyNarrowerThanTypes,
   type Key,
 } from "./marfa.js";
 import { Hold, type Ended } from "./hold.js";
@@ -157,21 +158,6 @@ function keyWiderThanTypes(
   return wider;
 }
 
-function keyNarrowerThanTypes(
-  key: Key,
-  types: ReadonlySet<string>,
-  connections: ReadonlySet<string>,
-): string[] {
-  return [
-    ...[...types]
-      .filter((name) => key.type_permissions[name] !== "write")
-      .map((name) => `type ${name}`),
-    ...[...connections]
-      .filter((name) => key.edge_permissions[name] !== "write")
-      .map((name) => `edge ${name}`),
-  ];
-}
-
 async function ensureConnections(
   connections: readonly ConnectionDefinition[],
   marfa: Marfa,
@@ -226,12 +212,19 @@ async function ensureConnections(
   return undefined;
 }
 
+/** `again` is a registration made again, so a type missing now was deleted
+ *  from the instance since the connector registered it. */
 async function ensureType(
   type: TypeDefinition,
   marfa: Marfa,
+  key: Key,
+  again: boolean,
 ): Promise<string | undefined> {
   const served = await marfa.type(type.id);
   if (served !== undefined) return checkType(type, marfa, served);
+  if (again && key.metadata_permissions["types"] !== "write") {
+    return `the type ${type.id} was deleted from the instance and this key may not register it again; stop the connector or mint a key with types=write`;
+  }
   try {
     await marfa.registerType(type);
     return undefined;
@@ -250,6 +243,7 @@ async function ensureType(
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
+  again: boolean,
 ): Promise<Started> {
   const id = await marfa.register(connector.name, connector.description);
   const key = await marfa.currentKey();
@@ -284,7 +278,7 @@ async function registerAndCheck<E extends EnvDeclaration>(
     return { id, spare: undefined, problem: problems.join(" ") };
   }
   for (const kind of connector.types) {
-    const problem = await ensureType(kind.type, marfa);
+    const problem = await ensureType(kind.type, marfa, key, again);
     if (problem !== undefined) return { id, spare: undefined, problem };
   }
   const problem = await ensureConnections(connector.connections ?? [], marfa);
@@ -509,13 +503,13 @@ export async function start<E extends EnvDeclaration>(
     logger.info("asked to stop");
     stop.abort();
   });
-  const clientFor = (signal?: AbortSignal): ReturnType<typeof createClient> =>
+  const marfa = new Marfa((signal, timing) =>
     createClient({
       baseUrl: environment.url,
       credential: environment.key,
-      fetch: marfaFetch(runtime.requestTimeoutMs, signal),
-    });
-  const marfa = new Marfa(clientFor(), clientFor);
+      fetch: marfaFetch(runtime.requestTimeoutMs, signal, timing),
+    }),
+  );
   const shared: Shared<E> = {
     connector,
     environment,
@@ -528,20 +522,20 @@ export async function start<E extends EnvDeclaration>(
   };
   let lostAt: number | undefined;
   for (;;) {
-    const ended = await serve(shared);
+    const ended = await serve(shared, lostAt !== undefined);
     if (ended !== "registration") return ended;
     // A server that loses the registration as fast as it is made would
     // have this loop register it for good.
     const now = clock.now().getTime();
     if (lostAt !== undefined && now - lostAt < reregisterAfterMs) {
       logger.error(
-        "the server keeps losing this connector's registration, so the connector stops; check what removes it, then start it again",
+        "the server keeps losing this connector's registration or a type it registered, so the connector stops; check what removes it, then start it again",
       );
       return 1;
     }
     lostAt = now;
     logger.warn(
-      "the server no longer holds this connector's registration, so it is registered again",
+      "the server no longer holds this connector's registration or a type it registered, so they are registered again",
     );
   }
 }
@@ -551,6 +545,7 @@ export async function start<E extends EnvDeclaration>(
  *  would mend it. */
 async function serve<E extends EnvDeclaration>(
   shared: Shared<E>,
+  again: boolean,
 ): Promise<number | "registration"> {
   const {
     connector,
@@ -568,7 +563,7 @@ async function serve<E extends EnvDeclaration>(
   let started: Started | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
-      started = await registerAndCheck(connector, marfa);
+      started = await registerAndCheck(connector, marfa, again);
     } catch (error) {
       if (causeOf(error) === "address" || faultOf(error) !== undefined) {
         logger.error(addressProblem(error));
@@ -852,13 +847,15 @@ async function serve<E extends EnvDeclaration>(
   } finally {
     beating.abort();
     await heartbeat;
-    if (halted === undefined) await hold.release();
-    else hold.abandon();
+    // A lost type leaves the registration, and so the hold, in place.
+    if (halted === undefined || halted === "registration") {
+      await hold.release();
+    } else hold.abandon();
   }
   if (halted === undefined || (succeeded && code === 0)) return code;
   if (halted === "key") {
     logger.error(
-      "the server refused MARFA_KEY, so the connector stops: the key is wrong or revoked. Mint another as the template's README says, set MARFA_KEY, and start the connector again.",
+      "the server refused MARFA_KEY, or the key no longer reaches the connector's types, so the connector stops: the key is wrong, revoked or narrowed. Mint another as the template's README says, set MARFA_KEY, and start the connector again.",
     );
     return 1;
   }
@@ -870,7 +867,7 @@ async function serve<E extends EnvDeclaration>(
   }
   if (schedule.mode === "once") {
     logger.error(
-      "the server no longer holds this connector's registration, so this run stops; start it again to register it anew",
+      "the server no longer holds this connector's registration or a type it registered, so this run stops; start it again to register them anew",
     );
     return 1;
   }

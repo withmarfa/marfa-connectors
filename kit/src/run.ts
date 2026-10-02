@@ -381,7 +381,13 @@ export async function runOnce<E extends EnvDeclaration>(
   }
   const stored = loaded ?? { state: {}, conditions: {} };
   const draft = structuredClone(stored.state);
+  let narrowed: Promise<string[]> | undefined;
   const hooks = {
+    narrowed: () =>
+      (narrowed ??= setup.marfa.narrower(
+        new Set(connector.types.map((kind) => kind.type.id)),
+        new Set((connector.connections ?? []).map((kind) => kind.id)),
+      )),
     refused: (sourceId: string, reason: string) =>
       raised.set(
         `refused:${sourceId}`,

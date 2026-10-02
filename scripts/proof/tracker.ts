@@ -7,6 +7,7 @@ import {
   ConnectorUnderProof,
   create,
   edit,
+  item,
   lastRun,
   moved,
   purge,
@@ -14,6 +15,7 @@ import {
   restore,
   rowsOf,
   trash,
+  typeHeld,
   type Item,
 } from "./connector.js";
 import { pixel, Tracker } from "./tracker-stub.js";
@@ -460,6 +462,54 @@ export async function proveTracker(
     );
 
     await check(
+      "tracker: an issue a person retyped to a type the key may not write is held with the instance's refusal named, and the runs after it succeed and carry an edit to another issue",
+      async () => {
+        const retyped = tracker.add("Retyped");
+        await runOnce();
+        const was = await row(retyped.id);
+        const moved = await marfa.PATCH("/items/{id}", {
+          params: { path: { id: was.id } },
+          body: {
+            version: was.version,
+            retype: true,
+            type: "core.note",
+            properties: { body: "kept as a note" },
+            properties_mode: "replace",
+          },
+        });
+        if (moved.data === undefined) {
+          throw new Error(
+            `the retype was refused: ${JSON.stringify(moved.error)}`,
+          );
+        }
+        retyped.title = "Retyped, changed at the tracker";
+        retyped.updated_at = tracker.touch();
+        await edit(marfa, await row(parent.id), {
+          body: "edited beside a retyped issue",
+        });
+        await runOnce();
+        const first = await lastRun(marfa, key.id);
+        await runOnce();
+        const second = await lastRun(marfa, key.id);
+        const note = await item(marfa, was.id);
+        const said = `the server refused ${retyped.id}: type_not_permitted`;
+        tracker.hidden.add(retyped.id);
+        if (
+          first.outcome !== "succeeded" ||
+          !(first.summary ?? "").includes(said) ||
+          second.outcome !== "succeeded" ||
+          parent.body !== "edited beside a retyped issue" ||
+          note.type !== "core.note"
+        ) {
+          throw new Error(
+            `the run after the retype ${first.outcome}: ${String(first.summary ?? first.error)}; the next ${second.outcome}; the tracker holds ${parent.body}; the row is ${note.type}`,
+          );
+        }
+        return `${said}; the next run succeeded too, the edit to ${parent.id} reached the tracker and the row stayed a core.note`;
+      },
+    );
+
+    await check(
       "tracker: a key that may not write its connection types is refused at start",
       async () => {
         const narrow = await mintWithConnections(
@@ -584,6 +634,86 @@ export async function proveTracker(
             throw new Error(`the delivery's run fetched ${fetched.join()}`);
           }
           return `the delivery's run fetched ${[...new Set(fetched)].join(", ")}; the edit reached the tracker as ${writesSince(written).join(", ")}`;
+        } finally {
+          child.kill("SIGTERM");
+          await exited;
+        }
+      },
+    );
+
+    await check(
+      "tracker: a type of its own force-deleted while it runs is registered again with its rows, and the runs after it succeed",
+      async () => {
+        const kept = (await rowsOf(marfa, "proof.attachment", source)).get(
+          attachment.id,
+        );
+        const said: string[] = [];
+        const child = spawn(
+          "node",
+          [entry, "--every", "1h", "--look-every", "1s"],
+          {
+            env: {
+              PATH: process.env["PATH"],
+              MARFA_URL: url,
+              MARFA_KEY: key.key,
+              ...env,
+            },
+            stdio: ["ignore", "ignore", "pipe"],
+          },
+        );
+        child.stderr.on("data", (chunk) => said.push(String(chunk)));
+        const exited = new Promise<void>((done) =>
+          child.once("exit", () => {
+            done();
+          }),
+        );
+        try {
+          const before = (await lastRun(marfa, key.id)).reported_at;
+          await until(
+            async () => (await lastRun(marfa, key.id)).reported_at !== before,
+            "the scheduled run",
+          );
+          const deleted = await marfa.DELETE("/types/{id}", {
+            params: {
+              path: { id: "proof.attachment" },
+              query: { force: "true" },
+            },
+          });
+          if (!deleted.response.ok) {
+            throw new Error(
+              `the delete was refused: ${JSON.stringify(deleted.error)}`,
+            );
+          }
+          await edit(marfa, await row(parent.id), {
+            body: "edited after the type went",
+          });
+          await until(
+            () => Promise.resolve(parent.body === "edited after the type went"),
+            "the edit reaching the tracker",
+          );
+          await until(
+            async () =>
+              (await lastRun(marfa, key.id)).outcome === "succeeded" &&
+              (await typeHeld(marfa, "proof.attachment")),
+            "a run succeeding with the type registered again",
+          );
+          const output = said.join("");
+          const failed = output
+            .split("\n")
+            .find((line) => line.includes("unknown_type"));
+          const again = (await rowsOf(marfa, "proof.attachment", source)).get(
+            attachment.id,
+          );
+          if (
+            failed === undefined ||
+            !output.includes("so they are registered again") ||
+            again?.id !== kept?.id
+          ) {
+            throw new Error(
+              `the attachment row was ${String(kept?.id)} and is ${String(again?.id)}; the connector said: ${output}`,
+            );
+          }
+          return `${failed.slice(failed.indexOf("run failed"))}; registered again, the attachment row kept as ${String(again?.id)}, the edit reached the tracker, and the run after succeeded`;
         } finally {
           child.kill("SIGTERM");
           await exited;
