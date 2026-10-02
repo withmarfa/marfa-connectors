@@ -633,7 +633,7 @@ describe("a row the server refuses", () => {
     expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
-  it("is held when a person retyped it to a type the key may not write, and every later run goes on", async () => {
+  it("retyped by a person to a type the key may not write is named every run while it lasts, and does not hold the state", async () => {
     harness.server.insert("a:1", { title: "One" }, "core.note");
     const held = vendor([one, two]);
     held.token = "t1";
@@ -643,28 +643,81 @@ describe("a row the server refuses", () => {
       "the server refused a:1: type_not_permitted",
     );
     expect(harness.server.row("a:2").type).toBe("test.entry");
+    expect(harness.kept()).toMatchObject({
+      state: { token: "t1" },
+      conditions: {
+        "refused:a:1": expect.stringContaining("type_not_permitted"),
+      },
+    });
 
+    held.token = "t2";
     expect(await harness.once(held)).toBe(0);
-    expect(harness.lastRun().outcome).toBe("succeeded");
     expect(bulks().at(-1)?.body).toMatchObject({
       items: [{ source_id: "a:1" }],
     });
-    expect(harness.lastRun().summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 1, skipped 1",
-    );
+    expect(harness.kept()).toMatchObject({
+      state: { token: "t2" },
+      conditions: { "refused:a:1": expect.any(String) },
+    });
+
+    held.entries = [two];
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.kept()).toHaveProperty("conditions", {});
   });
 
-  it("is held whatever the server's code for it, since the answer is about that entry alone", async () => {
+  it("fails the run when a key narrowed since it started may no longer write the connector's type", async () => {
+    harness.server.beforeAnswer = (request) => {
+      if (request.path === "/items/bulk") {
+        harness.server.grants = { type_permissions: { "test.entry": "read" } };
+      }
+    };
+    expect(await harness.once(vendor([one, two]))).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lastRun().error).toContain("type test.entry");
+    expect(harness.server.requestsTo("GET", "/keys/current")).toHaveLength(2);
+  });
+
+  it("fails the run when the instance refuses the connector's own source a create of its type", async () => {
     harness.server.entryRefusals.set("a:1", {
       status: 403,
       code: "forbidden",
       message: "the source is not on the type's allowlist",
     });
-    expect(await harness.once(vendor([one, two]))).toBe(0);
-    expect(harness.lastRun().summary).toContain(
-      "the server refused a:1: forbidden",
-    );
-    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
+    expect(await harness.once(vendor([one, two]))).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lastRun().error).toContain("forbidden");
+  });
+
+  it("fails the run when every row a write sends is refused with the same code", async () => {
+    for (const id of ["a:1", "a:2"]) {
+      harness.server.entryRefusals.set(id, {
+        status: 400,
+        code: "invalid_properties",
+        message: "title is not a string",
+      });
+    }
+    expect(await harness.once(vendor([one, two]))).toBe(1);
+    expect(harness.lastRun().error).toContain("invalid_properties");
+  });
+
+  it("fails the run when every row's own write is refused with the same code", async () => {
+    await harness.once(vendor([one, two]));
+    for (const id of ["a:1", "a:2"]) {
+      harness.server.refuseNext(
+        `PATCH /items/${harness.server.row(id).id}`,
+        400,
+        "validation_error",
+      );
+    }
+    expect(
+      await harness.once(
+        vendor([
+          { ...one, properties: { title: "x" } },
+          { ...two, properties: { title: "y" } },
+        ]),
+      ),
+    ).toBe(1);
+    expect(harness.lastRun().error).toContain("validation_error");
   });
 
   it("is held when its own write is refused, and the run goes on", async () => {

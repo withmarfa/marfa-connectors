@@ -269,6 +269,19 @@ describe("a file's upload", () => {
   );
 });
 
+describe("a file's upload Marfa cuts off", () => {
+  it("fails the run on Marfa, never blaming the vendor", async () => {
+    harness.server.resetUploads = true;
+    const held: Held = { entries: [issue], files: [], loads: 0 };
+    held.files = [streamed(held, ["one ", "two ", "three "], 50)];
+    expect(await once(held)).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lastRun().summary).not.toContain(
+      "could not be fetched from the vendor",
+    );
+  });
+});
+
 describe("a file row carried back", () => {
   it("keeps what its bytes were uploaded as, so a carried edit loads nothing again", async () => {
     const held: Held = { entries: [issue], files: [], loads: 0 };

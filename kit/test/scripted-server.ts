@@ -177,6 +177,8 @@ export class ScriptedServer {
   readonly entryRefusals = new Map<string, Refusal>();
   afterRead: ((request: Request) => void) | undefined;
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
+  /** The connection is cut as an upload's first bytes arrive. */
+  resetUploads = false;
   /** The key is refused as a revoked one is: 401 at every door. */
   revoked = false;
   /** The registration is gone: every door under it answers 404 until the
@@ -670,6 +672,9 @@ export class ScriptedServer {
     res: ServerResponse,
   ): Promise<void> {
     const url = new URL(req.url ?? "/", this.url);
+    if (this.resetUploads && url.pathname === "/blobs") {
+      req.once("data", () => req.socket.destroy());
+    }
     const chunks: Buffer[] = [];
     try {
       for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -1623,17 +1628,29 @@ export class ScriptedServer {
     };
   }
 
-  private writes(type: string): boolean {
+  /** What the key holds on a type, as marfa's `resolveTypePermission`
+   *  (packages/shared/src/validation.ts) resolves it: an exact entry first,
+   *  then the wildcard with the longest root, `*` last. */
+  private permission(type: string): string {
     const held = this.grants.type_permissions ?? this.minted.type_permissions;
-    return Object.entries(held).some(
-      ([pattern, access]) =>
-        access === "write" &&
-        (pattern === "*" ||
-          pattern === type ||
-          (pattern.endsWith(".*") &&
-            (type === pattern.slice(0, -2) ||
-              type.startsWith(pattern.slice(0, -1))))),
-    );
+    const exact = held[type];
+    if (exact !== undefined) return exact;
+    let best: string | undefined;
+    let length = 0;
+    for (const [pattern, access] of Object.entries(held)) {
+      if (pattern === "*") {
+        if (length === 0) best = access;
+        continue;
+      }
+      if (!pattern.endsWith(".*")) continue;
+      const root = pattern.slice(0, -2);
+      if (type !== root && !type.startsWith(`${root}.`)) continue;
+      if (root.length > length) {
+        best = access;
+        length = root.length;
+      }
+    }
+    return best ?? "none";
   }
 
   private bulk(input: Record<string, unknown>): unknown {
@@ -1650,17 +1667,36 @@ export class ScriptedServer {
           error: { code: refusal.code, message: refusal.message },
         };
       }
-      const existing = this.rows.find(
-        (row) => row.source === source && row.source_id === sourceId,
-      );
-      // A key told nothing of a row it may not write, its id included.
-      if (existing !== undefined && !this.writes(existing.type)) {
+      // In the order of marfa's processBulkItem
+      // (packages/server/src/routes/bulk.ts): the write check on the type the
+      // entry declares, then the row its natural key resolves, refused
+      // without its id where the key may not write it (requireResolvedRowWrite
+      // in packages/server/src/middleware/auth.ts), then the declared type
+      // against the row's.
+      if (this.permission(String(entry["type"])) !== "write") {
         return {
           index,
           outcome: "errored",
           error: {
             code: "type_not_permitted",
-            message: "the natural key names a row the key may not write",
+            message: `Write access to type "${String(entry["type"])}" denied`,
+          },
+        };
+      }
+      const existing = this.rows.find(
+        (row) => row.source === source && row.source_id === sourceId,
+      );
+      if (
+        existing !== undefined &&
+        this.permission(existing.type) !== "write"
+      ) {
+        return {
+          index,
+          outcome: "errored",
+          error: {
+            code: "type_not_permitted",
+            message:
+              "The natural key resolves a row of a type this credential may not reach",
           },
         };
       }
@@ -1761,9 +1797,22 @@ export class ScriptedServer {
     refuse: Refuse,
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
-    // The door reads the row as every read does, the bin left out.
-    if (row === undefined || row.state === "trashed") {
+    // The door reads the row as every read does, the bin left out, and one
+    // the key may not read as a missing one (keys-and-oauth.md 20).
+    if (
+      row === undefined ||
+      row.state === "trashed" ||
+      this.permission(row.type) === "none"
+    ) {
       refuse(404, "item_not_found");
+      return;
+    }
+    if (this.permission(row.type) !== "write") {
+      refuse(
+        403,
+        "type_not_permitted",
+        `Write access to type "${row.type}" denied`,
+      );
       return;
     }
     const version = input["version"];

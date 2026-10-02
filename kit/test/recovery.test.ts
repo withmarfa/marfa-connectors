@@ -338,6 +338,7 @@ describe("a registration the server lost", () => {
 
 describe("a type of the connector's the server lost", () => {
   it("is registered again, and the connector goes on writing its rows", async () => {
+    harness.server.grants = { metadata_permissions: { types: "write" } };
     const held = vendor([one]);
     const exit = every(held, "15m");
     await harness.clock.sleeping(15 * minute);
@@ -360,7 +361,25 @@ describe("a type of the connector's the server lost", () => {
     expect(await exit).toBe(0);
   });
 
+  it("stops the connector, saying so plainly, where the key may not register it again", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      metadata_permissions: { types: "read" },
+    };
+    const held = vendor([one]);
+    const exit = every(held, "15m");
+    await harness.clock.sleeping(15 * minute);
+    harness.server.types.delete("test.entry");
+    await harness.clock.wake(15 * minute);
+    expect(await exit).toBe(1);
+    expect(harness.lastRun().error).toBe(
+      "the type test.entry was deleted from the instance and this key may not register it again; stop the connector or mint a key with types=write",
+    );
+    expect(harness.server.requestsTo("POST", "/types")).toHaveLength(1);
+  });
+
   it("deleted while a bulk write is on its way is registered again, not its rows held", async () => {
+    harness.server.grants = { metadata_permissions: { types: "write" } };
     const held = vendor([one]);
     const exit = every(held, "15m");
     await harness.clock.sleeping(15 * minute);

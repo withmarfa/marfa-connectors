@@ -76,6 +76,29 @@ export class MarfaUnreachable extends Error {
   readonly fault: string | undefined;
 }
 
+/** The key no longer reaches what the connector writes, found on a run:
+ *  every later write would be refused too. */
+export class KeyNarrowed extends Error {
+  override name = "KeyNarrowed";
+}
+
+/** What the key may not write of the connector's own types and connections,
+ *  each named with its family. */
+export function keyNarrowerThanTypes(
+  key: Key,
+  types: ReadonlySet<string>,
+  connections: ReadonlySet<string>,
+): string[] {
+  return [
+    ...[...types]
+      .filter((name) => key.type_permissions[name] !== "write")
+      .map((name) => `type ${name}`),
+    ...[...connections]
+      .filter((name) => key.edge_permissions[name] !== "write")
+      .map((name) => `edge ${name}`),
+  ];
+}
+
 /** The address cannot be used whatever Marfa does: it redirects, or is not a
  *  URL. No retry mends it. */
 export class MarfaAddress extends Error {
@@ -178,7 +201,8 @@ export function marfaFetch(
 /** Whose failure an error is, by what it is and never by what it says:
  *  - `marfa`: no answer from Marfa, or one that asks for time (408, 429,
  *    5xx);
- *  - `key`: a key Marfa refuses;
+ *  - `key`: a key Marfa refuses, or one that no longer reaches the
+ *    connector's types;
  *  - `registration`: a connector Marfa no longer holds, or a type of its
  *    own, the only kind the kit names, so registering again mends both;
  *  - `address`: an address that cannot be used;
@@ -195,6 +219,7 @@ export function causeOf(error: unknown): Cause {
   ) {
     if (at instanceof MarfaUnreachable) return "marfa";
     if (at instanceof MarfaAddress) return "address";
+    if (at instanceof KeyNarrowed) return "key";
     if (!(at instanceof Refusal)) continue;
     if (at.status === 401) return "key";
     if (
@@ -348,6 +373,17 @@ export class Marfa {
     if (response.status === 404) return undefined;
     if (data === undefined) throw refusal(response, error);
     return data;
+  }
+
+  /** What the key, read again now, may not write of these. */
+  async narrower(
+    types: ReadonlySet<string>,
+    connections: ReadonlySet<string>,
+  ): Promise<string[]> {
+    const key = await this.currentKey();
+    return key === undefined
+      ? []
+      : keyNarrowerThanTypes(key, types, connections);
   }
 
   async type(id: string): Promise<Record<string, unknown> | undefined> {

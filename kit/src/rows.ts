@@ -13,6 +13,8 @@ import {
 import type { Entry, Item, Target } from "./define.js";
 import {
   causeOf,
+  KeyNarrowed,
+  MarfaUnreachable,
   Refusal,
   type BulkResult,
   type Marfa,
@@ -125,6 +127,23 @@ const raced = new Set([
   "invalid_transition",
 ]);
 
+/** A row whose type the key may not write, or that is now of another type:
+ *  sending it again cannot mend it, so it holds nothing back, and its
+ *  condition stands for as long as the vendor names it. */
+const unmendable = new Set(["type_not_permitted", "type_mismatch"]);
+
+/** The rows one call of `upsert` or `archive` wrote, and how many of them
+ *  were refused, by code. */
+interface Batch {
+  tried: number;
+  refused: number;
+  codes: Map<string, Refusal>;
+}
+
+function batch(): Batch {
+  return { tried: 0, refused: 0, codes: new Map() };
+}
+
 /** A bulk request's bounds, well inside the door's 5000 entries and
  *  16 MiB; a page refused for its size is split in two. */
 const pageEntries = 500;
@@ -152,17 +171,20 @@ function paged(creates: readonly NewRow[]): NewRow[][] {
 }
 
 /** A file's bytes as they reach Marfa, and whether an upload that failed
- *  did so on the vendor's side: its stream broke, or Marfa was waiting on
- *  it when the upload went quiet. */
+ *  did so on the vendor's side: its stream broke, or the upload went quiet
+ *  while it waited on the vendor. Anything else that cut the upload off,
+ *  such as Marfa resetting the connection, is Marfa's. */
 function vendorRead(bytes: Uint8Array | ReadableStream<Uint8Array>): {
   body: Uint8Array | ReadableStream<Uint8Array>;
-  failed: () => boolean;
+  failed: (error: unknown) => boolean;
 } {
-  if (!(bytes instanceof ReadableStream))
+  if (!(bytes instanceof ReadableStream)) {
     return { body: bytes, failed: () => false };
+  }
   const reader = bytes.getReader();
   let waiting = false;
-  let failed = false;
+  let waitingWhenCut = false;
+  let broke = false;
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       waiting = true;
@@ -170,7 +192,7 @@ function vendorRead(bytes: Uint8Array | ReadableStream<Uint8Array>): {
       try {
         next = await reader.read();
       } catch (error) {
-        failed = true;
+        broke = true;
         controller.error(error);
         return;
       } finally {
@@ -180,14 +202,24 @@ function vendorRead(bytes: Uint8Array | ReadableStream<Uint8Array>): {
       else controller.enqueue(next.value);
     },
     cancel: (reason) => {
-      if (waiting) failed = true;
+      waitingWhenCut = waiting;
       return reader.cancel(reason);
     },
   });
-  return { body, failed: () => failed || waiting };
+  return {
+    body,
+    failed: (error) =>
+      broke ||
+      (error instanceof MarfaUnreachable &&
+        error.timedOut &&
+        (waiting || waitingWhenCut)),
+  };
 }
 
 export interface Hooks {
+  /** What the key, read again once a run, may not write of the
+   *  connector's types and connections. */
+  narrowed(): Promise<string[]>;
   refused(sourceId: string, reason: string): void;
   condition(key: string, message: string): void;
   fenced(): boolean;
@@ -206,6 +238,7 @@ export class Rows {
   seeded = 0;
   remembered = 0;
   revived = 0;
+  private batch = batch();
   private readonly buried = new Map<string, Tombstone>();
   private readonly asked = new Set<string>();
   readonly marked = new Set<string>();
@@ -256,6 +289,7 @@ export class Rows {
   }
 
   async upsert(entries: readonly Entry[]): Promise<void> {
+    this.batch = batch();
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
     await this.know({
@@ -364,6 +398,7 @@ export class Rows {
     for (const page of paged([...made.keys()])) {
       await this.createPage(page, made);
     }
+    this.judge();
   }
 
   private agreedFile(
@@ -413,8 +448,8 @@ export class Rows {
       stored = await this.marfa.upload(read.body, loaded.mime_type);
     } catch (error) {
       if (this.signal.aborted) throw error;
-      if (read.failed()) unloaded();
-      else this.absorb(error, entry.source_id);
+      if (read.failed(error)) unloaded();
+      else await this.absorb(error, entry.source_id);
       return undefined;
     }
     const withFile = {
@@ -457,10 +492,11 @@ export class Rows {
       (found.state === "archived" && agreement?.stateBy === "vendor")
     ) {
       this.checkStopped();
+      this.batch.tried += 1;
       try {
         row = await this.marfa.transition(found.id, "active");
       } catch (error) {
-        this.absorb(error, entry.source_id);
+        await this.absorb(error, entry.source_id);
         return;
       }
       this.index(row);
@@ -543,6 +579,7 @@ export class Rows {
         return;
       }
       this.checkStopped();
+      if (attempt === 0) this.batch.tried += 1;
       try {
         const written = await this.marfa.update(
           row.id,
@@ -569,7 +606,7 @@ export class Rows {
             continue;
           }
         }
-        this.absorb(error, entry.source_id);
+        await this.absorb(error, entry.source_id);
         return;
       }
     }
@@ -705,7 +742,8 @@ export class Rows {
         throw error;
       }
       if (page.length === 1) {
-        this.absorb(error, first.source_id);
+        this.batch.tried += 1;
+        await this.absorb(error, first.source_id, true);
         return;
       }
       const half = Math.ceil(page.length / 2);
@@ -717,7 +755,7 @@ export class Rows {
       const created = page[result.index];
       if (created === undefined) continue;
       const entry = made.get(created);
-      if (entry !== undefined) this.settle(result, created, entry);
+      if (entry !== undefined) await this.settle(result, created, entry);
     }
   }
 
@@ -788,6 +826,7 @@ export class Rows {
   }
 
   async archive(keys: readonly string[]): Promise<void> {
+    this.batch = batch();
     await this.know(this.kind.link === undefined ? { keys } : { links: keys });
     const rows = [...new Set(keys)].flatMap((key) => {
       const id =
@@ -828,6 +867,7 @@ export class Rows {
         continue;
       }
       this.checkStopped();
+      this.batch.tried += 1;
       try {
         const archived = await this.marfa.transition(row.id, "archived");
         this.index(archived);
@@ -842,9 +882,10 @@ export class Rows {
         });
         this.counts.archived += 1;
       } catch (error) {
-        this.absorb(error, key);
+        await this.absorb(error, key);
       }
     }
+    this.judge();
   }
 
   async putBack(id: string, fields: readonly string[]): Promise<string[]> {
@@ -873,7 +914,7 @@ export class Rows {
         await this.marfa.update(row.id, row.version, properties, undefined),
       );
     } catch (error) {
-      this.absorb(error, row.source_id ?? row.id);
+      await this.absorb(error, row.source_id ?? row.id);
       return [];
     }
     this.counts.updated += 1;
@@ -950,7 +991,7 @@ export class Rows {
         ) {
           continue;
         }
-        this.absorb(error, row.source_id ?? row.id);
+        await this.absorb(error, row.source_id ?? row.id);
         // Not written: agreed as the row's, so the next listing writes it.
         const agreement = this.store.get(id);
         if (agreement !== undefined) {
@@ -1101,7 +1142,12 @@ export class Rows {
     }
   }
 
-  private settle(result: BulkResult, created: NewRow, entry: Entry): void {
+  private async settle(
+    result: BulkResult,
+    created: NewRow,
+    entry: Entry,
+  ): Promise<void> {
+    this.batch.tried += 1;
     if (result.outcome === "created" && result.id !== undefined) {
       const now = new Date().toISOString();
       this.index({
@@ -1135,7 +1181,7 @@ export class Rows {
       this.counts.skipped += 1;
       return;
     }
-    this.absorb(
+    await this.absorb(
       new Refusal(
         undefined,
         result.error?.code ?? "unknown",
@@ -1143,21 +1189,62 @@ export class Rows {
         result.error?.details ?? {},
       ),
       created.source_id,
+      true,
     );
   }
 
-  /** Marfa's refusal of one row's write is that row's, whatever its code;
-   *  only a failure of Marfa or of the key, which every later write meets
-   *  too, ends the run. */
-  private absorb(error: unknown, sourceId: string): void {
+  /** Holds a row Marfa refused, whatever the code, unless the refusal is
+   *  one every later write meets too: Marfa failing or the key refused, a
+   *  key that no longer reaches the connector's types, or the connector's
+   *  own source refused a create of its type. */
+  private async absorb(
+    error: unknown,
+    sourceId: string,
+    creating = false,
+  ): Promise<void> {
     if (!(error instanceof Refusal) || causeOf(error) !== "refused") {
       throw error;
     }
-    this.counts.skipped += 1;
-    this.held += 1;
-    if (!raced.has(error.code)) {
-      this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
+    if (error.code === "type_not_permitted" || error.code === "forbidden") {
+      const narrower = await this.hooks.narrowed();
+      if (narrower.length > 0) {
+        throw new KeyNarrowed(
+          `the key may no longer write ${narrower.join(", ")}, which the connector writes, so the run stops: ${error.message}`,
+        );
+      }
+      if (creating && error.code === "forbidden") throw error;
     }
+    this.counts.skipped += 1;
+    if (raced.has(error.code)) {
+      this.held += 1;
+      return;
+    }
+    this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
+    if (unmendable.has(error.code)) return;
+    this.held += 1;
+    this.batch.refused += 1;
+    this.batch.codes.set(error.code, error);
+  }
+
+  /** Every row a call wrote refused with one code is no row's own fault, such
+   *  as a shape every write fails, so the run fails rather than hold them all. */
+  private judge(): void {
+    const { tried, refused, codes } = this.batch;
+    const [only] = codes.values();
+    if (
+      tried < 2 ||
+      refused !== tried ||
+      codes.size !== 1 ||
+      only === undefined
+    ) {
+      return;
+    }
+    throw new Refusal(
+      only.status,
+      only.code,
+      `every one of the ${String(tried)} rows written was refused: ${only.detail}`,
+      only.details,
+    );
   }
 
   private checkStopped(): void {
