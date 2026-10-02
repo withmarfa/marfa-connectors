@@ -73,7 +73,6 @@ export async function proveTodoist(
       section_id: "s1",
       labels: ["Food", "Errands"],
       child_order: 2,
-      note_count: 3,
     });
     const b = todoist.task("b", {
       content: "Write the note",
@@ -107,7 +106,7 @@ export async function proveTodoist(
           written.values(),
         );
         const expected =
-          "child_order,comment_count,labels,parent_id,project_id,section_id,todoist_id";
+          "child_order,labels,parent_id,project_id,section_id,todoist_id";
         if (own.join() !== expected) {
           throw new Error(`own fields ${own.join(", ")}`);
         }
@@ -127,7 +126,6 @@ export async function proveTodoist(
           section_id: first["section_id"],
           labels: first["labels"],
           child_order: first["child_order"],
-          comment_count: first["comment_count"],
           parent_id: sub["parent_id"],
           status: done["status"],
           completed_at: done["completed_at"],
@@ -139,7 +137,6 @@ export async function proveTodoist(
           section_id: "s1",
           labels: ["Food", "Errands"],
           child_order: 2,
-          comment_count: 3,
           parent_id: "a",
           status: "pending",
           completed_at: undefined,
@@ -625,6 +622,20 @@ export async function proveTodoist(
     const lately = (): string =>
       new Date(Date.now() - 60 * 60_000).toISOString();
     const completedDoor = "/api/v1/tasks/completed/by_completion_date";
+    const clearState = async (): Promise<void> => {
+      const connectorId = (await registration(marfa, key.id)).id;
+      const cleared = await createClient({
+        baseUrl: url,
+        credential: key.key,
+      }).DELETE("/connectors/{id}/state", {
+        params: { path: { id: connectorId } },
+      });
+      if (!cleared.response.ok) {
+        throw new Error(
+          `the clear was refused: ${JSON.stringify(cleared.error)}`,
+        );
+      }
+    };
 
     await check(
       "todoist: a task completed in Todoist while the connector's state was lost reads as completed after the full sync that follows",
@@ -632,18 +643,7 @@ export async function proveTodoist(
         todoist.put(todoist.task("l", { content: "Renew the passport" }));
         await runOnce();
         const open = await row("l");
-        const connectorId = (await registration(marfa, key.id)).id;
-        const cleared = await createClient({
-          baseUrl: url,
-          credential: key.key,
-        }).DELETE("/connectors/{id}/state", {
-          params: { path: { id: connectorId } },
-        });
-        if (!cleared.response.ok) {
-          throw new Error(
-            `the clear was refused: ${JSON.stringify(cleared.error)}`,
-          );
-        }
+        await clearState();
         const at = lately();
         todoist.edit("l", { checked: true, completed_at: at });
         const asked = todoist.received.length;
@@ -773,6 +773,156 @@ export async function proveTodoist(
           );
         }
         return `${waited}; Todoist kept "${held}" and the row "${kept}", and the next run sent it: Todoist holds "${landed}"`;
+      },
+    );
+
+    await check(
+      "todoist: moving a recurring task's due date in Marfa keeps it recurring in Todoist, due on the new date",
+      async () => {
+        todoist.put(
+          todoist.task("rr", {
+            content: "Take out the bins",
+            due: {
+              date: "2026-10-01",
+              string: "every day",
+              lang: "en",
+              is_recurring: true,
+              timezone: null,
+            },
+          }),
+        );
+        await runOnce();
+        await edit(marfa, await row("rr"), {
+          due_at: "2026-10-07T12:00:00.000Z",
+          precision: "day",
+        });
+        await runOnce();
+        const sent = todoist
+          .commands("item_update")
+          .filter((c) => c.args["id"] === "rr")
+          .map((c) => c.args["due"]);
+        const due = todoist.tasks.get("rr")?.due;
+        if (
+          JSON.stringify(sent) !==
+            JSON.stringify([
+              { string: "every day", lang: "en", date: "2026-10-07" },
+            ]) ||
+          due?.["date"] !== "2026-10-07" ||
+          due["is_recurring"] !== true ||
+          due["string"] !== "every day"
+        ) {
+          throw new Error(
+            `sent ${JSON.stringify(sent)}; Todoist holds ${JSON.stringify(due)}`,
+          );
+        }
+        return `item_update sent due ${JSON.stringify(sent[0])}; Todoist holds ${JSON.stringify(due)}`;
+      },
+    );
+
+    await check(
+      "todoist: an edit to a row completed in Todoist reaches the task, looked at by id as Todoist answers a completed one",
+      async () => {
+        todoist.put(todoist.task("k", { content: "Return the books" }));
+        await runOnce();
+        todoist.complete("k");
+        await runOnce();
+        const done = await row("k");
+        const asked = todoist.received.length;
+        await edit(marfa, done, { title: "Return the library books" });
+        await runOnce();
+        const task = todoist.tasks.get("k");
+        const looked = todoist.received
+          .slice(asked)
+          .some((r) => r.method === "GET" && r.path === "/api/v1/tasks/k");
+        if (
+          done.properties["status"] !== "completed" ||
+          task?.content !== "Return the library books" ||
+          !task.checked ||
+          !looked
+        ) {
+          throw new Error(
+            `the row was ${String(done.properties["status"])}; Todoist holds ${JSON.stringify(task)}; looked up by id ${String(looked)}`,
+          );
+        }
+        return `k completed in Todoist, edited in Marfa: GET /api/v1/tasks/k answered the completed task and Todoist holds "${task.content}", still completed`;
+      },
+    );
+
+    await check(
+      "todoist: a task deleted in Todoist while the connector's state was lost is archived after the full sync that follows",
+      async () => {
+        todoist.put(todoist.task("x", { content: "Cancel the order" }));
+        await runOnce();
+        const before = await row("x");
+        await clearState();
+        todoist.delete("x");
+        await runOnce();
+        const after = await row("x");
+        if (before.state !== "active" || after.state !== "archived") {
+          throw new Error(`x was ${before.state}, is ${after.state}`);
+        }
+        return `with the state cleared, the full sync left x out, the connector asked Todoist for it by id and archived its row: ${before.state} → ${after.state}`;
+      },
+    );
+
+    await check(
+      "todoist: a todoist.task created in Marfa naming a project, section and labels is made there in Todoist and keeps them",
+      async () => {
+        const created = await create(marfa, "todoist.task", {
+          title: "Filed from Marfa",
+          project_id: "p-work",
+          section_id: "s-later",
+          labels: ["Home"],
+          status: "pending",
+        });
+        await runOnce();
+        await runOnce();
+        const linked = await item(marfa, created.id);
+        const taskId = linked.properties["todoist_id"];
+        const task =
+          typeof taskId === "string" ? todoist.tasks.get(taskId) : undefined;
+        if (
+          task?.project_id !== "p-work" ||
+          task.section_id !== "s-later" ||
+          task.labels.join() !== "Home" ||
+          linked.properties["project_id"] !== "p-work" ||
+          linked.properties["section_id"] !== "s-later" ||
+          JSON.stringify(linked.properties["labels"]) !== '["Home"]'
+        ) {
+          throw new Error(
+            `Todoist holds ${JSON.stringify(task)}; the row holds ${JSON.stringify(linked.properties)}`,
+          );
+        }
+        return `Todoist made ${String(taskId)} in p-work, section s-later, labelled Home, and the row keeps them after the next run`;
+      },
+    );
+
+    await check(
+      "todoist: with TODOIST_READ_ONLY=true nothing goes back to Todoist, and an edit made in Marfa is put back",
+      async () => {
+        const readOnly = new ConnectorUnderProof("todoist", url, key.key, {
+          TODOIST_API_TOKEN: "todoist-proof-token",
+          TODOIST_API_URL: todoist.url,
+          TODOIST_READ_ONLY: "true",
+        });
+        const before = await row("a");
+        const held = todoist.tasks.get("a")?.content;
+        await edit(marfa, before, { title: "Edited in Marfa" });
+        const sent = todoist.commands().length;
+        const { code, output } = await readOnly.once();
+        const after = await row("a");
+        const reported = await summary();
+        if (
+          code !== 0 ||
+          todoist.commands().length !== sent ||
+          after.properties["title"] !== held ||
+          !reported.includes("put back")
+        ) {
+          throw new Error(
+            `exit ${String(code)}; ${String(todoist.commands().length - sent)} commands; the row holds ${String(after.properties["title"])}; ${reported}; ${output.slice(-300)}`,
+          );
+        }
+        return `no command sent; the row's title is "${String(after.properties["title"])}" again; reported ${reported}`;
       },
     );
 

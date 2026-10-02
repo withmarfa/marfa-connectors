@@ -15,18 +15,24 @@ export interface TodoistItem {
   parent_id?: string | null;
   labels?: string[] | null;
   priority?: number;
-  due?: { date?: string | null } | null;
+  due?: {
+    date?: string | null;
+    string?: string | null;
+    lang?: string | null;
+    is_recurring?: boolean;
+  } | null;
   child_order?: number;
   checked?: boolean;
   completed_at?: string | null;
   is_deleted?: boolean;
-  note_count?: number;
   added_at?: string;
   updated_at?: string;
 }
 
 export interface SyncAnswer {
   sync_token: string;
+  /** Todoist may answer a delta with every active task, deletions left out. */
+  full_sync?: boolean;
   items: TodoistItem[];
   user?: { id?: unknown; tz_info?: { timezone?: unknown } };
 }
@@ -35,6 +41,7 @@ export const firstSync = "*";
 export const defaultBase = "https://api.todoist.com";
 const requestTimeoutMs = 60_000;
 const longestWaitMs = 60_000;
+const rateLimitWaits = 5;
 const serverErrorRetries = 3;
 const commandResends = 5;
 
@@ -83,6 +90,7 @@ async function request(
   signal: AbortSignal,
 ): Promise<Response> {
   let serverErrors = 0;
+  let waits = 0;
   for (;;) {
     let response: Response;
     try {
@@ -123,6 +131,12 @@ async function request(
           `Todoist asked for a wait of ${wait === undefined ? "unknown length" : `${String(wait / 1000)}s`}, longer than a run holds`,
         );
       }
+      if (waits === rateLimitWaits) {
+        throw new Unanswered(
+          `Todoist asked for a wait ${String(rateLimitWaits + 1)} times in a row`,
+        );
+      }
+      waits += 1;
       await pause(wait, signal);
       continue;
     }
@@ -306,8 +320,8 @@ export async function send(
 }
 
 // The door answers a completed task (`checked`) and a deleted one
-// (`is_deleted`) as well as an open one, whatever the documentation's "active
-// task" suggests.
+// (`is_deleted`) with 200, as well as an open one, though Todoist's reference
+// calls it active-only (seen live in October 2026).
 export type TaskAnswer = TodoistItem | "missing" | "forbidden";
 
 export async function getTask(
@@ -554,7 +568,6 @@ export const taskFields = [
   "parent_id",
   "labels",
   "child_order",
-  "comment_count",
 ] as const;
 
 export function entryOf(
@@ -585,7 +598,6 @@ export function entryOf(
           ? item.labels
           : undefined,
       child_order: item.child_order,
-      comment_count: item.note_count,
     },
     occurred_at: item.added_at,
     changed_at: instantOf(item.updated_at),

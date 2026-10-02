@@ -2,9 +2,10 @@ import {
   defineConnector,
   main,
   type Entry,
+  type Log,
   type TypeDefinition,
 } from "@withmarfa/connector";
-import { carry, remake, outboundEnv } from "./outbound.js";
+import { carry, readOnly, remake, outboundEnv } from "./outbound.js";
 import {
   accountOf,
   completed,
@@ -13,6 +14,7 @@ import {
   firstSync,
   getTask,
   namedZoneOf,
+  sourceId,
   sync,
   taskFields,
   timezoneOf,
@@ -20,12 +22,13 @@ import {
 import todoistTask from "./todoist.task.json" with { type: "json" };
 
 const taskType = todoistTask.id;
+const source = "todoist";
 
 const connector = defineConnector({
   name: "todoist",
   description:
     "Tasks from a Todoist account, read through the Sync API, and every todoist.task in Marfa carried back to it.",
-  source: "todoist",
+  source,
   types: [
     {
       // Imported JSON widens every string, so its field types read as
@@ -39,12 +42,12 @@ const connector = defineConnector({
         "parent_id",
         "labels",
         "child_order",
-        "comment_count",
       ],
     },
   ],
   env: outboundEnv,
-  async run({ env, signal, state, log, hints, upsert, archive }) {
+  carries: (env) => (readOnly(env) ? [] : [taskType]),
+  async run({ env, signal, state, log, hints, upsert, archive, held }) {
     const base = env.TODOIST_API_URL ?? defaultBase;
     const keptAccount = state.get("account");
     if (hints !== undefined && typeof keptAccount === "string") {
@@ -56,7 +59,8 @@ const connector = defineConnector({
       for (const id of hints.get(taskType) ?? []) {
         const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
         if (task === "missing") gone.push(id);
-        else if (task !== "forbidden") {
+        else if (task === "forbidden") forbidden(log, id);
+        else {
           found.push(
             entryOf(keptAccount, typeof zone === "string" ? zone : "UTC", task),
           );
@@ -66,13 +70,13 @@ const connector = defineConnector({
       await archive(taskType, gone);
       return;
     }
-    const held = state.get("sync_token");
-    const heldToken = typeof held === "string" ? held : firstSync;
+    const saved = state.get("sync_token");
+    const heldToken = typeof saved === "string" ? saved : firstSync;
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
     const knownZone = state.get("timezone");
     const kept = typeof knownZone === "string" ? knownZone : undefined;
     const newZone = timezoneOf(answer.user);
-    let fullSync = heldToken === firstSync;
+    let fullSync = heldToken === firstSync || answer.full_sync === true;
     // A moved zone reads every whole-day and floating due date differently, so
     // the run asks for all tasks. A full sync lists only active tasks, so the
     // delta's deletions and completions are kept beside it.
@@ -148,6 +152,31 @@ const connector = defineConnector({
         .filter((item) => item.is_deleted === true)
         .map((item) => item.id),
     );
+    // A full sync leaves out a task deleted since the last token, and the
+    // completed tasks only reach back twelve weeks: an open row it left out
+    // is asked about by id.
+    if (fullSync) {
+      const listed = new Set(answer.items.map((item) => item.id));
+      const found: Entry[] = [];
+      const gone: string[] = [];
+      for (const row of await held(taskType)) {
+        const id = row.properties["todoist_id"];
+        if (
+          typeof id !== "string" ||
+          listed.has(id) ||
+          row.properties["status"] === "completed" ||
+          (row.source === source && row.source_id !== sourceId(account, id))
+        ) {
+          continue;
+        }
+        const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
+        if (task === "missing") gone.push(id);
+        else if (task === "forbidden") forbidden(log, id);
+        else found.push(entryOf(account, timeZone, task));
+      }
+      await upsert(taskType, found);
+      await archive(taskType, gone);
+    }
     state.set("account", account);
     if (named !== undefined) state.set("timezone", named);
     state.set("sync_token", answer.sync_token);
@@ -159,5 +188,12 @@ const connector = defineConnector({
     return remake(change, context, context.env.TODOIST_API_URL ?? defaultBase);
   },
 });
+
+function forbidden(log: Log, id: string): void {
+  log.condition(
+    `task-forbidden:${id}`,
+    `Todoist refuses the token access to task ${id}, so its row is left as it is`,
+  );
+}
 
 await main(connector);

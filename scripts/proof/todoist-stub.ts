@@ -15,7 +15,6 @@ export interface StubTask {
   checked: boolean;
   completed_at: string | null;
   is_deleted: boolean;
-  note_count: number;
   added_at: string;
   updated_at: string;
 }
@@ -44,13 +43,15 @@ interface Refusal {
 
 type CommandStatus = "ok" | Record<string, unknown>;
 
-// Todoist remembers a command's `uuid` with its answer: a replayed command
-// is answered as before and changes nothing (seen with `item_add` in the real
-// run).
+// Todoist remembers a command's `uuid` with the answer it took: a replayed
+// command is answered as before and changes nothing. A refused one is not
+// remembered: a valid command sent again under its uuid is run (seen live in
+// October 2026, with `item_add` and `item_update`).
 // Deltas are by a sequence each change moves, so the connector's own change
 // comes back on the next sync.
 export class TodoistStub {
   projects: Set<string> | undefined;
+  sections: Set<string> | undefined;
   readonly tasks = new Map<string, StubTask>();
   readonly received: ReceivedRequest[] = [];
   account = "1001";
@@ -126,7 +127,6 @@ export class TodoistStub {
       checked: false,
       completed_at: null,
       is_deleted: false,
-      note_count: 0,
       added_at: "2026-09-20T09:00:00.000000Z",
       updated_at: "2026-09-20T09:00:00.000000Z",
       ...overrides,
@@ -253,8 +253,9 @@ export class TodoistStub {
     }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
-      // Todoist answers a completed or deleted task with 200, flagged; only
-      // one never made is a 404.
+      // Todoist answers a completed or deleted task with 200, flagged, though
+      // its reference calls the door active-only (seen live in October 2026);
+      // only one never made is a 404.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
       if (found === undefined) {
         reply(404, { error: "Task not found" });
@@ -286,6 +287,7 @@ export class TodoistStub {
     );
     return {
       sync_token: `token-${String(this.seq)}`,
+      full_sync: syncToken === "*",
       items,
       ...((syncToken === "*" || this.userSeq > since) && {
         user: {
@@ -360,8 +362,6 @@ export class TodoistStub {
         if (scripted.status !== "nothing") {
           sync_status[command.uuid] = scripted.status;
         }
-        // The stub forgets a refusal; whether Todoist does is unverified,
-        // so the connector sends nothing again under a refused command's id.
         continue;
       }
       const { status, made } = this.apply(command);
@@ -400,18 +400,30 @@ export class TodoistStub {
         ) {
           return {
             status: {
-              error_code: 21,
               error: "Project not found",
-              http_code: 404,
+              error_code: 21,
+              error_extra: { project_id: project },
+              error_tag: "PROJECT_NOT_FOUND",
+              http_code: 400,
             },
           };
         }
         this.made += 1;
         const made = `made-${String(this.made)}`;
+        const fields = this.fields(args);
+        // Todoist makes a task naming a section deleted since at the root of
+        // its project rather than refusing it.
+        if (
+          typeof fields.section_id === "string" &&
+          this.sections !== undefined &&
+          !this.sections.has(fields.section_id)
+        ) {
+          fields.section_id = null;
+        }
         this.tasks.set(
           made,
           this.task(made, {
-            ...this.fields(args),
+            ...fields,
             added_at: this.now,
             updated_at: this.now,
           }),
@@ -493,15 +505,35 @@ export class TodoistStub {
       out.due =
         due === null
           ? null
-          : {
-              ...(due as Record<string, unknown>),
-              is_recurring: false,
-              timezone: null,
-              lang: "en",
-            };
+          : dueOf(due as Record<string, unknown>, this.timezone);
     }
     return out;
   }
+}
+
+/**
+ * A due as Todoist answers it, seen live in October 2026: a date alone makes a
+ * task due once, a recurring one included, with the date as its text; a
+ * recurrence's text sent with a date keeps the recurrence and takes the date
+ * as its next occurrence, whatever day it falls on; a time fixed in UTC takes
+ * the account's timezone. The stub reads a text beginning "every" or "after"
+ * as a recurrence, where Todoist parses it.
+ */
+function dueOf(
+  sent: Record<string, unknown>,
+  zone: string | null,
+): Record<string, unknown> {
+  const date = typeof sent["date"] === "string" ? sent["date"] : null;
+  const text = typeof sent["string"] === "string" ? sent["string"] : date;
+  return {
+    date,
+    timezone: date?.endsWith("Z") === true ? zone : null,
+    string: text,
+    lang: typeof sent["lang"] === "string" ? sent["lang"] : "en",
+    is_recurring:
+      typeof sent["string"] === "string" &&
+      /^(every|after)\b/i.test(sent["string"]),
+  };
 }
 
 function nextOccurrence(due: Record<string, unknown>): Record<string, unknown> {

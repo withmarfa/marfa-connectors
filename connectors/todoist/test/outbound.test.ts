@@ -25,7 +25,6 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
-    comment_count: { type: "integer" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };
@@ -56,7 +55,9 @@ afterEach(async () => {
   await todoist.close();
 });
 
-async function once(): Promise<{ code: number; output: string }> {
+async function once(
+  env: Record<string, string> = {},
+): Promise<{ code: number; output: string }> {
   try {
     const { stderr } = await run("node", [built, "--once"], {
       env: {
@@ -65,6 +66,7 @@ async function once(): Promise<{ code: number; output: string }> {
         MARFA_KEY: marfa.key,
         TODOIST_API_TOKEN: token,
         TODOIST_API_URL: todoist.url,
+        ...env,
       },
     });
     return { code: 0, output: stderr };
@@ -381,15 +383,73 @@ describe("a row Todoist knows", () => {
     expect(summary()).toMatch(/pushed 0, own 2, conflicts 0/);
   });
 
-  it("names a task Todoist no longer has as a condition, and the run lands", async () => {
+  it("refuses an edit to a task Todoist no longer has, and the run lands", async () => {
     const row = await synced("a");
     todoist.tasks.delete("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
     await landed();
     expect(todoist.commands()).toEqual([]);
     expect(summary()).toContain(
-      `Todoist no longer has task a for row ${row.id}`,
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist no longer has task a`,
     );
+  });
+
+  it("moves a recurring task's due date by its recurrence and the new date, so it stays recurring", async () => {
+    todoist.put(
+      todoist.task("r", {
+        due: {
+          date: "2026-10-01",
+          string: "every day",
+          lang: "en",
+          is_recurring: true,
+          timezone: null,
+        },
+      }),
+      todoist.task("t", {
+        due: {
+          date: "2026-10-01T10:00:00",
+          string: "every day at 10:00",
+          lang: "en",
+          is_recurring: true,
+          timezone: null,
+        },
+      }),
+    );
+    await landed();
+    const daily = marfa.row(`${todoist.account}:r`);
+    const timed = marfa.row(`${todoist.account}:t`);
+    marfa.edit(daily.id, {
+      due_at: "2026-10-04T23:00:00.000Z",
+      precision: "day",
+    });
+    marfa.edit(timed.id, {
+      due_at: "2026-10-05T09:00:00.000Z",
+      precision: "time",
+    });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "r", due: { string: "every day", lang: "en", date: "2026-10-05" } },
+      {
+        id: "t",
+        due: {
+          string: "every day at 10:00",
+          lang: "en",
+          date: "2026-10-05T09:00:00Z",
+        },
+      },
+    ]);
+    expect(todoist.tasks.get("r")?.due).toMatchObject({
+      date: "2026-10-05",
+      string: "every day",
+      is_recurring: true,
+    });
+    expect(todoist.tasks.get("t")?.due).toMatchObject({
+      date: "2026-10-05T09:00:00Z",
+      is_recurring: true,
+      timezone: "Europe/London",
+    });
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(2);
   });
 });
 
@@ -728,28 +788,46 @@ describe("transitions over runs", () => {
     await landed();
     todoist.tasks.delete("a");
     marfa.restore(row.id);
-    todoist.scriptCommand(
-      "item_add",
-      {
-        error_code: 20,
-        error: "Invalid argument value",
-        http_code: 400,
-      },
-      2,
-    );
+    todoist.scriptCommand("item_add", {
+      error_code: 20,
+      error: "Invalid argument value",
+      http_code: 400,
+    });
     await landed();
     expect(summary()).toContain(
       `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused creating a task: Invalid argument value (20)`,
     );
     expect(marfa.agreements.get(row.id)?.record["state"]).toBe("trashed");
     await landed();
-    expect(todoist.commands("item_add")).toHaveLength(2);
+    expect(todoist.commands("item_add")).toHaveLength(1);
     marfa.edit(row.id, { title: "Task a, back" });
     await landed();
     const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
     expect(madeId).not.toBe("a");
     expect(todoist.tasks.get(madeId)?.content).toBe("Task a, back");
     expect(marfa.agreements.get(row.id)?.record["state"]).toBe("active");
+  });
+
+  it("makes the task again at its project's root when its section is gone, as Todoist does", async () => {
+    todoist.sections = new Set();
+    todoist.put(
+      todoist.task("a", { project_id: "p-work", section_id: "s-gone" }),
+    );
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    await landed();
+    expect(
+      todoist.commands("item_add").map((c) => c.args["section_id"]),
+    ).toEqual(["s-gone"]);
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(madeId)).toMatchObject({
+      project_id: "p-work",
+      section_id: null,
+    });
+    expect(summary()).not.toContain("refused");
   });
 
   it("makes the task again in the Inbox when its project is gone", async () => {
@@ -930,12 +1008,22 @@ describe("transitions over runs", () => {
     await landed();
     expect(todoist.commands()).toHaveLength(2);
     expect(summary()).toContain(
-      `Todoist no longer has task a for row ${row.id}`,
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist no longer has task a`,
     );
   });
 });
 
 describe("Todoist's answers, continued", () => {
+  it("stops waiting on a 429 after five waits, and the run fails saying so", async () => {
+    for (let wait = 0; wait < 6; wait += 1) {
+      todoist.refuseNext(429, { headers: { "Retry-After": "0" } });
+    }
+    const { code, output } = await once();
+    expect(code).not.toBe(0);
+    expect(output).toContain("Todoist asked for a wait 6 times in a row");
+    expect(todoist.received).toHaveLength(6);
+  });
+
   it("waits as a command's own refusal asks and sends the command again", async () => {
     const row = await synced("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
@@ -1268,6 +1356,96 @@ describe("the account's zone", () => {
     });
     const conditions = summary().split("named no timezone").length - 1;
     expect(conditions).toBe(1);
+  });
+});
+
+describe("a row made in Marfa", () => {
+  it("is made in the project and section it names, with its labels, and keeps them", async () => {
+    todoist.put(todoist.task("seed"));
+    const row = personsRow({
+      title: "Filed from Marfa",
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+      status: "pending",
+    });
+    await landed();
+    expect(todoist.commands("item_add")[0]?.args).toMatchObject({
+      content: "Filed from Marfa",
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+    });
+    await landed();
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+    });
+  });
+
+  it("is not made in the Inbox when Todoist refuses it for anything but a project gone", async () => {
+    todoist.put(todoist.task("seed"));
+    const row = personsRow({
+      title: "Refused",
+      project_id: "p-work",
+      status: "pending",
+    });
+    todoist.scriptCommand("item_add", {
+      error_code: 20,
+      error: "Invalid argument value",
+      http_code: 400,
+    });
+    await landed();
+    expect(todoist.commands("item_add")).toHaveLength(1);
+    expect(marfa.byId(row.id).properties["todoist_id"]).toBeUndefined();
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused creating a task: Invalid argument value (20)`,
+    );
+  });
+});
+
+describe("a full sync", () => {
+  it("archives a row whose task was deleted while the connector held no sync token, and reads one completed long ago", async () => {
+    const gone = await synced("a");
+    const old = await synced("b");
+    const kept = await synced("c");
+    todoist.delete("a");
+    todoist.edit("b", {
+      checked: true,
+      completed_at: "2026-01-05T10:00:00.000000Z",
+    });
+    marfa.states.delete("todoist");
+    await landed();
+    expect(marfa.byId(gone.id).state).toBe("archived");
+    expect(marfa.byId(old.id).properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-01-05T10:00:00.000Z",
+    });
+    expect(marfa.byId(old.id).state).toBe("active");
+    expect(marfa.byId(kept.id).state).toBe("active");
+    const looked = todoist.received
+      .filter(
+        (r) =>
+          r.method === "GET" &&
+          r.path.startsWith("/api/v1/tasks/") &&
+          !r.path.includes("completed"),
+      )
+      .map((r) => r.path);
+    expect(looked.sort()).toEqual(["/api/v1/tasks/a", "/api/v1/tasks/b"]);
+  });
+});
+
+describe("read only", () => {
+  it("carries nothing to Todoist, and puts back an edit made in Marfa", async () => {
+    const row = await synced("a");
+    marfa.edit(row.id, { title: "From Marfa" });
+    personsRow({ title: "Made in Marfa", status: "pending" });
+    const { code, output } = await once({ TODOIST_READ_ONLY: "true" });
+    expect(code, output).toBe(0);
+    expect(todoist.commands()).toEqual([]);
+    expect(marfa.byId(row.id).properties["title"]).toBe("Task a");
+    expect(summary()).toContain("put back");
   });
 });
 
