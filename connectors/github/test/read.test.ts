@@ -87,6 +87,21 @@ function kept(): Record<string, Record<string, unknown>> {
   return state?.repositories ?? {};
 }
 
+function forgetPrivate(): void {
+  for (const one of marfa.rows)
+    Reflect.deleteProperty(one.properties, "private");
+  for (const held of marfa.agreements.values()) {
+    const record = held.record as {
+      vendor?: Record<string, unknown>;
+      marfa?: Record<string, unknown>;
+    };
+    Reflect.deleteProperty(record.vendor ?? {}, "private");
+    Reflect.deleteProperty(record.marfa ?? {}, "private");
+  }
+  for (const one of Object.values(kept()))
+    Reflect.deleteProperty(one, "private");
+}
+
 function checkDue(): void {
   const document = marfa.states.get("github");
   const state = document?.["state"] as
@@ -279,15 +294,72 @@ describe("what a row says of its repository's visibility", () => {
     const issue = github.addIssue(repository);
     const comment = github.addComment(issue, "Words");
     await ok();
-    for (const node of [issue.node, comment.node]) {
-      Reflect.deleteProperty(row(node).properties, "private");
-    }
-    for (const one of Object.values(kept()))
-      Reflect.deleteProperty(one, "private");
+    forgetPrivate();
     await ok();
     expect(row(issue.node).properties["private"]).toBe(true);
     expect(row(comment.node).properties["private"]).toBe(true);
     expect(Object.values(kept())[0]?.["private"]).toBe(true);
+  });
+
+  it("leaves a trashed issue in the bin on the first run after the field arrives, as GitHub's listing names it again", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const trashed = github.addIssue(repository, { title: "Trashed" });
+    const other = github.addIssue(repository, { title: "Other" });
+    await ok();
+    marfa.trash(row(trashed.node).id);
+    await ok();
+    forgetPrivate();
+    github.edit(other, { title: "Other, edited" });
+    await ok();
+    expect(row(trashed.node).state).toBe("trashed");
+    expect(row(other.node).properties["private"]).toBe(true);
+  });
+
+  it("leaves a trashed issue in the bin when its repository changes visibility, and marks it once it is restored", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const trashed = github.addIssue(repository, { title: "Trashed" });
+    const other = github.addIssue(repository, { title: "Other" });
+    await ok();
+    marfa.trash(row(trashed.node).id);
+    await ok();
+    repository.private = false;
+    repository.updated_at = github.now();
+    github.edit(other, { title: "Other, edited" });
+    await ok();
+    expect(row(trashed.node).state).toBe("trashed");
+    expect(row(other.node).properties["private"]).toBe(false);
+    marfa.restore(row(trashed.node).id);
+    await ok();
+    expect(row(trashed.node).state).toBe("active");
+    expect(row(trashed.node).properties["private"]).toBe(false);
+  });
+
+  it("marks the rows of a repository the App can no longer read as private", async () => {
+    const repository = github.addRepository("someone/tracker", {
+      private: false,
+    });
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Words");
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(false);
+    github.installations = [];
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(true);
+    expect(row(comment.node).properties["private"]).toBe(true);
+  });
+
+  it("marks the rows of a repository with its issues turned off from its visibility", async () => {
+    const repository = github.addRepository("someone/tracker", {
+      private: true,
+    });
+    const issue = github.addIssue(repository);
+    await ok();
+    repository.issuesOff = true;
+    repository.private = false;
+    repository.updated_at = github.now();
+    checkDue();
+    await ok();
+    expect(row(issue.node).properties["private"]).toBe(false);
   });
 });
 

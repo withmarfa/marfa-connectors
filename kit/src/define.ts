@@ -134,6 +134,17 @@ export interface RunContext<E extends EnvDeclaration> {
    */
   readonly archive: (type: string, keys: readonly string[]) => Promise<void>;
   /**
+   * Sets a type's derived fields on the rows held under these keys, as the
+   * entries would, where the vendor's answer is not to hand, such as for a
+   * container no longer readable. A row in the bin is left, and takes the
+   * value when it comes back.
+   */
+  readonly derive: (
+    type: string,
+    keys: readonly string[],
+    values: Readonly<Record<string, unknown>>,
+  ) => Promise<void>;
+  /**
    * Only rows the vendor has been told about; empty where Marfa lacks the
    * target. Connections a run names are written once it ends, so a row this run's
    * entries connect shows from the next, and one they or an answer move
@@ -303,6 +314,15 @@ export interface Kind {
    * been told about each of their targets.
    */
   readonly readOnly?: readonly string[];
+  /**
+   * Read-only fields that say where a row sits, such as its container's
+   * visibility, not what happened to it: a change in one is never the
+   * vendor's activity, so it neither brings a trashed row back nor returns
+   * a restored one, and a field an agreement never held is no change. A row in
+   * the bin is left alone, since the instance refuses a write to it, so it
+   * takes the new value when it comes back.
+   */
+  readonly derived?: readonly string[];
   /**
    * A row in the bin comes back when the vendor changes it, once its trash
    * has reached the vendor. Carrying that trash must answer the vendor's

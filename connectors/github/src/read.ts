@@ -202,14 +202,20 @@ export async function read(
         );
       }
       // Under the name its rows hold, which a rename meanwhile does not change.
-      next[node] = { ...repository, paused: true };
+      next[node] = await marked(
+        context,
+        node,
+        { ...repository, paused: true },
+        left.private,
+      );
       continue;
     }
     if (answered.has(repository.installation)) {
       await takeOut(context, node, repository.name);
       continue;
     }
-    next[node] = repository;
+    // Its visibility is no longer known, so its rows say what is safe.
+    next[node] = await marked(context, node, repository, true);
     if (!answered.has(repository.installation)) {
       log.condition(
         `repository-lost:${node}`,
@@ -229,6 +235,12 @@ export async function read(
         `issues-off:${node}`,
         `${repository.name} has its issues turned off on GitHub, so its rows are left as they are`,
       );
+      next[node] = await marked(
+        context,
+        node,
+        repository,
+        privateIn(privacy, node),
+      );
       return;
     }
     try {
@@ -244,6 +256,7 @@ export async function read(
         `repository-unreadable:${node}`,
         `${repository.name} is listed for the App but answered ${String(status(error))}, so its rows are left as they are`,
       );
+      next[node] = await marked(context, node, repository, true);
     }
   };
 
@@ -338,10 +351,6 @@ async function syncRepository(
   const byNumber = new Map(listed.map((issue) => [issue.number, issue]));
   const at = { node, name: repository.name };
   const hidden = privateIn(options.privacy, node);
-  // Rows read before the field existed, or before the repository changed
-  // its visibility, are not listed again: ask for each one held.
-  const stale =
-    repository.comments !== undefined && repository.private !== hidden;
 
   // Relations, which move no issue's time, asked of every issue that
   // changed, since REST names no parent to an App; and the issues an issue
@@ -354,15 +363,6 @@ async function syncRepository(
   // A child detached, or an issue no longer blocked, names nothing on
   // GitHub's side of what changed: ask about those Marfa holds under it.
   const held: string[] = [];
-  if (stale) {
-    for (const row of await context.linked(issueType, inRepository, {
-      type: repositoryType,
-      id: node,
-    })) {
-      const link = linkOf(row);
-      if (link !== undefined) held.push(link);
-    }
-  }
   if (repository.comments !== undefined) {
     for (const issue of listed) {
       const under = { type: issueType, id: issue.node_id };
@@ -463,7 +463,9 @@ async function syncRepository(
     [...comments.values()],
     new Map(listed.map((issue) => [issue.number, issue.node_id])),
   );
-  if (stale) await refreshComments(context, octokit, where, wrote);
+  if (repository.comments !== undefined && repository.private !== hidden) {
+    await markRows(context, node, hidden);
+  }
 
   const kept: Kept = {
     installation: repository.installation,
@@ -559,27 +561,30 @@ async function writeComments(
   return new Set(entries.map((entry) => entry.source_id));
 }
 
-async function refreshComments(
+async function marked(
   context: Context,
-  octokit: Client,
-  where: { node: string; hidden: boolean },
-  written: Set<string>,
+  node: string,
+  repository: Kept,
+  hidden: boolean,
+): Promise<Kept> {
+  if (repository.private !== hidden) await markRows(context, node, hidden);
+  return { ...repository, private: hidden };
+}
+
+/** Rows read before the field existed, or before the repository changed
+ *  its visibility, are not listed again, so each one held is told. */
+async function markRows(
+  context: Context,
+  node: string,
+  hidden: boolean,
 ): Promise<void> {
-  const rows = await context.linked(commentType, inRepository, {
-    type: repositoryType,
-    id: where.node,
-  });
-  const found = (
-    await commentsByNode(
-      octokit,
-      rows.flatMap((row) => linkOf(row) ?? []).filter((id) => !written.has(id)),
-    )
-  ).filter((comment) => comment.repository.node === where.node);
-  await context.upsert(
-    commentType,
-    found.map((comment) => commentEntry(comment, where.hidden)),
-  );
-  for (const comment of found) written.add(comment.node);
+  const under = { type: repositoryType, id: node };
+  for (const type of [issueType, commentType]) {
+    const links = (await context.linked(type, inRepository, under)).flatMap(
+      (row) => linkOf(row) ?? [],
+    );
+    await context.derive(type, links, { private: hidden });
+  }
 }
 
 function numberOf(comment: RestComment): number {

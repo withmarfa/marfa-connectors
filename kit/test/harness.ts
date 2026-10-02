@@ -126,6 +126,8 @@ export interface Vendor {
   revive?: boolean;
   connections?: ConnectionDefinition[];
   readOnly?: string[];
+  derived?: string[];
+  derive?: { keys: string[]; values: Record<string, unknown> };
   ask?: { connection: string; target: Target } | undefined;
   answers?: string[][];
 }
@@ -171,6 +173,7 @@ function twoWayConnector(held: Vendor) {
         fields: testFields,
         revive: held.revive === true,
         ...(held.readOnly !== undefined && { readOnly: held.readOnly }),
+        ...(held.derived !== undefined && { derived: held.derived }),
       },
     ],
     ...(held.connections !== undefined && { connections: held.connections }),
@@ -186,6 +189,9 @@ function twoWayConnector(held: Vendor) {
       await context.upsert(testType.id, held.entries);
       if (held.archived.length > 0) {
         await context.archive(testType.id, held.archived);
+      }
+      if (held.derive !== undefined) {
+        await context.derive(testType.id, held.derive.keys, held.derive.values);
       }
       if (held.ask !== undefined) {
         const rows = await context.linked(

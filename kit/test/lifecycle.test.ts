@@ -199,6 +199,69 @@ describe("a kind that revives", () => {
     expect(held.changes).toEqual([]);
   });
 
+  it("never takes a derived field for the vendor's activity, and gives it to the row once the row comes back", async () => {
+    const held = vendor([one]);
+    held.revive = true;
+    held.readOnly = ["note"];
+    held.derived = ["note"];
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    held.changes.length = 0;
+
+    held.entries = [
+      {
+        ...one,
+        properties: { ...one.properties, note: "where it sits" },
+        changed_at: "2026-10-02T00:00:00.000Z",
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("trashed");
+    expect(held.changes).toEqual([]);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("trashed");
+
+    held.entries = [
+      {
+        ...one,
+        properties: {
+          ...one.properties,
+          title: "Reopened",
+          note: "where it sits",
+        },
+        changed_at: "2026-10-03T00:00:00.000Z",
+      },
+    ];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").state).toBe("active");
+    expect(harness.server.row("a:1").properties["note"]).toBe("where it sits");
+  });
+
+  it("sets a derived field on the rows held, and not on one in the bin", async () => {
+    const held = vendor([one, two]);
+    held.revive = true;
+    held.readOnly = ["note"];
+    held.derived = ["note"];
+    await harness.twoWay(held);
+    harness.server.trash(harness.server.row("a:2").id);
+    await harness.twoWay(held);
+    held.derive = { keys: ["v1", "v2"], values: { note: "unreadable" } };
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["note"]).toBe("unreadable");
+    expect(harness.server.row("a:2").properties["note"]).toBeUndefined();
+    const version = harness.server.row("a:1").version;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").version).toBe(version);
+    held.derive = { keys: ["v1"], values: { title: "No" } };
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      "declares no derived field title",
+    );
+  });
+
   it("brings a row back as the vendor has it, its close among the fields, and carries nothing", async () => {
     const held = vendor([one]);
     held.revive = true;

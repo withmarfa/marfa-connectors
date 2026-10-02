@@ -99,6 +99,7 @@ const connector = defineConnector({
         "blocked_by_urls",
         inRepository,
       ],
+      derived: ["private"],
       revive: true,
     },
     {
@@ -112,6 +113,7 @@ const connector = defineConnector({
         inThread,
         inRepository,
       ],
+      derived: ["private"],
     },
   ],
   connections: [

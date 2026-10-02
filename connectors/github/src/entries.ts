@@ -157,8 +157,8 @@ export function repositoryEntry(repository: RestRepository): Entry {
   };
 }
 
-/** `hidden` is the repository's visibility, which a read knows; an answer
- *  to a write leaves it out, and the row keeps what the read set. */
+/** `hidden` is the repository's visibility: named by every read and by the
+ *  answers to writes where the last read recorded it. */
 export function issueEntry(
   issue: Issue,
   relations: Relations,

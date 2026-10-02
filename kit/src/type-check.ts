@@ -54,17 +54,20 @@ function show(value: unknown): string {
   return value === undefined ? "nothing" : JSON.stringify(value);
 }
 
-/** Fields the connector carries and the server's type lacks, the difference
- *  of a connector that grew, which an operator may put right by replacing
- *  the type and which leaves the rows it holds as they are. */
-export function fieldsAdded(
+const missing = (name: string): string =>
+  `field "${name}" is missing on the server`;
+
+/** Whether the connector only gained fields, the difference an operator may
+ *  put right by replacing the type, which leaves its rows as they are. */
+export function onlyFieldsAdded(
+  differences: readonly string[],
   carried: TypeDefinition,
-  served: Record<string, unknown>,
-): string[] {
-  const theirs = record(served["fields"]);
-  return Object.keys(record(carried.fields))
-    .filter((name) => !(name in theirs))
-    .sort();
+): boolean {
+  const added = Object.keys(record(carried.fields)).map(missing);
+  return (
+    differences.length > 0 &&
+    differences.every((difference) => added.includes(difference))
+  );
 }
 
 export function typeDifferences(
@@ -79,7 +82,7 @@ export function typeDifferences(
   for (const name of Object.keys(mine)
     .filter((n) => !(n in theirs))
     .sort()) {
-    differences.push(`field "${name}" is missing on the server`);
+    differences.push(missing(name));
   }
   for (const name of Object.keys(theirs)
     .filter((n) => !(n in mine) && !inherited.includes(n))
