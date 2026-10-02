@@ -556,6 +556,61 @@ describe("a due date moved in Marfa", () => {
   });
 });
 
+describe("a floating time moved across a change of the clocks", () => {
+  it("is fixed in the account's zone in the hour the clocks repeat, and floats in the hour after they skip one", async () => {
+    const floating = {
+      date: "2026-10-01T10:00:00",
+      string: "every day at 10:00",
+      lang: "en",
+      is_recurring: true,
+      timezone: null,
+    };
+    todoist.put(
+      todoist.task("back", { due: floating }),
+      todoist.task("forward", { due: floating }),
+    );
+    await landed();
+    marfa.edit(marfa.row(`${todoist.account}:back`).id, {
+      due_at: "2026-10-25T01:30:00.000Z",
+      precision: "time",
+    });
+    marfa.edit(marfa.row(`${todoist.account}:forward`).id, {
+      due_at: "2026-03-29T01:30:00.000Z",
+      precision: "time",
+    });
+    await landed();
+    expect(
+      todoist.commands("item_update").map((c) => [c.args["id"], c.args["due"]]),
+    ).toEqual([
+      [
+        "back",
+        {
+          string: "every day at 10:00",
+          lang: "en",
+          date: "2026-10-25T01:30:00Z",
+          timezone: "Europe/London",
+        },
+      ],
+      [
+        "forward",
+        {
+          string: "every day at 10:00",
+          lang: "en",
+          date: "2026-03-29T02:30:00",
+        },
+      ],
+    ]);
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(2);
+    expect(marfa.row(`${todoist.account}:back`).properties["due_at"]).toBe(
+      "2026-10-25T01:30:00.000Z",
+    );
+    expect(marfa.row(`${todoist.account}:forward`).properties["due_at"]).toBe(
+      "2026-03-29T01:30:00.000Z",
+    );
+  });
+});
+
 describe("an echo", () => {
   it("is not carried back: a push then a sync moves nothing, and a sync's write is read as the connector's own", async () => {
     todoist.put(todoist.task("seed"));
@@ -1545,6 +1600,56 @@ describe("a full sync", () => {
     expect(marfa.byId(row.id).state).toBe("active");
     expect(summary()).toContain(
       "Todoist does not answer task a for this token, so its row is left as it is",
+    );
+  });
+
+  it("names a task Todoist does not answer on every run until it answers, and forgets one whose row is no longer open", async () => {
+    const row = await synced("a");
+    const other = await synced("b");
+    todoist.tasks.delete("a");
+    todoist.tasks.delete("b");
+    marfa.states.delete("todoist");
+    const named = (id: string): string =>
+      `Todoist does not answer task ${id} for this token, so its row is left as it is`;
+    const held = (): Record<string, string> =>
+      (marfa.states.get("todoist")?.["conditions"] ?? {}) as Record<
+        string,
+        string
+      >;
+    await landed();
+    expect(summary()).toContain(named("a"));
+    expect(summary()).toContain(named("b"));
+    await landed();
+    await landed();
+    expect(held()).toMatchObject({
+      "task-unanswered:a": named("a"),
+      "task-unanswered:b": named("b"),
+    });
+    marfa.transition(other.id, "archived");
+    todoist.put(todoist.task("a", { content: "Answered again" }));
+    await landed();
+    expect(Object.keys(held())).not.toContain("task-unanswered:a");
+    expect(Object.keys(held())).not.toContain("task-unanswered:b");
+    expect(marfa.byId(row.id).properties["title"]).toBe("Answered again");
+    expect(marfa.states.get("todoist")?.["state"]).not.toHaveProperty(
+      "unanswered",
+    );
+  });
+
+  it("holds at most two thousand rows to ask about, and names how many wait for the next full sync", async () => {
+    const ids = Array.from({ length: 2205 }, (_, at) => `t${String(at)}`);
+    todoist.put(...ids.map((id) => todoist.task(id)));
+    await landed();
+    for (const id of ids) todoist.delete(id);
+    marfa.states.delete("todoist");
+    await landed();
+    const held = marfa.states.get("todoist")?.["state"] as Record<
+      string,
+      unknown
+    >;
+    expect(held["unasked"]).toHaveLength(2000);
+    expect(summary()).toContain(
+      "5 rows the full sync left out are not held to ask about, and wait for the next full sync",
     );
   });
 

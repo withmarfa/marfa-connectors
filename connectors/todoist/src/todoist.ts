@@ -390,8 +390,7 @@ export function dueFor(
   };
 }
 
-/** An instant as the wall time it shows in the zone, as Todoist writes a floating time. */
-export function wallTime(instant: string, timeZone: string): string {
+function wallTimeAt(at: number, timeZone: string): string {
   const read: Record<string, string> = {};
   for (const part of new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -402,10 +401,34 @@ export function wallTime(instant: string, timeZone: string): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-  }).formatToParts(new Date(instant))) {
+  }).formatToParts(at)) {
     read[part.type] = part.value;
   }
   return `${read["year"] ?? ""}-${read["month"] ?? ""}-${read["day"] ?? ""}T${read["hour"] ?? ""}:${read["minute"] ?? ""}:${read["second"] ?? ""}`;
+}
+
+/**
+ * An instant as the floating time Todoist writes, the wall time it shows in
+ * the zone, or `undefined` where the clocks going back show that wall time
+ * twice, so a floating time could not say which.
+ */
+export function floatingTime(
+  instant: string,
+  timeZone: string,
+): string | undefined {
+  const at = Date.parse(instant);
+  const wall = wallTimeAt(at, timeZone);
+  const offset = (when: number): number =>
+    Date.parse(`${wallTimeAt(when, timeZone)}Z`) - when;
+  const shift = offset(at - dayMs) - offset(at + dayMs);
+  if (
+    shift !== 0 &&
+    (wallTimeAt(at + shift, timeZone) === wall ||
+      wallTimeAt(at - shift, timeZone) === wall)
+  ) {
+    return undefined;
+  }
+  return wall;
 }
 
 /**

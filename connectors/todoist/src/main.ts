@@ -160,22 +160,31 @@ const connector = defineConnector({
     // A full sync leaves out a task deleted since the last token, and the
     // completed tasks only reach back twelve weeks: an open row it left out
     // is asked about by id, a share each run.
+    // A task Todoist does not answer is asked about again each run, first,
+    // and named until it answers or its row is no longer open.
     const listed = new Set(answer.items.map((item) => item.id));
-    const left = state.get("unasked");
-    const unasked = fullSync
-      ? (await held(taskType)).flatMap((row) => {
-          const id = row.properties["todoist_id"];
-          return typeof id !== "string" ||
-            listed.has(id) ||
-            row.properties["status"] === "completed" ||
-            (row.source === source && row.source_id !== sourceId(account, id))
-            ? []
-            : [id];
-        })
-      : (Array.isArray(left) ? left : []).filter(
-          (id): id is string => typeof id === "string" && !listed.has(id),
-        );
-    const rest = await askAbout(unasked, {
+    const keptUnasked = idsOf(state.get("unasked"));
+    const keptUnanswered = unansweredOf(state.get("unanswered"));
+    const open =
+      fullSync || keptUnasked.length > 0 || keptUnanswered.length > 0
+        ? new Set(
+            (await held(taskType)).flatMap((row) => {
+              const id = row.properties["todoist_id"];
+              return typeof id !== "string" ||
+                row.properties["status"] === "completed" ||
+                (row.source === source &&
+                  row.source_id !== sourceId(account, id))
+                ? []
+                : [id];
+            }),
+          )
+        : new Set<string>();
+    const asking = (id: string): boolean => open.has(id) && !listed.has(id);
+    const waiting = keptUnanswered.filter(({ id }) => asking(id));
+    const unasked = (fullSync ? [...open] : keptUnasked).filter(
+      (id) => asking(id) && !waiting.some((one) => one.id === id),
+    );
+    const asked = await askAbout([...waiting.map(({ id }) => id), ...unasked], {
       base,
       token: env.TODOIST_API_TOKEN,
       account,
@@ -185,7 +194,32 @@ const connector = defineConnector({
       upsert,
       archive,
     });
-    state.set("unasked", rest.length > 0 ? rest : undefined);
+    const notAsked = new Set(asked.rest);
+    const stillWaiting = [
+      ...waiting.filter(({ id }) => notAsked.has(id)),
+      ...asked.unanswered,
+    ];
+    for (const { id, answer: said } of stillWaiting) {
+      unanswered(log, id, said);
+    }
+    const stillUnasked = unasked.filter((id) => notAsked.has(id));
+    const overflow =
+      Math.max(0, stillUnasked.length - heldAtMost) +
+      Math.max(0, stillWaiting.length - heldAtMost);
+    if (overflow > 0) {
+      log.condition(
+        "unasked-overflow",
+        `${String(overflow)} rows the full sync left out are not held to ask about, and wait for the next full sync`,
+      );
+    }
+    state.set(
+      "unasked",
+      stillUnasked.length > 0 ? stillUnasked.slice(0, heldAtMost) : undefined,
+    );
+    state.set(
+      "unanswered",
+      stillWaiting.length > 0 ? stillWaiting.slice(0, heldAtMost) : undefined,
+    );
     state.set("sync_token", answer.sync_token);
   },
   onChange(change, context) {
@@ -212,8 +246,34 @@ function unanswered(
 /** Well inside Todoist's 1000 requests in 15 minutes. */
 const asksPerRun = 200;
 const writtenEvery = 50;
+/** Well inside what the instance keeps as a connector's state. */
+const heldAtMost = 2000;
 
-/** Answers the ids not asked about, for the next run. */
+interface Unheard {
+  id: string;
+  answer: "forbidden" | "unknown";
+}
+
+function idsOf(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((id): id is string => typeof id === "string")
+    : [];
+}
+
+function unansweredOf(value: unknown): Unheard[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (one): one is Unheard =>
+          typeof one === "object" &&
+          one !== null &&
+          typeof (one as Unheard).id === "string" &&
+          ((one as Unheard).answer === "forbidden" ||
+            (one as Unheard).answer === "unknown"),
+      )
+    : [];
+}
+
+/** The ids not asked about, and those Todoist did not answer. */
 async function askAbout(
   ids: readonly string[],
   context: {
@@ -226,8 +286,9 @@ async function askAbout(
     upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
     archive: (type: string, keys: readonly string[]) => Promise<void>;
   },
-): Promise<string[]> {
+): Promise<{ rest: string[]; unanswered: Unheard[] }> {
   const { log } = context;
+  const unknown: Unheard[] = [];
   const found: Entry[] = [];
   const gone: string[] = [];
   const write = async (): Promise<void> => {
@@ -246,7 +307,7 @@ async function askAbout(
       );
       if (task === "deleted") gone.push(id);
       else if (task === "forbidden" || task === "unknown") {
-        unanswered(log, id, task);
+        unknown.push({ id, answer: task });
       } else found.push(entryOf(context.account, context.timeZone, task));
       if (found.length + gone.length >= writtenEvery) await write();
     }
@@ -258,7 +319,7 @@ async function askAbout(
     );
   }
   await write();
-  return ids.slice(at);
+  return { rest: ids.slice(at), unanswered: unknown };
 }
 
 await main(connector);

@@ -19,7 +19,7 @@ import {
   Unanswered,
   user,
   uuidFor,
-  wallTime,
+  floatingTime,
   type Command,
   type CommandAnswer,
   type CommandError,
@@ -310,18 +310,27 @@ function unreached(taskId: string, answer: "forbidden" | "unknown"): string {
 
 // Todoist keeps the date sent, but a date alone ends a recurrence and moves
 // a time to the account's zone (seen live in October 2026): the recurrence
-// goes with it, and the time stays fixed in the task's zone or floating.
+// goes with it, and the time stays fixed in the task's zone or floating. A
+// floating time the clocks show twice is fixed in the account's zone instead.
 function moved(date: string, have: TodoistItem["due"], timeZone: string): Due {
   const timed = date.includes("T");
-  const zone = typeof have?.timezone === "string" ? have.timezone : undefined;
-  const floating = zone === undefined && /T[^Z]*$/.test(have?.date ?? "");
+  const held = typeof have?.timezone === "string" ? have.timezone : undefined;
+  const floating =
+    timed && held === undefined && /T[^Z]*$/.test(have?.date ?? "")
+      ? floatingTime(date, timeZone)
+      : undefined;
+  const zone =
+    held ??
+    (timed && floating === undefined && /T[^Z]*$/.test(have?.date ?? "")
+      ? timeZone
+      : undefined);
   return {
     ...(have?.is_recurring === true &&
       typeof have.string === "string" && {
         string: have.string,
         ...(typeof have.lang === "string" && { lang: have.lang }),
       }),
-    date: timed && floating ? wallTime(date, timeZone) : date,
+    date: floating ?? date,
     ...(timed && zone !== undefined && { timezone: zone }),
   };
 }
