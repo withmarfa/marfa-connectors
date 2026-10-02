@@ -671,6 +671,21 @@ describe("the installation tokens", () => {
     expect(links(child.node, "github.sub-issue-of")).toEqual([parent.node]);
   });
 
+  it("name a repository paused before its id was recorded, which the next run records", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    await ok();
+    for (const one of Object.values(kept())) {
+      Reflect.deleteProperty(one, "id");
+    }
+    const { code, output } = await once({
+      GITHUB_REPOSITORIES: "someone/tracker",
+    });
+    expect(code, output).toBe(0);
+    expect(kept()[other.node]).toMatchObject({ paused: true, id: other.id });
+    expect(kept()[tracker.node]?.["id"]).toBe(tracker.id);
+  });
+
   it("are replaced when GitHub revokes one mid-run, and the request sent again", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);

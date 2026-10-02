@@ -84,6 +84,10 @@ export interface Reach {
   /** Past GitHub's cap, or absent, the token reaches every repository of
    *  the installation. */
   readonly repositoryIds?: readonly number[];
+  /** For a read token that only finds where a node sits: where GitHub
+   *  refuses to name a repository, as one taken from the installation since
+   *  it was recorded, the installation's whole reach instead. */
+  readonly orWhole?: boolean;
 }
 
 /** How far apart this machine's clock and GitHub's may be before the
@@ -192,22 +196,40 @@ async function tokenFor(
 ): Promise<{ token: string; createdAt: string }> {
   const signer = signerOf(app);
   const named = [...(reach.repositoryIds ?? [])].sort((a, b) => a - b);
-  const options = {
+  const whole = {
     type: "installation" as const,
     installationId,
     permissions: { ...permissions[reach.access] },
-    ...(reach.repositoryIds !== undefined &&
-      named.length <= namedAtMost && { repositoryIds: named }),
     refresh,
   };
+  const options: typeof whole & { repositoryIds?: number[] } = {
+    ...whole,
+    ...(reach.repositoryIds !== undefined &&
+      named.length <= namedAtMost && { repositoryIds: named }),
+  };
   const mint = minterOf(app, signal);
+  const signed = async (asked: typeof options) => {
+    try {
+      return await mint(asked);
+    } catch (error) {
+      const skew = skewOf(error);
+      if (skew === undefined) throw error;
+      adopt(signer, skew);
+      return mint(asked);
+    }
+  };
   try {
-    return await mint(options);
+    return await signed(options);
   } catch (error) {
-    const skew = skewOf(error);
-    if (skew === undefined) throw error;
-    adopt(signer, skew);
-    return mint(options);
+    if (
+      reach.access !== "read" ||
+      reach.orWhole !== true ||
+      status(error) !== 422 ||
+      options.repositoryIds === undefined
+    ) {
+      throw error;
+    }
+    return signed(whole);
   }
 }
 

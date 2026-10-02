@@ -124,10 +124,6 @@ export class GitHubStub {
   clockAhead = 0;
   /** Requests the tokens answer before GitHub revokes every one of them. */
   revokeAfter: number | undefined;
-  /** Repositories, by id, GitHub refuses to name in a token that writes,
-   *  standing in for one gone from the installation between the listing a
-   *  connector keeps and a change it carries. */
-  unmintable = new Set<number>();
   private grants = new Map<string, Grant>();
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
@@ -425,15 +421,7 @@ export class GitHubStub {
           own.find((one) => one.id === id),
         ),
       ];
-      if (
-        named.length > 500 ||
-        named.some(
-          (one) =>
-            one === undefined ||
-            (asked.permissions?.["issues"] === "write" &&
-              this.unmintable.has(one.id)),
-        )
-      ) {
+      if (named.length > 500 || named.some((one) => one === undefined)) {
         return {
           refused:
             "There is at least one repository that does not exist or is not accessible to the parent installation.",

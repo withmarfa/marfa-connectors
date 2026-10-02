@@ -269,7 +269,7 @@ async function readAll(
       next[node] = await marked(
         context,
         node,
-        { ...repository, paused: true },
+        { ...repository, paused: true, id: left.id },
         left.private,
       );
       continue;

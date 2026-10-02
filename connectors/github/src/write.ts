@@ -175,18 +175,22 @@ function paused(node: string, kept: Kept): Unreachable {
 }
 
 /** A token that looks things up across the repositories the connector
- *  holds under an installation, paused ones too, reading only. */
+ *  holds under an installation, paused ones too, reading only. Where one
+ *  has no id recorded yet, or GitHub refuses to name one, it reaches the
+ *  whole installation instead: it only finds where a node sits, and
+ *  `placeIn` refuses anything the connector does not sync. */
 function looker(context: Context, app: App, installation: number): Client {
+  const held = Object.values(allKept(context)).filter(
+    (one) => one.installation === installation,
+  );
+  const repositoryIds = held.flatMap((one) => one.id ?? []);
   return asInstallation(
     app,
     installation,
     {
       access: "read",
-      repositoryIds: Object.values(allKept(context)).flatMap((one) =>
-        one.installation === installation && one.id !== undefined
-          ? [one.id]
-          : [],
-      ),
+      ...(repositoryIds.length === held.length && { repositoryIds }),
+      orWhole: true,
     },
     context.secret,
     context.signal,

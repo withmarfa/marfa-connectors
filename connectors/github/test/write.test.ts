@@ -181,23 +181,6 @@ describe("an issue changed in Marfa", () => {
     ]);
   });
 
-  it("waits where GitHub will not name its repository in a token, and the rest are carried", async () => {
-    const other = github.addRepository("someone/other");
-    const here = github.addIssue(repository, { title: "Here" });
-    const there = github.addIssue(other, { title: "There" });
-    await ok();
-    github.unmintable.add(other.id);
-    marfa.edit(row(here.node).id, { title: "Here, edited" });
-    marfa.edit(row(there.node).id, { title: "There, edited" });
-    const output = await ok();
-    expect(here.title).toBe("Here, edited");
-    expect(there.title).toBe("There");
-    expect(output).toContain("waits");
-    github.unmintable.clear();
-    await ok();
-    expect(there.title).toBe("There, edited");
-  });
-
   it("has its title, body, labels and assignees carried to GitHub, once", async () => {
     const issue = github.addIssue(repository, { title: "Before" });
     await ok();

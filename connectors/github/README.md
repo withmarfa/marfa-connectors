@@ -73,7 +73,8 @@ Each installation token the connector asks GitHub for reaches no more than its u
 
 - One lists which repositories an installation holds, and reads nothing else.
 - One reads the issues and comments of the repositories synced, and of those paused, so their relations stay.
-- One for each change made in Marfa writes issues and comments only in the synced repositories that change touches: its own, and that of the issue at the other end of a relation it draws or removes. A paused repository is never among them. Where GitHub will not mint one, as for a repository gone from the installation since the last scheduled run, only the changes touching that repository wait. With `GITHUB_READ_ONLY` none is asked for.
+- One finds where an issue or comment named by a change sits, reading only, across the repositories the connector holds under the installation. Where GitHub will not name one of them, as for a repository taken from the installation since the last scheduled run, or one whose id is not yet recorded, it reaches the whole installation instead; a change is still carried only into a synced repository.
+- One for each change made in Marfa writes issues and comments only in the synced repositories that change touches: its own, and that of the issue at the other end of a relation it draws or removes. A paused repository is never among them. Where GitHub will not mint one, as for a repository gone from the installation since the last scheduled run, only the changes touching that repository wait. A change in a repository whose id is not yet recorded waits for the next scheduled run, which records it, and the run says so. With `GITHUB_READ_ONLY` none is asked for.
 
 GitHub names at most 500 repositories to a token, so past that many synced or paused under one installation, the token that reads reaches every repository of it, and the run says so; a token for a change names far fewer.
 

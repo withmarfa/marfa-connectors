@@ -355,6 +355,52 @@ describe("a run for deliveries", () => {
     });
   }, 30_000);
 
+  it("carries a change between scheduled runs though another repository was taken from the installation meanwhile", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    const here = github.addIssue(repository, { title: "Here" });
+    const there = github.addIssue(other, { title: "There" });
+    await watching(async () => {
+      deliver("ping", {});
+      await until(() => marfa.runs.length > 1, "the first run for deliveries");
+      other.installation = 99;
+      // Every token is minted afresh, as once the cached ones expire.
+      github.revokeAfter = 0;
+      marfa.edit(row(there.node).id, { title: "There, edited" });
+      marfa.edit(row(here.node).id, { title: "Here, edited" });
+      await until(
+        () => here.title === "Here, edited",
+        "the edit in the repository still installed being carried",
+      );
+      expect(there.title).toBe("There");
+    });
+  });
+
+  it("waits to carry a change while its repository's id is not yet recorded, and says so", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository, { title: "On GitHub" });
+    await watching(async () => {
+      deliver("ping", {});
+      await until(() => marfa.runs.length > 1, "the first run for deliveries");
+      const state = marfa.states.get("github")?.["state"] as {
+        repositories: Record<string, Record<string, unknown>>;
+      };
+      for (const one of Object.values(state.repositories)) {
+        Reflect.deleteProperty(one, "id");
+      }
+      const runs = marfa.runs.length;
+      marfa.edit(row(issue.node).id, { title: "Edited in Marfa" });
+      await until(
+        () =>
+          JSON.stringify(marfa.runs.slice(runs)).includes(
+            "id for the repository is not yet recorded",
+          ),
+        "the run saying the change waits",
+      );
+      expect(issue.title).toBe("On GitHub");
+    });
+  });
+
   it("changes nothing where a named issue's installation lost access", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
