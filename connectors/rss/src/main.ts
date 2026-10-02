@@ -11,7 +11,6 @@ import {
   maxFeedElements,
   maxFeedEntries,
   privateHosts,
-  readFeed,
   TooManyElements,
   TooManyEntries,
   type Feed,
@@ -24,6 +23,13 @@ import {
   TooLarge,
   TooManyRedirects,
 } from "./fetch.js";
+import {
+  parseLimits,
+  parseTimeoutMs,
+  readBounded,
+  TooHeavy,
+  TooSlow,
+} from "./parse.js";
 import rssEntry from "./rss.entry.json" with { type: "json" };
 
 interface FeedState {
@@ -67,6 +73,12 @@ function refusal(error: unknown): string | undefined {
   if (error instanceof TooManyRedirects) {
     return `redirected more than ${String(maxRedirects)} times, so it is skipped`;
   }
+  if (error instanceof TooHeavy) {
+    return `needs more than ${String(parseLimits.maxOldGenerationSizeMb)} MB to read, so it is skipped`;
+  }
+  if (error instanceof TooSlow) {
+    return `takes longer than ${String(parseTimeoutMs / 1000)} seconds to read, so it is skipped`;
+  }
   return undefined;
 }
 
@@ -106,19 +118,22 @@ const connector = defineConnector({
       }
     }
 
-    // A feed renamed, or named for the first time, finds its rows by its
-    // address; one moved under its name keeps its key.
+    // A feed renamed, or named for the first time, in the same edit finds
+    // its rows by its address; one moved under its name keeps its key. A
+    // feed that left the list is found again by its key alone: another
+    // account can be read at the same address.
     const previous = (feed: Feed): { held: FeedState; id?: string } => {
       const own = known[feed.key];
       if (own !== undefined) {
         claimed.add(feed.key);
-        return {
-          held: { ...own, address: own.address ?? feed.key },
-          id: feed.key,
-        };
+        const held: FeedState = { ...own, address: own.address ?? feed.key };
+        Reflect.deleteProperty(held, "left");
+        return { held, id: feed.key };
       }
       for (const [id, held] of Object.entries(known)) {
-        if (configured.has(id) || claimed.has(id)) continue;
+        if (configured.has(id) || claimed.has(id) || held.left !== undefined) {
+          continue;
+        }
         const address = held.address ?? id;
         if (address === feed.address) {
           claimed.add(id);
@@ -230,7 +245,7 @@ const connector = defineConnector({
         raise(feed, carried);
         continue;
       }
-      if (!("text" in fetched)) {
+      if (!("bytes" in fetched)) {
         log.condition(
           `status:${feed.key}`,
           `${name} answered ${String(fetched.status)}`,
@@ -240,8 +255,17 @@ const connector = defineConnector({
       }
       let read;
       try {
-        read = readFeed(feed, fetched.text, fetched.url);
+        read = await readBounded(
+          {
+            feed,
+            bytes: fetched.bytes,
+            contentType: fetched.contentType,
+            documentUrl: fetched.url,
+          },
+          signal,
+        );
       } catch (error) {
+        if (signal.aborted) throw error;
         const why = refusal(error);
         log.condition(
           why === undefined ? `unreadable:${feed.key}` : `refused:${feed.key}`,

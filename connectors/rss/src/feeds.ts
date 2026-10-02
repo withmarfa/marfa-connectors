@@ -22,40 +22,54 @@ export class TooManyElements extends Error {
 }
 
 /**
- * Counted in the text before it is parsed, so a feed past either cap costs no
- * parse. Every `<` that opens an element counts, whatever its name, and an
- * entry is any element whose local name is `item` or `entry` in any case and
- * under any prefix: the parser lowercases names and maps prefixes, so this
- * counts at least what it builds. Comments and CDATA are skipped, as the
- * parser builds nothing from them.
+ * A cheap refusal before the parse, which runs bounded in a worker either
+ * way: counts each `<` that opens an element or a `<!` declaration, and as
+ * entries those whose local name is `item` or `entry` in any case. Comments,
+ * CDATA, the doctype, processing instructions, end tags and quoted attribute
+ * values are passed over.
  */
 function countTags(text: string): void {
   const name = /[^\s/>]*/y;
+  const tagEnd = /["'>]/g;
   let elements = 0;
   let entries = 0;
   for (let at = text.indexOf("<"); at !== -1; at = text.indexOf("<", at)) {
-    if (text.startsWith("<!--", at)) {
-      const end = text.indexOf("-->", at + 4);
+    const skipTo = text.startsWith("<!--", at)
+      ? "-->"
+      : text.startsWith("<![", at)
+        ? "]]>"
+        : undefined;
+    if (skipTo !== undefined) {
+      const end = text.indexOf(skipTo, at + 3);
       if (end === -1) return;
-      at = end + 3;
-      continue;
-    }
-    if (text.startsWith("<![CDATA[", at)) {
-      const end = text.indexOf("]]>", at + 9);
-      if (end === -1) return;
-      at = end + 3;
+      at = end + skipTo.length;
       continue;
     }
     const next = text[at + 1];
-    at += 1;
-    if (next === "!" || next === "?" || next === "/") continue;
+    if (next === "?" || next === "/" || text.startsWith("<!D", at)) {
+      at += 1;
+      continue;
+    }
     elements += 1;
     if (elements > maxFeedElements) throw new TooManyElements();
-    name.lastIndex = at;
-    const local = (name.exec(text)?.[0] ?? "").toLowerCase().split(":").pop();
+    name.lastIndex = next === "!" ? at + 2 : at + 1;
+    const found = name.exec(text)?.[0] ?? "";
+    const local = found.toLowerCase().split(":").pop();
     if (local === "item" || local === "entry") {
       entries += 1;
       if (entries > maxFeedEntries) throw new TooManyEntries();
+    }
+    tagEnd.lastIndex = name.lastIndex;
+    for (;;) {
+      const mark = tagEnd.exec(text);
+      if (mark === null) return;
+      if (mark[0] === ">") {
+        at = mark.index + 1;
+        break;
+      }
+      const close = text.indexOf(mark[0], mark.index + 1);
+      if (close === -1) return;
+      tagEnd.lastIndex = close + 1;
     }
   }
 }
@@ -153,11 +167,16 @@ export interface Validators {
 export type Fetched =
   | {
       status: 200;
-      text: string;
+      bytes: Uint8Array;
+      contentType: string | null;
       validators: Validators;
       url: string;
     }
   | { status: number };
+
+/** A validator is echoed back verbatim; past this a server is not using it
+ *  as one, and it is not kept. */
+const maxValidatorLength = 1024;
 
 function sniffed(bytes: Uint8Array): string | undefined {
   const [a, b, c, d] = bytes;
@@ -246,11 +265,18 @@ export async function fetchFeed(
     const value = answer.headers[name];
     return Array.isArray(value) ? value[0] : value;
   };
-  const etag = header("etag");
-  const lastModified = header("last-modified");
+  const kept = (name: string): string | undefined => {
+    const value = header(name);
+    return value !== undefined && value.length <= maxValidatorLength
+      ? value
+      : undefined;
+  };
+  const etag = kept("etag");
+  const lastModified = kept("last-modified");
   return {
     status: 200,
-    text: decodeFeed(answer.bytes, header("content-type") ?? null),
+    bytes: answer.bytes,
+    contentType: header("content-type") ?? null,
     validators: {
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),

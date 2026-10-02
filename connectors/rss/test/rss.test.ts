@@ -22,6 +22,17 @@ import {
 } from "../src/feeds.js";
 import { getFeed, isPrivate, maxFeedBytes, TooLarge } from "../src/fetch.js";
 
+/** Few elements, each with thousands of attributes: under every count, and
+ *  far over what any real feed takes to parse. */
+function heavyFeed(bytes: number): string {
+  const attributes = Array.from(
+    { length: 4000 },
+    (_, at) => `a${String(at)}="v"`,
+  ).join(" ");
+  const item = `<item><title ${attributes}>t</title><guid>g</guid></item>`;
+  return `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>${item.repeat(Math.floor(bytes / item.length))}</channel></rss>`;
+}
+
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const fixture = (name: string): string =>
@@ -685,6 +696,25 @@ describe("fetching a feed", () => {
     }
   });
 
+  it("passes over quoted attribute values and counts declarations it does not know, so neither hides entries or elements from the count", () => {
+    const rss = (items: string): string =>
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>${items}</channel></rss>`;
+    const read = (text: string) => () =>
+      readFeed(at("https://example.org/rss.xml"), text);
+    for (const opener of ["<!--", "<![CDATA[", "<!DOCTYPE"]) {
+      expect(
+        read(
+          rss(
+            `<title a="${opener}">t</title><x b='${opener}'/>${"<item><title>a</title><guid>a</guid></item>".repeat(maxFeedEntries + 1)}`,
+          ),
+        ),
+      ).toThrow(TooManyEntries);
+    }
+    expect(read(rss("<!a/>".repeat(maxFeedElements + 1)))).toThrow(
+      TooManyElements,
+    );
+  });
+
   it("counts every element and every entry the parser would build, whatever their names' case, prefix or alphabet", () => {
     const rss = (items: string): string =>
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>${items}</channel></rss>`;
@@ -775,6 +805,27 @@ describe("fetching a feed", () => {
       expect([address, isPrivate(address)]).toEqual([address, false]);
     }
   });
+
+  it("reads a feed in a worker whose heap limit, not the feed, bounds the memory it takes", async () => {
+    const { readBounded } = (await import(
+      resolve(import.meta.dirname, "../dist/parse.js")
+    )) as typeof import("../src/parse.js");
+    const bytes = new TextEncoder().encode(heavyFeed(44 * 1024 * 1024));
+    const before = process.resourceUsage().maxRSS;
+    await expect(
+      readBounded(
+        {
+          feed: at("https://example.org/rss.xml"),
+          bytes,
+          contentType: null,
+          documentUrl: "https://example.org/rss.xml",
+        },
+        AbortSignal.timeout(60_000),
+      ),
+    ).rejects.toMatchObject({ name: "TooHeavy" });
+    const grewMiB = (process.resourceUsage().maxRSS - before) / 1024;
+    expect(grewMiB).toBeLessThan(450);
+  }, 60_000);
 });
 
 interface Served {
@@ -1565,5 +1616,62 @@ describe("the connector, run as a process", () => {
         candidate.source_id?.startsWith(`${second}:`),
       ),
     ).toHaveLength(1);
+  });
+
+  it("skips a feed that needs more memory to read than the cap, naming it, and reads the others", async () => {
+    served["/heavy.xml"] = { body: heavyFeed(20 * 1024 * 1024) };
+    expect((await once(["/heavy.xml", "/rss.xml"])).code).toBe(0);
+    expect(marfa.rows).toHaveLength(2);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) needs more than 192 MB to read, so it is skipped`,
+    );
+  }, 30_000);
+
+  it("finds a feed that left the list again by its key alone, not by its address", async () => {
+    expect((await once([], ["--once"], `work=${base}/atom.xml`)).code).toBe(0);
+    expect((await once(["/rss.xml"])).code).toBe(0);
+    const atom = served["/atom.xml"];
+    if (typeof atom?.body !== "string") throw new Error("no atom fixture");
+    atom.body = atom.body.replace("</feed>", "<!-- changed --></feed>");
+    atom.etag = '"atom-other-account"';
+    expect((await once(["/atom.xml"])).code).toBe(0);
+    const work = feedKey(`${base}/atom.xml`, "work");
+    const plain = feedKey(`${base}/atom.xml`);
+    const keys = marfa.rows
+      .filter((candidate) =>
+        String(candidate.properties["entry_id"]).startsWith("tag:example.com"),
+      )
+      .map((candidate) => candidate.source_id?.split(":")[0])
+      .sort();
+    expect(keys).toEqual([work, work, plain, plain].sort());
+  });
+
+  it("forgets when a feed left once it returns, read or not", async () => {
+    expect((await once([], ["--once"], `work=${base}/atom.xml`)).code).toBe(0);
+    expect((await once(["/rss.xml"])).code).toBe(0);
+    const kept = (): Record<string, Record<string, unknown>> =>
+      (
+        marfa.states.get("rss") as {
+          state: { feeds: Record<string, Record<string, unknown>> };
+        }
+      ).state.feeds;
+    const work = feedKey(`${base}/atom.xml`, "work");
+    expect(kept()[work]?.["left"]).toEqual(expect.any(String));
+    Reflect.deleteProperty(served, "/atom.xml");
+    expect((await once([], ["--once"], `work=${base}/atom.xml`)).code).toBe(0);
+    expect(asked.at(-1)?.answered).toBe(404);
+    expect(kept()[work]).not.toHaveProperty("left");
+  });
+
+  it("keeps no validator longer than 1 KiB, and asks without it", async () => {
+    served["/long.xml"] = {
+      body: fixture("rss.xml"),
+      etag: `"${"e".repeat(2000)}"`,
+    };
+    expect((await once(["/long.xml"])).code).toBe(0);
+    expect((await once(["/long.xml"])).code).toBe(0);
+    expect(JSON.stringify(marfa.states.get("rss"))).not.toContain("eeee");
+    expect(asked[1]?.headers["if-none-match"]).toBeUndefined();
+    expect(asked.map((request) => request.answered)).toEqual([200, 200]);
   });
 });
