@@ -18,7 +18,11 @@ import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
+<<<<<<< HEAD
 const statements = 81;
+=======
+const statements = 82;
+>>>>>>> 3cbe915 (feat(github): say on each issue and comment whether its repository is private)
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();

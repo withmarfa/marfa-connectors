@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
 import { apiVersion } from "../src/github.js";
+import { hookUrl } from "../src/setup.js";
 
 const built = resolve(import.meta.dirname, "../dist/main.js");
 
@@ -72,6 +73,17 @@ function decoded(text: string): string {
     .replaceAll("&amp;", "&");
 }
 
+describe("the webhook's address", () => {
+  it("keeps the public address's own path before the endpoint's", () => {
+    expect(hookUrl("https://marfa.example", "/inbound/in_1")).toBe(
+      "https://marfa.example/inbound/in_1",
+    );
+    expect(hookUrl("https://marfa.example/a/b/", "/inbound/in_1")).toBe(
+      "https://marfa.example/a/b/inbound/in_1",
+    );
+  });
+});
+
 describe("setup", () => {
   it("registers the App from a manifest, with its webhook at the instance's public address, and writes its secrets", async () => {
     const file = join(dir, "secrets.json");
@@ -83,7 +95,7 @@ describe("setup", () => {
     } = {};
     const finished = await setup(
       file,
-      { GITHUB_PUBLIC_URL: "https://marfa.example" },
+      { GITHUB_PUBLIC_URL: "https://marfa.example/behind/a/prefix/" },
       (line) => {
         const opened = / open (\S+) in a browser/.exec(line)?.[1];
         if (opened === undefined) return;
@@ -123,7 +135,9 @@ describe("setup", () => {
     });
     const hook = (seenPage.manifest?.["hook_attributes"] as { url: string })
       .url;
-    expect(hook).toMatch(/^https:\/\/marfa\.example\/inbound\/in_/);
+    expect(hook).toMatch(
+      /^https:\/\/marfa\.example\/behind\/a\/prefix\/inbound\/in_/,
+    );
     const written = JSON.parse(await readFile(file, "utf8")) as Record<
       string,
       string

@@ -77,6 +77,7 @@ const connector = defineConnector({
         "url",
         "number",
         "repository",
+        "private",
         "author",
         "labels",
         "assignees",
@@ -90,6 +91,7 @@ const connector = defineConnector({
         "url",
         "number",
         "repository",
+        "private",
         "author",
         "state_reason",
         "github_updated_at",
@@ -101,8 +103,15 @@ const connector = defineConnector({
     },
     {
       type: comment as TypeDefinition,
-      fields: ["github_id", "body", "from", "repository", "url"],
-      readOnly: ["from", "repository", "url", inThread, inRepository],
+      fields: ["github_id", "body", "from", "repository", "private", "url"],
+      readOnly: [
+        "from",
+        "repository",
+        "private",
+        "url",
+        inThread,
+        inRepository,
+      ],
     },
   ],
   connections: [

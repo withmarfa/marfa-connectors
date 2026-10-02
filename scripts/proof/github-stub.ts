@@ -137,6 +137,12 @@ export class GitHubStub {
     return new Date(this.clock).toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
+  /** GitHub's own clock, which every answer's Date header tells, run this
+   *  far behind the machine's. */
+  runBehind(milliseconds: number): void {
+    this.clock = Math.floor((Date.now() - milliseconds) / 1000) * 1000;
+  }
+
   ago(days: number): string {
     return new Date(this.clock - days * 86_400_000)
       .toISOString()
@@ -382,6 +388,7 @@ export class GitHubStub {
       asked.status = status;
       res.writeHead(status, {
         "content-type": "application/json",
+        date: new Date(this.clock).toUTCString(),
         "x-ratelimit-remaining": String(this.rateRemaining),
         ...headers,
       });

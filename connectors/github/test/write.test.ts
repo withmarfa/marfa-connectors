@@ -164,6 +164,24 @@ describe("an issue changed in Marfa", () => {
 });
 
 describe("a trash", () => {
+  it("leaves an issue closed as a duplicate a duplicate through a trash and a restore", async () => {
+    const issue = github.addIssue(repository, {
+      title: "Twice",
+      state: "closed",
+      state_reason: "duplicate",
+      closed_at: github.ago(1),
+      updated_at: github.ago(1),
+    });
+    await ok();
+    expect(row(issue.node).properties["status"]).toBe("canceled");
+    marfa.trash(row(issue.node).id);
+    await settled();
+    marfa.restore(row(issue.node).id);
+    await settled();
+    expect(issue).toMatchObject({ state: "closed", state_reason: "duplicate" });
+    expect(written()).toEqual([]);
+  });
+
   it("closes the issue as not planned, stays, comes back on GitHub's activity, and a restore reopens it", async () => {
     const issue = github.addIssue(repository, { title: "Maybe" });
     await ok();

@@ -157,10 +157,13 @@ export function repositoryEntry(repository: RestRepository): Entry {
   };
 }
 
+/** `hidden` is the repository's visibility, which a read knows; an answer
+ *  to a write leaves it out, and the row keeps what the read set. */
 export function issueEntry(
   issue: Issue,
   relations: Relations,
   synced: ReadonlySet<string>,
+  hidden?: boolean,
 ): Entry {
   const inside = (one: Related): boolean => synced.has(one.repository.id);
   const target = (one: Related): Target => ({ type: issueType, id: one.id });
@@ -176,6 +179,7 @@ export function issueEntry(
       url: issue.url,
       number: issue.number,
       repository: issue.repository.name,
+      ...(hidden !== undefined && { private: hidden }),
       author: issue.author,
       labels: issue.labels,
       assignees: issue.assignees,
@@ -196,7 +200,7 @@ export function issueEntry(
   };
 }
 
-export function commentEntry(comment: Comment): Entry {
+export function commentEntry(comment: Comment, hidden?: boolean): Entry {
   return {
     source_id: comment.node,
     properties: {
@@ -204,6 +208,7 @@ export function commentEntry(comment: Comment): Entry {
       body: unmarked(comment.body),
       from: comment.author ?? "ghost",
       repository: comment.repository.name,
+      ...(hidden !== undefined && { private: hidden }),
       url: comment.url,
     },
     occurred_at: comment.createdAt,
