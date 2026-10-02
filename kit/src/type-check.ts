@@ -54,6 +54,19 @@ function show(value: unknown): string {
   return value === undefined ? "nothing" : JSON.stringify(value);
 }
 
+/** Fields the connector carries and the server's type lacks, the difference
+ *  of a connector that grew, which an operator may put right by replacing
+ *  the type and which leaves the rows it holds as they are. */
+export function fieldsAdded(
+  carried: TypeDefinition,
+  served: Record<string, unknown>,
+): string[] {
+  const theirs = record(served["fields"]);
+  return Object.keys(record(carried.fields))
+    .filter((name) => !(name in theirs))
+    .sort();
+}
+
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,

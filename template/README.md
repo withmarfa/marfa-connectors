@@ -128,7 +128,7 @@ Once every type and connection the connector declares is registered, it has no u
 marfa keys update <key-id> --metadata-permission types=read
 ```
 
-adding `--metadata-permission edge_types=read` for a connector that registers connection types. Read on either registers nothing, and the binary names a map only with its entries, so read is how it narrows one; the rest of the key stays as it was. A later version of the connector that declares a new type needs `types=write` again until its first start has registered it.
+adding `--metadata-permission edge_types=read` for a connector that registers connection types. Read on either registers nothing, and the binary names a map only with its entries, so read is how it narrows one; the rest of the key stays as it was. A later version of the connector that declares a new type needs `types=write` again until its first start has registered it. One that adds a field to a type already registered cannot be started on its own key, since replacing a type takes `schema.write`, which a connector's key never holds: an operator replaces the type first, `marfa types update <type-id> --file <definition>`, and the rows keep their values until their next write.
 
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among live keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 

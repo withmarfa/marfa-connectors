@@ -44,7 +44,11 @@ import {
   usage,
   type Schedule,
 } from "./schedule.js";
-import { edgeTypeDifferences, typeDifferences } from "./type-check.js";
+import {
+  edgeTypeDifferences,
+  fieldsAdded,
+  typeDifferences,
+} from "./type-check.js";
 
 const heartbeatMs = 60_000;
 
@@ -86,7 +90,11 @@ async function checkType(
       : Object.keys((await marfa.type(parent))?.["fields"] ?? {});
   const differences = typeDifferences(type, served, inherited);
   if (differences.length === 0) return undefined;
-  return `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
+  const grown =
+    differences.length === fieldsAdded(type, served).length
+      ? `. The connector only adds fields, which a connector's key may not put right (replacing a type takes schema.write): an operator replaces the type with the connector's definition, \`marfa types update ${type.id} --file <definition>\`, and the rows it holds keep their values until their next write`
+      : "";
+  return `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}${grown}`;
 }
 
 /** Shipped connection types a connector may write between its own rows,
