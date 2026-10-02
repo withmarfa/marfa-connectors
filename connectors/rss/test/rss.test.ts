@@ -13,11 +13,13 @@ import {
   decodeFeed,
   feedKey,
   feedList,
+  maxFeedElements,
   maxFeedEntries,
   readFeed,
+  TooManyElements,
   TooManyEntries,
 } from "../src/feeds.js";
-import { getFeed, maxFeedBytes, TooLarge } from "../src/fetch.js";
+import { getFeed, isPrivate, maxFeedBytes, TooLarge } from "../src/fetch.js";
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
@@ -86,19 +88,19 @@ describe("a feed's identity", () => {
       feedKey("https://elsewhere.example.net/feed?token=b", "news"),
     );
     expect(named).not.toBe(feedKey("https://example.org/rss.xml?token=a"));
-    const thief = `<?xml version="1.0"?>
+    const document = `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom"><title>T</title><id>tag:example.com,2026:feed</id>
-        <entry><title>Stolen</title><id>tag:example.com,2026:entry:1</id></entry></feed>`;
-    const victim = readFeed(
+        <entry><title>Twin</title><id>tag:example.com,2026:entry:1</id></entry></feed>`;
+    const first = readFeed(
       at("https://example.com/atom.xml"),
       fixture("atom.xml"),
     );
-    const stolen = readFeed(at("https://thief.example.net/atom.xml"), thief);
-    expect(stolen.declared).toBe(victim.declared);
-    expect(stolen.entries[0]?.source_id).not.toBe(victim.entries[0]?.source_id);
+    const second = readFeed(at("https://twin.example.net/atom.xml"), document);
+    expect(second.declared).toBe(first.declared);
+    expect(second.entries[0]?.source_id).not.toBe(first.entries[0]?.source_id);
     expect(
-      stolen.entries[0]?.source_id.startsWith(
-        feedKey("https://thief.example.net/atom.xml"),
+      second.entries[0]?.source_id.startsWith(
+        feedKey("https://twin.example.net/atom.xml"),
       ),
     ).toBe(true);
   });
@@ -391,7 +393,7 @@ describe("reading a feed", () => {
   it("reads a list of feeds, and refuses an entry that is not an address", () => {
     expect(
       feedList(
-        "https://a.example.com/1\nhttps://b.example.com/2, https://a.example.com/1",
+        "https://a.example.com/1\nhttps://b.example.com/2  https://a.example.com/1",
       ),
     ).toEqual([
       {
@@ -435,6 +437,17 @@ describe("reading a feed", () => {
         "news=https://a.example.com/1 news=https://www.a.example.com/1/",
       ),
     ).toHaveLength(1);
+  });
+
+  it("keeps a comma in an address, separating entries by whitespace alone", () => {
+    expect(
+      feedList(
+        "https://a.example.com/feed?tags=a,b\thttps://b.example.com/2",
+      ).map((feed) => feed.url),
+    ).toEqual([
+      "https://a.example.com/feed?tags=a,b",
+      "https://b.example.com/2",
+    ]);
   });
 
   it("lists a feed once however it is spelled, keeping the first spelling", () => {
@@ -625,7 +638,7 @@ describe("fetching a feed", () => {
     };
     const before = process.resourceUsage().maxRSS;
     await expect(
-      getFeed(`${base}/bomb.xml`, {}, AbortSignal.timeout(30_000)),
+      getFeed(`${base}/bomb.xml`, {}, new Set(), AbortSignal.timeout(30_000)),
     ).rejects.toBeInstanceOf(TooLarge);
     const grewKiB = process.resourceUsage().maxRSS - before;
     expect(grewKiB * 1024).toBeLessThan(unpacked / 8);
@@ -643,22 +656,69 @@ describe("fetching a feed", () => {
         res.end(big);
       };
       await expect(
-        getFeed(`${base}/big.xml`, {}, AbortSignal.timeout(30_000)),
+        getFeed(`${base}/big.xml`, {}, new Set(), AbortSignal.timeout(30_000)),
       ).rejects.toBeInstanceOf(TooLarge);
     }
   });
 
-  it("refuses a feed with more entries than the cap", () => {
+  it("refuses a feed with more entries or elements than the caps before parsing it, counting entries the parser would drop", () => {
     expect(() =>
       readFeed(
         at("https://example.org/rss.xml"),
         manyItems(maxFeedEntries + 1),
       ),
     ).toThrow(TooManyEntries);
+    expect(() =>
+      readFeed(
+        at("https://example.org/rss.xml"),
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>${"<item></item>".repeat(maxFeedEntries + 1)}</channel></rss>`,
+      ),
+    ).toThrow(TooManyEntries);
+    expect(() =>
+      readFeed(
+        at("https://example.org/rss.xml"),
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><item><title>A</title><guid>a</guid>${"<x/>".repeat(maxFeedElements)}</item></channel></rss>`,
+      ),
+    ).toThrow(TooManyElements);
     expect(
       readFeed(at("https://example.org/rss.xml"), manyItems(maxFeedEntries))
         .entries,
     ).toHaveLength(maxFeedEntries);
+  });
+
+  it("takes an address on this machine or a private network for one, however an IPv6 address carries it", () => {
+    for (const address of [
+      "127.0.0.1",
+      "10.1.2.3",
+      "169.254.169.254",
+      "168.63.129.16",
+      "100.100.100.200",
+      "::1",
+      "fd00:ec2::254",
+      "fe80::1",
+      "fec0::1",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "::ffff:0:a9fe:a9fe",
+      "::127.0.0.1",
+      "64:ff9b::a9fe:a9fe",
+      "64:ff9b:1::5db8:d822",
+      "2002:7f00:1::",
+      "2002:a9fe:a9fe::1",
+      "2001:0:5db8:d822:0:0:80ff:fffe",
+    ]) {
+      expect([address, isPrivate(address)]).toEqual([address, true]);
+    }
+    for (const address of [
+      "93.184.216.34",
+      "2606:4700::1111",
+      "64:ff9b::5db8:d822",
+      "2002:5db8:d822::1",
+      "::ffff:93.184.216.34",
+      "example.org",
+    ]) {
+      expect([address, isPrivate(address)]).toEqual([address, false]);
+    }
   });
 });
 
@@ -753,6 +813,7 @@ describe("the connector, run as a process", () => {
     paths = ["/atom.xml", "/rss.xml"],
     argv = ["--once"],
     feedList = paths.map((path) => `${base}${path}`).join("\n"),
+    env: Record<string, string> = {},
   ): Promise<{ code: number | null; output: string }> {
     try {
       const { stderr } = await run("node", [built, ...argv], {
@@ -761,6 +822,7 @@ describe("the connector, run as a process", () => {
           MARFA_URL: marfa.url,
           MARFA_KEY: marfa.key,
           RSS_FEEDS: feedList,
+          ...env,
         },
         timeout: 15_000,
       });
@@ -894,14 +956,14 @@ describe("the connector, run as a process", () => {
   it("keeps two feeds that declare one id apart, whichever is listed first, and says so", async () => {
     const atom = served["/atom.xml"];
     if (typeof atom?.body !== "string") throw new Error("no atom fixture");
-    served["/thief.xml"] = {
+    served["/twin.xml"] = {
       body: atom.body
-        .replace("<title>First entry</title>", "<title>Stolen</title>")
-        .replace("<title>Second entry</title>", "<title>Stolen too</title>")
-        .replaceAll("https://example.com/", "https://thief.example.net/"),
+        .replace("<title>First entry</title>", "<title>Twin</title>")
+        .replace("<title>Second entry</title>", "<title>Twin too</title>")
+        .replaceAll("https://example.com/", "https://twin.example.net/"),
     };
     for (let run = 0; run < 2; run += 1) {
-      expect((await once(["/thief.xml", "/atom.xml"])).code).toBe(0);
+      expect((await once(["/twin.xml", "/atom.xml"])).code).toBe(0);
     }
     expect(marfa.rows).toHaveLength(4);
     const byFeed = (path: string): unknown[] =>
@@ -912,7 +974,7 @@ describe("the connector, run as a process", () => {
         )
         .map((candidate) => candidate.properties["title"]);
     expect(byFeed("/atom.xml")).toEqual(["First entry", "Second entry"]);
-    expect(byFeed("/thief.xml")).toEqual(["Stolen", "Stolen too"]);
+    expect(byFeed("/twin.xml")).toEqual(["Twin", "Twin too"]);
     expect(marfa.rows.every((candidate) => candidate.version === 1)).toBe(true);
     expect(marfa.runs[0]?.summary).toContain(
       `feed 2 in RSS_FEEDS (${base}) declares the same feed id as feed 1 in RSS_FEEDS (${base}), and each keeps its own entries`,
@@ -1108,7 +1170,7 @@ describe("the connector, run as a process", () => {
     const summary = marfa.runs.at(-1)?.summary ?? "";
     for (const position of [1, 3]) {
       expect(summary).toContain(
-        `feed ${String(position)} in RSS_FEEDS (${base}) is larger than 16 MiB, so it is skipped`,
+        `feed ${String(position)} in RSS_FEEDS (${base}) is larger than 24 MiB, so it is skipped`,
       );
     }
   });
@@ -1122,49 +1184,53 @@ describe("the connector, run as a process", () => {
     );
   });
 
-  it("refuses a redirect to this machine, by address or by a name resolved to it, and follows one on the listed host", async () => {
+  it("refuses a redirect to this machine or a private network, by address, by an IPv6 form carrying one or by a name resolved to it", async () => {
     const port = new URL(base).port;
-    served["/to-loopback"] = { body: "", redirect: `${base}/rss.xml` };
-    served["/to-name"] = {
+    const targets = [
+      `http://localhost:${port}/rss.xml`,
+      `http://[::1]:${port}/rss.xml`,
+      `http://[::ffff:127.0.0.1]:${port}/rss.xml`,
+      `http://[64:ff9b::7f00:1]:${port}/rss.xml`,
+      "http://169.254.169.254/latest/",
+    ];
+    targets.forEach((target, at) => {
+      served[`/to/${String(at)}`] = { body: "", redirect: target };
+    });
+    const { code } = await once(targets.map((_, at) => `/to/${String(at)}`));
+    expect(code).toBe(0);
+    expect(marfa.rows).toHaveLength(0);
+    expect(asked.map((request) => request.path)).toEqual(
+      targets.map((_, at) => `/to/${String(at)}`),
+    );
+    const summary = marfa.runs.at(-1)?.summary ?? "";
+    targets.forEach((_, at) => {
+      expect(summary).toContain(
+        `feed ${String(at + 1)} in RSS_FEEDS (${base}) redirected to an address on this machine or a private network, which is not followed`,
+      );
+    });
+  });
+
+  it("reads a feed whose host resolves to this machine only when RSS_PRIVATE_HOSTS names it, and follows its redirects there", async () => {
+    const port = new URL(base).port;
+    served["/via-name"] = {
       body: "",
       redirect: `http://localhost:${port}/rss.xml`,
     };
-    served["/to-v6"] = { body: "", redirect: `http://[::1]:${port}/rss.xml` };
-    served["/to-metadata"] = {
-      body: "",
-      redirect: "http://169.254.169.254/latest/meta-data/",
-    };
-    const { code } = await once(
-      [],
-      ["--once"],
-      [
-        `http://localhost:${port}/to-loopback`,
-        `${base}/to-name`,
-        `http://localhost:${port}/to-v6`,
-        `http://localhost:${port}/to-metadata`,
-      ].join("\n"),
+    const listed = `http://localhost:${port}/via-name`;
+    expect((await once([], ["--once"], listed)).code).toBe(0);
+    expect(asked).toHaveLength(0);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 1 in RSS_FEEDS (http://localhost:${port}) is on this machine or a private network, which is read only when RSS_PRIVATE_HOSTS names its host`,
     );
-    expect(code).toBe(0);
-    expect(marfa.rows).toHaveLength(0);
-    expect(asked.map((request) => request.path)).toEqual([
-      "/to-loopback",
-      "/to-name",
-      "/to-v6",
-      "/to-metadata",
-    ]);
-    const summary = marfa.runs.at(-1)?.summary ?? "";
-    expect(summary).toContain(
-      `feed 1 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine or a private network, which is not followed`,
-    );
-    expect(summary).toContain(
-      `feed 2 in RSS_FEEDS (${base}) redirected to an address on this machine or a private network`,
-    );
-    expect(summary).toContain(
-      `feed 3 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine`,
-    );
-    expect(summary).toContain(
-      `feed 4 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine`,
-    );
+    expect(
+      (
+        await once([], ["--once"], listed, {
+          RSS_PRIVATE_HOSTS: "nas.example LOCALHOST",
+        })
+      ).code,
+    ).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([301, 200]);
+    expect(marfa.rows).toHaveLength(2);
   });
 
   it("stops following a feed's redirects after five", async () => {
@@ -1288,5 +1354,71 @@ describe("the connector, run as a process", () => {
     expect(
       marfa.rows.map((candidate) => candidate.source_id?.split(":")[0]),
     ).toEqual([address, address]);
+  });
+
+  it("brings back no entry a person trashed or purged before the feed was renamed, however often it is read after", async () => {
+    expect((await once([], ["--once"], `blog=${base}/atom.xml`)).code).toBe(0);
+    const first = row("tag:example.com,2026:entry:1");
+    const second = row("tag:example.com,2026:entry:2");
+    marfa.trash(first.id);
+    marfa.trash(second.id);
+    marfa.purgeById(second.id);
+    const atom = served["/atom.xml"];
+    if (typeof atom?.body !== "string") throw new Error("no atom fixture");
+    for (const [run, name] of ["journal", "journal", "notes"].entries()) {
+      atom.body = atom.body.replace("</feed>", "<!-- changed --></feed>");
+      atom.etag = `"atom-run-${String(run)}"`;
+      expect(
+        (await once([], ["--once"], `${name}=${base}/atom.xml`)).code,
+      ).toBe(0);
+    }
+    expect(asked.map((request) => request.answered)).toEqual([
+      200, 200, 200, 200,
+    ]);
+    expect(
+      marfa.rows.filter((candidate) => candidate.state === "active"),
+    ).toEqual([]);
+    expect(marfa.rows).toHaveLength(1);
+  });
+
+  it("moves no row from an earlier key two saved feeds held, and says so", async () => {
+    served["/other.xml"] = { body: fixture("atom.xml") };
+    expect((await once(["/atom.xml", "/other.xml"])).code).toBe(0);
+    const atomKey = feedKey(`${base}/atom.xml`);
+    const otherKey = feedKey(`${base}/other.xml`);
+    const declared = createHash("sha256")
+      .update("feed-id:tag:example.com,2026:feed")
+      .digest("hex")
+      .slice(0, 32);
+    for (const candidate of marfa.rows.filter((r) =>
+      r.source_id?.startsWith(atomKey),
+    )) {
+      candidate.source_id = candidate.source_id?.replace(atomKey, declared);
+    }
+    marfa.rows = marfa.rows.filter((r) => !r.source_id?.startsWith(otherKey));
+    const kept = marfa.states.get("rss") as {
+      state: { feeds: Record<string, Record<string, unknown>> };
+    };
+    kept.state.feeds = {
+      [otherKey]: { key: declared },
+      [atomKey]: { key: declared },
+    };
+    const old = marfa.rows.map((candidate) => [
+      candidate.id,
+      candidate.source_id,
+    ]);
+    expect((await once(["/other.xml", "/atom.xml"])).code).toBe(0);
+    expect(
+      old.every(([id, key]) =>
+        marfa.rows.some((r) => r.id === id && r.source_id === key),
+      ),
+    ).toBe(true);
+    expect(marfa.rows).toHaveLength(6);
+    const summary = marfa.runs.at(-1)?.summary ?? "";
+    for (const position of [1, 2]) {
+      expect(summary).toContain(
+        `rows written for feed ${String(position)} in RSS_FEEDS (${base}) before share their key with another feed's, so they are left as they are and its entries are written anew`,
+      );
+    }
   });
 });

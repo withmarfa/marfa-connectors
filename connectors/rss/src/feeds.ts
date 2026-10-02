@@ -7,8 +7,34 @@ import { getFeed } from "./fetch.js";
 /** Past it a feed is skipped: its entries would be a run's worth of writes. */
 export const maxFeedEntries = 5000;
 
+/** Parsing holds an object per element, so their count, more than the
+ *  bytes, sets the memory a feed takes; the largest real feeds hold about
+ *  200,000. */
+export const maxFeedElements = 300_000;
+
 export class TooManyEntries extends Error {
   override name = "TooManyEntries";
+}
+
+export class TooManyElements extends Error {
+  override name = "TooManyElements";
+}
+
+/** Counted in the text before it is parsed, so a feed past either cap costs
+ *  no parse; a tag inside CDATA counts too, which errs toward refusing. */
+function countTags(text: string): void {
+  const tag = /<(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)/g;
+  let elements = 0;
+  let entries = 0;
+  for (let match = tag.exec(text); match !== null; match = tag.exec(text)) {
+    elements += 1;
+    if (elements > maxFeedElements) throw new TooManyElements();
+    const name = match[1];
+    if (name === "item" || name === "entry") {
+      entries += 1;
+      if (entries > maxFeedEntries) throw new TooManyEntries();
+    }
+  }
 }
 
 export interface Feed {
@@ -56,7 +82,7 @@ function isAddress(value: string): boolean {
  * one unnamed address are one feed, read once.
  */
 export function feedList(value: string): Feed[] {
-  const parts = value.split(/[\s,]+/).filter((part) => part !== "");
+  const parts = value.split(/\s+/).filter((part) => part !== "");
   const read = parts.map((part, at) => {
     const named = /^https?:\/\//i.test(part)
       ? undefined
@@ -147,9 +173,21 @@ export function decodeFeed(
   return new TextDecoder("utf-8").decode(bytes);
 }
 
+/** Hosts the owner allows to resolve to this machine or a private network,
+ *  separated by whitespace. */
+export function privateHosts(value: string | undefined): Set<string> {
+  return new Set(
+    (value ?? "")
+      .split(/\s+/)
+      .filter((host) => host !== "")
+      .map((host) => host.toLowerCase().replace(/^\[|\]$/g, "")),
+  );
+}
+
 export async function fetchFeed(
   feed: Feed,
   validators: Validators | undefined,
+  allowed: ReadonlySet<string>,
   signal: AbortSignal,
 ): Promise<Fetched> {
   const headers: Record<string, string> = {
@@ -161,7 +199,7 @@ export async function fetchFeed(
   if (validators?.last_modified !== undefined) {
     headers["If-Modified-Since"] = validators.last_modified;
   }
-  const answer = await getFeed(feed.url, headers, signal);
+  const answer = await getFeed(feed.url, headers, allowed, signal);
   if (answer.bytes === undefined) return { status: answer.status };
   const header = (name: string): string | undefined => {
     const value = answer.headers[name];
@@ -339,11 +377,14 @@ export const entryFields = [
   "feed_hash",
 ] as const;
 
-/** The `xml:base` on an RSS 2.0 `<channel>`, which feedsmith does not read. */
+/** The `xml:base` on an RSS 2.0 `<channel>`, which feedsmith does not read,
+ *  taken from that start tag alone rather than a second parse of the feed. */
 function channelBaseOf(text: string): string | undefined {
+  const start = /<channel\b[^>]*>/.exec(text)?.[0];
+  if (start === undefined) return undefined;
   const channel = DomUtils.findOne(
     (element) => element.name === "channel",
-    parseDocument(text, { xmlMode: true }).children,
+    parseDocument(start, { xmlMode: true }).children,
   );
   return channel?.attribs["xml:base"];
 }
@@ -353,16 +394,8 @@ export function readFeed(
   text: string,
   documentUrl: string = feed.url,
 ): Read {
+  countTags(text);
   const parsed = parseFeed(text);
-  const count =
-    parsed.format === "atom"
-      ? parsed.feed.entries?.length
-      : parsed.format === "rss"
-        ? parsed.feed.items?.length
-        : undefined;
-  if (count !== undefined && count > maxFeedEntries) {
-    throw new TooManyEntries();
-  }
   const { key } = feed;
   const named = {
     feed_origin: new URL(feed.url).origin,

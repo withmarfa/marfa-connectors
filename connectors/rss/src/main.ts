@@ -8,16 +8,19 @@ import {
   feedList,
   feedName,
   fetchFeed,
-  readFeed,
-  TooManyEntries,
+  maxFeedElements,
   maxFeedEntries,
+  privateHosts,
+  readFeed,
+  TooManyElements,
+  TooManyEntries,
   type Feed,
   type Validators,
 } from "./feeds.js";
 import {
   maxFeedBytes,
   maxRedirects,
-  RefusedRedirect,
+  RefusedAddress,
   TooLarge,
   TooManyRedirects,
 } from "./fetch.js";
@@ -29,6 +32,12 @@ interface FeedState {
   address?: string;
   /** The key the feed's rows were last written under. */
   key?: string;
+  /** Keys its rows were written under before, newest first: a row in the bin
+   *  or purged stays under one, so every read names them. */
+  was?: string[];
+  /** Earlier keys another saved feed also wrote under, whose rows are left
+   *  where they are rather than handed to either. */
+  shared?: string[];
   unkeyed?: number;
   declared?: string;
 }
@@ -40,8 +49,13 @@ function refusal(error: unknown): string | undefined {
   if (error instanceof TooManyEntries) {
     return `carries more than ${String(maxFeedEntries)} entries, so it is skipped`;
   }
-  if (error instanceof RefusedRedirect) {
-    return "redirected to an address on this machine or a private network, which is not followed";
+  if (error instanceof TooManyElements) {
+    return `holds more than ${String(maxFeedElements)} elements, so it is skipped`;
+  }
+  if (error instanceof RefusedAddress) {
+    return error.hop === 0
+      ? "is on this machine or a private network, which is read only when RSS_PRIVATE_HOSTS names its host"
+      : "redirected to an address on this machine or a private network, which is not followed";
   }
   if (error instanceof TooManyRedirects) {
     return `redirected more than ${String(maxRedirects)} times, so it is skipped`;
@@ -64,24 +78,36 @@ const connector = defineConnector({
   // A secret, since a private feed's address carries its token.
   env: {
     RSS_FEEDS: "secret",
+    RSS_PRIVATE_HOSTS: "optional",
   },
   checkEnv(env) {
     feedList(env.RSS_FEEDS);
   },
   async run({ env, signal, state, log, upsert }) {
     const feeds = feedList(env.RSS_FEEDS);
+    const allowed = privateHosts(env.RSS_PRIVATE_HOSTS);
     const known = (state.get("feeds") ?? {}) as Record<string, FeedState>;
     const configured = new Set(feeds.map((feed) => feed.key));
     const claimed = new Set<string>();
     const kept: Record<string, FeedState> = {};
     const declaredBy = new Map<string, Feed>();
+    const holders = new Map<string, number>();
+    for (const held of Object.values(known)) {
+      for (const key of new Set([
+        ...(held.key === undefined ? [] : [held.key]),
+        ...(held.was ?? []),
+      ])) {
+        holders.set(key, (holders.get(key) ?? 0) + 1);
+      }
+    }
 
     // A feed renamed, or named for the first time, finds its rows by its
     // address; one moved under its name keeps its key.
     const previous = (feed: Feed): FeedState => {
       const own = known[feed.key];
-      if (own !== undefined)
+      if (own !== undefined) {
         return { ...own, address: own.address ?? feed.key };
+      }
       for (const [key, held] of Object.entries(known)) {
         if (configured.has(key) || claimed.has(key)) continue;
         const address = held.address ?? key;
@@ -106,6 +132,12 @@ const connector = defineConnector({
             : `${String(count)} entries in ${name} carry neither an id nor a link, and are left out`,
         );
       }
+      if ((held.shared ?? []).length > 0) {
+        log.condition(
+          `shared:${feed.key}`,
+          `rows written for ${name} before share their key with another feed's, so they are left as they are and its entries are written anew`,
+        );
+      }
       if (held.declared === undefined) return;
       const first = declaredBy.get(held.declared);
       if (first === undefined) {
@@ -121,16 +153,34 @@ const connector = defineConnector({
     for (const feed of feeds) {
       const name = feedName(feed);
       const held = previous(feed);
-      kept[feed.key] = held;
+      const earlier = [
+        ...new Set([
+          ...(held.key === undefined ? [] : [held.key]),
+          ...(held.was ?? []),
+        ]),
+      ].filter((key) => key !== feed.key);
+      const shared = [
+        ...new Set([
+          ...(held.shared ?? []),
+          ...earlier.filter((key) => (holders.get(key) ?? 0) > 1),
+        ]),
+      ];
+      const was = earlier.filter((key) => !shared.includes(key));
+      const carried: FeedState = {
+        ...held,
+        ...(was.length > 0 && { was }),
+        ...(shared.length > 0 && { shared }),
+      };
+      kept[feed.key] = carried;
       let fetched;
       try {
-        // Rows still under another key are read whole, so they move now.
+        // Rows not yet under this key are read whole, so they move now.
         fetched = await fetchFeed(
           feed,
-          held.address === feed.address &&
-            (held.key === undefined || held.key === feed.key)
+          held.address === feed.address && held.key === feed.key
             ? held.validators
             : undefined,
+          allowed,
           signal,
         );
       } catch (error) {
@@ -140,11 +190,11 @@ const connector = defineConnector({
           why === undefined ? `unreachable:${feed.key}` : `refused:${feed.key}`,
           `${name} ${why ?? "could not be fetched"}`,
         );
-        raise(feed, held);
+        raise(feed, carried);
         continue;
       }
       if (fetched.status === 304) {
-        raise(feed, held);
+        raise(feed, carried);
         continue;
       }
       if (!("text" in fetched)) {
@@ -152,7 +202,7 @@ const connector = defineConnector({
           `status:${feed.key}`,
           `${name} answered ${String(fetched.status)}`,
         );
-        raise(feed, held);
+        raise(feed, carried);
         continue;
       }
       let read;
@@ -164,27 +214,28 @@ const connector = defineConnector({
           why === undefined ? `unreadable:${feed.key}` : `refused:${feed.key}`,
           `${name} ${why ?? "is not an Atom or RSS 2.0 feed"}`,
         );
-        raise(feed, held);
+        raise(feed, carried);
         continue;
       }
       const now: FeedState = {
         validators: fetched.validators,
         address: feed.address,
         key: feed.key,
+        ...(was.length > 0 && { was }),
+        ...(shared.length > 0 && { shared }),
         ...(read.unkeyed > 0 && { unkeyed: read.unkeyed }),
         ...(read.declared !== undefined && { declared: read.declared }),
       };
       kept[feed.key] = now;
       raise(feed, now);
-      const from = held.key;
       await upsert(
         rssEntry.id,
-        from === undefined || from === feed.key
+        was.length === 0
           ? read.entries
-          : read.entries.map((entry) => ({
-              ...entry,
-              movedFrom: `${from}${entry.source_id.slice(feed.key.length)}`,
-            })),
+          : read.entries.map((entry) => {
+              const id = entry.source_id.slice(feed.key.length);
+              return { ...entry, movedFrom: was.map((key) => `${key}${id}`) };
+            }),
       );
     }
     state.set("feeds", kept);

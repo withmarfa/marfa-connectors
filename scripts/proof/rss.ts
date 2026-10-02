@@ -331,7 +331,7 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
     );
 
     await check(
-      "rss: a compressed bomb, a feed declaring another's id and a redirect to this machine are each refused or kept apart, and the honest feed still lands",
+      "rss: a feed past the size cap is skipped, two feeds declaring one id are kept apart and a redirect to this machine is refused, and the other feed's rows stand",
       async () => {
         const port = new URL(served.url).port;
         const atom = served.feeds["/atom.xml"];
@@ -341,23 +341,23 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
           etag: '"bomb"',
           encoding: "gzip",
         };
-        served.feeds["/thief.xml"] = {
+        served.feeds["/twin.xml"] = {
           body: String(atom.body).replace(
             /<title>[^<]*<\/title>/g,
-            "<title>Stolen</title>",
+            "<title>Twin</title>",
           ),
-          etag: '"thief"',
+          etag: '"twin"',
         };
         served.feeds["/hop"] = {
           body: "",
           etag: '"hop"',
-          redirect: `${served.url}/rss.xml`,
+          redirect: `http://localhost:${port}/rss.xml`,
         };
         const hostile = new ConnectorUnderProof("rss", url, key.key, {
           RSS_FEEDS: [
             `${served.url}/bomb.xml`,
-            `${served.url}/thief.xml`,
-            `http://localhost:${port}/hop`,
+            `${served.url}/twin.xml`,
+            `${served.url}/hop`,
             `${served.url}/atom.xml`,
           ].join("\n"),
         });
@@ -366,38 +366,36 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
         if (code !== 0)
           throw new Error(`the run exited ${String(code)}: ${output}`);
         const after = [...(await rows()).values()];
-        const thieves = after.filter(
-          (row) => row.properties["title"] === "Stolen",
-        );
-        const honest = after.filter(
+        const twins = after.filter((row) => row.properties["title"] === "Twin");
+        const others = after.filter(
           (row) =>
             String(row.properties["entry_id"]).startsWith("tag:example.com") &&
-            row.properties["title"] !== "Stolen",
+            row.properties["title"] !== "Twin",
         );
         const { summary } = await lastRun(marfa, key.id);
         const said = [
           "feed 1 in RSS_FEEDS",
-          "is larger than 16 MiB, so it is skipped",
+          "is larger than 24 MiB, so it is skipped",
           "feed 4 in RSS_FEEDS",
           "declares the same feed id as feed 2 in RSS_FEEDS",
-          `feed 3 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine or a private network`,
+          `feed 3 in RSS_FEEDS (${served.url}) redirected to an address on this machine or a private network`,
         ];
         const missing = said.filter((text) => summary?.includes(text) !== true);
         if (
-          thieves.length !== 2 ||
-          honest.length < 2 ||
-          new Set(thieves.map(feedHashed)).size !== 1 ||
-          thieves.some((row) => before.has(row.source_id ?? "")) ||
-          honest.some((row) =>
-            thieves.some((thief) => feedHashed(thief) === feedHashed(row)),
+          twins.length !== 2 ||
+          others.length < 2 ||
+          new Set(twins.map(feedHashed)).size !== 1 ||
+          twins.some((row) => before.has(row.source_id ?? "")) ||
+          others.some((row) =>
+            twins.some((twin) => feedHashed(twin) === feedHashed(row)),
           ) ||
           missing.length > 0
         ) {
           throw new Error(
-            `${String(thieves.length)} stolen rows, ${String(honest.length)} honest; missing ${missing.join(" | ")}; reported ${String(summary)}`,
+            `${String(twins.length)} rows of the second feed, ${String(others.length)} of the first; missing ${missing.join(" | ")}; reported ${String(summary)}`,
           );
         }
-        return `the bomb skipped, the redirect refused, the thief's 2 entries written under its own key beside the honest feed's rows, which kept their titles; reported ${String(summary)}`;
+        return `the oversized feed skipped, the redirect refused, the second feed declaring the first's id written under its own key beside the first's rows, which kept their titles; reported ${String(summary)}`;
       },
     );
   } finally {
