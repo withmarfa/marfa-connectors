@@ -1768,8 +1768,11 @@ describe("the connector, run as a process", () => {
     const work = feedKey(`${base}/atom.xml`, "work");
     expect(kept()[work]?.["left"]).toEqual(expect.any(String));
     Reflect.deleteProperty(served, "/atom.xml");
-    expect((await once([], ["--once"], `work=${base}/atom.xml`)).code).toBe(0);
-    expect(asked.at(-1)?.answered).toBe(404);
+    expect(
+      (await once([], ["--once"], `work=${base}/atom.xml\n${base}/rss.xml`))
+        .code,
+    ).toBe(0);
+    expect(asked.at(-2)?.answered).toBe(404);
     expect(kept()[work]).not.toHaveProperty("left");
   });
 

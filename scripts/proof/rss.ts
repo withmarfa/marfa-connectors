@@ -480,11 +480,12 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
       "rss: a run whose state the server will not keep, being past its cap, is reported failed after the save, and the state kept before stands",
       async () => {
         const many: string[] = [];
-        for (let at = 0; at < 45; at += 1) {
+        // Each validator is kept up to 1 KiB, so enough feeds pass the cap.
+        for (let at = 0; at < 600; at += 1) {
           const path = `/big-etag/${String(at)}.xml`;
           served.feeds[path] = {
             body: '<?xml version="1.0"?><rss version="2.0"><channel><title>Empty</title></channel></rss>',
-            etag: `"${String(at)}-${"e".repeat(14_000)}"`,
+            etag: `"${String(at)}-${"e".repeat(1000)}"`,
           };
           many.push(`${served.url}${path}`);
         }
