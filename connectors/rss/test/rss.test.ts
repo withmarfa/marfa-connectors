@@ -466,7 +466,7 @@ describe("reading a feed", () => {
       "http://nas.example",
       "nas.example:8080",
       "nas.example/feed",
-      "user@nas.example",
+      "nas.example#top",
     ]) {
       expect(() => privateHosts(bad)).toThrow(
         "RSS_PRIVATE_HOSTS holds an entry that is not a host name",
