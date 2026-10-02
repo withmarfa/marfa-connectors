@@ -505,7 +505,8 @@ describe("what the write review found", () => {
     );
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     const output = await ok();
-    expect(output).toContain(`GitHub refused ${made.id}`);
+    expect(output).toContain(made.id);
+    expect(output).toContain("GitHub refused the new issue in someone/tracker");
     expect(github.issues.some((one) => one.title === "Labelled")).toBe(false);
   });
 
@@ -520,6 +521,7 @@ describe("what the write review found", () => {
     );
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     await ok();
     expect(
@@ -533,6 +535,7 @@ describe("what the write review found", () => {
     );
     marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     await ok();
     expect(
@@ -616,6 +619,7 @@ describe("what the adversarial review found", () => {
     );
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     marfa.trash(made.id);
     expect(await ok()).toContain("trashed before GitHub answered its create");
@@ -644,6 +648,7 @@ describe("what the adversarial review found", () => {
     );
     marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     marfa.trash(said.id);
     expect(await ok()).toContain("trashed before GitHub answered its create");
@@ -667,6 +672,7 @@ describe("what the adversarial review found", () => {
     await ok();
     const second = place("Same");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     await ok();
     await ok();
@@ -691,6 +697,7 @@ describe("what the adversarial review found", () => {
     );
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     marfa.edit(made.id, { title: "Second name" });
     await ok();
@@ -712,6 +719,7 @@ describe("what the adversarial review found", () => {
     await ok();
     marfa.restore(id);
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     await ok();
     await ok();
@@ -834,6 +842,7 @@ describe("what the fix review found", () => {
     );
     marfa.drawEdge(second.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
+    github.listLate = true;
     await expect(ok()).rejects.toThrow();
     const made = github.issues.find((one) => one.title === "Row B");
     github.writesLimited = undefined;
@@ -848,7 +857,7 @@ describe("what the fix review found", () => {
     ]);
   });
 
-  it("keeps a comment's remake waiting where GitHub refuses it, and makes it once it may", async () => {
+  it("does not ask GitHub again for a comment's remake it refused, and makes it once the row changes", async () => {
     const issue = github.addIssue(repository);
     const comment = ours(issue, "Keep this");
     await ok();
@@ -857,12 +866,16 @@ describe("what the fix review found", () => {
     await ok();
     repository.archived = true;
     marfa.restore(id);
-    await ok();
+    expect(await ok()).toContain("Repository was archived");
     repository.archived = false;
+    const before = github.writes().length;
+    await ok();
+    expect(github.writes().slice(before)).toEqual([]);
+    marfa.edit(id, { body: "Keep this, again" });
     await ok();
     expect(
       github.comments.filter(
-        (one) => !one.deleted && unmarked(one.body) === "Keep this",
+        (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
       ),
     ).toHaveLength(1);
   });
@@ -1195,5 +1208,90 @@ describe("an installation that refuses the App", () => {
         one.body.startsWith("Posted beside a lost installation"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("a create GitHub made but answered with a server error", () => {
+  it("is found at once and linked, made once, and the run goes on", async () => {
+    const issue = github.addIssue(repository, { title: "Home" });
+    await ok();
+    const made = marfa.insert(
+      undefined,
+      { title: "Made once" },
+      "github.issue",
+      "person",
+    );
+    marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
+    github.loseNextCreate = true;
+    await settled();
+    const said = marfa.insert(
+      undefined,
+      { body: "Said once", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    github.loseNextCreate = true;
+    await settled();
+    const issues = github.issues.filter((one) => one.title === "Made once");
+    const comments = github.comments.filter(
+      (one) => unmarked(one.body) === "Said once",
+    );
+    expect([issues.length, comments.length]).toEqual([1, 1]);
+    expect(marfa.byId(made.id).properties["github_id"]).toBe(issues[0]?.node);
+    expect(marfa.byId(said.id).properties["github_id"]).toBe(comments[0]?.node);
+  });
+});
+
+describe("a change GitHub does not take", () => {
+  it("is not taken as agreed when refused: it is not asked again as it stands, and lands whole once the row changes", async () => {
+    const archived = github.addRepository("someone/old", { archived: true });
+    const stuck = github.addIssue(archived, { title: "Stuck" });
+    await ok();
+    const id = row(stuck.node).id;
+    marfa.edit(id, { title: "Stuck, edited" });
+    const output = await ok();
+    expect(output).toContain("Repository was archived");
+    const before = github.writes().length;
+    await ok();
+    expect(github.writes().slice(before)).toEqual([]);
+    expect(marfa.byId(id).properties["title"]).toBe("Stuck, edited");
+    archived.archived = false;
+    marfa.edit(id, { body: "Now with a body" });
+    await ok();
+    expect([stuck.title, stuck.body]).toEqual([
+      "Stuck, edited",
+      "Now with a body",
+    ]);
+  });
+
+  it("waits, rather than settling as gone, where the repository turned issues off", async () => {
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    const id = row(issue.node).id;
+    repository.issuesOff = true;
+    marfa.edit(id, { title: "After" });
+    const output = await ok();
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(marfa.agreements.get(id)?.waiting).toBe(true);
+    repository.issuesOff = false;
+    await ok();
+    expect(issue.title).toBe("After");
+  });
+
+  it("does not post again under the App a comment whose author in Marfa is not the one GitHub gave", async () => {
+    const issue = github.addIssue(repository);
+    const comment = github.addComment(issue, "Theirs");
+    await ok();
+    const id = row(comment.node).id;
+    marfa.edit(id, { from: bot });
+    marfa.trash(id);
+    await ok();
+    comment.deleted = true;
+    marfa.restore(id);
+    marfa.refuseNext(`PATCH /items/${id}`, 409, "version_conflict");
+    const output = await ok();
+    expect(github.comments.filter((one) => !one.deleted)).toEqual([]);
+    expect(output).toContain("waits");
   });
 });

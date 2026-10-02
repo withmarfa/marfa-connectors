@@ -744,6 +744,49 @@ export async function proveGitHub(
         return `GitHub holds the edit; tokens minted for ${JSON.stringify(minted)}`;
       },
     );
+
+    await check(
+      "github: a change GitHub refuses is not asked again as it stands, and lands whole once the row changes; a create GitHub made but answered with a server error is found and linked, made once",
+      async () => {
+        const archived = github.addRepository("someone/frozen", {
+          archived: true,
+        });
+        const stuck = github.addIssue(archived, { title: "Stuck" });
+        await runOnce();
+        await edit(marfa, await row(stuck.node), { title: "Stuck, edited" });
+        const refused = await runOnce();
+        const writes = github.writes().length;
+        await runOnce();
+        const quiet = github.writes().length === writes;
+        archived.archived = false;
+        await edit(marfa, await row(stuck.node), { body: "Now with a body" });
+        await runOnce();
+        const said = await create(marfa, "github.comment", {
+          body: "Said once, through a 502",
+          from: "me",
+        });
+        await connect(marfa, said, await row(parent.node), "in-thread");
+        github.loseNextCreate = true;
+        await runOnce();
+        const posted = github.comments.filter((one) =>
+          one.body.startsWith("Said once, through a 502"),
+        );
+        const link = (await item(marfa, said.id)).properties["github_id"];
+        if (
+          !refused.includes("Repository was archived") ||
+          !quiet ||
+          stuck.title !== "Stuck, edited" ||
+          stuck.body !== "Now with a body" ||
+          posted.length !== 1 ||
+          link !== posted[0]?.node
+        ) {
+          throw new Error(
+            `${quiet ? "not asked again" : "asked again"}; GitHub holds ${JSON.stringify([stuck.title, stuck.body])} and ${String(posted.length)} comments, the row linked to ${String(link)}`,
+          );
+        }
+        return "refused once and named, not asked again, then sent whole after the next edit; the comment answered 502 found by its mark, once, and linked";
+      },
+    );
   } finally {
     await github.stop();
   }
