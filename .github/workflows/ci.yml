@@ -94,8 +94,8 @@ jobs:
       - run: pnpm build
       - run: pnpm proof
 
-  # Not a required check: nothing else builds the image or reads the launchd
-  # example, so a change to either, or to what the image copies, runs this.
+  # Nothing else builds the image or reads the launchd example, so a change to
+  # either, or to what the image copies, runs this.
   image:
     name: Image
     needs: changes
@@ -121,7 +121,7 @@ jobs:
         run: |
           for dir in template/connector connectors/*; do
             name="$(node -p "require('./${dir}/package.json').name")"
-            docker build -f template/Dockerfile --build-arg CONNECTOR="${name}" -t "image-${name}" .
+            docker build -f template/Dockerfile --build-arg CONNECTOR="${name}" --build-arg CONNECTOR_DIR="${dir}" -t "image-${name}" .
           done
       - name: Check each image holds the pinned client
         run: node --experimental-strip-types scripts/check-image-client.ts $(docker images --format '{{.Repository}}' 'image-*')
