@@ -478,14 +478,17 @@ export class Marfa {
   }
 
   /** `/items?type=` matches subtypes, so callers filter by exact type. */
-  async ownRows(type: string): Promise<Item[]> {
+  async ownRows(
+    type: string,
+    state: "any" | "active" = "any",
+  ): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
       const { data, error, response } = await this.client.GET("/items", {
         params: {
           query: {
             type,
-            state: "any",
+            state,
             limit: 200,
             ...(cursor !== undefined && { cursor }),
           },

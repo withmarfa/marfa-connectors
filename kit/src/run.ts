@@ -509,6 +509,23 @@ export async function runOnce<E extends EnvDeclaration>(
           return structuredClone(row);
         });
     },
+    held: async (type) => {
+      const { rows, spec } = lane(type);
+      const found = await setup.marfa.ownRows(type, "active");
+      return found
+        .filter(
+          (row) =>
+            row.type === type &&
+            row.state === "active" &&
+            (spec.link === undefined
+              ? row.source === spec.source
+              : rows.linkOf(row.properties) !== undefined),
+        )
+        .map((row) => {
+          rows.adopt(row);
+          return structuredClone(row);
+        });
+    },
   };
   const watchContext: WatchContext<E> = {
     env,

@@ -130,6 +130,8 @@ export interface Vendor {
   derive?: { keys: string[]; values: Record<string, unknown> };
   ask?: { connection: string; target: Target } | undefined;
   answers?: string[][];
+  askHeld?: boolean;
+  heldAnswers?: string[][];
 }
 
 export function vendor(entries: Entry[] = []): Vendor {
@@ -201,6 +203,12 @@ function twoWayConnector(held: Vendor) {
         );
         (held.answers ??= []).push(
           rows.map((row) => String(row.properties["vendor_id"])),
+        );
+      }
+      if (held.askHeld === true) {
+        const rows = await context.held(testType.id);
+        (held.heldAnswers ??= []).push(
+          rows.map((row) => String(row.properties["vendor_id"])).sort(),
         );
       }
       if (held.failAfter !== undefined) throw held.failAfter;

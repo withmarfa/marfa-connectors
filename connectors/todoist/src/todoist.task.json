@@ -29,10 +29,6 @@
     "child_order": {
       "type": "integer",
       "description": "Where the task sits among its siblings in Todoist."
-    },
-    "comment_count": {
-      "type": "integer",
-      "description": "How many comments the task has in Todoist."
     }
   },
   "display_hints": {

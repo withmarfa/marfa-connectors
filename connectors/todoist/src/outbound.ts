@@ -19,6 +19,7 @@ import {
   Unanswered,
   user,
   uuidFor,
+  floatingTime,
   type Command,
   type CommandAnswer,
   type CommandError,
@@ -31,9 +32,16 @@ import todoistTask from "./todoist.task.json" with { type: "json" };
 export const outboundEnv = {
   TODOIST_API_TOKEN: "secret",
   TODOIST_API_URL: "optional",
+  TODOIST_READ_ONLY: "optional",
 } as const satisfies EnvDeclaration;
 
 export type OutboundEnv = typeof outboundEnv;
+
+export function readOnly(env: {
+  TODOIST_READ_ONLY?: string | undefined;
+}): boolean {
+  return env.TODOIST_READ_ONLY === "true";
+}
 
 export const linkField = todoistTask.link_field;
 
@@ -41,7 +49,14 @@ export interface TaskArgs {
   content: string;
   description: string;
   priority: number;
-  due: { date: string } | null;
+  due: Due | null;
+}
+
+interface Due {
+  date: string;
+  string?: string;
+  lang?: string;
+  timezone?: string;
 }
 
 export function argsOf(item: Item, timeZone: string): TaskArgs {
@@ -113,6 +128,10 @@ function linkOf(item: Item): string | undefined {
 
 function isNotFound(answer: CommandError | undefined): boolean {
   return answer?.error_code === 22 || answer?.error_tag === "ITEM_NOT_FOUND";
+}
+
+function isProjectGone(answer: CommandError | undefined): boolean {
+  return answer?.error_code === 21 || answer?.error_tag === "PROJECT_NOT_FOUND";
 }
 
 const scope = "Todoist";
@@ -209,7 +228,7 @@ async function carried(
     return;
   }
 
-  await sync(item, taskId, timeZone, todoist, context);
+  await sync(item, kind, taskId, timeZone, todoist);
 }
 
 async function remade(
@@ -221,7 +240,11 @@ async function remade(
   const taskId = linkOf(item);
   if (taskId === undefined) return false;
   const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
-  if ((await todoist.task(taskId)) !== "missing") return false;
+  const found = await todoist.task(taskId);
+  if (found === "forbidden" || found === "unknown") {
+    throw new Refused(unreached(taskId, found));
+  }
+  if (found !== "deleted") return false;
   const timeZone = await timeZoneFor(context, todoist);
   const made = await add(
     item,
@@ -231,33 +254,32 @@ async function remade(
     change.refused,
     taskId,
   );
-  await sync(item, made, timeZone, todoist, context);
+  await sync(item, change.kind, made, timeZone, todoist);
   return true;
 }
 
 async function sync(
   item: Item,
+  kind: Change["kind"],
   taskId: string,
   timeZone: string,
   todoist: Door,
-  context: WatchContext<OutboundEnv>,
 ): Promise<void> {
-  const { log } = context;
   const task = await todoist.task(taskId);
-  if (task === "forbidden") {
-    throw new Refused(`Todoist refuses access to task ${taskId}`);
+  if (task === "forbidden" || task === "unknown") {
+    throw new Refused(unreached(taskId, task));
   }
-  if (task === "missing") {
-    // The door answers a completed task as well as an open one, so none
-    // is a task deleted in Todoist, and nothing is asked of it.
-    log.condition(
-      `todoist-gone:${item.id}`,
-      `Todoist no longer has task ${taskId} for row ${item.id}`,
-    );
-    return;
+  if (task === "deleted") {
+    // An archive owes a deleted task nothing; the sync that brings the
+    // deletion archives the row of any other change.
+    if (kind === "archived") return;
+    throw new Refused(`Todoist deleted task ${taskId}`);
   }
 
   const diff = differing(argsOf(item, timeZone), task, timeZone);
+  if (diff.due !== undefined && diff.due !== null) {
+    diff.due = moved(diff.due.date, task.due, timeZone);
+  }
   if (Object.keys(diff).length > 0) {
     const answer = await todoist.one(
       "item_update",
@@ -280,6 +302,39 @@ async function sync(
   }
 }
 
+function unreached(taskId: string, answer: "forbidden" | "unknown"): string {
+  return answer === "forbidden"
+    ? `Todoist refuses access to task ${taskId}`
+    : `Todoist does not answer task ${taskId} for this token`;
+}
+
+// Todoist keeps the date sent, but a date alone ends a recurrence and moves
+// a time to the account's zone (seen live in October 2026): the recurrence
+// goes with it, and the time stays fixed in the task's zone or floating. A
+// floating time the clocks show twice is fixed in the account's zone instead.
+function moved(date: string, have: TodoistItem["due"], timeZone: string): Due {
+  const timed = date.includes("T");
+  const held = typeof have?.timezone === "string" ? have.timezone : undefined;
+  const floating =
+    timed && held === undefined && /T[^Z]*$/.test(have?.date ?? "")
+      ? floatingTime(date, timeZone)
+      : undefined;
+  const zone =
+    held ??
+    (timed && floating === undefined && /T[^Z]*$/.test(have?.date ?? "")
+      ? timeZone
+      : undefined);
+  return {
+    ...(have?.is_recurring === true &&
+      typeof have.string === "string" && {
+        string: have.string,
+        ...(typeof have.lang === "string" && { lang: have.lang }),
+      }),
+    date: floating ?? date,
+    ...(timed && zone !== undefined && { timezone: zone }),
+  };
+}
+
 async function add(
   item: Item,
   timeZone: string,
@@ -297,34 +352,29 @@ async function add(
   ];
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
-  // An edit does not carry project, section and labels; they are the row's from
-  // Todoist.
   const p = item.properties;
-  const where =
-    replacing === undefined
-      ? {}
-      : {
-          ...(typeof p["project_id"] === "string" && {
-            project_id: p["project_id"],
-          }),
-          ...(typeof p["section_id"] === "string" && {
-            section_id: p["section_id"],
-          }),
-          ...(Array.isArray(p["labels"]) && { labels: p["labels"] }),
-        };
+  const labels = Array.isArray(p["labels"]) && { labels: p["labels"] };
+  const where = {
+    ...(typeof p["project_id"] === "string" && {
+      project_id: p["project_id"],
+    }),
+    ...(typeof p["section_id"] === "string" && {
+      section_id: p["section_id"],
+    }),
+  };
   let answer = await todoist.send([
     {
       type: "item_add",
       uuid,
       temp_id: tempId,
-      args: { ...argsOf(item, timeZone), ...where },
+      args: { ...argsOf(item, timeZone), ...where, ...labels },
     },
   ]);
   let status = answer.sync_status[uuid];
-  if (status !== "ok" && !passing(status) && Object.keys(where).length > 0) {
-    // Where the task was is gone, a project or a section deleted since:
-    // it is made in the Inbox rather than not at all, under ids of its
-    // own, apart from the refused command's.
+  if (status !== "ok" && isProjectGone(status)) {
+    // Made in the Inbox rather than not at all, under ids of its own, apart
+    // from the refused command's. Todoist makes a task whose section is gone
+    // at its project's root, so only a project gone is refused.
     const inboxUuid = uuidFor(item.id, "item_add", ...again, "inbox");
     const inboxTemp = uuidFor(item.id, "temp_id", ...again, "inbox");
     answer = await todoist.send([
@@ -332,7 +382,7 @@ async function add(
         type: "item_add",
         uuid: inboxUuid,
         temp_id: inboxTemp,
-        args: { ...argsOf(item, timeZone) },
+        args: { ...argsOf(item, timeZone), ...labels },
       },
     ]);
     status = answer.sync_status[inboxUuid];

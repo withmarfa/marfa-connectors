@@ -155,6 +155,12 @@ export interface RunContext<E extends EnvDeclaration> {
     connection: string,
     target: Target,
   ) => Promise<Item[]>;
+  /**
+   * The active rows of the type the vendor has been told about, read from
+   * the instance: what Marfa holds, so a connector whose vendor's listing
+   * leaves out what it no longer holds can ask about each row it left out.
+   */
+  readonly held: (type: string) => Promise<Item[]>;
 }
 
 export type ChangeKind =

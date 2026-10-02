@@ -30,7 +30,6 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
-    comment_count: { type: "integer" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };
@@ -64,7 +63,6 @@ function task(id: string, overrides: Partial<TodoistItem> = {}): TodoistItem {
     child_order: 1,
     checked: false,
     is_deleted: false,
-    note_count: 0,
     added_at: "2026-09-01T10:00:00.000000Z",
     ...overrides,
   };
@@ -79,6 +77,8 @@ let completedAnswer: (
   query: URLSearchParams,
 ) => { items: TodoistItem[]; next_cursor: string | null } | number;
 let completedAsked: URLSearchParams[];
+let taskAnswer: (id: string) => TodoistItem | number;
+let tasksAsked: string[];
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("todoist", {
@@ -88,6 +88,8 @@ beforeEach(async () => {
   received = [];
   completedAsked = [];
   completedAnswer = () => ({ items: [], next_cursor: null });
+  taskAnswer = () => 404;
+  tasksAsked = [];
   answer = () => ({
     sync_token: "t1",
     items: [],
@@ -109,6 +111,19 @@ beforeEach(async () => {
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(page));
+        return;
+      }
+      const byId = /^\/api\/v1\/tasks\/([^/]+)$/.exec(asked.pathname);
+      if (req.method === "GET" && byId !== null) {
+        const id = decodeURIComponent(byId[1] ?? "");
+        tasksAsked.push(id);
+        const found = authorized ? taskAnswer(id) : 401;
+        if (typeof found === "number") {
+          res.writeHead(found).end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(found));
         return;
       }
       const syncToken = form.get("sync_token") ?? "";
@@ -177,7 +192,6 @@ describe("the mapping", () => {
         due: wholeDaySent,
         section_id: "s1",
         parent_id: "p0",
-        note_count: 2,
         checked: true,
         completed_at: "2026-09-02T08:30:00.000000Z",
         updated_at: "2026-09-02T08:31:00Z",
@@ -200,7 +214,6 @@ describe("the mapping", () => {
         parent_id: "p0",
         labels: ["Food"],
         child_order: 1,
-        comment_count: 2,
       },
       occurred_at: "2026-09-01T10:00:00.000000Z",
       changed_at: "2026-09-02T08:31:00.000Z",
@@ -897,6 +910,37 @@ describe("the connector, run as a process", () => {
       completed_at: "2026-09-28T10:00:00.000Z",
     });
     expect(marfa.row("2671355:a").state).toBe("active");
+    expect(tasksAsked).toEqual(["b"]);
+    expect(marfa.row("2671355:b").state).toBe("active");
+  });
+
+  it("takes a delta Todoist answers in full as a full sync, and asks about each open row it left out", async () => {
+    answer = (syncToken) => ({
+      sync_token: syncToken === "*" ? "t1" : "t2",
+      ...(syncToken !== "*" && { full_sync: true }),
+      items:
+        syncToken === "*" ? [task("a"), task("b"), task("c")] : [task("a")],
+      user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
+    });
+    taskAnswer = (id) =>
+      id === "b"
+        ? task("b", { is_deleted: true })
+        : task(id, {
+            checked: true,
+            completed_at: "2026-03-02T10:00:00.000000Z",
+          });
+    expect((await once()).code).toBe(0);
+    expect(tasksAsked).toEqual([]);
+    expect((await once()).code).toBe(0);
+    expect(completedAsked).toHaveLength(2);
+    expect(tasksAsked.sort()).toEqual(["b", "c"]);
+    expect(marfa.row("2671355:a").state).toBe("active");
+    expect(marfa.row("2671355:b").state).toBe("archived");
+    expect(marfa.row("2671355:c").properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-03-02T10:00:00.000Z",
+    });
+    expect(state()["sync_token"]).toBe("t2");
   });
 
   it("reads a completed task's due date anew when the account's timezone moves", async () => {

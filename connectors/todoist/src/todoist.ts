@@ -15,18 +15,25 @@ export interface TodoistItem {
   parent_id?: string | null;
   labels?: string[] | null;
   priority?: number;
-  due?: { date?: string | null } | null;
+  due?: {
+    date?: string | null;
+    string?: string | null;
+    lang?: string | null;
+    is_recurring?: boolean;
+    timezone?: string | null;
+  } | null;
   child_order?: number;
   checked?: boolean;
   completed_at?: string | null;
   is_deleted?: boolean;
-  note_count?: number;
   added_at?: string;
   updated_at?: string;
 }
 
 export interface SyncAnswer {
   sync_token: string;
+  /** Todoist may answer a delta with every active task, deletions left out. */
+  full_sync?: boolean;
   items: TodoistItem[];
   user?: { id?: unknown; tz_info?: { timezone?: unknown } };
 }
@@ -35,6 +42,7 @@ export const firstSync = "*";
 export const defaultBase = "https://api.todoist.com";
 const requestTimeoutMs = 60_000;
 const longestWaitMs = 60_000;
+const rateLimitWaits = 5;
 const serverErrorRetries = 3;
 const commandResends = 5;
 
@@ -83,6 +91,7 @@ async function request(
   signal: AbortSignal,
 ): Promise<Response> {
   let serverErrors = 0;
+  let waits = 0;
   for (;;) {
     let response: Response;
     try {
@@ -123,6 +132,12 @@ async function request(
           `Todoist asked for a wait of ${wait === undefined ? "unknown length" : `${String(wait / 1000)}s`}, longer than a run holds`,
         );
       }
+      if (waits === rateLimitWaits) {
+        throw new Unanswered(
+          `Todoist asked for a wait ${String(rateLimitWaits + 1)} times in a row`,
+        );
+      }
+      waits += 1;
       await pause(wait, signal);
       continue;
     }
@@ -306,9 +321,10 @@ export async function send(
 }
 
 // The door answers a completed task (`checked`) and a deleted one
-// (`is_deleted`) as well as an open one, whatever the documentation's "active
-// task" suggests.
-export type TaskAnswer = TodoistItem | "missing" | "forbidden";
+// (`is_deleted`) with 200, as well as an open one, though Todoist's reference
+// calls it active-only (seen live in October 2026). A 404 is then an id the
+// token cannot reach, never a deletion.
+export type TaskAnswer = TodoistItem | "deleted" | "unknown" | "forbidden";
 
 export async function getTask(
   base: string,
@@ -323,7 +339,7 @@ export async function getTask(
     { method: "GET", forbiddenIsAnswer: true },
     signal,
   );
-  if (response.status === 404) return "missing";
+  if (response.status === 404) return "unknown";
   if (response.status === 403) return "forbidden";
   if (!response.ok) {
     throw new Error(
@@ -331,7 +347,7 @@ export async function getTask(
     );
   }
   const found = (await response.json()) as TodoistItem;
-  return found.is_deleted === true ? "missing" : found;
+  return found.is_deleted === true ? "deleted" : found;
 }
 
 // Laid out as a UUID, the form Todoist's documentation shows for command ids.
@@ -372,6 +388,47 @@ export function dueFor(
   return {
     date: `${read["year"] ?? ""}-${read["month"] ?? ""}-${read["day"] ?? ""}`,
   };
+}
+
+function wallTimeAt(at: number, timeZone: string): string {
+  const read: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(at)) {
+    read[part.type] = part.value;
+  }
+  return `${read["year"] ?? ""}-${read["month"] ?? ""}-${read["day"] ?? ""}T${read["hour"] ?? ""}:${read["minute"] ?? ""}:${read["second"] ?? ""}`;
+}
+
+/**
+ * An instant as the floating time Todoist writes, the wall time it shows in
+ * the zone, or `undefined` where the clocks going back show that wall time
+ * twice, so a floating time could not say which.
+ */
+export function floatingTime(
+  instant: string,
+  timeZone: string,
+): string | undefined {
+  const at = Date.parse(instant);
+  const wall = wallTimeAt(at, timeZone);
+  const offset = (when: number): number =>
+    Date.parse(`${wallTimeAt(when, timeZone)}Z`) - when;
+  const shift = offset(at - dayMs) - offset(at + dayMs);
+  if (
+    shift !== 0 &&
+    (wallTimeAt(at + shift, timeZone) === wall ||
+      wallTimeAt(at - shift, timeZone) === wall)
+  ) {
+    return undefined;
+  }
+  return wall;
 }
 
 /**
@@ -554,7 +611,6 @@ export const taskFields = [
   "parent_id",
   "labels",
   "child_order",
-  "comment_count",
 ] as const;
 
 export function entryOf(
@@ -585,7 +641,6 @@ export function entryOf(
           ? item.labels
           : undefined,
       child_order: item.child_order,
-      comment_count: item.note_count,
     },
     occurred_at: item.added_at,
     changed_at: instantOf(item.updated_at),
