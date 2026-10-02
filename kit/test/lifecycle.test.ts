@@ -377,3 +377,30 @@ describe("a row the connector archived", () => {
     expect(harness.lastRun().summary).toContain("updated 1");
   });
 });
+
+describe("a purge of a row whose link a person changed before its trash", () => {
+  it("is carried by the link agreed with the vendor, which a restore lets go", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1").id;
+    harness.server.edit(first, { vendor_id: "v-other" });
+    harness.server.trash(first);
+    held.entries = [two];
+    await harness.twoWay(held);
+    harness.server.purge("a:1");
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    const purge = held.changes.find((change) => change.kind === "purged");
+    expect(purge?.item.properties["vendor_id"]).toBe("v1");
+
+    const second = harness.server.row("a:2").id;
+    harness.server.edit(second, { vendor_id: "v-other" });
+    harness.server.trash(second);
+    await harness.twoWay(held);
+    const relinked = () => Object.keys(harness.kept()["relinked"] ?? {});
+    expect(relinked()).toEqual([second]);
+    harness.server.restore(second);
+    await harness.twoWay(held);
+    expect(relinked()).toEqual([]);
+  });
+});

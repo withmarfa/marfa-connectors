@@ -88,6 +88,9 @@ const wholeAbove = 200;
 
 const marksPerRequest = 200;
 
+/** At about a hundred bytes each, a small part of the state's cap. */
+const relinkedCap = 1000;
+
 export function describe(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const cause: unknown = error.cause;
@@ -560,6 +563,46 @@ export async function runOnce<E extends EnvDeclaration>(
   const purged = new Map<string, Purge>(
     (stored.purges ?? []).map((purge) => [purge.id, purge]),
   );
+  const relinked = new Map(Object.entries(stored.relinked ?? {}));
+  const relinkedFull = (id: string): void => {
+    raised.set(
+      "relinked-full",
+      `more than ${String(relinkedCap)} rows in the bin carry a link other than the one agreed, so the agreed link of ${id} is not kept, and a purge of it goes by the link it carries`,
+    );
+  };
+  /** A row in the bin cannot have its link put back, so the agreed one is
+   *  kept for its purge, which drops the agreement. */
+  const keepAgreedLink = (kind: Spec, item: Item, agreement: Agreement) => {
+    const own = lane(kind.type).rows.linkOf(item.properties);
+    if (
+      item.state !== "trashed" ||
+      kind.link === undefined ||
+      agreement.link === undefined ||
+      own === agreement.link
+    ) {
+      relinked.delete(item.id);
+      return;
+    }
+    if (!relinked.has(item.id) && relinked.size >= relinkedCap) {
+      relinkedFull(item.id);
+      return;
+    }
+    relinked.set(item.id, agreement.link);
+  };
+  const unagreedOf = (
+    kind: Spec,
+    item: Item,
+    agreement: Agreement,
+  ): ReadonlySet<string> | undefined => {
+    const off = changedInMarfa(
+      agreement,
+      kind.fields.filter(
+        (field) => kind.readOnly.has(field) && field !== kind.link,
+      ),
+      item.properties,
+    );
+    return off.length === 0 ? undefined : new Set(off);
+  };
   let recorded = false;
   let unagreed = 0;
 
@@ -571,6 +614,9 @@ export async function runOnce<E extends EnvDeclaration>(
   const putBack = async (id: string): Promise<void> => {
     const agreement = store.get(id);
     const found = await find(id);
+    if (agreement !== undefined && found !== undefined) {
+      keepAgreedLink(found.spec, found.item, agreement);
+    }
     if (
       agreement?.waiting === undefined ||
       found === undefined ||
@@ -728,6 +774,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec: kind, rows } = lane(item.type);
     if (connector.onChange === undefined || !kind.twoWay) return;
+    keepAgreedLink(kind, item, agreement);
     // What changed before another row's trash took it waits for its restore.
     if (agreement.stateBy === "cascade") return;
     if (item.state === "trashed" && cascaded(item)) {
@@ -832,6 +879,8 @@ export async function runOnce<E extends EnvDeclaration>(
         refused: agreement.refused.change,
       }),
     };
+    const unagreed = unagreedOf(kind, current, agreement);
+    if (unagreed !== undefined) Object.assign(change, { unagreed });
     if (refusedBefore(current.id, agreement, change)) return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
@@ -1072,12 +1121,22 @@ export async function runOnce<E extends EnvDeclaration>(
         // The instance drops a purged row's agreement and keeps its
         // keys as tombstones, named as the log last showed the row.
         store.clear(id);
+        const agreed = relinked.get(id);
+        relinked.delete(id);
         if (
           kind.twoWay &&
           rows.linkOf(last.properties) !== undefined &&
           !cascaded(last)
         ) {
-          purged.set(id, last);
+          purged.set(
+            id,
+            agreed === undefined || kind.link === undefined
+              ? last
+              : {
+                  ...last,
+                  properties: { ...last.properties, [kind.link]: agreed },
+                },
+          );
         }
         continue;
       }
@@ -1211,6 +1270,8 @@ export async function runOnce<E extends EnvDeclaration>(
               refused: agreement.refused.change,
             }),
           };
+          const unagreed = unagreedOf(kind, item, agreement);
+          if (unagreed !== undefined) Object.assign(change, { unagreed });
           if (placed?.unplaced === true) {
             heldBack(id);
             done.add(id);
@@ -1525,6 +1586,7 @@ export async function runOnce<E extends EnvDeclaration>(
           ? { cursor: read.cursor }
           : stored.cursor !== undefined && { cursor: stored.cursor }),
         ...(purged.size > 0 && { purges: [...purged.values()] }),
+        ...(relinked.size > 0 && { relinked: Object.fromEntries(relinked) }),
       });
     } catch (error) {
       logger.warn(

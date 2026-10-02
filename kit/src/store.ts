@@ -10,6 +10,9 @@ export interface Kept {
   conditions: Record<string, string>;
   cursor?: string;
   purges?: Purge[];
+  /** The link agreed for each row in the bin whose own link differs, which
+   *  a purge, dropping the agreement, would otherwise lose. */
+  relinked?: Record<string, string>;
 }
 
 const perRequest = 500;
@@ -35,11 +38,19 @@ function keptOf(value: unknown): Kept {
   const purges = Array.isArray(kept["purges"])
     ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Purge)
     : [];
+  const relinked = isRecord(kept["relinked"])
+    ? Object.fromEntries(
+        Object.entries(kept["relinked"]).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      )
+    : {};
   return {
     state,
     conditions,
     ...(typeof cursor === "string" && { cursor }),
     ...(purges.length > 0 && { purges }),
+    ...(Object.keys(relinked).length > 0 && { relinked }),
   };
 }
 
@@ -110,6 +121,7 @@ export class Store {
       conditions: kept.conditions,
       ...(kept.cursor !== undefined && { cursor: kept.cursor }),
       ...(kept.purges !== undefined && { purges: kept.purges }),
+      ...(kept.relinked !== undefined && { relinked: kept.relinked }),
     });
   }
 

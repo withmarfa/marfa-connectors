@@ -374,6 +374,27 @@ export async function proveTracker(
     );
 
     await check(
+      "tracker: a purge goes by the link agreed with the tracker, whatever link the row carried into the bin",
+      async () => {
+        const relinked = tracker.add("Relinked");
+        await runOnce();
+        const binned = await edit(marfa, await row(relinked.id), {
+          issue_id: "i-elsewhere",
+        });
+        await trash(marfa, binned.id);
+        await runOnce();
+        await purge(marfa, binned.id);
+        const written = tracker.writes().length;
+        await runOnce();
+        const onPurge = writesSince(written);
+        if (onPurge.join() !== `PATCH /issues/${relinked.id}`) {
+          throw new Error(`on the purge the tracker took ${onPurge.join()}`);
+        }
+        return `the tracker took ${onPurge.join()}, the agreed issue, and nothing for the link the row carried`;
+      },
+    );
+
+    await check(
       "tracker: a sub-issue removed in Marfa is removed at the tracker, and one the tracker removed is removed in Marfa",
       async () => {
         const top = await row(parent.id);

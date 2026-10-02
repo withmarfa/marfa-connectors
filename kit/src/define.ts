@@ -198,6 +198,12 @@ export interface Change {
    * a lost answer would have the vendor answer the refusal again.
    */
   readonly refused?: string;
+  /**
+   * The read-only fields the row holds otherwise than was agreed with the
+   * vendor, where putting them back failed; none of them is to be trusted
+   * as the vendor's.
+   */
+  readonly unagreed?: ReadonlySet<string>;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {
