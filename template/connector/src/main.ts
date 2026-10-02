@@ -168,8 +168,10 @@ const connector = defineConnector({
               refused === undefined ? item.id : `${item.id}:${refused}`,
           })
         ).json()) as { id: string };
-        // A retry may be answered with what the first try made, from the
-        // values the row held then.
+        // Linked first, so whatever follows changes this item, never makes
+        // another. A retry may be answered with what the first try made,
+        // from the values the row held then, so it is brought up to date.
+        await setLink(item, made.id);
         if (attempted !== undefined) {
           await call(
             env,
@@ -179,7 +181,6 @@ const connector = defineConnector({
             body,
           );
         }
-        await setLink(item, made.id);
         return;
       }
       const path = `items/${encodeURIComponent(linked)}`;
@@ -224,6 +225,7 @@ const connector = defineConnector({
           "Idempotency-Key": `${item.id}:${id}${refused === undefined ? "" : `:${refused}`}`,
         })
       ).json()) as { id: string };
+      await setLink(item, made.id);
       if (attempted !== undefined) {
         await call(
           env,
@@ -233,7 +235,6 @@ const connector = defineConnector({
           body,
         );
       }
-      await setLink(item, made.id);
     } catch (error) {
       throw undelivered(error, signal);
     }
