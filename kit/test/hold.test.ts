@@ -393,6 +393,58 @@ describe("the hold at any window the server allows", () => {
     expect(await exit).toBe(0);
   });
 
+  it("aborts an update to Marfa sent when the trust runs out, so it cannot land after the hold lapsed, and records nothing as agreed", async () => {
+    const linked = {
+      source_id: "a:1",
+      properties: { title: "One", vendor_id: "v1" },
+    };
+    const held = vendor([linked]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    const agreed = JSON.stringify(harness.agreement(row.id));
+    harness.server.holdMs = 400;
+    held.entries = [
+      {
+        ...linked,
+        properties: { ...linked.properties, title: "One, changed" },
+      },
+    ];
+    let aborted = false;
+    harness.server.beforeAnswer = async (request) => {
+      if (request.method === "PATCH" && request.path.startsWith("/items/")) {
+        // Held until the connection goes, as a slow instance holds it.
+        await new Promise<void>((resolve) => {
+          const done = setTimeout(resolve, 3000);
+          request.onClose(() => {
+            aborted = true;
+            clearTimeout(done);
+            resolve();
+          });
+        });
+        if (!aborted) throw new Error("the update was never aborted");
+      }
+    };
+    expect(await harness.twoWay(held)).toBe(1);
+    // The client dropped the connection while the update was pending.
+    expect(aborted).toBe(true);
+    expect(JSON.stringify(harness.agreement(row.id))).toBe(agreed);
+    expect(harness.lastRun().outcome).toBe("failed");
+  });
+
+  it("beats the heartbeat every minute whatever the renewal's own spacing", async () => {
+    harness.server.holdMs = 150_000;
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1 && harness.server.heartbeats === 1);
+    // Renewals fifty seconds apart; the heartbeat still lands at sixty.
+    await harness.clock.wake(50_000);
+    await harness.clock.wake(10_000);
+    await until(() => harness.server.heartbeats === 2);
+    release();
+    expect(await exit).toBe(0);
+  });
+
   it("is not kept waiting by a heartbeat that has not answered", async () => {
     const held = vendor([one]);
     const release = gate(held);

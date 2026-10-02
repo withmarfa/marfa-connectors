@@ -37,6 +37,8 @@ export interface Request {
   query: URLSearchParams;
   headers: Record<string, string | undefined>;
   body: unknown;
+  /** Calls the listener if the client drops the request before it is answered. */
+  onClose: (listener: () => void) => void;
 }
 
 export interface Delivery {
@@ -687,6 +689,11 @@ export class ScriptedServer {
       query: url.searchParams,
       headers,
       body,
+      onClose: (listener: () => void) => {
+        res.on("close", () => {
+          if (!res.writableEnded) listener();
+        });
+      },
     };
     this.requests.push(request);
 

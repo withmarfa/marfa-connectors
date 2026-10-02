@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { start } from "../src/main.js";
 import {
   causeOf,
+  faultOf,
   marfaFetch,
   MarfaAddress,
   MarfaUnreachable,
@@ -110,15 +111,10 @@ describe("a call that gets no answer, by what the transport says", () => {
     }
   });
 
-  it("is an address that cannot be used for a redirect, a malformed URL and a certificate the connection refuses", async () => {
+  it("is an address that cannot be used for a redirect and a malformed URL", async () => {
     for (const cause of [
       { message: "unexpected redirect" },
       { code: "ERR_INVALID_URL" },
-      { code: "DEPTH_ZERO_SELF_SIGNED_CERT" },
-      { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
-      { code: "CERT_HAS_EXPIRED" },
-      { code: "ERR_TLS_CERT_ALTNAME_INVALID" },
-      { code: "EPROTO" },
     ]) {
       const thrown = await failing("fetch failed", cause);
       expect(thrown).toBeInstanceOf(MarfaAddress);
@@ -126,11 +122,22 @@ describe("a call that gets no answer, by what the transport says", () => {
     }
   });
 
-  it("is a host that is not found, which a start refuses and a running connector waits out", async () => {
-    const thrown = await failing("fetch failed", { code: "ENOTFOUND" });
-    expect(thrown).toBeInstanceOf(MarfaUnreachable);
-    expect((thrown as MarfaUnreachable).hostNotFound).toBe(true);
-    expect(causeOf(thrown)).toBe("marfa");
+  it("is a fault a start refuses and a running connector waits out, for a host not found, a certificate and a TLS error", async () => {
+    for (const code of [
+      "ENOTFOUND",
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+      "CERT_HAS_EXPIRED",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+      "EPROTO",
+    ]) {
+      const thrown = await failing("fetch failed", { code });
+      expect(thrown).toBeInstanceOf(MarfaUnreachable);
+      expect(causeOf(thrown)).toBe("marfa");
+      expect(faultOf(thrown)).toEqual(expect.any(String));
+    }
+    const refused = await failing("fetch failed", { code: "ECONNREFUSED" });
+    expect(faultOf(refused)).toBeUndefined();
   });
 });
 
@@ -158,24 +165,54 @@ describe("an address that cannot be used", () => {
     }
   });
 
-  it("refuses a start where the host is not found, under either schedule", async () => {
-    vi.stubGlobal("fetch", () =>
-      Promise.reject(
-        new TypeError("fetch failed", {
-          cause: Object.assign(new Error("getaddrinfo ENOTFOUND"), {
-            code: "ENOTFOUND",
+  it("refuses a start where the host is not found or the certificate is refused, under either schedule", async () => {
+    for (const code of ["ENOTFOUND", "CERT_HAS_EXPIRED", "EPROTO"]) {
+      vi.stubGlobal("fetch", () =>
+        Promise.reject(
+          new TypeError("fetch failed", {
+            cause: Object.assign(new Error(code), { code }),
           }),
-        }),
-      ),
+        ),
+      );
+      try {
+        for (const argv of [["--once"], ["--every", "5m"]]) {
+          harness.lines.length = 0;
+          expect(
+            await start(testConnector(vendor([one])), harness.runtime(argv)),
+          ).toBe(2);
+          expect(said()).toContain("MARFA_URL");
+          expect(said()).toContain(code);
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+
+  it("is waited out by a running connector, with a warning that names MARFA_URL and the cause", async () => {
+    const real = fetch;
+    let broken = false;
+    vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) =>
+      broken
+        ? Promise.reject(
+            new TypeError("fetch failed", {
+              cause: Object.assign(new Error("expired"), {
+                code: "CERT_HAS_EXPIRED",
+              }),
+            }),
+          )
+        : real(...args),
     );
     try {
-      for (const argv of [["--once"], ["--every", "5m"]]) {
-        harness.lines.length = 0;
-        expect(
-          await start(testConnector(vendor([one])), harness.runtime(argv)),
-        ).toBe(2);
-        expect(said()).toContain("MARFA_URL");
-      }
+      const exit = every(vendor([one]), "10m");
+      await harness.clock.sleeping(10 * minute);
+      broken = true;
+      await harness.clock.wake(minute);
+      await until(() => said().includes("CERT_HAS_EXPIRED"));
+      expect(said()).toContain("MARFA_URL");
+      broken = false;
+      harness.stop();
+      expect(await exit).toBe(0);
     } finally {
       vi.unstubAllGlobals();
     }

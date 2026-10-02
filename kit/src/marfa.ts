@@ -48,50 +48,55 @@ export class Refusal extends Error {
 }
 
 /** A call that got no answer from Marfa: the connection was refused, cut
- *  or timed out, or the host could not be looked up. A timeout carries no
- *  cause; any other keeps the transport's, so it reads as the error it
- *  replaces. */
+ *  or timed out, or could not be made. A timeout carries no cause; any
+ *  other keeps the transport's, so it reads as the error it replaces. */
 export class MarfaUnreachable extends Error {
   override name = "MarfaUnreachable";
 
   constructor(
     message: string,
-    options?: ErrorOptions & { timedOut?: boolean; hostNotFound?: boolean },
+    options?: ErrorOptions & {
+      timedOut?: boolean;
+      fault?: string | undefined;
+    },
   ) {
     super(message, options);
     this.timedOut = options?.timedOut === true;
-    this.hostNotFound = options?.hostNotFound === true;
+    this.fault = options?.fault;
   }
 
   /** The request ran out of time, as against being refused or cut. */
   readonly timedOut: boolean;
 
-  /** The name did not resolve: a mistake in a setting when a connector
-   *  starts, and a hiccup in a resolver once it has run. */
-  readonly hostNotFound: boolean;
+  /** Says what is wrong with the address where the transport names it: a
+   *  host that is not found, or a certificate or TLS handshake refused. A
+   *  mistake in a setting when a connector starts, and what a resolver or a
+   *  proxy can do to one that has run, so a start refuses it and a running
+   *  connector waits it out. */
+  readonly fault: string | undefined;
 }
 
-/** The address cannot be used whatever Marfa does: it redirects, is not a
- *  URL, or its certificate or protocol is refused. No retry mends it. */
+/** The address cannot be used whatever Marfa does: it redirects, or is not a
+ *  URL. No retry mends it. */
 export class MarfaAddress extends Error {
   override name = "MarfaAddress";
 }
 
-/** Codes the transport gives for an address no retry mends. A redirect is
- *  the one that has none, and is read by the message undici gives it. */
-const addressCodes = new Set([
-  "ERR_INVALID_URL",
-  "EPROTO",
-  "DEPTH_ZERO_SELF_SIGNED_CERT",
-  "SELF_SIGNED_CERT_IN_CHAIN",
-  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-  "UNABLE_TO_GET_ISSUER_CERT",
-  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-  "CERT_HAS_EXPIRED",
-  "CERT_NOT_YET_VALID",
-  "CERT_UNTRUSTED",
-  "ERR_TLS_CERT_ALTNAME_INVALID",
-  "HOSTNAME_MISMATCH",
+/** What the transport's code says is wrong with the address, for a code a
+ *  start refuses and a running connector waits out. */
+const faults = new Map<string, string>([
+  ["ENOTFOUND", "the host was not found"],
+  ["EPROTO", "the TLS handshake was refused"],
+  ["DEPTH_ZERO_SELF_SIGNED_CERT", "the certificate is not trusted"],
+  ["SELF_SIGNED_CERT_IN_CHAIN", "the certificate is not trusted"],
+  ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "the certificate is not trusted"],
+  ["UNABLE_TO_GET_ISSUER_CERT", "the certificate is not trusted"],
+  ["UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "the certificate is not trusted"],
+  ["CERT_UNTRUSTED", "the certificate is not trusted"],
+  ["CERT_HAS_EXPIRED", "the certificate has expired"],
+  ["CERT_NOT_YET_VALID", "the certificate is not yet valid"],
+  ["ERR_TLS_CERT_ALTNAME_INVALID", "the certificate is for another host"],
+  ["HOSTNAME_MISMATCH", "the certificate is for another host"],
 ]);
 
 function transportError(error: TypeError): Error {
@@ -99,35 +104,36 @@ function transportError(error: TypeError): Error {
   const code = (value: unknown): unknown =>
     value instanceof Error ? (value as NodeJS.ErrnoException).code : undefined;
   const named = code(cause) ?? code(error);
-  if (
-    (typeof named === "string" && addressCodes.has(named)) ||
-    (cause instanceof Error && cause.message === "unexpected redirect")
-  ) {
-    return new MarfaAddress(
-      cause instanceof Error && cause.message === "unexpected redirect"
-        ? "the server redirected the request"
-        : `${error.message} (${typeof named === "string" ? named : "no code"})`,
-      { cause },
-    );
+  // A redirect is the one failure undici gives no code, only this message.
+  if (cause instanceof Error && cause.message === "unexpected redirect") {
+    return new MarfaAddress("the server redirected the request", { cause });
+  }
+  if (named === "ERR_INVALID_URL") {
+    return new MarfaAddress(`${error.message} (ERR_INVALID_URL)`, { cause });
   }
   return new MarfaUnreachable(error.message, {
     cause,
-    hostNotFound: named === "ENOTFOUND",
+    fault: typeof named === "string" ? faults.get(named) : undefined,
   });
 }
 
 /** The transport for every call to Marfa: a call that gets no answer fails
  *  as `MarfaUnreachable` or, where the address itself is at fault, as
  *  `MarfaAddress`. A timeout is wrapped whoever's timer it was, and a call
- *  its caller aborted is left as it was. */
-export function marfaFetch(ms: number): typeof fetch {
+ *  its caller aborted is left as it was. `signal`, where given, ends every
+ *  call made through it. */
+export function marfaFetch(ms: number, signal?: AbortSignal): typeof fetch {
   return async (input, init) => {
     try {
       const request = new Request(input, init);
       // Handed to fetch as its own option: built into a copy of the request,
       // the timer's signal is collected before it fires.
       return await fetch(request, {
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(ms)]),
+        signal: AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(ms),
+          ...(signal === undefined ? [] : [signal]),
+        ]),
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === "TimeoutError") {
@@ -174,16 +180,17 @@ export function causeOf(error: unknown): Cause {
   return "run";
 }
 
-/** True for a host that did not resolve, however deep in the error. */
-export function hostNotFound(error: unknown): boolean {
+/** What is wrong with the address, where the transport said, however deep
+ *  in the error. */
+export function faultOf(error: unknown): string | undefined {
   for (
     let at: unknown = error, depth = 0;
     at instanceof Error && depth < 8;
     at = at.cause, depth += 1
   ) {
-    if (at instanceof MarfaUnreachable) return at.hostNotFound;
+    if (at instanceof MarfaUnreachable) return at.fault;
   }
-  return false;
+  return undefined;
 }
 
 /** The wait a refusal asked for, however deep in the error it sits. */
@@ -241,8 +248,26 @@ export interface NewRow {
   occurred_at?: string;
 }
 
+/** The longest a run's report is given to land, which no fence cuts short. */
+const reportMs = 15_000;
+
 export class Marfa {
-  constructor(private readonly client: MarfaClient) {}
+  /** `scope` makes a client every call of which `signal` ends, which is how
+   *  a run's calls are held to its hold: the hold's signal aborts when the
+   *  hold can no longer be trusted, so a write sent just before that cannot
+   *  land after the hold lapsed. */
+  constructor(
+    private readonly client: MarfaClient,
+    private readonly scope?: (signal: AbortSignal) => MarfaClient,
+    private readonly root: MarfaClient = client,
+  ) {}
+
+  /** This connection, every call of which but the run's report ends with
+   *  `signal`. */
+  scoped(signal: AbortSignal): Marfa {
+    if (this.scope === undefined) return this;
+    return new Marfa(this.scope(signal), this.scope, this.root);
+  }
 
   async register(
     name: string,
@@ -263,12 +288,14 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
+  /** Sent after a fence too, so it is not held to a run's signal. */
   async report(id: string, run: RunReport): Promise<void> {
-    const { data, error, response } = await this.client.POST(
+    const { data, error, response } = await this.root.POST(
       "/connectors/{id}/runs",
       {
         params: { path: { id } },
         body: run,
+        signal: AbortSignal.timeout(reportMs),
       },
     );
     if (data === undefined) throw refusal(response, error);

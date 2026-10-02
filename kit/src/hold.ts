@@ -1,14 +1,16 @@
 import type { Logger } from "./log.js";
 import { causeOf, type Cause, type Marfa } from "./marfa.js";
 import { describe } from "./run.js";
+import { Stopped } from "./rows.js";
 import type { Clock } from "./runtime.js";
 
 /** How the instance's window, which each answer names and which may be any
  *  length, sets the rest. A renewal is asked a third of it apart, measured
  *  from the start of one ask to the start of the next, and each is given a
  *  twelfth of it to answer. A run is trusted for five sixths of it from the
- *  last ask that landed, and its signal aborts then, so nothing it calls,
- *  the vendor included, outlasts the trust. One renewal that times out
+ *  last ask that landed, and its signal aborts then. Every call the run
+ *  makes to Marfa, its report apart, is ended by that signal, and a call to
+ *  the vendor that is handed it is too, so none outlasts the trust. One renewal that times out
  *  leaves the next asked at two thirds of the window, well inside the trust;
  *  two in a row are what fence a run. */
 const renewalShare = 3;
@@ -167,6 +169,6 @@ export class Hold {
     if (this.fence.signal.aborted || !this.holding) return;
     this.fencedFor = why;
     this.logger.warn(why);
-    this.fence.abort();
+    this.fence.abort(new Stopped());
   }
 }

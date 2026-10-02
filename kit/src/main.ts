@@ -17,7 +17,7 @@ import {
 import { cap, Logger } from "./log.js";
 import {
   causeOf,
-  hostNotFound,
+  faultOf,
   Marfa,
   marfaFetch,
   Refusal,
@@ -383,9 +383,19 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
 }
 
 function addressProblem(error: unknown): string {
-  return hostNotFound(error)
-    ? `could not start: the host in MARFA_URL was not found (${describe(error)}). Check the address in MARFA_URL.`
-    : `could not start: MARFA_URL cannot be used (${describe(error)}). It must name the Marfa server itself, with no redirect in front of it and a certificate this machine trusts.`;
+  const fault = faultOf(error);
+  return fault === undefined
+    ? `could not start: MARFA_URL cannot be used (${describe(error)}). It must name the Marfa server itself, with no redirect in front of it.`
+    : `could not start: MARFA_URL cannot be used, since ${fault} (${describe(error)}). Check the address, and that the server's certificate is one this machine trusts.`;
+}
+
+/** Said once a connector that has run cannot reach Marfa for a fault in the
+ *  address, which may mend itself, so it waits. */
+function faultWarning(error: unknown): string | undefined {
+  const fault = faultOf(error);
+  return fault === undefined
+    ? undefined
+    : `MARFA_URL cannot be used for now, since ${fault} (${describe(error)}); the connector waits for it to mend, and stops only when told to`;
 }
 
 function startProblem(error: unknown): string {
@@ -492,13 +502,13 @@ export async function start<E extends EnvDeclaration>(
     logger.info("asked to stop");
     stop.abort();
   });
-  const marfa = new Marfa(
+  const clientFor = (signal?: AbortSignal): ReturnType<typeof createClient> =>
     createClient({
       baseUrl: environment.url,
       credential: environment.key,
-      fetch: marfaFetch(runtime.requestTimeoutMs),
-    }),
-  );
+      fetch: marfaFetch(runtime.requestTimeoutMs, signal),
+    });
+  const marfa = new Marfa(clientFor(), clientFor);
   const shared: Shared<E> = {
     connector,
     environment,
@@ -553,7 +563,7 @@ async function serve<E extends EnvDeclaration>(
     try {
       started = await registerAndCheck(connector, marfa);
     } catch (error) {
-      if (causeOf(error) === "address" || hostNotFound(error)) {
+      if (causeOf(error) === "address" || faultOf(error) !== undefined) {
         logger.error(addressProblem(error));
         return 2;
       }
@@ -646,12 +656,14 @@ async function serve<E extends EnvDeclaration>(
         // A heartbeat cut short because beating ended is not a failure.
         if (!beatingEnded() && !failing) {
           logger.warn(
-            `the heartbeat failed, and is tried again with the next beat: ${describe(error)}`,
+            faultWarning(error) ??
+              `the heartbeat failed, and is tried again with the next beat: ${describe(error)}`,
           );
           failing = true;
         }
       }
     };
+    let renewBegan = Number.NEGATIVE_INFINITY;
     while (!beatingEnded()) {
       const began = clock.now().getTime();
       // Not waited for, so a heartbeat that has not answered never holds up
@@ -662,15 +674,18 @@ async function serve<E extends EnvDeclaration>(
           beatInFlight = undefined;
         });
       }
-      const lost = await hold.renew();
-      if (lost !== undefined) end(lost);
-      if (beatingEnded()) break;
-      // From the start of one round to the start of the next, so a round
-      // that ran long does not push the renewal past what the hold allows,
-      // and never closer than half a renewal, whatever the window.
+      if (began - renewBegan >= hold.renewEvery) {
+        renewBegan = began;
+        const lost = await hold.renew();
+        if (lost !== undefined) end(lost);
+        if (beatingEnded()) break;
+      }
+      // Until the sooner of the next renewal and the next heartbeat, each
+      // counted from its own start, and never closer than half a renewal,
+      // whatever the window.
       const left =
-        Math.min(heartbeatMs, hold.renewEvery) -
-        (clock.now().getTime() - began);
+        Math.min(renewBegan + hold.renewEvery, beatBegan + heartbeatMs) -
+        clock.now().getTime();
       await clock.sleep(
         Math.max(Math.min(minimumBeatGapMs, hold.renewEvery / 2), left),
         AbortSignal.any([beat, hold.rearmed]),
@@ -723,6 +738,7 @@ async function serve<E extends EnvDeclaration>(
     const ran = await runOnce(
       {
         ...setup,
+        marfa: marfa.scoped(hold.signal),
         signal: AbortSignal.any([lasting, hold.signal]),
         fenced: () => hold.check(),
       },
@@ -746,6 +762,7 @@ async function serve<E extends EnvDeclaration>(
     const spread = (ms: number): number => ms * (1 + probeJitter * random());
     const asked = (ms: number | undefined): number =>
       Math.min(ms ?? 0, longestRetryAfterMs);
+    let faultSaid = false;
     let wait = spread(Math.max(every, asked(named)));
     logger.info(
       `Marfa did not answer, so the connector asks every ${describeDuration(every)} and runs again once it does`,
@@ -768,6 +785,11 @@ async function serve<E extends EnvDeclaration>(
         }
         // Marfa answered, though it refused: the run can find out why.
         if (cause !== "marfa") break;
+        const said = faultWarning(error);
+        if (said !== undefined && !faultSaid) {
+          faultSaid = true;
+          logger.warn(said);
+        }
         wait = spread(Math.max(every, asked(retryAfterOf(error))));
       }
     }
