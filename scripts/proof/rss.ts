@@ -18,6 +18,7 @@ import {
   promoteAndFind,
   registration,
   rowsOf,
+  runsOf,
   trash,
   type Item,
 } from "./connector.js";
@@ -32,6 +33,8 @@ interface Feed {
   etag: string;
   encoding?: string;
   redirect?: string;
+  /** Called on a request it never answers. */
+  hang?: () => void;
 }
 
 async function serveFeeds(): Promise<{
@@ -53,6 +56,10 @@ async function serveFeeds(): Promise<{
   const answers: number[] = [];
   const server = createServer((req, res) => {
     const feed = feeds[req.url ?? ""];
+    if (feed?.hang !== undefined) {
+      feed.hang();
+      return;
+    }
     const status =
       feed === undefined
         ? 404
@@ -396,6 +403,140 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
           );
         }
         return `the oversized feed skipped, the redirect refused, the second feed declaring the first's id written under its own key beside the first's rows, which kept their titles; reported ${String(summary)}`;
+      },
+    );
+
+    const refused = "http://127.0.0.1:1/private/feed.xml";
+    const dead = [
+      `feed 2 in RSS_FEEDS (${served.url}) answered 404`,
+      "feed 3 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
+    ];
+    await check(
+      "rss: a feed that keeps failing is named, with its cause, in the report of every run it fails, and the run still succeeds",
+      async () => {
+        const failing = new ConnectorUnderProof("rss", url, key.key, {
+          RSS_FEEDS: [
+            `${served.url}/atom.xml`,
+            `${served.url}/dead.xml`,
+            refused,
+          ].join("\n"),
+        });
+        const before = (await runsOf(marfa, key.id)).length;
+        const seen: string[] = [];
+        for (let at = 1; at <= 3; at += 1) {
+          const { code, output } = await failing.once();
+          const runs = await runsOf(marfa, key.id);
+          const last = runs[0];
+          const missing = dead.filter(
+            (text) => last?.summary?.includes(text) !== true,
+          );
+          if (
+            code !== 0 ||
+            runs.length !== before + at ||
+            last?.outcome !== "succeeded" ||
+            missing.length > 0 ||
+            last.summary?.includes("/private/") === true ||
+            last.summary?.includes("dead.xml") === true
+          ) {
+            throw new Error(
+              `run ${String(at)} exited ${String(code)}, ${String(runs.length - before)} reported, the last ${String(last?.outcome)}: ${String(last?.summary)}; ${output}`,
+            );
+          }
+          seen.push(last.summary ?? "");
+        }
+        return `three runs, each reported succeeded and each naming both: ${seen.join(" | ")}`;
+      },
+    );
+
+    await check(
+      "rss: a run in which every feed failed is reported failed, naming each feed and why",
+      async () => {
+        const failing = new ConnectorUnderProof("rss", url, key.key, {
+          RSS_FEEDS: [`${served.url}/dead.xml`, refused].join("\n"),
+        });
+        const { code, output } = await failing.once();
+        const last = await lastRun(marfa, key.id);
+        const named = [
+          `feed 1 in RSS_FEEDS (${served.url}) answered 404`,
+          "feed 2 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
+        ];
+        if (
+          code !== 1 ||
+          last.outcome !== "failed" ||
+          last.error?.includes(
+            "none of the 2 feeds in RSS_FEEDS could be read",
+          ) !== true ||
+          named.some((text) => last.summary?.includes(text) !== true)
+        ) {
+          throw new Error(
+            `exited ${String(code)}, reported ${last.outcome}: ${String(last.error)}; ${String(last.summary)}; ${output}`,
+          );
+        }
+        return `exited 1, reported failed: ${last.error}; ${String(last.summary)}`;
+      },
+    );
+
+    await check(
+      "rss: a run whose state the server will not keep, being past its cap, is reported failed after the save, and the state kept before stands",
+      async () => {
+        const many: string[] = [];
+        for (let at = 0; at < 45; at += 1) {
+          const path = `/big-etag/${String(at)}.xml`;
+          served.feeds[path] = {
+            body: '<?xml version="1.0"?><rss version="2.0"><channel><title>Empty</title></channel></rss>',
+            etag: `"${String(at)}-${"e".repeat(14_000)}"`,
+          };
+          many.push(`${served.url}${path}`);
+        }
+        const heavy = new ConnectorUnderProof("rss", url, key.key, {
+          RSS_FEEDS: many.join("\n"),
+        });
+        const before = (await runsOf(marfa, key.id)).length;
+        const { code, output } = await heavy.once();
+        const runs = await runsOf(marfa, key.id);
+        const last = runs[0];
+        if (
+          code !== 1 ||
+          runs.length !== before + 1 ||
+          last?.outcome !== "failed" ||
+          last.error?.includes("the connector's state could not be kept") !==
+            true
+        ) {
+          throw new Error(
+            `exited ${String(code)}, ${String(runs.length - before)} reported, ${String(last?.outcome)}: ${String(last?.error)}; ${output}`,
+          );
+        }
+        await runOnce();
+        return `exited 1, reported failed: ${last.error}; the next run with the usual feeds succeeded`;
+      },
+    );
+
+    await check(
+      "rss: a run stopped while it fetches is not reported, says it stopped, and exits 0",
+      async () => {
+        let arrived: () => void = () => undefined;
+        const fetching = new Promise<void>((done) => {
+          arrived = done;
+        });
+        served.feeds["/slow.xml"] = { body: "", etag: '"slow"', hang: arrived };
+        const slow = new ConnectorUnderProof("rss", url, key.key, {
+          RSS_FEEDS: `${served.url}/atom.xml\n${served.url}/slow.xml`,
+        });
+        const before = await runsOf(marfa, key.id);
+        const { code, output } = await slow.stopped(["--once"], () => fetching);
+        const after = await runsOf(marfa, key.id);
+        if (
+          code !== 0 ||
+          after.length !== before.length ||
+          !output.includes("run stopped before it finished") ||
+          output.includes("run failed")
+        ) {
+          throw new Error(
+            `exited ${String(code)}, ${String(after.length - before.length)} runs reported: ${output}`,
+          );
+        }
+        await runOnce();
+        return `exited 0 with no run reported, the log saying: ${output.split("\n").find((line) => line.includes("run stopped")) ?? ""}`;
       },
     );
   } finally {
