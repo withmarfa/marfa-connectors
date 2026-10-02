@@ -510,7 +510,7 @@ describe("the template, run as a process", () => {
     expect(output).not.toContain("wrong-token-value");
   });
 
-  it("leaves out an item with no title and says so once", async () => {
+  it("leaves out an item with no title and says so on every run it lasts", async () => {
     items = [
       { id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" },
       { id: "2", created: "2026-09-02T10:00:00.000Z" },
@@ -521,7 +521,7 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(marfa.runs).toHaveLength(2);
     expect(marfa.runs.at(-1)?.summary).toContain("unchanged 1");
-    expect(marfa.runs.at(-1)?.summary).not.toContain("no title");
+    expect(marfa.runs.at(-1)?.summary).toContain("an item has no title");
   });
 
   it("clears at the vendor what was cleared in Marfa, and keeps it cleared", async () => {

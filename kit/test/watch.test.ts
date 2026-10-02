@@ -731,7 +731,7 @@ describe("a row purged or transitioned in Marfa", () => {
 });
 
 describe("a stop during the pushes", () => {
-  it("fails the run, and what it did not carry waits for the next", async () => {
+  it("ends the run unreported, and what it did not carry waits for the next", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
@@ -746,8 +746,9 @@ describe("a stop during the pushes", () => {
       if (change.item.id === first.id) harness.stop();
       return undefined;
     };
+    const reported = harness.server.runs.length;
     expect(await harness.twoWay(held)).toBe(0);
-    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.server.runs).toHaveLength(reported);
     expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
 
     held.vendorIdFor = undefined;

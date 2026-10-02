@@ -608,7 +608,7 @@ describe("the state", () => {
 });
 
 describe("a row the server refuses", () => {
-  it("is skipped, holds the state, and is reported once while it lasts", async () => {
+  it("is skipped, holds the state, and is reported on every run while it lasts", async () => {
     const held = vendor([one, two]);
     held.token = "t1";
     harness.server.entryRefusals.set("a:2", {
@@ -623,8 +623,8 @@ describe("a row the server refuses", () => {
     expect(harness.kept()).toHaveProperty("state", {});
 
     await harness.once(held);
-    expect(harness.lastRun().summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 1, skipped 1",
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 0, archived 0, unchanged 1, skipped 1\. .*a:2.*invalid_properties/,
     );
 
     harness.server.entryRefusals.delete("a:2");

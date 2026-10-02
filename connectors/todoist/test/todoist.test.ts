@@ -554,7 +554,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.row("2671355:a").properties).not.toHaveProperty("precision");
   });
 
-  it("reads due dates in UTC when Todoist names no timezone, and says so once", async () => {
+  it("reads due dates in UTC when Todoist names no timezone, and says so on every run it lasts", async () => {
     answer = () => ({
       sync_token: "t1",
       items: [task("a", { due: { date: "2026-10-01T09:00:00" } })],
@@ -567,8 +567,9 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toContain("named no timezone");
     expect((await once()).code).toBe(0);
     expect(marfa.runs).toHaveLength(2);
-    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 0, /);
-    expect(marfa.runs.at(-1)?.summary).not.toContain("timezone");
+    expect(marfa.runs.at(-1)?.summary).toMatch(
+      /^created 0, .*named no timezone/,
+    );
     expect(state()).toEqual({ account: "2671355", sync_token: "t1" });
   });
 
