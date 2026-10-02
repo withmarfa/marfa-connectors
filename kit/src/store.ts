@@ -15,7 +15,7 @@ export interface Kept {
 const perRequest = 500;
 
 /** The instance's cap on one agreement, serialized. */
-export const recordBytes = 16 * 1024;
+const recordBytes = 16 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,6 +51,42 @@ function agreementOf(value: unknown): Agreement | undefined {
     return undefined;
   }
   return value as unknown as Agreement;
+}
+
+/** How much of a refusal's reason is kept. */
+export const reasonBytes = 200;
+
+export function capBytes(text: string, bytes: number): string {
+  let kept = "";
+  for (const char of text) {
+    if (Buffer.byteLength(kept + char) > bytes) break;
+    kept += char;
+  }
+  return kept;
+}
+
+function fits(agreement: Agreement): boolean {
+  return Buffer.byteLength(JSON.stringify(agreement)) <= recordBytes;
+}
+
+/**
+ * The agreement with a refusal's mark and its reason, cut to `reasonBytes`;
+ * the reason goes first where both would pass the instance's cap, and
+ * nothing is answered where even the mark would, so the mark never costs
+ * the row its agreement.
+ */
+export function withRefusal(
+  agreement: Agreement,
+  change: string,
+  reason: string,
+): Agreement | undefined {
+  const full: Agreement = {
+    ...agreement,
+    refused: { change, reason: capBytes(reason, reasonBytes) },
+  };
+  if (fits(full)) return full;
+  const bare: Agreement = { ...agreement, refused: { change } };
+  return fits(bare) ? bare : undefined;
 }
 
 export class Store {

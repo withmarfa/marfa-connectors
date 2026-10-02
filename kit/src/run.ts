@@ -42,7 +42,13 @@ import {
 } from "./rows.js";
 import { instant } from "./values.js";
 import type { Clock } from "./runtime.js";
-import { recordBytes, Store, type Purge } from "./store.js";
+import {
+  capBytes,
+  reasonBytes,
+  Store,
+  withRefusal,
+  type Purge,
+} from "./store.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
@@ -144,24 +150,8 @@ function sending(change: Change): string {
   });
 }
 
-/** How much of a refusal's reason is kept with the row. */
-const reasonBytes = 200;
-
 /** How long a refused purge waits before it is asked again. */
 const purgeAgainMs = 24 * 3_600_000;
-
-function capBytes(text: string, bytes: number): string {
-  let kept = "";
-  for (const char of text) {
-    if (Buffer.byteLength(kept + char) > bytes) break;
-    kept += char;
-  }
-  return kept;
-}
-
-function fits(agreement: Agreement): boolean {
-  return Buffer.byteLength(JSON.stringify(agreement)) <= recordBytes;
-}
 
 export function specsOf<E extends EnvDeclaration>(
   connector: Connector<E>,
@@ -315,11 +305,15 @@ export async function runOnce<E extends EnvDeclaration>(
     id: string,
     kind: ChangeKind,
     reason: string | undefined,
+    remembered = true,
   ): void => {
-    const what =
-      kind === "trashed"
-        ? `the trash of ${id} was refused, so it waits until the row is restored in Marfa`
-        : `the change to ${id} was refused, so it waits until the row changes in Marfa`;
+    const change =
+      kind === "trashed" ? `the trash of ${id}` : `the change to ${id}`;
+    const what = !remembered
+      ? `${change} was refused, and the row's agreement has no room to remember the refusal, so it is sent again next run`
+      : kind === "trashed"
+        ? `${change} was refused, so it waits until the row is restored in Marfa`
+        : `${change} was refused, so it waits until the row changes in Marfa`;
     raised.set(
       `change-refused:${id}`,
       `${what}: ${reason ?? "its reason was too long to keep"}`,
@@ -329,16 +323,13 @@ export async function runOnce<E extends EnvDeclaration>(
   // but never at the cost of the row's agreement.
   const refuse = (id: string, change: Change, error: Refused): void => {
     const said = logger.redact(error.message);
-    refusedOf(id, change.kind, said);
     const agreement = store.get(id);
-    if (agreement === undefined) return;
-    const marked = sending(change);
-    const full: Agreement = {
-      ...agreement,
-      refused: { change: marked, reason: capBytes(said, reasonBytes) },
-    };
-    const bare: Agreement = { ...agreement, refused: { change: marked } };
-    store.set(id, fits(full) ? full : fits(bare) ? bare : agreement);
+    const marked =
+      agreement === undefined
+        ? undefined
+        : withRefusal(agreement, sending(change), said);
+    refusedOf(id, change.kind, said, marked !== undefined);
+    if (marked !== undefined) store.set(id, marked);
   };
   const refusedBefore = (
     id: string,

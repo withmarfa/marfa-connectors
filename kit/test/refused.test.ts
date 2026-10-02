@@ -237,6 +237,31 @@ describe("what a refusal remembers", () => {
     expect(held.changes).toEqual([]);
   });
 
+  it("says a refusal it has no room to remember is sent again next run, and sends it", async () => {
+    const held = vendor([noted]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    const kept = harness.server.agreements.get(row.id);
+    if (kept === undefined) throw new Error("nothing agreed");
+    // Room for the edit's agreement, and not for the refusal's mark beside it.
+    kept.record = {
+      ...kept.record,
+      file: { key: "k".repeat(16 * 1024 - 340), ref: "r", mime: "text/plain" },
+    };
+    harness.server.edit(row.id, { title: "One, edited" });
+    held.refused = new Map([[row.id, "nope"]]);
+    await harness.twoWay(held);
+    const record = harness.agreement(row.id);
+    expect(record?.["waiting"]).toBeDefined();
+    expect(record?.["refused"]).toBeUndefined();
+    expect(conditions()[`change-refused:${row.id}`]).toBe(
+      `the change to ${row.id} was refused, and the row's agreement has no room to remember the refusal, so it is sent again next run: nope`,
+    );
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(held.changes).toHaveLength(1);
+  });
+
   it("names a refused trash as waiting for the row's restore", async () => {
     const held = vendor([noted]);
     await harness.twoWay(held);
