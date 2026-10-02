@@ -2,11 +2,14 @@ import type { Agreement } from "./agreement.js";
 import type { Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
+/** A purge still to carry, with when and why the vendor last refused it. */
+export type Purge = Item & { refused?: { at: string; reason?: string } };
+
 export interface Kept {
   state: Record<string, unknown>;
   conditions: Record<string, string>;
   cursor?: string;
-  purges?: Item[];
+  purges?: Purge[];
 }
 
 const perRequest = 500;
@@ -30,7 +33,7 @@ function keptOf(value: unknown): Kept {
     : {};
   const cursor = kept["cursor"];
   const purges = Array.isArray(kept["purges"])
-    ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Item)
+    ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Purge)
     : [];
   return {
     state,
@@ -48,6 +51,42 @@ function agreementOf(value: unknown): Agreement | undefined {
     return undefined;
   }
   return value as unknown as Agreement;
+}
+
+/** How much of a refusal's reason is kept. */
+export const reasonBytes = 200;
+
+export function capBytes(text: string, bytes: number): string {
+  let kept = "";
+  for (const char of text) {
+    if (Buffer.byteLength(kept + char) > bytes) break;
+    kept += char;
+  }
+  return kept;
+}
+
+function fits(agreement: Agreement): boolean {
+  return Buffer.byteLength(JSON.stringify(agreement)) <= recordBytes;
+}
+
+/**
+ * The agreement with a refusal's mark and its reason, cut to `reasonBytes`;
+ * the reason goes first where both would pass the instance's cap, and
+ * nothing is answered where even the mark would, so the mark never costs
+ * the row its agreement.
+ */
+export function withRefusal(
+  agreement: Agreement,
+  change: string,
+  reason: string,
+): Agreement | undefined {
+  const full: Agreement = {
+    ...agreement,
+    refused: { change, reason: capBytes(reason, reasonBytes) },
+  };
+  if (fits(full)) return full;
+  const bare: Agreement = { ...agreement, refused: { change } };
+  return fits(bare) ? bare : undefined;
 }
 
 export class Store {

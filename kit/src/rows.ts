@@ -41,8 +41,9 @@ export class LinkTaken extends Error {
 
 /**
  * Thrown by `onChange` or `remake` where the vendor cannot take the row's
- * change now, such as for want of access: the change waits for a later
- * run, and this one goes on, its message raised as a condition. Changes
+ * change now but may later, such as a rate limit, a server error or no
+ * answer: nothing is agreed, the change is sent again next run, and this
+ * one goes on, its message raised as a condition. Changes
  * thrown with one `scope`, the part of the vendor they all wait on, raise
  * one condition between them, saying how many wait, so the message names
  * the scope rather than the row.
@@ -55,6 +56,19 @@ export class Unreachable extends Error {
     super(message);
     this.scope = options?.scope;
   }
+}
+
+/**
+ * Thrown by `onChange` or `remake` where the vendor answered that it will
+ * not take the row's change as it stands, such as a value it does not
+ * accept or a row the account may not change. Nothing is agreed: the
+ * change waits, the run goes on, and a condition names the row and the
+ * message, the vendor's reason. The same change is not sent again; one
+ * that differs, once the row changes, is. A purge, which cannot change, is
+ * asked again a day after its refusal.
+ */
+export class Refused extends Error {
+  override name = "Refused";
 }
 
 export interface Spec {
@@ -565,6 +579,8 @@ export class Rows {
       ...(was?.connections !== undefined && { connections: was.connections }),
       ...(was?.pending !== undefined && { pending: was.pending }),
       ...(file !== undefined && { file }),
+      ...(was?.refused !== undefined &&
+        carriable(agreement.waiting) && { refused: was.refused }),
     });
     if (carriable(agreement.waiting)) this.marked.add(id);
     if (entry.connections !== undefined) {

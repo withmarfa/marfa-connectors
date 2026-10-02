@@ -161,6 +161,13 @@ export interface Change {
    * until it has, and one purged is never carried.
    */
   readonly connections?: Readonly<Record<string, Connected>>;
+  /**
+   * While the vendor's refusal of an earlier change to the row stands, a
+   * mark of that change. A refused write made nothing, so a create sent
+   * again takes an idempotency key of its own from it, where one kept for
+   * a lost answer would have the vendor answer the refusal again.
+   */
+  readonly refused?: string;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {
@@ -319,9 +326,18 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * vendor's entry as the write left it, which the kit takes as what the
    * vendor now holds, connections included, so one the vendor would not
    * take is taken back in Marfa; otherwise the carried values are taken as
-   * the vendor's. Resolving means the change landed or was abandoned with a
-   * condition; throwing fails the run, and the change waits for the next,
-   * but throwing `Unreachable` leaves the run going on.
+   * the vendor's. Resolving means the vendor took the change, or that there
+   * was nothing to send, so it is never the answer to a refusal. Where the
+   * vendor did not take it, throw: `Unreachable` for an answer that can pass
+   * by itself, such as a rate limit, a server error or no answer at all,
+   * and the change is sent again next run; `Refused` for one that will not,
+   * such as a value the vendor rejects, and the same change is not sent
+   * again, though one that differs, once the row changes in Marfa, is; a
+   * refused trash waits for the row's restore, and a refused purge is asked
+   * again a day after.
+   * Either way nothing is agreed, the run goes on, and a condition says why
+   * until the change lands. Any other throw fails the run, and the change
+   * waits for the next.
    * For a purge, the answer's `changed_at` keeps the purge remembered past
    * the vendor's own change, such as a close.
    */
@@ -334,9 +350,11 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * the row to what it made. Asked before `run` reads the vendor, so a run
    * that fails between the vendor's answer and the link cannot read the
    * vendor's copy first and create the row's twin. Answers whether it made
-   * the row; one the vendor still has is carried by `onChange` after the
-   * read. Where a remake failed before, `change.attempted` says when it was
-   * first asked; it may throw `Unreachable` as `onChange` may.
+   * the row, so `true` only once the vendor has made it and the row is
+   * linked; one the vendor still has answers `false` and is carried by
+   * `onChange` after the read. Where a remake failed before,
+   * `change.attempted` says when it was first asked; a remake the vendor did
+   * not take throws `Unreachable` or `Refused` as `onChange` does.
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**

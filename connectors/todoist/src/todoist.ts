@@ -38,6 +38,15 @@ const longestWaitMs = 60_000;
 const serverErrorRetries = 3;
 const commandResends = 5;
 
+/**
+ * Todoist did not answer in a way that holds: no answer, a server error
+ * past its retries, or a wait longer than a run holds. Sending again later
+ * may land.
+ */
+export class Unanswered extends Error {
+  override name = "Unanswered";
+}
+
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -75,12 +84,24 @@ async function request(
 ): Promise<Response> {
   let serverErrors = 0;
   for (;;) {
-    const response = await fetch(new URL(path, base), {
-      method: init.method,
-      ...(init.body !== undefined && { body: init.body }),
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]),
-    });
+    let response: Response;
+    try {
+      response = await fetch(new URL(path, base), {
+        method: init.method,
+        ...(init.body !== undefined && { body: init.body }),
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.any([
+          signal,
+          AbortSignal.timeout(requestTimeoutMs),
+        ]),
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new Unanswered(
+        `Todoist did not answer: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
     if (
       response.status === 401 ||
       (response.status === 403 && init.forbiddenIsAnswer !== true)
@@ -98,14 +119,19 @@ async function request(
         }
       }
       if (wait === undefined || wait > longestWaitMs) {
-        throw new Error(
+        throw new Unanswered(
           `Todoist asked for a wait of ${wait === undefined ? "unknown length" : `${String(wait / 1000)}s`}, longer than a run holds`,
         );
       }
       await pause(wait, signal);
       continue;
     }
-    if (response.status >= 500 && serverErrors < serverErrorRetries) {
+    if (response.status >= 500) {
+      if (serverErrors === serverErrorRetries) {
+        throw new Unanswered(
+          `Todoist answered ${String(response.status)} to a request tried ${String(serverErrorRetries + 1)} times`,
+        );
+      }
       serverErrors += 1;
       await pause(1000 * 2 ** (serverErrors - 1), signal);
       continue;
@@ -270,7 +296,7 @@ export async function send(
     if (waits.length === 0 || resends === commandResends) return answer;
     const wait = Math.max(...waits);
     if (wait > longestWaitMs) {
-      throw new Error(
+      throw new Unanswered(
         `Todoist asked for a wait of ${String(wait / 1000)}s on a command, longer than a run holds`,
       );
     }

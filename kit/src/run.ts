@@ -3,6 +3,7 @@ import {
   carried,
   changedInMarfa,
   laterThan,
+  mark,
   noteWaiting,
   sideOf,
   type Agreement,
@@ -31,6 +32,7 @@ import {
   cascaded,
   connectKey,
   LinkTaken,
+  Refused,
   Rows,
   stateKey,
   Stopped,
@@ -40,7 +42,13 @@ import {
 } from "./rows.js";
 import { instant } from "./values.js";
 import type { Clock } from "./runtime.js";
-import { Store } from "./store.js";
+import {
+  capBytes,
+  reasonBytes,
+  Store,
+  withRefusal,
+  type Purge,
+} from "./store.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
@@ -119,6 +127,31 @@ function summarize(
   }
   return { summary, carried };
 }
+
+/** What a change sends, so the one a vendor refused is not sent again. */
+function sending(change: Change): string {
+  const ids = (items: readonly Item[]): string[] =>
+    items.map((item) => item.id).sort();
+  return mark({
+    kind: change.kind,
+    state: change.item.state,
+    was: change.was,
+    // A field the row does not hold is named alone, apart from any value.
+    values: [...change.changed].sort().map((field) => {
+      const value = change.item.properties[field];
+      return value === undefined || value === null ? [field] : [field, value];
+    }),
+    connections: Object.fromEntries(
+      Object.entries(change.connections ?? {}).map(([type, connected]) => [
+        type,
+        { added: ids(connected.added), removed: ids(connected.removed) },
+      ]),
+    ),
+  });
+}
+
+/** How long a refused purge waits before it is asked again. */
+const purgeAgainMs = 24 * 3_600_000;
 
 export function specsOf<E extends EnvDeclaration>(
   connector: Connector<E>,
@@ -218,6 +251,7 @@ export function observe(
   if (stateBy !== undefined) next.stateBy = stateBy;
   if (stateBy !== undefined && stateAt !== undefined) next.stateAt = stateAt;
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
+  if (!carriable(next.waiting)) Reflect.deleteProperty(next, "refused");
   return { next, own };
 }
 
@@ -266,6 +300,52 @@ export async function runOnce<E extends EnvDeclaration>(
     } else {
       scope.ids.add(id);
     }
+  };
+  const refusedOf = (
+    id: string,
+    kind: ChangeKind,
+    reason: string | undefined,
+    remembered = true,
+  ): void => {
+    const change =
+      kind === "trashed" ? `the trash of ${id}` : `the change to ${id}`;
+    const what = !remembered
+      ? `${change} was refused, and the row's agreement has no room to remember the refusal, so it is sent again next run`
+      : kind === "trashed"
+        ? `${change} was refused, so it waits until the row is restored in Marfa`
+        : `${change} was refused, so it waits until the row changes in Marfa`;
+    raised.set(
+      `change-refused:${id}`,
+      `${what}: ${reason ?? "its reason was too long to keep"}`,
+    );
+  };
+  // What a refusal names is kept with the row, so it stands until settled,
+  // but never at the cost of the row's agreement.
+  const refuse = (id: string, change: Change, error: Refused): void => {
+    const said = logger.redact(error.message);
+    const agreement = store.get(id);
+    const marked =
+      agreement === undefined
+        ? undefined
+        : withRefusal(agreement, sending(change), said);
+    refusedOf(id, change.kind, said, marked !== undefined);
+    if (marked !== undefined) store.set(id, marked);
+  };
+  const refusedBefore = (
+    id: string,
+    agreement: Agreement,
+    change: Change,
+  ): boolean => {
+    const refused = agreement.refused;
+    if (refused?.change !== sending(change)) return false;
+    refusedOf(id, change.kind, refused.reason);
+    return true;
+  };
+  const purgeRefusedOf = (id: string, reason: string | undefined): void => {
+    raised.set(
+      `change-refused:${id}`,
+      `the purge of ${id} was refused, so it is asked again a day after: ${reason ?? "its reason was too long to keep"}`,
+    );
   };
   const startedAt = clock.now();
   let failure: unknown;
@@ -454,8 +534,8 @@ export async function runOnce<E extends EnvDeclaration>(
       return undefined;
     }
   };
-  const purged = new Map<string, Item>(
-    (stored.purges ?? []).map((item) => [item.id, item]),
+  const purged = new Map<string, Purge>(
+    (stored.purges ?? []).map((purge) => [purge.id, purge]),
   );
   let recorded = false;
   let unagreed = 0;
@@ -533,9 +613,10 @@ export async function runOnce<E extends EnvDeclaration>(
     ]) {
       Reflect.deleteProperty(waiting, field);
     }
-    const now = store.get(id) ?? agreement;
+    const now = withoutWaiting(store.get(id) ?? agreement);
+    if (!carriable(waiting)) Reflect.deleteProperty(now, "refused");
     store.set(id, {
-      ...withoutWaiting(now),
+      ...now,
       ...(Object.keys(waiting).length > 0 && { waiting }),
     });
   };
@@ -661,6 +742,7 @@ export async function runOnce<E extends EnvDeclaration>(
         ),
       );
       const next = withoutWaiting(agreement);
+      Reflect.deleteProperty(next, "refused");
       if (Object.keys(left).length > 0) next.waiting = left;
       store.set(current.id, settledConnections(next, moved));
       return;
@@ -674,6 +756,22 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     const attempted = unlinked ? agreement.attempted : undefined;
+    const change: Change = {
+      kind: changeKind,
+      item: current,
+      changed: new Set(changed),
+      ...(attempted !== undefined && { attempted }),
+      ...(changeKind === "restored" &&
+        (agreement.state === "trashed" || agreement.state === "archived") && {
+          was: agreement.state,
+        }),
+      ...(connected &&
+        moved !== undefined && { connections: moved.connections }),
+      ...(agreement.refused !== undefined && {
+        refused: agreement.refused.change,
+      }),
+    };
+    if (refusedBefore(current.id, agreement, change)) return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
@@ -686,26 +784,17 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     let answered: Entry | undefined;
     try {
-      answered = await connector.onChange(
-        {
-          kind: changeKind,
-          item: current,
-          changed: new Set(changed),
-          ...(attempted !== undefined && { attempted }),
-          ...(changeKind === "restored" &&
-            (agreement.state === "trashed" ||
-              agreement.state === "archived") && {
-              was: agreement.state,
-            }),
-          ...(connected &&
-            moved !== undefined && { connections: moved.connections }),
-        },
-        watchContext,
-      );
+      answered = await connector.onChange(change, watchContext);
     } catch (error) {
-      if (!(error instanceof Unreachable)) throw error;
-      unreached(current.id, error);
-      return;
+      if (error instanceof Unreachable) {
+        unreached(current.id, error);
+        return;
+      }
+      if (error instanceof Refused) {
+        refuse(current.id, change, error);
+        return;
+      }
+      throw error;
     }
     settle(kind, current, changeKind, changed, answered, moved);
     // A carried field keeps its value over the answer's.
@@ -1052,9 +1141,16 @@ export async function runOnce<E extends EnvDeclaration>(
             ...(agreement.attempted !== undefined && {
               attempted: agreement.attempted,
             }),
+            ...(agreement.refused !== undefined && {
+              refused: agreement.refused.change,
+            }),
           };
           if (placed?.unplaced === true) {
             heldBack(id);
+            done.add(id);
+            continue;
+          }
+          if (refusedBefore(id, agreement, change)) {
             done.add(id);
             continue;
           }
@@ -1067,8 +1163,9 @@ export async function runOnce<E extends EnvDeclaration>(
           try {
             remade = await connector.remake(change, watchContext);
           } catch (error) {
-            if (!(error instanceof Unreachable)) throw error;
-            unreached(id, error);
+            if (error instanceof Unreachable) unreached(id, error);
+            else if (error instanceof Refused) refuse(id, change, error);
+            else throw error;
             done.add(id);
             continue;
           }
@@ -1153,9 +1250,16 @@ export async function runOnce<E extends EnvDeclaration>(
         if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
       }
       await answeredBack();
-      for (const item of purged.values()) {
+      for (const { refused, ...item } of purged.values()) {
         if (setup.fenced?.() === true || setup.signal.aborted) {
           throw new Stopped();
+        }
+        if (
+          refused !== undefined &&
+          clock.now().getTime() - Date.parse(refused.at) < purgeAgainMs
+        ) {
+          purgeRefusedOf(item.id, refused.reason);
+          continue;
         }
         if (!specs.has(item.type)) {
           raised.set(
@@ -1172,8 +1276,20 @@ export async function runOnce<E extends EnvDeclaration>(
             watchContext,
           );
         } catch (error) {
-          if (!(error instanceof Unreachable)) throw error;
-          unreached(item.id, error);
+          if (error instanceof Unreachable) {
+            unreached(item.id, error);
+            purged.set(item.id, item);
+          } else if (error instanceof Refused) {
+            const said = logger.redact(error.message);
+            purgeRefusedOf(item.id, said);
+            purged.set(item.id, {
+              ...item,
+              refused: {
+                at: clock.now().toISOString(),
+                reason: capBytes(said, reasonBytes),
+              },
+            });
+          } else throw error;
           continue;
         }
         pushed += 1;

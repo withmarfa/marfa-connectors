@@ -360,8 +360,8 @@ export class TodoistStub {
         if (scripted.status !== "nothing") {
           sync_status[command.uuid] = scripted.status;
         }
-        // A refusal is not remembered: Todoist answers a command that
-        // did not run afresh when it is sent again.
+        // The stub forgets a refusal; whether Todoist does is unverified,
+        // so the connector sends nothing again under a refused command's id.
         continue;
       }
       const { status, made } = this.apply(command);

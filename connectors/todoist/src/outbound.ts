@@ -1,5 +1,7 @@
 import {
   LinkTaken,
+  Refused,
+  Unreachable,
   type Change,
   type EnvDeclaration,
   type Item,
@@ -14,6 +16,7 @@ import {
   priorityFor,
   send,
   timezoneOf,
+  Unanswered,
   user,
   uuidFor,
   type Command,
@@ -108,8 +111,42 @@ function linkOf(item: Item): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-function isNotFound(answer: CommandError): boolean {
-  return answer.error_code === 22 || answer.error_tag === "ITEM_NOT_FOUND";
+function isNotFound(answer: CommandError | undefined): boolean {
+  return answer?.error_code === 22 || answer?.error_tag === "ITEM_NOT_FOUND";
+}
+
+const scope = "Todoist";
+
+// Sent again: a rate limit held past every resend, a server error, or no
+// answer for the command, which Todoist runs once whatever is resent.
+function passing(answer: CommandError | undefined): boolean {
+  const code = answer?.http_code;
+  return answer === undefined || code === 429 || (code ?? 0) >= 500;
+}
+
+function notTaken(answer: CommandError | undefined, what: string): Error {
+  const reason =
+    answer === undefined ? "no answer for the command" : describeError(answer);
+  return passing(answer)
+    ? new Unreachable(`Todoist is not taking changes for now: ${reason}`, {
+        scope,
+      })
+    : new Refused(`Todoist refused ${what}: ${reason}`);
+}
+
+async function delivering<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof Unanswered) {
+      throw new Unreachable(
+        `Todoist is not taking changes for now: ${error.message}`,
+        { scope },
+      );
+    }
+    if (error instanceof LinkTaken) throw new Refused(error.message);
+    throw error;
+  }
 }
 
 function isCompleted(item: Item): boolean {
@@ -123,7 +160,23 @@ function commandId(item: Item, type: string): string {
   return uuidFor(item.id, String(item.version), item.updated_at, type);
 }
 
-export async function carry(
+export function carry(
+  change: Change,
+  context: WatchContext<OutboundEnv>,
+  base: string,
+): Promise<undefined> {
+  return delivering(() => carried(change, context, base));
+}
+
+export function remake(
+  change: Change,
+  context: WatchContext<OutboundEnv>,
+  base: string,
+): Promise<boolean> {
+  return delivering(() => remade(change, context, base));
+}
+
+async function carried(
   change: Change,
   context: WatchContext<OutboundEnv>,
   base: string,
@@ -138,8 +191,7 @@ export async function carry(
 
   if (taskId === undefined) {
     if (kind === "trashed" || kind === "purged") return;
-    taskId = await add(item, timeZone, todoist, context);
-    if (taskId === undefined) return;
+    taskId = await add(item, timeZone, todoist, context, change.refused);
   }
 
   if (kind === "trashed" || kind === "purged") {
@@ -152,10 +204,7 @@ export async function carry(
       { id: taskId },
     );
     if (answer !== "ok" && !isNotFound(answer)) {
-      context.log.condition(
-        `todoist-refused:${item.id}`,
-        `Todoist refused deleting task ${taskId} for row ${item.id}: ${describeError(answer)}`,
-      );
+      throw notTaken(answer, `deleting task ${taskId}`);
     }
     return;
   }
@@ -163,7 +212,7 @@ export async function carry(
   await sync(item, taskId, timeZone, todoist, context);
 }
 
-export async function remake(
+async function remade(
   change: Change,
   context: WatchContext<OutboundEnv>,
   base: string,
@@ -174,8 +223,14 @@ export async function remake(
   const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
   if ((await todoist.task(taskId)) !== "missing") return false;
   const timeZone = await timeZoneFor(context, todoist);
-  const made = await add(item, timeZone, todoist, context, taskId);
-  if (made === undefined) return true;
+  const made = await add(
+    item,
+    timeZone,
+    todoist,
+    context,
+    change.refused,
+    taskId,
+  );
   await sync(item, made, timeZone, todoist, context);
   return true;
 }
@@ -190,11 +245,7 @@ async function sync(
   const { log } = context;
   const task = await todoist.task(taskId);
   if (task === "forbidden") {
-    log.condition(
-      `todoist-refused:${item.id}`,
-      `Todoist refuses access to task ${taskId} for row ${item.id}, so its changes are not carried`,
-    );
-    return;
+    throw new Refused(`Todoist refuses access to task ${taskId}`);
   }
   if (task === "missing") {
     // The door answers a completed task as well as an open one, so none
@@ -213,13 +264,7 @@ async function sync(
       commandId(item, "item_update"),
       { id: taskId, ...diff },
     );
-    if (answer !== "ok") {
-      log.condition(
-        `todoist-refused:${item.id}`,
-        `Todoist refused updating task ${taskId} for row ${item.id}: ${describeError(answer)}`,
-      );
-      return;
-    }
+    if (answer !== "ok") throw notTaken(answer, `updating task ${taskId}`);
   }
   const completed = isCompleted(item);
   if (completed === (task.checked === true)) return;
@@ -228,9 +273,9 @@ async function sync(
     id: taskId,
   });
   if (answer !== "ok") {
-    log.condition(
-      `todoist-refused:${item.id}`,
-      `Todoist refused ${completed ? "closing" : "reopening"} task ${taskId} for row ${item.id}: ${describeError(answer)}`,
+    throw notTaken(
+      answer,
+      `${completed ? "closing" : "reopening"} task ${taskId}`,
     );
   }
 }
@@ -240,11 +285,16 @@ async function add(
   timeZone: string,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
+  refused: string | undefined,
   replacing?: string,
-): Promise<string | undefined> {
-  const { log } = context;
-  const again = replacing === undefined ? [] : [replacing];
-  // `again` makes a restore a new create, not the first create's answer again.
+): Promise<string> {
+  // `again` makes a restore a new create, not the first create's answer
+  // again, and a create after a refused one a new command, since the refused
+  // one made nothing.
+  const again = [
+    ...(replacing === undefined ? [] : [replacing]),
+    ...(refused === undefined ? [] : [refused]),
+  ];
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
   // An edit does not carry project, section and labels; they are the row's from
@@ -271,10 +321,10 @@ async function add(
     },
   ]);
   let status = answer.sync_status[uuid];
-  if (status !== "ok" && Object.keys(where).length > 0) {
+  if (status !== "ok" && !passing(status) && Object.keys(where).length > 0) {
     // Where the task was is gone, a project or a section deleted since:
     // it is made in the Inbox rather than not at all, under ids of its
-    // own, since Todoist remembers the refused command.
+    // own, apart from the refused command's.
     const inboxUuid = uuidFor(item.id, "item_add", ...again, "inbox");
     const inboxTemp = uuidFor(item.id, "temp_id", ...again, "inbox");
     answer = await todoist.send([
@@ -288,28 +338,14 @@ async function add(
     status = answer.sync_status[inboxUuid];
     tempId = inboxTemp;
   }
-  if (status !== "ok") {
-    log.condition(
-      `todoist-refused:${item.id}`,
-      `Todoist refused creating a task for row ${item.id}: ${status === undefined ? "no answer for the command" : describeError(status)}`,
-    );
-    return undefined;
-  }
+  if (status !== "ok") throw notTaken(status, "creating a task");
   const taskId = answer.temp_id_mapping?.[tempId];
   if (taskId === undefined) {
-    log.condition(
-      `todoist-unmapped:${item.id}`,
-      `Todoist took the create for row ${item.id} without naming the task it made; link the row to its task by hand`,
+    throw new Refused(
+      "Todoist took the create without naming the task it made; link the row to its task by hand",
     );
-    return undefined;
   }
-  try {
-    await context.setLink(item, taskId);
-  } catch (error) {
-    if (!(error instanceof LinkTaken)) throw error;
-    log.condition(`todoist-link-taken:${item.id}`, error.message);
-    return undefined;
-  }
+  await context.setLink(item, taskId);
   return taskId;
 }
 
@@ -328,9 +364,9 @@ class Door {
     type: string,
     uuid: string,
     args: Record<string, unknown>,
-  ): Promise<"ok" | CommandError> {
+  ): Promise<"ok" | CommandError | undefined> {
     const answer = await this.send([{ type, uuid, args }]);
-    return answer.sync_status[uuid] ?? { error: "no answer for the command" };
+    return answer.sync_status[uuid];
   }
 
   task(id: string): Promise<TaskAnswer> {

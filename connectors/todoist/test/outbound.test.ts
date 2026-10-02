@@ -247,13 +247,16 @@ describe("a row Todoist has not been told about", () => {
     expect(summary()).toMatch(/pushed 0, own 0/);
   });
 
-  it("records a create Todoist took without naming the task it made", async () => {
+  it("keeps a create Todoist took without naming the task it made waiting, and says so", async () => {
     todoist.put(todoist.task("seed"));
     const unmapped = personsRow({ title: "Unmapped", status: "pending" });
     todoist.scriptCommand("item_add", "ok");
     await landed();
     expect(marfa.byId(unmapped.id).properties["todoist_id"]).toBeUndefined();
-    expect(summary()).toContain(`without naming the task it made`);
+    expect(summary()).toContain(
+      `the change to ${unmapped.id} was refused, so it waits until the row changes in Marfa: Todoist took the create without naming the task it made`,
+    );
+    expect(marfa.agreements.get(unmapped.id)?.waiting).toBe(true);
   });
 
   it("records a link another row carries, naming both rows, and leaves the task Todoist made", async () => {
@@ -523,7 +526,7 @@ describe("Todoist's answers", () => {
     expect(JSON.stringify(marfa.runs)).not.toContain(token);
   });
 
-  it("records a command Todoist refused as a condition naming the row, and the run lands", async () => {
+  it("keeps an edit Todoist refused, unsent and not taken back by the next read, until the row changes", async () => {
     const row = await synced("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
     todoist.scriptCommand("item_update", {
@@ -533,9 +536,60 @@ describe("Todoist's answers", () => {
     });
     await landed();
     expect(summary()).toContain(
-      `Todoist refused updating task a for row ${row.id}: Invalid argument value (20)`,
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused updating task a: Invalid argument value (20)`,
     );
     expect(todoist.tasks.get("a")?.content).toBe("Task a");
+    todoist.edit("a", { description: "Edited in Todoist" });
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(1);
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      title: "Task a, renamed",
+      description: "Edited in Todoist",
+    });
+    expect(summary()).not.toContain("conflicts 1");
+    marfa.edit(row.id, { title: "Task a, renamed again" });
+    await landed();
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed again");
+    expect(marfa.states.get("todoist")?.["conditions"]).toEqual({});
+  });
+
+  it("keeps a trash Todoist refused, and deletes on the next run one it put off", async () => {
+    const row = await synced("a");
+    const other = await synced("b");
+    marfa.trash(row.id);
+    marfa.trash(other.id);
+    todoist.scriptCommand(
+      "item_delete",
+      {
+        error_code: 1,
+        error: "Too many requests",
+        http_code: 429,
+        error_extra: { retry_after: 0 },
+      },
+      6,
+    );
+    await landed();
+    expect(todoist.tasks.get("a")?.is_deleted).toBe(false);
+    expect(summary()).toContain(
+      "change waits: Todoist is not taking changes for now",
+    );
+    await landed();
+    expect(todoist.tasks.get("a")?.is_deleted).toBe(true);
+    expect(todoist.tasks.get("b")?.is_deleted).toBe(true);
+
+    const third = await synced("c");
+    marfa.trash(third.id);
+    todoist.scriptCommand("item_delete", {
+      error_code: 39,
+      error: "Insufficient permissions",
+      http_code: 403,
+    });
+    await landed();
+    expect(todoist.tasks.get("c")?.is_deleted).toBe(false);
+    expect(summary()).toContain(
+      `the trash of ${third.id} was refused, so it waits until the row is restored in Marfa: Todoist refused deleting task c: Insufficient permissions (39)`,
+    );
+    expect(marfa.agreements.get(third.id)?.waiting).toBe(true);
   });
 });
 
@@ -666,6 +720,36 @@ describe("transitions over runs", () => {
     const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
     expect(madeId).not.toBe("a");
     expect(todoist.tasks.get(madeId)?.is_deleted).toBe(false);
+  });
+
+  it("never links a restored row to a task Todoist refused to make, and makes it once the row changes", async () => {
+    const row = await synced("a");
+    marfa.trash(row.id);
+    await landed();
+    todoist.tasks.delete("a");
+    marfa.restore(row.id);
+    todoist.scriptCommand(
+      "item_add",
+      {
+        error_code: 20,
+        error: "Invalid argument value",
+        http_code: 400,
+      },
+      2,
+    );
+    await landed();
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused creating a task: Invalid argument value (20)`,
+    );
+    expect(marfa.agreements.get(row.id)?.record["state"]).toBe("trashed");
+    await landed();
+    expect(todoist.commands("item_add")).toHaveLength(2);
+    marfa.edit(row.id, { title: "Task a, back" });
+    await landed();
+    const madeId = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(madeId).not.toBe("a");
+    expect(todoist.tasks.get(madeId)?.content).toBe("Task a, back");
+    expect(marfa.agreements.get(row.id)?.record["state"]).toBe("active");
   });
 
   it("makes the task again in the Inbox when its project is gone", async () => {
@@ -888,22 +972,26 @@ describe("Todoist's answers, continued", () => {
     expect([...todoist.tasks.keys()]).toEqual(["seed", "made-1"]);
   });
 
-  it("gives up on a server error after three more tries, and the run fails", async () => {
+  it("keeps a create through a server error past three more tries, and makes it on the next run", async () => {
     todoist.put(todoist.task("seed"));
-    personsRow({ title: "Unlucky", status: "pending" });
+    const unlucky = personsRow({ title: "Unlucky", status: "pending" });
     for (let i = 0; i < 4; i += 1) {
       todoist.refuseNext(503, {
         when: (request) => request.commands !== undefined,
       });
     }
-    const { code, output } = await once();
-    expect(code).not.toBe(0);
-    expect(output).toContain("answered 503");
+    await landed();
+    expect(summary()).toContain(
+      "1 change waits: Todoist is not taking changes for now: Todoist answered 503 to a request tried 4 times",
+    );
     expect(todoist.commands("item_add")).toHaveLength(4);
     expect([...todoist.tasks.keys()]).toEqual(["seed"]);
+    await landed();
+    expect([...todoist.tasks.keys()]).toEqual(["seed", "made-1"]);
+    expect(marfa.byId(unlucky.id).properties["todoist_id"]).toBe("made-1");
   }, 20_000);
 
-  it("names a task the token cannot reach as a condition, and the run lands", async () => {
+  it("keeps an edit to a task the token cannot reach, unsent until the row changes, and the run lands", async () => {
     const row = await synced("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
     todoist.refuseNext(403, {
@@ -913,8 +1001,19 @@ describe("Todoist's answers, continued", () => {
     await landed();
     expect(todoist.commands()).toEqual([]);
     expect(summary()).toContain(
-      `Todoist refuses access to task a for row ${row.id}, so its changes are not carried`,
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refuses access to task a`,
     );
+    const asked = todoist.received.length;
+    await landed();
+    expect(
+      todoist.received
+        .slice(asked)
+        .filter((request) => request.path === "/api/v1/tasks/a"),
+    ).toEqual([]);
+    expect(marfa.byId(row.id).properties["title"]).toBe("Task a, renamed");
+    marfa.edit(row.id, { title: "Task a, renamed again" });
+    await landed();
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed again");
   });
 
   it("does not send a refused command again on the wait it names, unless the refusal is a rate limit", async () => {
@@ -933,11 +1032,11 @@ describe("Todoist's answers, continued", () => {
     await landed();
     expect(todoist.commands("item_update")).toHaveLength(1);
     expect(summary()).toContain(
-      `Todoist refused updating task a for row ${row.id}: Item not found (22)`,
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused updating task a: Item not found (22)`,
     );
   });
 
-  it("gives up on a rate limit that holds through every resend, and records it", async () => {
+  it("keeps an edit through a rate limit that holds past every resend, and sends it on the next run", async () => {
     const row = await synced("a");
     marfa.edit(row.id, { title: "Task a, renamed" });
     todoist.scriptCommand(
@@ -948,16 +1047,21 @@ describe("Todoist's answers, continued", () => {
         http_code: 429,
         error_extra: { retry_after: 0 },
       },
-      100,
+      6,
     );
     await landed();
     expect(todoist.commands("item_update")).toHaveLength(6);
     expect(summary()).toContain(
-      `Todoist refused updating task a for row ${row.id}: Too many requests (35)`,
+      "1 change waits: Todoist is not taking changes for now: Too many requests (35)",
     );
+    expect(todoist.tasks.get("a")?.content).toBe("Task a");
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(7);
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
+    expect(marfa.byId(row.id).properties["title"]).toBe("Task a, renamed");
   });
 
-  it("waits at least the second a 429 or a server error asks for, and fails a wait longer than a run holds", async () => {
+  it("waits at least the second a 429 or a server error asks for, and keeps a change whose wait is longer than a run holds", async () => {
     todoist.put(todoist.task("seed"));
     personsRow({ title: "Patient", status: "pending" });
     todoist.refuseNext(429, {
@@ -982,14 +1086,16 @@ describe("Todoist's answers, continued", () => {
       950,
     );
 
-    personsRow({ title: "Too patient", status: "pending" });
+    const patient = personsRow({ title: "Too patient", status: "pending" });
     todoist.refuseNext(429, {
       headers: { "Retry-After": "120" },
       when: (request) => request.commands !== undefined,
     });
-    const { code, output } = await once();
-    expect(code).not.toBe(0);
-    expect(output).toContain("a wait of 120s, longer than a run holds");
+    await landed();
+    expect(summary()).toContain("a wait of 120s, longer than a run holds");
+    expect(marfa.byId(patient.id).properties["todoist_id"]).toBeUndefined();
+    await landed();
+    expect(marfa.byId(patient.id).properties["todoist_id"]).toBe("made-3");
   });
 
   it("records a create Todoist refused, and a command it did not answer", async () => {
@@ -1003,7 +1109,7 @@ describe("Todoist's answers, continued", () => {
     await landed();
     expect(marfa.byId(refused.id).properties["todoist_id"]).toBeUndefined();
     expect(summary()).toContain(
-      `Todoist refused creating a task for row ${refused.id}: Invalid argument value (20)`,
+      `the change to ${refused.id} was refused, so it waits until the row changes in Marfa: Todoist refused creating a task: Invalid argument value (20)`,
     );
 
     const row = await synced("a");
@@ -1011,8 +1117,31 @@ describe("Todoist's answers, continued", () => {
     todoist.answerNothing("item_update");
     await landed();
     expect(summary()).toContain(
-      `Todoist refused updating task a for row ${row.id}: no answer for the command`,
+      "1 change waits: Todoist is not taking changes for now: no answer for the command",
     );
+    await landed();
+    expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed");
+    expect(todoist.commands("item_add")).toHaveLength(1);
+  });
+});
+
+describe("a create Todoist refused", () => {
+  it("is sent again under ids of its own once the row changes", async () => {
+    todoist.put(todoist.task("seed"));
+    const refused = personsRow({ title: "Refused", status: "pending" });
+    todoist.scriptCommand("item_add", {
+      error_code: 20,
+      error: "Invalid argument value",
+      http_code: 400,
+    });
+    await landed();
+    marfa.edit(refused.id, { title: "Taken" });
+    await landed();
+    const adds = todoist.commands("item_add");
+    expect(adds).toHaveLength(2);
+    expect(adds[1]?.uuid).not.toBe(adds[0]?.uuid);
+    expect(adds[1]?.temp_id).not.toBe(adds[0]?.temp_id);
+    expect(marfa.byId(refused.id).properties["todoist_id"]).toBe("made-1");
   });
 });
 
