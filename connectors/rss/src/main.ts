@@ -1,45 +1,73 @@
 import {
   defineConnector,
   main,
-  type Log,
   type TypeDefinition,
 } from "@withmarfa/connector";
 import {
   entryFields,
-  feedHash,
   feedList,
   feedName,
   fetchFeed,
+  maxFeedElements,
+  maxFeedEntries,
+  privateHosts,
   readFeed,
+  TooManyElements,
+  TooManyEntries,
+  type Feed,
   type Validators,
 } from "./feeds.js";
+import {
+  maxFeedBytes,
+  maxRedirects,
+  RefusedAddress,
+  TooLarge,
+  TooManyRedirects,
+} from "./fetch.js";
 import rssEntry from "./rss.entry.json" with { type: "json" };
 
 interface FeedState {
   validators?: Validators;
+  /** The key of the address the validators belong to. */
+  address?: string;
+  /** The key the feed's rows were last written under. */
   key?: string;
+  /** Keys its rows were written under before, newest first: a row in the bin
+   *  or purged stays under one, so every read names them. */
+  was?: string[];
+  /** Earlier keys another saved feed also wrote under, whose rows are left
+   *  where they are rather than handed to either. */
+  shared?: string[];
   unkeyed?: number;
-  sameAs?: string;
+  declared?: string;
+  /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
+   *  named again if it returns. */
+  left?: string;
 }
 
-// A feed not read this run (304 or failed) raises its conditions again; the
-// kit would otherwise take them as cleared.
-function raiseHeld(log: Log, id: string, name: string, feed: FeedState): void {
-  const count = feed.unkeyed ?? 0;
-  if (count > 0) {
-    log.condition(
-      `unkeyed:${id}`,
-      count === 1
-        ? `an entry in the feed ${name} carries neither an id nor a link, and is left out`
-        : `${String(count)} entries in the feed ${name} carry neither an id nor a link, and are left out`,
-    );
+/** Feeds kept after leaving the list, newest first; one leaves only by the
+ *  owner's edit, so this holds a long history of them. */
+const maxDeparted = 100;
+
+function refusal(error: unknown): string | undefined {
+  if (error instanceof TooLarge) {
+    return `is larger than ${String(maxFeedBytes / 1024 / 1024)} MiB, so it is skipped`;
   }
-  if (feed.sameAs !== undefined) {
-    log.condition(
-      `same:${id}`,
-      `the feed ${name} is the feed ${feed.sameAs} under another address, and is read once`,
-    );
+  if (error instanceof TooManyEntries) {
+    return `carries more than ${String(maxFeedEntries)} entries, so it is skipped`;
   }
+  if (error instanceof TooManyElements) {
+    return `holds more than ${String(maxFeedElements)} elements, so it is skipped`;
+  }
+  if (error instanceof RefusedAddress) {
+    return error.hop === 0
+      ? "is on this machine or a private network, which is read only when RSS_PRIVATE_HOSTS names its host"
+      : "redirected to an address on this machine or a private network, which is not followed";
+  }
+  if (error instanceof TooManyRedirects) {
+    return `redirected more than ${String(maxRedirects)} times, so it is skipped`;
+  }
+  return undefined;
 }
 
 const connector = defineConnector({
@@ -57,76 +85,193 @@ const connector = defineConnector({
   // A secret, since a private feed's address carries its token.
   env: {
     RSS_FEEDS: "secret",
+    RSS_PRIVATE_HOSTS: "optional",
   },
   checkEnv(env) {
     feedList(env.RSS_FEEDS);
+    privateHosts(env.RSS_PRIVATE_HOSTS);
   },
   async run({ env, signal, state, log, upsert }) {
     const feeds = feedList(env.RSS_FEEDS);
+    const allowed = privateHosts(env.RSS_PRIVATE_HOSTS);
     const known = (state.get("feeds") ?? {}) as Record<string, FeedState>;
+    const configured = new Set(feeds.map((feed) => feed.key));
+    const claimed = new Set<string>();
     const kept: Record<string, FeedState> = {};
-    const read = new Map<string, string>();
+    const declaredBy = new Map<string, Feed>();
+    const holders = new Map<string, Set<string>>();
+    for (const [id, held] of Object.entries(known)) {
+      for (const key of [held.key ?? [], held.was ?? []].flat()) {
+        holders.set(key, (holders.get(key) ?? new Set()).add(id));
+      }
+    }
 
-    for (const feedUrl of feeds) {
-      const name = feedName(feedUrl);
-      const id = feedHash(feedUrl);
-      const held = known[id] ?? {};
-      kept[id] = held;
-      const unread = (): void => {
-        if (held.key !== undefined && !read.has(held.key)) {
-          read.set(held.key, name);
+    // A feed renamed, or named for the first time, finds its rows by its
+    // address; one moved under its name keeps its key.
+    const previous = (feed: Feed): { held: FeedState; id?: string } => {
+      const own = known[feed.key];
+      if (own !== undefined) {
+        claimed.add(feed.key);
+        return {
+          held: { ...own, address: own.address ?? feed.key },
+          id: feed.key,
+        };
+      }
+      for (const [id, held] of Object.entries(known)) {
+        if (configured.has(id) || claimed.has(id)) continue;
+        const address = held.address ?? id;
+        if (address === feed.address) {
+          claimed.add(id);
+          return { held: { ...held, address }, id };
         }
-        raiseHeld(log, id, name, held);
+      }
+      return { held: {} };
+    };
+    const records = new Map(feeds.map((feed) => [feed, previous(feed)]));
+
+    // Rows are moved from an earlier key only when this feed alone held it:
+    // never from a key another listed feed now owns, nor one another saved
+    // feed also wrote under.
+    const sharedWith = (key: string, id: string | undefined): boolean =>
+      configured.has(key) ||
+      [...(holders.get(key) ?? [])].some((holder) => holder !== id);
+
+    const now = new Date().toISOString();
+    const departed = Object.entries(known)
+      .filter(([id]) => !claimed.has(id) && !configured.has(id))
+      .map(([id, held]): [string, FeedState] => [
+        id,
+        {
+          ...(held.address !== undefined && { address: held.address }),
+          ...(held.key !== undefined && { key: held.key }),
+          ...(held.was !== undefined && { was: held.was }),
+          ...(held.shared !== undefined && { shared: held.shared }),
+          left: held.left ?? now,
+        },
+      ])
+      .sort(([, a], [, b]) => (b.left ?? "").localeCompare(a.left ?? ""))
+      .slice(0, maxDeparted);
+
+    // A feed not read this run (304 or failed) raises its conditions again;
+    // the kit would otherwise take them as cleared.
+    const raise = (feed: Feed, held: FeedState): void => {
+      const name = feedName(feed);
+      const count = held.unkeyed ?? 0;
+      if (count > 0) {
+        log.condition(
+          `unkeyed:${feed.key}`,
+          count === 1
+            ? `an entry in ${name} carries neither an id nor a link, and is left out`
+            : `${String(count)} entries in ${name} carry neither an id nor a link, and are left out`,
+        );
+      }
+      if ((held.shared ?? []).length > 0) {
+        log.condition(
+          `shared:${feed.key}`,
+          `rows written for ${name} before share their key with another feed's, so they are left as they are and its entries are written anew`,
+        );
+      }
+      if (held.declared === undefined) return;
+      const first = declaredBy.get(held.declared);
+      if (first === undefined) {
+        declaredBy.set(held.declared, feed);
+        return;
+      }
+      log.condition(
+        `same-id:${feed.key}`,
+        `${name} declares the same feed id as ${feedName(first)}, and each keeps its own entries`,
+      );
+    };
+
+    for (const feed of feeds) {
+      const name = feedName(feed);
+      const { held, id } = records.get(feed) ?? { held: {} };
+      const earlier = [
+        ...new Set([
+          ...(held.key === undefined ? [] : [held.key]),
+          ...(held.was ?? []),
+        ]),
+      ].filter((key) => key !== feed.key);
+      const shared = [
+        ...new Set([
+          ...(held.shared ?? []),
+          ...earlier.filter((key) => sharedWith(key, id)),
+        ]),
+      ];
+      const was = earlier.filter((key) => !shared.includes(key));
+      const carried: FeedState = {
+        ...held,
+        ...(was.length > 0 && { was }),
+        ...(shared.length > 0 && { shared }),
       };
+      kept[feed.key] = carried;
       let fetched;
       try {
-        fetched = await fetchFeed(feedUrl, held.validators, signal);
+        // Rows not yet under this key are read whole, so they move now.
+        fetched = await fetchFeed(
+          feed,
+          held.address === feed.address && held.key === feed.key
+            ? held.validators
+            : undefined,
+          allowed,
+          signal,
+        );
       } catch (error) {
         if (signal.aborted) throw error;
+        const why = refusal(error);
         log.condition(
-          `unreachable:${id}`,
-          `the feed ${name} could not be fetched`,
+          why === undefined ? `unreachable:${feed.key}` : `refused:${feed.key}`,
+          `${name} ${why ?? "could not be fetched"}`,
         );
-        unread();
+        raise(feed, carried);
         continue;
       }
       if (fetched.status === 304) {
-        unread();
+        raise(feed, carried);
         continue;
       }
       if (!("text" in fetched)) {
         log.condition(
-          `status:${id}`,
-          `the feed ${name} answered ${String(fetched.status)}`,
+          `status:${feed.key}`,
+          `${name} answered ${String(fetched.status)}`,
         );
-        unread();
+        raise(feed, carried);
         continue;
       }
-      let entries;
+      let read;
       try {
-        entries = readFeed(feedUrl, fetched.text, fetched.url);
-      } catch {
+        read = readFeed(feed, fetched.text, fetched.url);
+      } catch (error) {
+        const why = refusal(error);
         log.condition(
-          `unreadable:${id}`,
-          `the feed ${name} is not an Atom or RSS 2.0 feed`,
+          why === undefined ? `unreadable:${feed.key}` : `refused:${feed.key}`,
+          `${name} ${why ?? "is not an Atom or RSS 2.0 feed"}`,
         );
-        unread();
+        raise(feed, carried);
         continue;
       }
-      const first = read.get(entries.key);
       const now: FeedState = {
         validators: fetched.validators,
-        key: entries.key,
-        ...(entries.unkeyed > 0 && { unkeyed: entries.unkeyed }),
-        ...(first !== undefined && { sameAs: first }),
+        address: feed.address,
+        key: feed.key,
+        ...(was.length > 0 && { was }),
+        ...(shared.length > 0 && { shared }),
+        ...(read.unkeyed > 0 && { unkeyed: read.unkeyed }),
+        ...(read.declared !== undefined && { declared: read.declared }),
       };
-      kept[id] = now;
-      raiseHeld(log, id, name, now);
-      if (first !== undefined) continue;
-      read.set(entries.key, name);
-      await upsert(rssEntry.id, entries.entries);
+      kept[feed.key] = now;
+      raise(feed, now);
+      await upsert(
+        rssEntry.id,
+        was.length === 0
+          ? read.entries
+          : read.entries.map((entry) => {
+              const id = entry.source_id.slice(feed.key.length);
+              return { ...entry, movedFrom: was.map((key) => `${key}${id}`) };
+            }),
+      );
     }
-    state.set("feeds", kept);
+    state.set("feeds", { ...kept, ...Object.fromEntries(departed) });
   },
 });
 

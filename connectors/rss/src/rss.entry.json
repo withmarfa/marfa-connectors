@@ -1,7 +1,7 @@
 {
   "id": "rss.entry",
   "label": "Feed Entry",
-  "description": "An entry from an Atom or RSS 2.0 feed, as the RSS connector reads it: a bookmark whose title and description are plain text and whose body keeps the feed's markup, with the entry's id in its feed and the feed's origin and address hash beside the bookmark's fields.",
+  "description": "An entry from an Atom or RSS 2.0 feed, as the RSS connector reads it: a bookmark whose title and description are plain text and whose body keeps the feed's markup, with the entry's id in its feed and the feed's origin and identity hash beside the bookmark's fields.",
   "parent": "core.bookmark",
   "fields": {
     "entry_id": {
@@ -17,7 +17,7 @@
     "feed_hash": {
       "type": "string",
       "required": true,
-      "description": "A hash of the feed's address, the same for every entry of one feed, which names the feed where its address may not go."
+      "description": "A hash of what identifies the feed in the connector's configuration, its name there or else its address, the same for every entry of one feed, which names the feed where its address may not go."
     }
   },
   "display_hints": {
