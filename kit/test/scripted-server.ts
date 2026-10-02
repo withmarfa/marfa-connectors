@@ -671,7 +671,12 @@ export class ScriptedServer {
   ): Promise<void> {
     const url = new URL(req.url ?? "/", this.url);
     const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
+    try {
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+    } catch {
+      // The client gave up on the request while sending it.
+      return;
+    }
     const raw = Buffer.concat(chunks);
     const text = raw.toString("utf8");
     const body: unknown =
@@ -1130,6 +1135,10 @@ export class ScriptedServer {
       return;
     }
     if (method === "POST" && url.pathname === "/blobs") {
+      if (raw.length === 0) {
+        refuse(400, "validation_error", "the upload holds no bytes");
+        return;
+      }
       const hash = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
       const mime = req.headers["content-type"] ?? "application/octet-stream";
       this.blobs.set(hash, { bytes: raw, mime_type: mime });
@@ -1207,6 +1216,11 @@ export class ScriptedServer {
       return;
     }
     if (method === "POST" && url.pathname === "/items/lookup") {
+      const type = String(input["type"]);
+      if (!this.types.has(type)) {
+        refuse(400, "unknown_type", `Unknown type: ${type}`, { type });
+        return;
+      }
       send(200, this.lookup(input));
       this.afterRead?.(request);
       return;
@@ -1609,6 +1623,19 @@ export class ScriptedServer {
     };
   }
 
+  private writes(type: string): boolean {
+    const held = this.grants.type_permissions ?? this.minted.type_permissions;
+    return Object.entries(held).some(
+      ([pattern, access]) =>
+        access === "write" &&
+        (pattern === "*" ||
+          pattern === type ||
+          (pattern.endsWith(".*") &&
+            (type === pattern.slice(0, -2) ||
+              type.startsWith(pattern.slice(0, -1))))),
+    );
+  }
+
   private bulk(input: Record<string, unknown>): unknown {
     const entries = input["items"] as Record<string, unknown>[];
     const results = entries.map((entry, index) => {
@@ -1626,13 +1653,26 @@ export class ScriptedServer {
       const existing = this.rows.find(
         (row) => row.source === source && row.source_id === sourceId,
       );
-      if (existing !== undefined && existing.type !== entry["type"]) {
+      // A key told nothing of a row it may not write, its id included.
+      if (existing !== undefined && !this.writes(existing.type)) {
         return {
           index,
           outcome: "errored",
           error: {
+            code: "type_not_permitted",
+            message: "the natural key names a row the key may not write",
+          },
+        };
+      }
+      if (existing !== undefined && existing.type !== entry["type"]) {
+        return {
+          index,
+          outcome: "errored",
+          id: existing.id,
+          error: {
             code: "type_mismatch",
             message: `the key names a ${existing.type}`,
+            details: { actual_type: existing.type },
           },
         };
       }
@@ -1660,6 +1700,17 @@ export class ScriptedServer {
           ...(entry["properties"] as Record<string, unknown>),
         });
         return { index, outcome: "updated", id: existing.id };
+      }
+      if (!this.types.has(String(entry["type"]))) {
+        return {
+          index,
+          outcome: "errored",
+          error: {
+            code: "unknown_type",
+            message: `Unknown type: ${String(entry["type"])}`,
+            details: { type: entry["type"] },
+          },
+        };
       }
       const holder = this.linkHolder(
         String(entry["type"]),

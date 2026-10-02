@@ -12,6 +12,7 @@ import {
 } from "./agreement.js";
 import type { Entry, Item, Target } from "./define.js";
 import {
+  causeOf,
   Refusal,
   type BulkResult,
   type Marfa,
@@ -124,19 +125,6 @@ const raced = new Set([
   "invalid_transition",
 ]);
 
-const refusedUpdate = new Set([
-  "invalid_properties",
-  "request_too_large",
-  "link_taken",
-]);
-const refusedCreate = new Set([
-  "invalid_properties",
-  "validation_error",
-  "type_mismatch",
-  "request_too_large",
-  "link_taken",
-]);
-
 /** A bulk request's bounds, well inside the door's 5000 entries and
  *  16 MiB; a page refused for its size is split in two. */
 const pageEntries = 500;
@@ -161,6 +149,42 @@ function paged(creates: readonly NewRow[]): NewRow[][] {
   }
   if (page.length > 0) pages.push(page);
   return pages;
+}
+
+/** A file's bytes as they reach Marfa, and whether an upload that failed
+ *  did so on the vendor's side: its stream broke, or Marfa was waiting on
+ *  it when the upload went quiet. */
+function vendorRead(bytes: Uint8Array | ReadableStream<Uint8Array>): {
+  body: Uint8Array | ReadableStream<Uint8Array>;
+  failed: () => boolean;
+} {
+  if (!(bytes instanceof ReadableStream))
+    return { body: bytes, failed: () => false };
+  const reader = bytes.getReader();
+  let waiting = false;
+  let failed = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      waiting = true;
+      let next;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        failed = true;
+        controller.error(error);
+        return;
+      } finally {
+        waiting = false;
+      }
+      if (next.done) controller.close();
+      else controller.enqueue(next.value);
+    },
+    cancel: (reason) => {
+      if (waiting) failed = true;
+      return reader.cancel(reason);
+    },
+  });
+  return { body, failed: () => failed || waiting };
 }
 
 export interface Hooks {
@@ -367,20 +391,32 @@ export class Rows {
     const source = entry.file;
     if (source === undefined) return entry;
     this.checkStopped();
-    let loaded;
-    try {
-      loaded = await source.load(this.signal);
-    } catch (error) {
-      if (this.signal.aborted) throw error;
+    const unloaded = (): void => {
       this.counts.skipped += 1;
       this.hooks.condition(
         `file-unloaded:${entry.source_id}`,
         // Not quoted: a loader's error can hold a signed address.
         `the file for ${entry.source_id} could not be fetched from the vendor, so its row waits`,
       );
+    };
+    let loaded;
+    try {
+      loaded = await source.load(this.signal);
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      unloaded();
       return undefined;
     }
-    const stored = await this.marfa.upload(loaded.bytes, loaded.mime_type);
+    const read = vendorRead(loaded.bytes);
+    let stored;
+    try {
+      stored = await this.marfa.upload(read.body, loaded.mime_type);
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      if (read.failed()) unloaded();
+      else this.absorb(error, entry.source_id);
+      return undefined;
+    }
     const withFile = {
       ...entry,
       properties: {
@@ -424,7 +460,7 @@ export class Rows {
       try {
         row = await this.marfa.transition(found.id, "active");
       } catch (error) {
-        this.absorb(error, entry.source_id, refusedUpdate);
+        this.absorb(error, entry.source_id);
         return;
       }
       this.index(row);
@@ -533,7 +569,7 @@ export class Rows {
             continue;
           }
         }
-        this.absorb(error, entry.source_id, refusedUpdate);
+        this.absorb(error, entry.source_id);
         return;
       }
     }
@@ -669,7 +705,7 @@ export class Rows {
         throw error;
       }
       if (page.length === 1) {
-        this.absorb(error, first.source_id, refusedCreate);
+        this.absorb(error, first.source_id);
         return;
       }
       const half = Math.ceil(page.length / 2);
@@ -806,7 +842,7 @@ export class Rows {
         });
         this.counts.archived += 1;
       } catch (error) {
-        this.absorb(error, key, refusedUpdate);
+        this.absorb(error, key);
       }
     }
   }
@@ -837,7 +873,7 @@ export class Rows {
         await this.marfa.update(row.id, row.version, properties, undefined),
       );
     } catch (error) {
-      this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+      this.absorb(error, row.source_id ?? row.id);
       return [];
     }
     this.counts.updated += 1;
@@ -914,7 +950,7 @@ export class Rows {
         ) {
           continue;
         }
-        this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+        this.absorb(error, row.source_id ?? row.id);
         // Not written: agreed as the row's, so the next listing writes it.
         const agreement = this.store.get(id);
         if (agreement !== undefined) {
@@ -1099,33 +1135,29 @@ export class Rows {
       this.counts.skipped += 1;
       return;
     }
-    const code = result.error?.code ?? "unknown";
-    const message = result.error?.message ?? result.outcome;
     this.absorb(
-      new Refusal(undefined, code, message),
+      new Refusal(
+        undefined,
+        result.error?.code ?? "unknown",
+        result.error?.message ?? result.outcome,
+        result.error?.details ?? {},
+      ),
       created.source_id,
-      refusedCreate,
     );
   }
 
-  /** Any other refusal ends the run, since it refuses every row after it too. */
-  private absorb(
-    error: unknown,
-    sourceId: string,
-    refusedRow: ReadonlySet<string>,
-  ): void {
-    if (
-      error instanceof Refusal &&
-      (raced.has(error.code) || refusedRow.has(error.code))
-    ) {
-      this.counts.skipped += 1;
-      this.held += 1;
-      if (refusedRow.has(error.code)) {
-        this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
-      }
-      return;
+  /** Marfa's refusal of one row's write is that row's, whatever its code;
+   *  only a failure of Marfa or of the key, which every later write meets
+   *  too, ends the run. */
+  private absorb(error: unknown, sourceId: string): void {
+    if (!(error instanceof Refusal) || causeOf(error) !== "refused") {
+      throw error;
     }
-    throw error;
+    this.counts.skipped += 1;
+    this.held += 1;
+    if (!raced.has(error.code)) {
+      this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
+    }
   }
 
   private checkStopped(): void {

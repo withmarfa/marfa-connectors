@@ -117,21 +117,51 @@ function transportError(error: TypeError): Error {
   });
 }
 
+/** How long a call may take: `whole`, `ms` for all of it; `quiet`, `ms`
+ *  without a byte of its body sent, and `ms` for the answer after the last,
+ *  so a large upload is never cut off for its size. */
+export type Timing = "whole" | "quiet";
+
 /** The transport for every call to Marfa: a call that gets no answer fails
  *  as `MarfaUnreachable` or, where the address itself is at fault, as
  *  `MarfaAddress`. A timeout is wrapped whoever's timer it was, and a call
  *  its caller aborted is left as it was. `signal`, where given, ends every
  *  call made through it. */
-export function marfaFetch(ms: number, signal?: AbortSignal): typeof fetch {
+export function marfaFetch(
+  ms: number,
+  signal?: AbortSignal,
+  timing: Timing = "whole",
+): typeof fetch {
   return async (input, init) => {
     try {
-      const request = new Request(input, init);
+      let request = new Request(input, init);
+      let timer = AbortSignal.timeout(ms);
+      if (timing === "quiet" && request.body !== null) {
+        const quiet = new AbortController();
+        const expire = setTimeout(() => {
+          quiet.abort(new DOMException("no progress", "TimeoutError"));
+        }, ms);
+        expire.unref();
+        const body = request.body.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              expire.refresh();
+              controller.enqueue(chunk);
+            },
+            flush() {
+              expire.refresh();
+            },
+          }),
+        );
+        request = new Request(request, { body, duplex: "half" });
+        timer = quiet.signal;
+      }
       // Handed to fetch as its own option: built into a copy of the request,
       // the timer's signal is collected before it fires.
       return await fetch(request, {
         signal: AbortSignal.any([
           request.signal,
-          AbortSignal.timeout(ms),
+          timer,
           ...(signal === undefined ? [] : [signal]),
         ]),
       });
@@ -149,7 +179,8 @@ export function marfaFetch(ms: number, signal?: AbortSignal): typeof fetch {
  *  - `marfa`: no answer from Marfa, or one that asks for time (408, 429,
  *    5xx);
  *  - `key`: a key Marfa refuses;
- *  - `registration`: a connector Marfa no longer holds;
+ *  - `registration`: a connector Marfa no longer holds, or a type of its
+ *    own, the only kind the kit names, so registering again mends both;
  *  - `address`: an address that cannot be used;
  *  - `refused`: Marfa answered, and refused or could not be understood;
  *  - `run`: anything else, which is the connector's own run and its vendor. */
@@ -166,7 +197,10 @@ export function causeOf(error: unknown): Cause {
     if (at instanceof MarfaAddress) return "address";
     if (!(at instanceof Refusal)) continue;
     if (at.status === 401) return "key";
-    if (at.status === 404 && at.code === "connector_not_found") {
+    if (
+      (at.status === 404 && at.code === "connector_not_found") ||
+      at.code === "unknown_type"
+    ) {
       return "registration";
     }
     if (
@@ -252,21 +286,29 @@ export interface NewRow {
 const reportMs = 15_000;
 
 export class Marfa {
-  /** `scope` makes a client every call of which `signal` ends, which is how
-   *  a run's calls are held to its hold: the hold's signal aborts when the
-   *  hold can no longer be trusted, so a write sent just before that cannot
-   *  land after the hold lapsed. */
+  private readonly client: MarfaClient;
+  private readonly uploads: MarfaClient;
+
+  /** `clientFor` makes a client every call of which `signal` ends, which is
+   *  how a run's calls are held to its hold: the hold's signal aborts when
+   *  the hold can no longer be trusted, so a write sent just before that
+   *  cannot land after the hold lapsed. */
   constructor(
-    private readonly client: MarfaClient,
-    private readonly scope?: (signal: AbortSignal) => MarfaClient,
-    private readonly root: MarfaClient = client,
-  ) {}
+    private readonly clientFor: (
+      signal?: AbortSignal,
+      timing?: Timing,
+    ) => MarfaClient,
+    signal?: AbortSignal,
+    private readonly root: MarfaClient = clientFor(),
+  ) {
+    this.client = signal === undefined ? root : clientFor(signal);
+    this.uploads = clientFor(signal, "quiet");
+  }
 
   /** This connection, every call of which but the run's report ends with
    *  `signal`. */
   scoped(signal: AbortSignal): Marfa {
-    if (this.scope === undefined) return this;
-    return new Marfa(this.scope(signal), this.scope, this.root);
+    return new Marfa(this.clientFor, signal, this.root);
   }
 
   async register(
@@ -456,10 +498,10 @@ export class Marfa {
   }
 
   async upload(
-    bytes: Uint8Array,
+    bytes: Uint8Array | ReadableStream<Uint8Array>,
     mimeType: string,
   ): Promise<{ hash: string; mime_type: string }> {
-    const { data, error, response } = await this.client.POST("/blobs", {
+    const { data, error, response } = await this.uploads.POST("/blobs", {
       body: bytes,
       bodySerializer: (body) => body,
       headers: { "Content-Type": mimeType },

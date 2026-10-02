@@ -509,13 +509,13 @@ export async function start<E extends EnvDeclaration>(
     logger.info("asked to stop");
     stop.abort();
   });
-  const clientFor = (signal?: AbortSignal): ReturnType<typeof createClient> =>
+  const marfa = new Marfa((signal, timing) =>
     createClient({
       baseUrl: environment.url,
       credential: environment.key,
-      fetch: marfaFetch(runtime.requestTimeoutMs, signal),
-    });
-  const marfa = new Marfa(clientFor(), clientFor);
+      fetch: marfaFetch(runtime.requestTimeoutMs, signal, timing),
+    }),
+  );
   const shared: Shared<E> = {
     connector,
     environment,
@@ -535,13 +535,13 @@ export async function start<E extends EnvDeclaration>(
     const now = clock.now().getTime();
     if (lostAt !== undefined && now - lostAt < reregisterAfterMs) {
       logger.error(
-        "the server keeps losing this connector's registration, so the connector stops; check what removes it, then start it again",
+        "the server keeps losing this connector's registration or a type it registered, so the connector stops; check what removes it, then start it again",
       );
       return 1;
     }
     lostAt = now;
     logger.warn(
-      "the server no longer holds this connector's registration, so it is registered again",
+      "the server no longer holds this connector's registration or a type it registered, so they are registered again",
     );
   }
 }
@@ -852,8 +852,10 @@ async function serve<E extends EnvDeclaration>(
   } finally {
     beating.abort();
     await heartbeat;
-    if (halted === undefined) await hold.release();
-    else hold.abandon();
+    // A lost type leaves the registration, and so the hold, in place.
+    if (halted === undefined || halted === "registration") {
+      await hold.release();
+    } else hold.abandon();
   }
   if (halted === undefined || (succeeded && code === 0)) return code;
   if (halted === "key") {
@@ -870,7 +872,7 @@ async function serve<E extends EnvDeclaration>(
   }
   if (schedule.mode === "once") {
     logger.error(
-      "the server no longer holds this connector's registration, so this run stops; start it again to register it anew",
+      "the server no longer holds this connector's registration or a type it registered, so this run stops; start it again to register them anew",
     );
     return 1;
   }

@@ -121,13 +121,13 @@ const connector = defineConnector({
                 new URL(`attachments/${id}`, values.PROOF_VENDOR_URL),
                 { signal: loading },
               );
-              if (!answer.ok) {
+              if (!answer.ok || answer.body === null) {
                 throw new Error(
                   `the tracker answered ${String(answer.status)}`,
                 );
               }
               return {
-                bytes: new Uint8Array(await answer.arrayBuffer()),
+                bytes: answer.body,
                 mime_type: answer.headers.get("content-type") ?? "image/png",
               };
             },

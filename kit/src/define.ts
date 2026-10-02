@@ -20,9 +20,12 @@ export interface Target {
 
 export interface FileSource {
   readonly key: string;
-  readonly load: (
-    signal: AbortSignal,
-  ) => Promise<{ bytes: Uint8Array; mime_type: string }>;
+  /** A stream, such as a vendor's response body, is uploaded as it is read,
+   *  never held whole. */
+  readonly load: (signal: AbortSignal) => Promise<{
+    bytes: Uint8Array | ReadableStream<Uint8Array>;
+    mime_type: string;
+  }>;
 }
 
 export interface Connected {

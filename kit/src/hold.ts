@@ -155,6 +155,8 @@ export class Hold {
     try {
       await this.marfa.release(this.connectorId, this.process);
     } catch (error) {
+      // A registration that is gone took its hold with it.
+      if (causeOf(error) === "registration") return;
       this.logger.warn(`the hold could not be released: ${describe(error)}`);
     }
   }

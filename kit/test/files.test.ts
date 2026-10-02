@@ -199,6 +199,76 @@ describe("attached-to", () => {
   });
 });
 
+function streamed(
+  held: Held,
+  chunks: readonly string[],
+  every: number,
+  end: "close" | "break" | "stall" = "close",
+): Entry {
+  return {
+    ...file(held, "etag-1", ""),
+    file: {
+      key: "etag-1",
+      load: () => {
+        held.loads += 1;
+        let sent = 0;
+        const bytes = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            await new Promise((done) => setTimeout(done, every));
+            const chunk = chunks[sent];
+            sent += 1;
+            if (chunk !== undefined) {
+              controller.enqueue(new TextEncoder().encode(chunk));
+            } else if (end === "close") controller.close();
+            else if (end === "break") controller.error(new Error("reset"));
+            else await new Promise(() => undefined);
+          },
+        });
+        return Promise.resolve({ bytes, mime_type: "text/plain" });
+      },
+    },
+  };
+}
+
+describe("a file's upload", () => {
+  it("of no bytes is refused for its row alone, and the run goes on", async () => {
+    const held: Held = { entries: [issue], files: [], loads: 0 };
+    held.files = [file(held, "etag-1", "")];
+    expect(await once(held)).toBe(0);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    expect(harness.lastRun().summary).toContain(
+      "the server refused f:1: validation_error",
+    );
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
+    expect(await once(held)).toBe(0);
+  });
+
+  it("streams a file read longer than the request time limit, timed by how long it goes quiet", async () => {
+    harness.requestTimeoutMs = 300;
+    const held: Held = { entries: [issue], files: [], loads: 0 };
+    const chunks = ["one ", "two ", "three ", "four ", "five ", "six "];
+    held.files = [streamed(held, chunks, 100)];
+    expect(await once(held)).toBe(0);
+    expect(harness.server.row("f:1").properties["blob_ref"]).toBe(
+      hashOf(chunks.join("")),
+    );
+  });
+
+  it.each(["break", "stall"] as const)(
+    "waits with the vendor's condition when the vendor's stream ends in a %s",
+    async (end) => {
+      harness.requestTimeoutMs = 300;
+      const held: Held = { entries: [issue], files: [], loads: 0 };
+      held.files = [streamed(held, ["one "], 10, end)];
+      expect(await once(held)).toBe(0);
+      expect(harness.lastRun().summary).toContain(
+        "the file for f:1 could not be fetched from the vendor, so its row waits",
+      );
+      expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:1"]);
+    },
+  );
+});
+
 describe("a file row carried back", () => {
   it("keeps what its bytes were uploaded as, so a carried edit loads nothing again", async () => {
     const held: Held = { entries: [issue], files: [], loads: 0 };

@@ -150,7 +150,7 @@ describe("new rows", () => {
         .map((request) => (request.body as { type: string }).type),
     ).toEqual(["test.entry"]);
     expect(harness.lastRun().summary).toContain("skipped 1");
-    expect(harness.lastRun().summary).toContain("type_mismatch");
+    expect(harness.lastRun().summary).toContain("type_not_permitted");
   });
 });
 
@@ -633,15 +633,65 @@ describe("a row the server refuses", () => {
     expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
   });
 
-  it("fails the run when the refusal is the key's, not the row's", async () => {
+  it("is held when a person retyped it to a type the key may not write, and every later run goes on", async () => {
+    harness.server.insert("a:1", { title: "One" }, "core.note");
+    const held = vendor([one, two]);
+    held.token = "t1";
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    expect(harness.lastRun().summary).toContain(
+      "the server refused a:1: type_not_permitted",
+    );
+    expect(harness.server.row("a:2").type).toBe("test.entry");
+
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    expect(bulks().at(-1)?.body).toMatchObject({
+      items: [{ source_id: "a:1" }],
+    });
+    expect(harness.lastRun().summary).toBe(
+      "created 0, updated 0, archived 0, unchanged 1, skipped 1",
+    );
+  });
+
+  it("is held whatever the server's code for it, since the answer is about that entry alone", async () => {
     harness.server.entryRefusals.set("a:1", {
       status: 403,
-      code: "type_not_permitted",
-      message: "the key may not write test.entry",
+      code: "forbidden",
+      message: "the source is not on the type's allowlist",
     });
+    expect(await harness.once(vendor([one, two]))).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      "the server refused a:1: forbidden",
+    );
+    expect(harness.server.rows.map((row) => row.source_id)).toEqual(["a:2"]);
+  });
+
+  it("is held when its own write is refused, and the run goes on", async () => {
+    await harness.once(vendor([one, two]));
+    harness.server.refuseNext(
+      `PATCH /items/${harness.server.row("a:1").id}`,
+      403,
+      "type_not_permitted",
+    );
+    expect(
+      await harness.once(
+        vendor([
+          { ...one, properties: { title: "x" } },
+          { ...two, properties: { title: "y" } },
+        ]),
+      ),
+    ).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      "the server refused a:1: type_not_permitted",
+    );
+    expect(harness.server.row("a:2").properties["title"]).toBe("y");
+  });
+
+  it("fails the run when the whole write is refused for the key", async () => {
+    harness.server.refuseNext("POST /items/bulk", 401, "unauthorized");
     expect(await harness.once(vendor([one]))).toBe(1);
     expect(harness.lastRun().outcome).toBe("failed");
-    expect(harness.lastRun().error).toContain("type_not_permitted");
   });
 
   it("fails the run on a server fault", async () => {
