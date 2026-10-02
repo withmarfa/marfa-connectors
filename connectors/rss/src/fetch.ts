@@ -116,6 +116,46 @@ function embedded(address: string): string[] {
   return found;
 }
 
+const plainly: Record<string, string> = {
+  ECONNREFUSED: "its server refused the connection",
+  ECONNRESET: "its server closed the connection before answering",
+  ENOTFOUND: "its host was not found",
+  EAI_AGAIN: "its host could not be looked up for now",
+  EHOSTUNREACH: "its host could not be reached",
+  ENETUNREACH: "its network could not be reached",
+  ETIMEDOUT: "its server did not answer in time",
+  CERT_HAS_EXPIRED: "its certificate has expired",
+  ERR_TLS_CERT_ALTNAME_INVALID: "its certificate is for another host",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "its certificate is self-signed",
+  SELF_SIGNED_CERT_IN_CHAIN: "its certificate is not one this machine trusts",
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE:
+    "its certificate is not one this machine trusts",
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+    "its certificate is not one this machine trusts",
+};
+
+/**
+ * Why a feed could not be fetched, in plain words, from the error's code,
+ * never its message, which a transport may write the address into.
+ */
+export function failureOf(error: unknown): string {
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 8;
+    at = at.cause, depth += 1
+  ) {
+    if (at.name === "TimeoutError") {
+      return `it did not answer within ${String(fetchTimeoutMs / 1000)} seconds`;
+    }
+    const code = (at as NodeJS.ErrnoException).code;
+    if (typeof code === "string")
+      return `${plainly[code] ?? "it failed"} (${code})`;
+  }
+  return error instanceof Error && error.constructor === Error
+    ? error.message
+    : "the cause was not given";
+}
+
 /** A URL's host as the checks compare it: no IPv6 brackets, no trailing dot. */
 export function hostOf(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");

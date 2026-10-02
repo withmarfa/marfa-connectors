@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { components, MarfaClient } from "@withmarfa/client";
@@ -36,6 +36,35 @@ export class ConnectorUnderProof {
 
   once(): Promise<{ code: number; output: string }> {
     return this.run(["--once"]);
+  }
+
+  /** A run told to stop once `until` says so, as a stop or a reboot would. */
+  stopped(
+    args: readonly string[],
+    until: () => Promise<void>,
+  ): Promise<{ code: number | null; output: string }> {
+    const child = spawn("node", [this.entry, ...args], {
+      env: {
+        PATH: process.env["PATH"],
+        MARFA_URL: this.url,
+        MARFA_KEY: this.key,
+        ...this.env,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let output = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const exited = new Promise<{ code: number | null; output: string }>(
+      (done) => {
+        child.once("close", (code) => {
+          done({ code, output });
+        });
+      },
+    );
+    void until().then(() => child.kill("SIGTERM"));
+    return exited;
   }
 
   async run(
@@ -190,6 +219,16 @@ export async function registeredAsKindOf(
     own: served.fields.filter((field) => !core.fields.includes(field)).sort(),
     inherited: core.fields.length,
   };
+}
+
+export async function runsOf(marfa: MarfaClient, keyId: string) {
+  const { id } = await registration(marfa, keyId);
+  const { data, error } = await marfa.GET("/connectors/{id}/runs", {
+    params: { path: { id } },
+  });
+  if (data === undefined)
+    throw new Error(`the runs were refused: ${JSON.stringify(error)}`);
+  return data.data;
 }
 
 export async function lastRun(marfa: MarfaClient, keyId: string) {

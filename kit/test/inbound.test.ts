@@ -241,16 +241,16 @@ describe("deliveries a scheduled run takes", () => {
     expect(await exit).toBe(0);
   });
 
-  it("fails a run stopped while it fetches bodies, rather than reading on without them", async () => {
+  it("ends a run stopped while it fetches bodies, unreported, rather than reading on without them", async () => {
     const said = signed({ ids: ["a:1"] });
     harness.server.deliver(said.body, said.headers);
     harness.server.beforeAnswer = (request) => {
       if (request.path.endsWith("/body")) harness.stop();
     };
-    expect(await harness.inbound(vendor([one]))).toBe(0);
-    const run = harness.lastRun();
-    expect(run.outcome).toBe("failed");
-    expect(run.summary).not.toContain("could not be");
+    const held = vendor([one]);
+    expect(await harness.inbound(held)).toBe(0);
+    expect(harness.server.runs).toEqual([]);
+    expect(held.runs).toBe(0);
     expect(outcomes()).toEqual([null]);
   });
 
@@ -494,7 +494,7 @@ describe("between scheduled runs", () => {
     expect(await exit).toBe(0);
   });
 
-  it("clears no condition in a run for deliveries, so the next scheduled run does not report it again", async () => {
+  it("clears no condition in a run for deliveries, which reports it as standing", async () => {
     harness.server.endpoints = [
       { id: "endpoint-1", retired_at: "2026-09-25T00:00:00.000Z" },
     ];
@@ -516,7 +516,7 @@ describe("between scheduled runs", () => {
 
     expect(
       harness.server.runs.map((run) => run.summary?.includes(missing)),
-    ).toEqual([true, false, false]);
+    ).toEqual([true, true, true]);
     expect(harness.lines.some((line) => line.includes("cleared:"))).toBe(false);
     harness.stop();
     expect(await exit).toBe(0);

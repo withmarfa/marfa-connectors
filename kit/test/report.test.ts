@@ -66,28 +66,31 @@ describe("a run's report", () => {
 });
 
 describe("a condition", () => {
-  it("is reported on the first run it holds, not on the next, and said to be cleared when it stops", async () => {
+  const warnedOf = (text: string): number =>
+    harness.lines.filter(
+      (line) => line.includes(" warn ") && line.includes(text),
+    ).length;
+
+  it("is reported and warned on every run it holds, and said to be cleared when it stops", async () => {
     const held = vendor([one]);
     held.conditions = [["feed-gone:x", "the feed x answers 410"]];
     await harness.once(held);
     expect(harness.lastRun().summary).toBe(
       "created 1, updated 0, archived 0, unchanged 0, skipped 0. the feed x answers 410",
     );
-    const warned = harness.lines.filter((line) =>
-      line.includes("the feed x answers 410"),
-    );
-    expect(warned).toHaveLength(1);
+    expect(warnedOf("the feed x answers 410")).toBe(1);
 
     await harness.once(held);
     expect(harness.lastRun().summary).toBe(
-      "created 0, updated 0, archived 0, unchanged 1, skipped 0",
+      "created 0, updated 0, archived 0, unchanged 1, skipped 0. the feed x answers 410",
     );
-    expect(
-      harness.lines.filter((line) => line.includes("the feed x answers 410")),
-    ).toHaveLength(1);
+    await harness.once(held);
+    expect(harness.lastRun().summary).toContain("the feed x answers 410");
+    expect(warnedOf("the feed x answers 410")).toBe(3);
 
     held.conditions = [];
     await harness.once(held);
+    expect(harness.lastRun().summary).not.toContain("the feed x answers 410");
     expect(
       harness.lines.filter((line) => line.includes("cleared")),
     ).toHaveLength(1);
@@ -97,19 +100,24 @@ describe("a condition", () => {
     expect(harness.lastRun().summary).toContain("the feed x answers 410");
   });
 
-  it("survives a failed run without being said to have cleared", async () => {
+  it("stands through a failed run, which reports it, without being said to have cleared", async () => {
     const held = vendor([one]);
     held.conditions = [["feed-gone:x", "the feed x answers 410"]];
     await harness.once(held);
     held.conditions = [];
     held.fail = new Error("the vendor is down");
-    await harness.once(held);
+    expect(await harness.once(held)).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lastRun().summary).toContain("the feed x answers 410");
+    expect(warnedOf("the feed x answers 410")).toBe(2);
     expect(harness.lines.some((line) => line.includes("cleared"))).toBe(false);
 
     held.fail = undefined;
-    held.conditions = [["feed-gone:x", "the feed x answers 410"]];
     await harness.once(held);
     expect(harness.lastRun().summary).not.toContain("the feed x answers 410");
+    expect(
+      harness.lines.filter((line) => line.includes("cleared")),
+    ).toHaveLength(1);
   });
 
   it("is reported on the next run when the report that carried it did not land", async () => {
@@ -124,6 +132,99 @@ describe("a condition", () => {
     expect(harness.server.runs).toEqual([]);
     await harness.once(held);
     expect(harness.lastRun().summary).toContain("the feed x answers 410");
+  });
+});
+
+describe("a state the server will not keep", () => {
+  it("fails the run, in its report and its exit code, reported once the save was refused", async () => {
+    const held = vendor([one]);
+    held.token = "x".repeat(600 * 1024);
+    expect(await harness.once(held)).toBe(1);
+    const run = harness.lastRun();
+    expect(run.outcome).toBe("failed");
+    expect(run.error).toContain("the connector's state could not be kept");
+    expect(run.error).toContain("a state is at most 512 KiB");
+    const order = harness.server.requests
+      .filter(
+        (request) =>
+          (request.method === "PUT" &&
+            request.path === "/connectors/connector-1/state") ||
+          (request.method === "POST" &&
+            request.path === "/connectors/connector-1/runs"),
+      )
+      .map((request) => request.method);
+    expect(order).toEqual(["PUT", "POST"]);
+    expect(harness.kept()).toEqual({});
+  });
+
+  it("fails the run where the server refuses the save for any other reason", async () => {
+    harness.server.refuseNext(
+      "PUT /connectors/connector-1/state",
+      400,
+      "validation_error",
+    );
+    expect(await harness.once(vendor([one]))).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lines.some((line) => line.includes("run succeeded"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("a run stopped part-way", () => {
+  const stoppedPartWay = async (
+    afterStop: (held: ReturnType<typeof vendor>) => void,
+  ): Promise<number> => {
+    const held = vendor([one]);
+    let release = (): void => undefined;
+    held.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const running = harness.once(held);
+    await vi.waitFor(() => {
+      expect(held.runs).toBe(1);
+    });
+    harness.stop();
+    afterStop(held);
+    release();
+    return running;
+  };
+
+  it("is not reported, and the log says it was stopped", async () => {
+    expect(await stoppedPartWay(() => undefined)).toBe(0);
+    expect(harness.server.runs).toEqual([]);
+    const said = harness.lines.join("\n");
+    expect(said).toContain("run stopped before it finished");
+    expect(said).not.toContain("run failed");
+  });
+
+  it("is not reported where the stop aborted the vendor's own call", async () => {
+    expect(
+      await stoppedPartWay((held) => {
+        held.fail = new DOMException(
+          "This operation was aborted",
+          "AbortError",
+        );
+      }),
+    ).toBe(0);
+    expect(harness.server.runs).toEqual([]);
+    expect(harness.lines.join("\n")).not.toContain("run failed");
+  });
+
+  it("keeps what it had, so the next run carries on from it", async () => {
+    await harness.once(vendor([one]));
+    const saves = harness.server.requestsTo(
+      "PUT",
+      "/connectors/connector-1/state",
+    ).length;
+    expect(await stoppedPartWay(() => undefined)).toBe(0);
+    expect(
+      harness.server.requestsTo("PUT", "/connectors/connector-1/state").length,
+    ).toBeGreaterThan(saves);
+    expect(await harness.once(vendor([one, two]))).toBe(0);
+    expect(harness.lastRun().summary).toBe(
+      "created 1, updated 0, archived 0, unchanged 1, skipped 0",
+    );
   });
 });
 
@@ -194,8 +295,6 @@ describe("secrets", () => {
     held.conditions = [[`expiring:${secretToken}`, "the token expires soon"]];
     await harness.once(held);
     expect(harness.lastRun().summary).toContain("the token expires soon");
-    await harness.once(held);
-    expect(harness.lastRun().summary).not.toContain("the token expires soon");
     const stored = JSON.stringify(harness.kept());
     expect(stored).toContain("expiring:[redacted]");
     expect(stored).not.toContain(secretToken);

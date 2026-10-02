@@ -383,11 +383,11 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
   ];
 }
 
-function addressProblem(error: unknown): string {
+function addressProblem(error: unknown, server: string): string {
   const fault = faultOf(error);
   return fault === undefined
-    ? `could not start: MARFA_URL cannot be used (${describe(error)}). It must name the Marfa server itself, with no redirect in front of it.`
-    : `could not start: MARFA_URL cannot be used, since ${fault} (${describe(error)}). Check the address, and that the server's certificate is one this machine trusts.`;
+    ? `could not start: MARFA_URL (${server}) cannot be used (${describe(error)}). It must name the Marfa server itself, with no redirect in front of it.`
+    : `could not start: MARFA_URL (${server}) cannot be used, since ${fault} (${describe(error)}). Check the address, and that the server's certificate is one this machine trusts.`;
 }
 
 /** Said once a connector that has run cannot reach Marfa for a fault in the
@@ -399,18 +399,18 @@ function faultWarning(error: unknown): string | undefined {
     : `MARFA_URL cannot be used for now, since ${fault} (${describe(error)}); the connector waits for it to mend, and stops only when told to`;
 }
 
-function startProblem(error: unknown): string {
+function startProblem(error: unknown, server: string): string {
   const cause = causeOf(error);
   if (cause === "key") {
-    return `could not start: the server refused MARFA_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_KEY to a key minted for this connector, as the template's README says.`;
+    return `could not start: the server at MARFA_URL (${server}) refused MARFA_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_KEY to a key minted for this connector, as the template's README says.`;
   }
   if (cause === "marfa") {
-    return `could not start: the server at MARFA_URL did not answer (${describe(error)}). Check MARFA_URL and that the server is up, then start the connector again.`;
+    return `could not start: the server at MARFA_URL (${server}) did not answer (${describe(error)}). Check MARFA_URL and that the server is up, then start the connector again.`;
   }
   if (error instanceof Refusal && error.status === 403) {
-    return `could not start: the server will not register this connector (${describe(error)}). MARFA_KEY must be a key minted for the connector itself, not an app's or a session's.`;
+    return `could not start: the server at MARFA_URL (${server}) will not register this connector (${describe(error)}). MARFA_KEY must be a key minted for the connector itself, not an app's or a session's.`;
   }
-  return `could not start: ${describe(error)}`;
+  return `could not start against the server at MARFA_URL (${server}): ${describe(error)}`;
 }
 
 interface Shared<E extends EnvDeclaration> {
@@ -566,11 +566,11 @@ async function serve<E extends EnvDeclaration>(
       started = await registerAndCheck(connector, marfa, again);
     } catch (error) {
       if (causeOf(error) === "address" || faultOf(error) !== undefined) {
-        logger.error(addressProblem(error));
+        logger.error(addressProblem(error, environment.url));
         return 2;
       }
       if (schedule.mode !== "every" || causeOf(error) !== "marfa") {
-        logger.error(startProblem(error));
+        logger.error(startProblem(error, environment.url));
         return 1;
       }
       const wait = Math.max(
@@ -578,7 +578,7 @@ async function serve<E extends EnvDeclaration>(
         Math.min(retryAfterOf(error) ?? 0, longestRetryAfterMs),
       );
       logger.warn(
-        `could not reach the server at MARFA_URL, trying again in ${describeDuration(wait)}: ${describe(error)}`,
+        `could not reach the server at MARFA_URL (${environment.url}), trying again in ${describeDuration(wait)}: ${describe(error)}`,
       );
       await clock.sleep(wait, stop.signal);
       if (stopped()) return 0;
@@ -705,6 +705,7 @@ async function serve<E extends EnvDeclaration>(
     logger,
     clock,
     signal: lasting,
+    stopping: stopped,
   };
   let heldUntil: string | undefined;
   const held = async (trigger: Trigger): Promise<RunResult | undefined> => {

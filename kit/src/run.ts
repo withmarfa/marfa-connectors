@@ -68,6 +68,8 @@ export interface RunSetup<E extends EnvDeclaration> {
   clock: Clock;
   signal: AbortSignal;
   fenced?: () => boolean;
+  /** Whether the process was told to stop, which leaves a run unreported. */
+  stopping?: () => boolean;
 }
 
 export type Trigger = "schedule" | "look";
@@ -128,26 +130,38 @@ const moreNote = 80;
 /** The longest a single condition may be, so one never crowds out the rest. */
 const conditionCap = 500;
 
+/** The most conditions kept between runs, which bounds the state they share. */
+const keptConditions = 200;
+
+/** The conditions that fit in a report beside counts of this length. */
+function fitting(
+  counts: string,
+  standing: ReadonlyMap<string, string>,
+): Set<string> {
+  let length = counts.length;
+  const shown = new Set<string>();
+  for (const [key, message] of standing) {
+    length += 2 + message.length;
+    if (length > reportCap - moreNote) break;
+    shown.add(key);
+  }
+  return shown;
+}
+
 function summarize(
   counts: string,
-  fresh: [string, string][],
-): {
-  summary: string;
-  carried: Set<string>;
-} {
+  standing: ReadonlyMap<string, string>,
+  shown: ReadonlySet<string>,
+): string {
   let summary = counts;
-  const carried = new Set<string>();
-  for (const [key, message] of fresh) {
-    const longer = `${summary}. ${message}`;
-    if (longer.length > reportCap - moreNote) break;
-    summary = longer;
-    carried.add(key);
+  for (const [key, message] of standing) {
+    if (shown.has(key)) summary += `. ${message}`;
   }
-  const waiting = fresh.length - carried.size;
-  if (waiting > 0) {
-    summary += `. ${String(waiting)} more ${waiting === 1 ? "condition waits" : "conditions wait"} for a later report`;
+  const more = standing.size - shown.size;
+  if (more > 0) {
+    summary += `. ${String(more)} more ${more === 1 ? "condition is" : "conditions are"} in the connector's log`;
   }
-  return { summary, carried };
+  return summary;
 }
 
 /** What a change sends, so the one a vendor refused is not sent again. */
@@ -1522,7 +1536,6 @@ export async function runOnce<E extends EnvDeclaration>(
       `what the two sides agreed on could not be kept: ${describe(error)}`,
     );
   }
-  const finishedAt = clock.now();
   const pastLog = recorded && flushed && read?.cursor !== undefined;
 
   const all = [...lanes.values()].map(({ rows }) => rows);
@@ -1567,91 +1580,54 @@ export async function runOnce<E extends EnvDeclaration>(
       cap(logger.redact(message), conditionCap),
     ]),
   );
-  raised.clear();
-  for (const [key, message] of redacted) raised.set(key, message);
-  const fresh = [...raised].filter(([key]) => !(key in stored.conditions));
-  for (const [, message] of fresh) logger.warn(message);
+  // Only a run that read everything and finished can find one gone. The
+  // newly raised go first, then the rest in the order kept, which puts those
+  // the last report had no room for ahead of those it carried.
+  const clears = failure === undefined && whole;
+  const standing = new Map(
+    [...redacted].filter(([key]) => !(key in stored.conditions)),
+  );
+  const cleared: string[] = [];
+  for (const [key, message] of Object.entries(stored.conditions)) {
+    const now = redacted.get(key);
+    if (now !== undefined) standing.set(key, now);
+    else if (clears) cleared.push(message);
+    else standing.set(key, message);
+  }
+  for (const message of standing.values()) logger.warn(message);
 
   const landed = failure === undefined && held === 0;
+  const marking = failure === undefined && !setup.signal.aborted;
   // A delivery is processed once its run ends without error; a write it
   // held is re-read by the next scheduled run's full read, so it need not wait.
   const taken = collected?.fresh ?? [];
-  let processed = 0;
-  if (failure === undefined && !setup.signal.aborted) {
-    try {
-      for (let at = 0; at < taken.length; at += marksPerRequest) {
-        const marking = taken.slice(at, at + marksPerRequest);
-        await setup.marfa.handled(setup.connectorId, marking, "processed");
-        processed += marking.length;
-      }
-    } catch (error) {
-      logger.warn(
-        `the deliveries could not be marked processed, and are taken again by a later run: ${describe(error)}`,
-      );
-    }
-  }
-  const settled =
-    processed === taken.length &&
-    (collected?.unfetched ?? 0) === 0 &&
-    (collected?.unverified ?? 0) === 0;
-  const counts = tally(
-    sumOf(all.map((rows) => rows.counts)),
-    twoWay ? { pushed, own } : undefined,
-    connector.inbound === undefined
-      ? undefined
-      : {
-          processed,
-          rejected: collected?.rejected ?? 0,
-          duplicate: collected?.duplicate ?? 0,
-        },
-  );
-  const { summary, carried: sent } = summarize(counts, fresh);
-  const outcome = failure === undefined ? "succeeded" : "failed";
-  if (failure === undefined) {
-    logger.info(`run succeeded: ${counts}`);
-  } else {
-    logger.error(`run failed: ${describe(failure)}; ${counts}`);
-  }
-  let reported = false;
-  try {
-    await setup.marfa.report(setup.connectorId, {
-      outcome,
-      started_at: startedAt.toISOString(),
-      finished_at: finishedAt.toISOString(),
-      summary: cap(logger.redact(summary)),
-      ...(failure !== undefined && {
-        error: cap(logger.redact(describe(failure))),
-      }),
-    });
-    reported = true;
-  } catch (error) {
-    logger.warn(`the run could not be reported: ${describe(error)}`);
-  }
-
-  // A condition counts as reported only once a report carrying it landed.
-  // A run that didn't reach what raises one can't be taken to have cleared it.
-  const known = [...raised].filter(
-    ([key]) => key in stored.conditions || sent.has(key),
-  );
-  let conditions = stored.conditions;
-  if (reported && failure === undefined && whole) {
-    for (const [key, message] of Object.entries(stored.conditions)) {
-      if (!raised.has(key)) {
-        logger.info(
-          `cleared: ${message} (this run read everything and did not find it again)`,
-        );
-      }
-    }
-    conditions = Object.fromEntries(known);
-  } else if (reported) {
-    conditions = { ...stored.conditions, ...Object.fromEntries(known) };
-  }
+  const tallied = (processed: number): string =>
+    tally(
+      sumOf(all.map((rows) => rows.counts)),
+      twoWay ? { pushed, own } : undefined,
+      connector.inbound === undefined
+        ? undefined
+        : {
+            processed,
+            rejected: collected?.rejected ?? 0,
+            duplicate: collected?.duplicate ?? 0,
+          },
+    );
+  // Fitted to the most the deliveries can count, so the report holds them
+  // however many are marked.
+  const shown = fitting(tallied(marking ? taken.length : 0), standing);
+  let saved = false;
   // A state that could not be read is not written over with nothing.
   if (loaded !== undefined && !fenced) {
     try {
       await store.save({
         state: landed ? draft : stored.state,
-        conditions,
+        conditions: Object.fromEntries(
+          [
+            ...[...standing].filter(([key]) => !shown.has(key)),
+            ...[...standing].filter(([key]) => shown.has(key)),
+          ].slice(0, keptConditions),
+        ),
         ...(pastLog && read?.cursor !== undefined
           ? { cursor: read.cursor }
           : stored.cursor !== undefined && { cursor: stored.cursor }),
@@ -1663,10 +1639,65 @@ export async function runOnce<E extends EnvDeclaration>(
           },
         }),
       });
+      saved = true;
+    } catch (error) {
+      failure ??= new Error(
+        `the connector's state could not be kept, so the next run starts from the state last kept: ${describe(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  if (saved) {
+    for (const message of cleared) {
+      logger.info(
+        `cleared: ${message} (this run read everything and did not find it again)`,
+      );
+    }
+  }
+
+  let processed = 0;
+  if (failure === undefined && marking) {
+    try {
+      for (let at = 0; at < taken.length; at += marksPerRequest) {
+        const marks = taken.slice(at, at + marksPerRequest);
+        await setup.marfa.handled(setup.connectorId, marks, "processed");
+        processed += marks.length;
+      }
     } catch (error) {
       logger.warn(
-        `the connector's state could not be kept: ${describe(error)}`,
+        `the deliveries could not be marked processed, and are taken again by a later run: ${describe(error)}`,
       );
+    }
+  }
+  const settled =
+    processed === taken.length &&
+    (collected?.unfetched ?? 0) === 0 &&
+    (collected?.unverified ?? 0) === 0;
+  const finishedAt = clock.now();
+  const counts = tallied(processed);
+  // The contract knows only succeeded and failed; a stop is neither.
+  if (failure !== undefined && setup.stopping?.() === true) {
+    logger.info(
+      `run stopped before it finished, so it is not reported: ${counts}`,
+    );
+  } else {
+    if (failure === undefined) {
+      logger.info(`run succeeded: ${counts}`);
+    } else {
+      logger.error(`run failed: ${describe(failure)}; ${counts}`);
+    }
+    try {
+      await setup.marfa.report(setup.connectorId, {
+        outcome: failure === undefined ? "succeeded" : "failed",
+        started_at: startedAt.toISOString(),
+        finished_at: finishedAt.toISOString(),
+        summary: cap(logger.redact(summarize(counts, standing, shown))),
+        ...(failure !== undefined && {
+          error: cap(logger.redact(describe(failure))),
+        }),
+      });
+    } catch (error) {
+      logger.warn(`the run could not be reported: ${describe(error)}`);
     }
   }
   return {
@@ -1674,7 +1705,7 @@ export async function runOnce<E extends EnvDeclaration>(
     cause: failure === undefined ? undefined : causeOf(failure),
     retryAfterMs: failure === undefined ? undefined : retryAfterOf(failure),
     settled,
-    cursor: pastLog ? read?.cursor : stored.cursor,
+    cursor: pastLog && saved ? read?.cursor : stored.cursor,
   };
 }
 

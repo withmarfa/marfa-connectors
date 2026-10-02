@@ -159,10 +159,15 @@ describe("--every", () => {
       harness.runtime(["--every", "5m"], { MARFA_URL: closed }),
     );
     await harness.clock.sleeping(minute);
-    expect(harness.lines.join("\n")).toContain("could not reach the server");
+    expect(harness.lines.join("\n")).toContain(
+      `could not reach the server at MARFA_URL (${closed})`,
+    );
     harness.stop();
     expect(await exit).toBe(0);
     expect(await harness.once(held, { MARFA_URL: closed })).toBe(1);
+    expect(harness.lines.at(-1)).toContain(
+      `could not start: the server at MARFA_URL (${closed}) did not answer`,
+    );
   });
 
   it("gives up on a request the server does not answer", async () => {
@@ -210,7 +215,7 @@ describe("--every", () => {
     expect(held.runs).toBe(1);
   });
 
-  it("stops a run in flight after its current write, reporting it stopped and keeping no state", async () => {
+  it("stops a run in flight after its current write, leaving it unreported and keeping no state", async () => {
     const earlier = vendor([one]);
     earlier.token = "t-old";
     await harness.once(earlier);
@@ -226,9 +231,10 @@ describe("--every", () => {
     release();
     expect(await exit).toBe(0);
 
-    const run = harness.lastRun();
-    expect(run.outcome).toBe("failed");
-    expect(run.error).toContain("stopped");
+    expect(harness.server.runs).toHaveLength(1);
+    expect(harness.lines.join("\n")).toContain(
+      "run stopped before it finished",
+    );
     expect(harness.server.row("a:1").properties).toEqual({ title: "One" });
     expect(harness.kept()).toMatchObject({
       state: { token: "t-old" },
@@ -283,6 +289,6 @@ describe("--once", () => {
     expect(
       harness.server.requests.filter((request) => request.method === "PATCH"),
     ).toHaveLength(1);
-    expect(harness.lastRun().error).toContain("stopped");
+    expect(harness.server.runs).toHaveLength(1);
   });
 });

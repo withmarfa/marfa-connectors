@@ -175,7 +175,7 @@ describe("a stop before a write", () => {
     expect(since.some((request) => request.path.endsWith("/transition"))).toBe(
       false,
     );
-    expect(harness.lastRun().error).toContain("stopped");
+    expect(harness.server.runs).toHaveLength(1);
   });
 });
 

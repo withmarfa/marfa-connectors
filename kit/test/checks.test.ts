@@ -119,7 +119,7 @@ describe("conditions past what one summary holds", () => {
     await harness.close();
   });
 
-  it("are each reported on some run, none marked reported before it is", async () => {
+  it("are each reported in turn when more stand than a report holds, the rest counted and named in the log", async () => {
     const held = vendor([{ source_id: "a:1", properties: { title: "One" } }]);
     held.conditions = Array.from(
       { length: 40 },
@@ -129,18 +129,22 @@ describe("conditions past what one summary holds", () => {
       ],
     );
     const seen = new Set<string>();
-    for (let run = 0; run < 6; run += 1) {
+    for (let run = 0; run < 2; run += 1) {
       await harness.once(held);
       const summary = harness.lastRun().summary ?? "";
       expect(summary.length).toBeLessThanOrEqual(2000);
-      for (const match of summary.matchAll(/condition (\d\d)/g)) {
-        expect(seen.has(match[1] ?? "")).toBe(false);
-        seen.add(match[1] ?? "");
-      }
+      const shown = [...summary.matchAll(/condition (\d\d)/g)];
+      for (const match of shown) seen.add(match[1] ?? "");
+      expect(summary).toMatch(
+        new RegExp(
+          `${String(40 - shown.length)} more conditions are in the connector's log$`,
+        ),
+      );
     }
     expect(seen.size).toBe(40);
-    expect(harness.server.runs[0]?.summary).toMatch(
-      /more conditions wait for a later report$/,
+    const warned = harness.lines.filter((line) =>
+      line.includes("is a lasting problem"),
     );
+    expect(warned).toHaveLength(80);
   });
 });
