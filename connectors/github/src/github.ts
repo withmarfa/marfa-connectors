@@ -6,6 +6,7 @@ import { retry } from "@octokit/plugin-retry";
 import { throttling } from "@octokit/plugin-throttling";
 import { RequestError } from "@octokit/request-error";
 import type { Secret } from "@withmarfa/connector";
+import githubAppJwt from "universal-github-app-jwt";
 
 export const defaultBase = "https://api.github.com";
 
@@ -47,36 +48,167 @@ function client(base: string, signal: AbortSignal, auth?: object): Client {
   return octokit;
 }
 
-const budgets = new WeakMap<Client, number>();
+/** GitHub's hourly limit is the installation's, whichever token spends it. */
+const budgets = new Map<string, number>();
+const budgetOf = new WeakMap<Client, string>();
 
 export function remaining(octokit: Client): number | undefined {
-  return budgets.get(octokit);
+  const key = budgetOf.get(octokit);
+  return key === undefined ? undefined : budgets.get(key);
 }
 
-function counted(octokit: Client): Client {
+function counted(octokit: Client, key: string): Client {
+  budgetOf.set(octokit, key);
   octokit.hook.after("request", (response) => {
     const left = Number(response.headers["x-ratelimit-remaining"]);
-    if (Number.isFinite(left)) budgets.set(octokit, left);
+    if (Number.isFinite(left)) budgets.set(key, left);
   });
   return octokit;
 }
 
-const auths = new Map<string, ReturnType<typeof createAppAuth>>();
+/** What an installation token is minted for: `list` reads only which
+ *  repositories the installation holds; `read` and `write` reach issues. */
+export type Access = "list" | "read" | "write";
 
-/** One per App and process, so its installation tokens are cached for
- *  their hour across runs. */
-function appAuth(app: App): ReturnType<typeof createAppAuth> {
-  const key = `${app.base} ${app.appId}`;
-  let auth = auths.get(key);
-  if (auth === undefined) {
-    auth = createAppAuth({
-      appId: app.appId,
-      privateKey: app.privateKey,
-      request: client(app.base, new AbortController().signal).request,
-    });
-    auths.set(key, auth);
+const permissions = {
+  list: { metadata: "read" },
+  read: { issues: "read", metadata: "read" },
+  write: { issues: "write", metadata: "read" },
+} as const;
+
+/** GitHub's cap on the repositories one token can name. */
+export const namedAtMost = 500;
+
+export interface Reach {
+  readonly access: Access;
+  /** Past GitHub's cap, or absent, the token reaches every repository of
+   *  the installation. */
+  readonly repositoryIds?: readonly number[];
+}
+
+/** How far apart this machine's clock and GitHub's may be before the
+ *  connector stops signing rather than trust its correction. */
+export const skewAtMost = 10 * 60;
+
+export class ClockSkew extends Error {
+  override name = "ClockSkew";
+  constructor(seconds: number) {
+    super(
+      `this machine's clock is ${String(Math.abs(seconds))} seconds ${seconds > 0 ? "behind" : "ahead of"} GitHub's, past the ${String(skewAtMost / 60)} minutes the connector allows for, so nothing is asked of GitHub until it is set right`,
+    );
   }
-  return auth;
+}
+
+interface Signer {
+  /** Installation tokens, kept for their hour across runs, as GitHub
+   *  answers 304 only to the token that was answered the ETag. */
+  readonly cache: TokenCache;
+  /** Seconds GitHub's clock runs ahead of ours, as its answers showed. */
+  skew: number;
+}
+
+/** A minute short of a token's hour, as `@octokit/auth-app`'s own. */
+const tokenLife = 59 * 60 * 1000;
+
+class TokenCache {
+  private readonly held = new Map<string, { value: string; until: number }>();
+
+  /** Empty where nothing is held, which the library takes for a miss. */
+  get(key: string): string {
+    const one = this.held.get(key);
+    if (one === undefined || one.until <= Date.now()) {
+      this.held.delete(key);
+      return "";
+    }
+    return one.value;
+  }
+
+  set(key: string, value: string): void {
+    this.held.set(key, { value, until: Date.now() + tokenLife });
+  }
+}
+
+const signers = new Map<string, Signer>();
+
+/** One per App and process, so what it learns of GitHub's clock and the
+ *  tokens it mints are kept between runs. */
+function signerOf(app: App): Signer {
+  const key = `${app.base} ${app.appId}`;
+  let signer = signers.get(key);
+  if (signer === undefined) {
+    signer = { cache: new TokenCache(), skew: 0 };
+    signers.set(key, signer);
+  }
+  return signer;
+}
+
+/** Mints under the run's own signal, from the App's shared cache. */
+function minterOf(app: App, signal: AbortSignal) {
+  const signer = signerOf(app);
+  return createAppAuth({
+    appId: app.appId,
+    createJwt: jwtOf(app, () => signer),
+    request: client(app.base, signal).request,
+    cache: signer.cache,
+  });
+}
+
+function adopt(signer: Signer, skew: number): void {
+  if (Math.abs(skew) > skewAtMost) throw new ClockSkew(skew);
+  signer.skew = skew;
+}
+
+/** Signs with what GitHub's clock is known to say; `timeDifference` is the
+ *  library's own reading of it, where its hook retried a refused JWT. */
+function jwtOf(app: App, signer: () => Signer) {
+  return async (appId: string | number, timeDifference?: number) => {
+    if (timeDifference !== undefined) adopt(signer(), timeDifference);
+    const { token, expiration } = await githubAppJwt({
+      id: appId,
+      privateKey: app.privateKey,
+      now: Math.floor(Date.now() / 1000) + signer().skew,
+    });
+    return { jwt: token, expiresAt: new Date(expiration * 1000).toISOString() };
+  };
+}
+
+/** How far GitHub's clock runs ahead of ours, where it refused a JWT for
+ *  its times. */
+function skewOf(error: unknown): number | undefined {
+  if (!(error instanceof RequestError) || error.status !== 401) return;
+  if (!/'(?:Expiration time|Issued at)' claim/.test(error.message)) return;
+  const date = Date.parse(String(error.response?.headers.date));
+  return Number.isNaN(date)
+    ? undefined
+    : Math.floor((date - Date.now()) / 1000);
+}
+
+async function tokenFor(
+  app: App,
+  installationId: number,
+  reach: Reach,
+  refresh: boolean,
+  signal: AbortSignal,
+): Promise<{ token: string; createdAt: string }> {
+  const signer = signerOf(app);
+  const named = [...(reach.repositoryIds ?? [])].sort((a, b) => a - b);
+  const options = {
+    type: "installation" as const,
+    installationId,
+    permissions: { ...permissions[reach.access] },
+    ...(reach.repositoryIds !== undefined &&
+      named.length <= namedAtMost && { repositoryIds: named }),
+    refresh,
+  };
+  const mint = minterOf(app, signal);
+  try {
+    return await mint(options);
+  } catch (error) {
+    const skew = skewOf(error);
+    if (skew === undefined) throw error;
+    adopt(signer, skew);
+    return mint(options);
+  }
 }
 
 export function anonymous(base: string, signal: AbortSignal): Client {
@@ -84,26 +216,57 @@ export function anonymous(base: string, signal: AbortSignal): Client {
 }
 
 export function asApp(app: App, signal: AbortSignal): Client {
+  const signer = signerOf(app);
   return client(app.base, signal, {
     authStrategy: createAppAuth,
-    auth: { appId: app.appId, privateKey: app.privateKey },
+    auth: { appId: app.appId, createJwt: jwtOf(app, () => signer) },
   });
 }
+
+/** As `@octokit/auth-app` does, a 401 this soon after minting is taken for
+ *  GitHub's replication delay and the token tried again. */
+const replication = 5000;
 
 export function asInstallation(
   app: App,
   installationId: number,
+  reach: Reach,
   secret: Secret,
   signal: AbortSignal,
 ): Client {
-  const octokit = counted(client(app.base, signal));
+  const octokit = counted(
+    client(app.base, signal),
+    `${app.base} ${app.appId} ${String(installationId)}`,
+  );
   octokit.hook.wrap("request", async (request, options) => {
-    const { token } = await appAuth(app)({
-      type: "installation",
-      installationId,
-    });
-    secret(token);
-    options.headers.authorization = `token ${token}`;
+    const sign = async (refresh: boolean): Promise<string> => {
+      const { token, createdAt } = await tokenFor(
+        app,
+        installationId,
+        reach,
+        refresh,
+        signal,
+      );
+      secret(token);
+      options.headers.authorization = `token ${token}`;
+      return createdAt;
+    };
+    const createdAt = await sign(false);
+    try {
+      return await request(options);
+    } catch (error) {
+      if (status(error) !== 401) throw error;
+    }
+    if (Date.now() - Date.parse(createdAt) < replication) {
+      await new Promise((done) => setTimeout(done, 1000));
+      try {
+        return await request(options);
+      } catch (error) {
+        if (status(error) !== 401) throw error;
+      }
+    }
+    // Revoked or expired while cached: the library keeps it for its hour.
+    await sign(true);
     return request(options);
   });
   return octokit;

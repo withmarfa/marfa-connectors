@@ -94,6 +94,18 @@ function written(): string[] {
     );
 }
 
+function writeMints(after: number): unknown[] {
+  return github.asked
+    .slice(after)
+    .filter(
+      (one) =>
+        one.path.endsWith("/access_tokens") &&
+        (one.body as { permissions?: { issues?: string } } | undefined)
+          ?.permissions?.issues === "write",
+    )
+    .map((one) => one.body);
+}
+
 async function settled(env: Record<string, string> = {}): Promise<string> {
   const output = await ok(env);
   const before = github.writes().length;
@@ -103,6 +115,86 @@ async function settled(env: Record<string, string> = {}): Promise<string> {
 }
 
 describe("an issue changed in Marfa", () => {
+  it("is carried with a token that names its own repository by id, and may write only issues", async () => {
+    github.addRepository("someone/other");
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    const before = github.asked.length;
+    marfa.edit(row(issue.node).id, { title: "After" });
+    await ok();
+    expect(issue.title).toBe("After");
+    expect(writeMints(before)).toEqual([
+      {
+        repository_ids: [repository.id],
+        permissions: { issues: "write", metadata: "read" },
+      },
+    ]);
+  });
+
+  it("is carried with a token that names the repository at the other end of a relation it draws too", async () => {
+    const other = github.addRepository("someone/other");
+    const child = github.addIssue(repository, { title: "Child" });
+    const blocker = github.addIssue(other, { title: "Blocker" });
+    await ok();
+    const before = github.asked.length;
+    marfa.drawEdge(
+      row(child.node).id,
+      row(blocker.node).id,
+      "github.blocked-by",
+    );
+    await ok();
+    expect(child.blocked_by).toEqual([blocker.node]);
+    expect(writeMints(before)).toEqual([
+      {
+        repository_ids: [repository.id, other.id],
+        permissions: { issues: "write", metadata: "read" },
+      },
+    ]);
+  });
+
+  it("is carried with a token that never names a paused repository", async () => {
+    const other = github.addRepository("someone/other");
+    const child = github.addIssue(repository, { title: "Child" });
+    const blocker = github.addIssue(other, { title: "Blocker" });
+    await ok();
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await ok(only);
+    const before = github.asked.length;
+    marfa.edit(row(child.node).id, { title: "Child, edited" });
+    marfa.drawEdge(
+      row(child.node).id,
+      row(blocker.node).id,
+      "github.blocked-by",
+    );
+    const output = await ok(only);
+    expect(child.title).toBe("Child, edited");
+    expect(child.blocked_by).toEqual([]);
+    expect(output).toContain("left out by GITHUB_REPOSITORIES");
+    expect(writeMints(before)).toEqual([
+      {
+        repository_ids: [repository.id],
+        permissions: { issues: "write", metadata: "read" },
+      },
+    ]);
+  });
+
+  it("waits where GitHub will not name its repository in a token, and the rest are carried", async () => {
+    const other = github.addRepository("someone/other");
+    const here = github.addIssue(repository, { title: "Here" });
+    const there = github.addIssue(other, { title: "There" });
+    await ok();
+    github.unmintable.add(other.id);
+    marfa.edit(row(here.node).id, { title: "Here, edited" });
+    marfa.edit(row(there.node).id, { title: "There, edited" });
+    const output = await ok();
+    expect(here.title).toBe("Here, edited");
+    expect(there.title).toBe("There");
+    expect(output).toContain("waits");
+    github.unmintable.clear();
+    await ok();
+    expect(there.title).toBe("There, edited");
+  });
+
   it("has its title, body, labels and assignees carried to GitHub, once", async () => {
     const issue = github.addIssue(repository, { title: "Before" });
     await ok();
@@ -364,7 +456,7 @@ describe("relations drawn in Marfa", () => {
   });
 
   it("that GitHub refuses are taken back in Marfa, and the run says why", async () => {
-    const other = github.addRepository("another/tracker");
+    const other = github.addRepository("another/elsewhere");
     const outsider = github.addIssue(other, { title: "Elsewhere" });
     await ok();
     marfa.drawEdge(

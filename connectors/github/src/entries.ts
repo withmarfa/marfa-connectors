@@ -26,6 +26,7 @@ export const blockedBy = "github.blocked-by";
 export const inThread = "in-thread";
 
 export interface RestRepository {
+  id: number;
   node_id: string;
   full_name: string;
   html_url: string;

@@ -31,6 +31,7 @@ import {
 import {
   asApp,
   asInstallation,
+  ClockSkew,
   reads,
   type App,
   type Client,
@@ -173,6 +174,54 @@ function paused(node: string, kept: Kept): Unreachable {
   );
 }
 
+/** A token that looks things up across the repositories the connector
+ *  holds under an installation, paused ones too, reading only. */
+function looker(context: Context, app: App, installation: number): Client {
+  return asInstallation(
+    app,
+    installation,
+    {
+      access: "read",
+      repositoryIds: Object.values(allKept(context)).flatMap((one) =>
+        one.installation === installation && one.id !== undefined
+          ? [one.id]
+          : [],
+      ),
+    },
+    context.secret,
+    context.signal,
+  );
+}
+
+/** A token for one write, naming by id only the repositories it touches
+ *  that are synced and not paused, so a stale or refused repository holds
+ *  up only the writes that touch it. */
+function writer(context: Context, app: App, nodes: readonly string[]): Client {
+  const kept = allKept(context);
+  const installation = kept[nodes[0] ?? ""]?.installation;
+  const touched = nodes.flatMap((node) => {
+    const one = kept[node];
+    return one === undefined ||
+      one.paused === true ||
+      one.installation !== installation
+      ? []
+      : [one];
+  });
+  const repositoryIds = touched.flatMap((one) => one.id ?? []);
+  if (installation === undefined || repositoryIds.length < touched.length) {
+    throw new Unreachable(
+      "GitHub's id for the repository is not yet recorded, so the change waits for the next scheduled run",
+    );
+  }
+  return asInstallation(
+    app,
+    installation,
+    { access: "write", repositoryIds },
+    context.secret,
+    context.signal,
+  );
+}
+
 interface Place {
   readonly octokit: Client;
   readonly owner: string;
@@ -197,12 +246,7 @@ function placeIn(
   }
   const [owner = "", repo = ""] = repository.name.split("/");
   return {
-    octokit: asInstallation(
-      app,
-      kept.installation,
-      context.secret,
-      context.signal,
-    ),
+    octokit: writer(context, app, [repository.node]),
     owner,
     repo,
     repository,
@@ -222,9 +266,7 @@ async function seek<T>(
   for (const installation of installations) {
     let found: T | undefined;
     try {
-      found = await ask(
-        asInstallation(app, installation, context.secret, context.signal),
-      );
+      found = await ask(looker(context, app, installation));
     } catch (error) {
       if (refusedApp(error)) continue;
       throw error;
@@ -289,7 +331,7 @@ async function repositoryAt(
   }
   if (kept.paused === true) throw paused(node, kept);
   const found = await repositoryByNode(
-    asInstallation(app, kept.installation, context.secret, context.signal),
+    looker(context, app, kept.installation),
     node,
   );
   if (found === undefined) {
@@ -322,7 +364,7 @@ async function goneOrWaits(
     let found: Map<string, string>;
     try {
       found = await repositoriesByNode(
-        asInstallation(app, installation, context.secret, context.signal),
+        looker(context, app, installation),
         nodes,
       );
     } catch (error) {
@@ -404,7 +446,6 @@ async function relations(
   change: Change,
   where: Place,
 ): Promise<Related> {
-  const { octokit } = where;
   const related = none();
   let reached: boolean | undefined;
   const took = (
@@ -460,14 +501,18 @@ async function relations(
         takenBack(what, `${kept.name} is left out by GITHUB_REPOSITORIES`);
         continue;
       }
+      const both = writer(context, app, [
+        where.repository.node,
+        far.repository.node,
+      ]);
       const why = ours
-        ? await relate(octokit, mutation, node, other)
-        : await relate(octokit, mutation, other, node);
+        ? await relate(both, mutation, node, other)
+        : await relate(both, mutation, other, node);
       if (why === undefined) {
         took(related[side], type, other);
         continue;
       }
-      reached ??= await reads(octokit, where.owner, where.repo);
+      reached ??= await reads(where.octokit, where.owner, where.repo);
       if (!reached) {
         throw new Unreachable(
           `${where.owner}/${where.repo} is out of the App's reach, so the change waits`,
@@ -519,6 +564,9 @@ async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
   try {
     return await act();
   } catch (error) {
+    if (error instanceof ClockSkew) {
+      throw new Unreachable(error.message, { scope: "clock" });
+    }
     const why = unreachable(error);
     if (why === undefined) throw error;
     throw new Unreachable(`the change to ${change.item.id} waits: ${why}`);

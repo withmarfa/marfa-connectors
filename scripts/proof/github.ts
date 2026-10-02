@@ -684,6 +684,54 @@ export async function proveGitHub(
         return "GitHub's comment unchanged and kept; the row put back, binned, and restored, each named in the run";
       },
     );
+
+    await check(
+      "github: with GITHUB_REPOSITORIES naming one of the installation's repositories, every token past the one that lists them names that repository alone, by id, reading or writing issues as each needs, and a token revoked mid-run is replaced",
+      async () => {
+        const other = github.addRepository("someone/other");
+        github.addIssue(other, { title: "Left out" });
+        await edit(marfa, await row(parent.node), {
+          title: "Parent, carried narrowly",
+        });
+        github.asked.length = 0;
+        github.revokeAfter = 3;
+        const runner = new ConnectorUnderProof(source, url, key.key, {
+          ...env,
+          GITHUB_REPOSITORIES: "someone/tracker",
+        });
+        const { code, output } = await runner.once();
+        if (code !== 0 || /answered 401|refused it/.test(output)) {
+          throw new Error(`the run exited ${String(code)}: ${output}`);
+        }
+        const minted = github.asked
+          .filter(
+            (one) => one.path.endsWith("/access_tokens") && one.status === 201,
+          )
+          .map((one) => JSON.stringify(one.body));
+        const allowed = [
+          JSON.stringify({ permissions: { metadata: "read" } }),
+          JSON.stringify({
+            repository_ids: [repository.id],
+            permissions: { issues: "read", metadata: "read" },
+          }),
+          JSON.stringify({
+            repository_ids: [repository.id],
+            permissions: { issues: "write", metadata: "read" },
+          }),
+        ];
+        if (
+          parent.title !== "Parent, carried narrowly" ||
+          minted.some((one) => !allowed.includes(one)) ||
+          !allowed.every((one) => minted.includes(one)) ||
+          minted.length <= allowed.length
+        ) {
+          throw new Error(
+            `GitHub holds ${parent.title}; tokens minted for ${minted.join(", ")}`,
+          );
+        }
+        return `GitHub holds the edit; tokens minted for ${minted.join(", ")}`;
+      },
+    );
   } finally {
     await github.stop();
   }

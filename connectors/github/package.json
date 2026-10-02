@@ -16,6 +16,7 @@
     "@octokit/plugin-retry": "^8.1.1",
     "@octokit/plugin-throttling": "^11.0.5",
     "@octokit/request-error": "^7.1.2",
-    "@withmarfa/connector": "workspace:*"
+    "@withmarfa/connector": "workspace:*",
+    "universal-github-app-jwt": "^2.2.2"
   }
 }
