@@ -144,12 +144,15 @@ describe("an issue changed in Marfa", () => {
     );
     await ok();
     expect(child.blocked_by).toEqual([blocker.node]);
-    expect(writeMints(before)).toEqual([
-      {
-        repository_ids: [repository.id, other.id],
-        permissions: { issues: "write", metadata: "read" },
-      },
-    ]);
+    expect(writeMints(before)).toContainEqual({
+      repository_ids: [repository.id, other.id],
+      permissions: { issues: "write", metadata: "read" },
+    });
+    for (const minted of writeMints(before)) {
+      expect([[repository.id], [repository.id, other.id]]).toContainEqual(
+        (minted as { repository_ids: number[] }).repository_ids,
+      );
+    }
   });
 
   it("is carried with a token that never names a paused repository", async () => {

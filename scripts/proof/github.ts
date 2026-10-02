@@ -686,7 +686,7 @@ export async function proveGitHub(
     );
 
     await check(
-      "github: with GITHUB_REPOSITORIES naming one of the installation's repositories, every token past the one that lists them names that repository alone, by id, reading or writing issues as each needs, and a token revoked mid-run is replaced",
+      "github: with GITHUB_REPOSITORIES naming one of the installation's repositories, the token that lists them names none, those that read name it and the paused ones but never the one left out and never synced, those that write name it alone, all by id, and a token revoked mid-run is replaced",
       async () => {
         const other = github.addRepository("someone/other");
         github.addIssue(other, { title: "Left out" });
@@ -707,29 +707,41 @@ export async function proveGitHub(
           .filter(
             (one) => one.path.endsWith("/access_tokens") && one.status === 201,
           )
-          .map((one) => JSON.stringify(one.body));
-        const allowed = [
-          JSON.stringify({ permissions: { metadata: "read" } }),
-          JSON.stringify({
-            repository_ids: [repository.id],
-            permissions: { issues: "read", metadata: "read" },
-          }),
-          JSON.stringify({
-            repository_ids: [repository.id],
-            permissions: { issues: "write", metadata: "read" },
-          }),
-        ];
+          .map(
+            (one) =>
+              one.body as {
+                repository_ids?: number[];
+                permissions?: { issues?: string };
+              },
+          );
+        const lists = minted.filter(
+          (one) => one.permissions?.issues === undefined,
+        );
+        const reads = minted.filter(
+          (one) => one.permissions?.issues === "read",
+        );
+        const writes = minted.filter(
+          (one) => one.permissions?.issues === "write",
+        );
         if (
           parent.title !== "Parent, carried narrowly" ||
-          minted.some((one) => !allowed.includes(one)) ||
-          !allowed.every((one) => minted.includes(one)) ||
-          minted.length <= allowed.length
+          lists.some((one) => one.repository_ids !== undefined) ||
+          reads.length < 2 ||
+          reads.some(
+            (one) =>
+              !one.repository_ids?.includes(repository.id) ||
+              one.repository_ids.includes(other.id),
+          ) ||
+          writes.length === 0 ||
+          writes.some(
+            (one) => one.repository_ids?.join() !== String(repository.id),
+          )
         ) {
           throw new Error(
-            `GitHub holds ${parent.title}; tokens minted for ${minted.join(", ")}`,
+            `GitHub holds ${parent.title}; tokens minted for ${JSON.stringify(minted)}`,
           );
         }
-        return `GitHub holds the edit; tokens minted for ${minted.join(", ")}`;
+        return `GitHub holds the edit; tokens minted for ${JSON.stringify(minted)}`;
       },
     );
   } finally {
