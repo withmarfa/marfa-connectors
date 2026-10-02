@@ -982,7 +982,7 @@ describe("where a write lands", () => {
     marfa.edit(row(issue.node).id, { title: "After" });
     const output = await ok();
     expect(output).toContain(
-      `GitHub shows the App nothing ${row(issue.node).id} is linked to, so the change to it waits`,
+      `GitHub shows the App nothing ${row(issue.node).id} is linked to, so the change to ${row(issue.node).id} waits`,
     );
     repository.hidden = false;
     await ok();
