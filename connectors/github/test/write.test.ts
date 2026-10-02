@@ -991,14 +991,83 @@ describe("where a write lands", () => {
 });
 
 describe("a delete GitHub answers as not found", () => {
-  it("is not taken as done while the comment is still there, and the run says so", async () => {
+  it("is not taken as done while the comment is still there: the trash waits, and lands once GitHub takes it", async () => {
     const issue = github.addIssue(repository);
     const comment = ours(issue, "Stays");
     await ok();
     github.deletesRefused = true;
-    marfa.trash(row(comment.node).id);
+    const id = row(comment.node).id;
+    marfa.trash(id);
     const output = await ok();
     expect(comment.deleted).toBeUndefined();
-    expect(output).toContain("GitHub refused the change");
+    expect(output).toContain(`its trash waits`);
+    expect(marfa.agreements.get(id)?.waiting).toBe(true);
+    github.deletesRefused = false;
+    await settled();
+    expect(comment.deleted).toBe(true);
+    expect(marfa.agreements.get(id)?.waiting).toBe(false);
+  });
+});
+
+describe("a target GitHub no longer has", () => {
+  it("takes an edit of a deleted issue as not sent, names it, and settles", async () => {
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    const id = row(issue.node).id;
+    issue.deleted = true;
+    marfa.edit(id, { title: "After" });
+    const output = await settled();
+    expect(output).toContain(`GitHub no longer shows what ${id} is linked to`);
+    expect(marfa.agreements.get(id)?.waiting).toBe(false);
+  });
+
+  it("takes a restore of a deleted issue as not sent, names it, and settles", async () => {
+    const issue = github.addIssue(repository, { title: "Binned" });
+    await ok();
+    const id = row(issue.node).id;
+    marfa.trash(id);
+    await ok();
+    issue.deleted = true;
+    marfa.restore(id);
+    const output = await settled();
+    expect(output).toContain(`GitHub no longer shows what ${id} is linked to`);
+    expect(marfa.agreements.get(id)?.waiting).toBe(false);
+  });
+
+  it("takes an edit of a deleted comment as not sent, names it, and settles", async () => {
+    const issue = github.addIssue(repository);
+    const comment = ours(issue, "Said");
+    await ok();
+    const id = row(comment.node).id;
+    comment.deleted = true;
+    marfa.edit(id, { body: "Said, edited" });
+    const output = await settled();
+    expect(output).toContain(`GitHub no longer shows what ${id} is linked to`);
+    expect(marfa.agreements.get(id)?.waiting).toBe(false);
+  });
+});
+
+describe("an installation that refuses the App", () => {
+  it("does not hold back a write to a repository under another", async () => {
+    const lost = github.addRepository("gone/away", { installation: 2 });
+    github.installations.unshift({ id: 2, login: "gone" });
+    github.addIssue(lost, { title: "Unreachable" });
+    const issue = github.addIssue(repository, { title: "Home" });
+    await ok();
+    const [first] = github.installations;
+    if (first !== undefined) first.lost = true;
+    const said = marfa.insert(
+      undefined,
+      { body: "Posted beside a lost installation", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    await ok();
+    expect(
+      github.comments.some((one) =>
+        one.body.startsWith("Posted beside a lost installation"),
+      ),
+    ).toBe(true);
   });
 });
