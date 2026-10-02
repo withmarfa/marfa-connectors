@@ -1,6 +1,6 @@
 import type { Comment, Issue, Related, Relations } from "./entries.js";
 import { GraphqlResponseError } from "@octokit/graphql";
-import { batches, query, type Client } from "./github.js";
+import { batches, query, reads, type Client } from "./github.js";
 
 const related = "id url repository { id }";
 
@@ -40,6 +40,10 @@ const commentsQuery = `query Comments($ids: [ID!]!) {
       issue { id repository { id nameWithOwner } }
     }
   }
+}`;
+
+const repositoriesQuery = `query Repositories($ids: [ID!]!) {
+  nodes(ids: $ids) { __typename ... on Repository { id nameWithOwner } }
 }`;
 
 const numbersQuery = (count: number): string =>
@@ -227,6 +231,19 @@ export async function commentsByNode(
   return found;
 }
 
+export async function repositoryByNode(
+  octokit: Client,
+  id: string,
+): Promise<{ node: string; name: string } | undefined> {
+  const answer = (await query(octokit, repositoriesQuery, {
+    ids: [id],
+  })) as Nodes<{ __typename: string; id: string; nameWithOwner: string }>;
+  const [found] = known(answer.nodes, "Repository");
+  return found === undefined
+    ? undefined
+    : { node: found.id, name: found.nameWithOwner };
+}
+
 export async function nodesOfNumbers(
   octokit: Client,
   owner: string,
@@ -322,16 +339,22 @@ export async function updateComment(
   };
 }
 
+/** GraphQL answers NOT_FOUND alike for a comment gone and for one it will
+ *  not let the App touch, so it counts as gone only where the comment no
+ *  longer reads in a repository that still does. */
 export async function deleteComment(
   octokit: Client,
   id: string,
+  where: { owner: string; repo: string },
 ): Promise<void> {
   try {
     await octokit.graphql(deleteCommentMutation, { id });
   } catch (error) {
     if (
       error instanceof GraphqlResponseError &&
-      error.errors?.every((one) => one.type === "NOT_FOUND") === true
+      error.errors?.every((one) => one.type === "NOT_FOUND") === true &&
+      (await commentsByNode(octokit, [id])).length === 0 &&
+      (await reads(octokit, where.owner, where.repo))
     ) {
       return;
     }
