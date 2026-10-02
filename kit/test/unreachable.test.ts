@@ -209,3 +209,78 @@ describe("changes waiting on one scope", () => {
     ).toBe(true);
   });
 });
+
+describe("a change the vendor is not to take", () => {
+  it("puts back an edit, says why, and is not tried again", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1");
+    const second = harness.server.row("a:2");
+    harness.server.edit(first.id, { title: "One, edited", note: "A note" });
+    harness.server.edit(second.id, { title: "Two, edited" });
+    held.declined = new Set([first.id]);
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.item.id).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+    expect(harness.server.byId(first.id).properties["title"]).toBe("One");
+    expect(harness.server.byId(first.id).properties["note"]).toBeUndefined();
+    expect(harness.server.byId(second.id).properties["title"]).toBe(
+      "Two, edited",
+    );
+    expect(harness.lastRun().summary).toContain(
+      `${first.id} is not the vendor's to take; title, note were put back`,
+    );
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("leaves a trash in Marfa alone, says why, and carries the restore", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.declined = new Set([row.id]);
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.kind)).toEqual(["trashed"]);
+    expect(harness.server.byId(row.id).state).toBe("trashed");
+    expect(harness.lastRun().summary).toContain(
+      `${row.id} is not the vendor's to take`,
+    );
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toHaveLength(1);
+    held.declined = undefined;
+    harness.server.restore(row.id);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.kind)).toEqual([
+      "trashed",
+      "restored",
+    ]);
+  });
+
+  it("to make a restored row again leaves it restored in Marfa, and says why", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    harness.server.restore(row.id);
+    held.entries = [];
+    held.gone = new Map([[row.id, "v1-again"]]);
+    held.declined = new Set([row.id]);
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      `${row.id} is not the vendor's to take`,
+    );
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.remakes).toHaveLength(1);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.byId(row.id).state).toBe("active");
+  });
+});

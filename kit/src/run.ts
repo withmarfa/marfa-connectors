@@ -37,6 +37,7 @@ import {
   carriable,
   cascaded,
   connectKey,
+  Declined,
   LinkTaken,
   Refused,
   Rows,
@@ -486,18 +487,11 @@ export async function runOnce<E extends EnvDeclaration>(
         target.id,
       );
       if (held === undefined) return [];
-      const spec = lane(type).spec;
       const found = await setup.marfa.connectedTo(type, connection, held.id);
+      const told = await rows.told(found);
       return found
         .filter((row) => {
-          if (row.type !== type) return false;
-          if (
-            spec.link !== undefined &&
-            rows.linkOf(row.properties) === undefined
-          )
-            return false;
-          if (spec.link === undefined && row.source !== spec.source)
-            return false;
+          if (!told.has(row.id)) return false;
           const named =
             rows.connecting.get(row.id)?.[connection] ??
             answeredConnections.get(row.id)?.[connection];
@@ -595,6 +589,12 @@ export async function runOnce<E extends EnvDeclaration>(
       current.properties,
     );
     const back = stale.length === 0 ? [] : await rows.putBack(id, stale);
+    if (back.length > 0) {
+      raised.set(
+        `put-back:${id}`,
+        `${back.join(", ")} on ${id} ${back.length === 1 ? "was" : "were"} changed in Marfa and put back from the vendor, which Marfa mirrors`,
+      );
+    }
     const types = connections.typesFrom(kind.type);
     const mirrored = types.filter((type) => connections.mirrored(kind, type));
     // A create's mirrored connections place it, so they are not put back.
@@ -660,6 +660,48 @@ export async function runOnce<E extends EnvDeclaration>(
       `${id} is not sent to the vendor until the vendor has each row its read-only connections name`,
     );
   };
+  // A row a person relinked that could not be put back, being in the bin or
+  // its link taken, is carried by the link the two sides agreed.
+  const byAgreedLink = (kind: Spec, item: Item, agreement: Agreement): Item =>
+    kind.link !== undefined &&
+    agreement.link !== undefined &&
+    lane(kind.type).rows.linkOf(item.properties) !== agreement.link
+      ? {
+          ...item,
+          properties: { ...item.properties, [kind.link]: agreement.link },
+        }
+      : item;
+  const decline = async (
+    kind: Spec,
+    item: Item,
+    changed: readonly string[],
+    error: Declined,
+  ): Promise<void> => {
+    const rows = lane(kind.type).rows;
+    const back =
+      changed.length === 0 || item.state === "trashed"
+        ? []
+        : await rows.putBack(item.id, changed);
+    raised.set(
+      `declined:${item.id}`,
+      back.length === 0
+        ? error.message
+        : `${error.message}; ${back.join(", ")} ${back.length === 1 ? "was" : "were"} put back`,
+    );
+    const agreement = store.get(item.id);
+    if (agreement === undefined) return;
+    const waiting = { ...agreement.waiting };
+    for (const key of [...back, stateKey, createKey]) {
+      Reflect.deleteProperty(waiting, key);
+    }
+    const next: Agreement = {
+      ...withoutWaiting(agreement),
+      state: agreedState(item.state),
+    };
+    Reflect.deleteProperty(next, "attempted");
+    if (Object.keys(waiting).length > 0) next.waiting = waiting;
+    store.set(item.id, next);
+  };
   const carry = async (
     item: Item,
     agreement: Agreement,
@@ -692,17 +734,7 @@ export async function runOnce<E extends EnvDeclaration>(
       store.clear(item.id);
       return;
     }
-    // A row a person relinked that could not be put back, being in the
-    // bin, is carried by the link the two sides agreed.
-    const current =
-      kind.link !== undefined &&
-      agreement.link !== undefined &&
-      rows.linkOf(item.properties) !== agreement.link
-        ? {
-            ...item,
-            properties: { ...item.properties, [kind.link]: agreement.link },
-          }
-        : item;
+    const current = byAgreedLink(kind, item, agreement);
     // A trash of a row whose create got no link back may still find it made.
     const changeKind: ChangeKind = unlinked
       ? current.state === "trashed"
@@ -796,6 +828,10 @@ export async function runOnce<E extends EnvDeclaration>(
     try {
       answered = await connector.onChange(change, watchContext);
     } catch (error) {
+      if (error instanceof Declined) {
+        await decline(kind, current, changed, error);
+        return;
+      }
       if (error instanceof Unreachable) {
         unreached(current.id, error);
         return;
@@ -1102,8 +1138,9 @@ export async function runOnce<E extends EnvDeclaration>(
         const agreement = store.get(id);
         const found = await find(id);
         if (agreement === undefined || found === undefined) continue;
-        const { item, spec: kind } = found;
+        const { spec: kind } = found;
         if (!kind.twoWay) continue;
+        const item = byAgreedLink(kind, found.item, agreement);
         if (agreement.waiting?.[createKey] !== undefined) {
           if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
           done.add(id);
@@ -1173,7 +1210,9 @@ export async function runOnce<E extends EnvDeclaration>(
           try {
             remade = await connector.remake(change, watchContext);
           } catch (error) {
-            if (error instanceof Unreachable) unreached(id, error);
+            if (error instanceof Declined) {
+              await decline(kind, item, [...change.changed], error);
+            } else if (error instanceof Unreachable) unreached(id, error);
             else if (error instanceof Refused) refuse(id, change, error);
             else throw error;
             done.add(id);
@@ -1286,7 +1325,10 @@ export async function runOnce<E extends EnvDeclaration>(
             watchContext,
           );
         } catch (error) {
-          if (error instanceof Unreachable) {
+          if (error instanceof Declined) {
+            raised.set(`declined:${item.id}`, error.message);
+            purged.delete(item.id);
+          } else if (error instanceof Unreachable) {
             unreached(item.id, error);
             purged.set(item.id, item);
           } else if (error instanceof Refused) {

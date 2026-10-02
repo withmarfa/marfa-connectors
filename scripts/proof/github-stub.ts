@@ -103,6 +103,8 @@ export class GitHubStub {
   writesLimited:
     { left: number; status: 403 | 429; title?: string } | undefined;
   mutationsLimited = 0;
+  // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
+  deletesRefused = false;
   hook: Record<string, unknown> | undefined;
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
@@ -831,6 +833,10 @@ export class GitHubStub {
       return true;
     }
     if (operation === "DeleteComment") {
+      if (this.deletesRefused) {
+        send(200, notFound);
+        return true;
+      }
       comment.deleted = true;
       send(200, { data: { deleteIssueComment: { clientMutationId: null } } });
       return true;
@@ -994,6 +1000,23 @@ export class GitHubStub {
               },
             },
           };
+        }),
+      };
+      send(200, { data, ...(errors.length > 0 && { errors }) });
+      return;
+    }
+    if (operation === "Repositories") {
+      const data = {
+        nodes: nodes(body.variables["ids"], (id) => {
+          const repository = this.repositories.find((one) => one.node === id);
+          return repository === undefined ||
+            (!this.visible(req, id) && repository.private)
+            ? undefined
+            : {
+                __typename: "Repository",
+                id,
+                nameWithOwner: `${repository.owner}/${repository.name}`,
+              };
         }),
       };
       send(200, { data, ...(errors.length > 0 && { errors }) });

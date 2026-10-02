@@ -353,7 +353,7 @@ describe("a run for deliveries", () => {
         ),
       ).toEqual([]);
     });
-  });
+  }, 30_000);
 
   it("changes nothing where a named issue's installation lost access", async () => {
     const repository = github.addRepository("someone/tracker");

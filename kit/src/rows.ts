@@ -78,6 +78,17 @@ export class Refused extends Error {
   override name = "Refused";
 }
 
+/**
+ * Thrown by `onChange` or `remake` where the vendor is not to take the
+ * row's change at all, such as an edit to something another person wrote:
+ * the fields it changed are put back to what was agreed, its state stays
+ * as Marfa has it, nothing is tried again until the row changes again, and
+ * the message, naming the row, is raised as a condition.
+ */
+export class Declined extends Error {
+  override name = "Declined";
+}
+
 export interface Spec {
   readonly type: string;
   readonly source: string;
@@ -758,11 +769,28 @@ export class Rows {
       return [];
     }
     this.counts.updated += 1;
-    this.hooks.condition(
-      `put-back:${id}`,
-      `${found.join(", ")} on ${id} ${found.length === 1 ? "was" : "were"} changed in Marfa and put back from the vendor, which Marfa mirrors`,
-    );
     return found;
+  }
+
+  /** The vendor has been told about a row once the connector agreed on it
+   *  with the vendor, under the link it carries: a row made by hand with a
+   *  link's value has not. */
+  async told(items: readonly Item[]): Promise<Set<string>> {
+    const own = items.filter((item) => item.type === this.kind.type);
+    await this.store.fetch(own.map((item) => item.id));
+    return new Set(
+      own
+        .filter((item) => {
+          const agreement = this.store.get(item.id);
+          return (
+            agreement !== undefined &&
+            (this.kind.link === undefined ||
+              (agreement.link !== undefined &&
+                agreement.link === this.linkOf(item.properties)))
+          );
+        })
+        .map((item) => item.id),
+    );
   }
 
   async adoptAnswer(

@@ -168,8 +168,10 @@ export interface Change {
   readonly was?: "trashed" | "archived";
   /**
    * The connections made or removed in Marfa since the vendor last had them,
-   * by connection type; a target the vendor has not been told about waits
-   * until it has, and one purged is never carried.
+   * by connection type, each target with the link agreed with the vendor; a
+   * target the vendor has not been told about, such as one made by hand
+   * under a link of its own, waits until it has, and one purged is never
+   * carried.
    */
   readonly connections?: Readonly<Record<string, Connected>>;
   /**
@@ -357,6 +359,11 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * Either way nothing is agreed, the run goes on, and a condition says why
    * until the change lands. Any other throw fails the run, and the change
    * waits for the next.
+   * Where the vendor is not to take the change at all, such as an edit to
+   * something another person wrote there, throw `Declined`: the fields it
+   * carried are put back to what was agreed, the row's state stays as Marfa
+   * has it, the message is raised as a condition, and nothing is tried
+   * again until the row changes again.
    * For a purge, the answer's `changed_at` keeps the purge remembered past
    * the vendor's own change, such as a close.
    */
@@ -373,7 +380,9 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * linked; one the vendor still has answers `false` and is carried by
    * `onChange` after the read. Where a remake failed before,
    * `change.attempted` says when it was first asked; a remake the vendor did
-   * not take throws `Unreachable` or `Refused` as `onChange` does.
+   * not take throws `Unreachable` or `Refused` as `onChange` does, and one
+   * that is not to be made throws `Declined`, leaving the row restored in
+   * Marfa alone.
    */
   remake?(change: Change, context: WatchContext<E>): Promise<boolean>;
   /**

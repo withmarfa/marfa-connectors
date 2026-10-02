@@ -507,6 +507,103 @@ export async function proveGitHub(
         }
       },
     );
+
+    await check(
+      "github: every write lands on the node agreed with GitHub: a row made by hand naming another issue takes no relation or thread, a trash closes the issue the row was agreed for whatever its number and repository say, and an edit follows a repository renamed while another took its name",
+      async () => {
+        const open = github.addRepository("other/public", {
+          installation: 99,
+          private: false,
+        });
+        const outside = github.addIssue(open, { title: "Outside" });
+        const binned = github.addIssue(repository, { title: "Binned" });
+        const second = github.addRepository("someone/second");
+        const quiet = github.addIssue(second, { title: "Quiet" });
+        await runOnce();
+        const named = await create(marfa, "github.issue", {
+          title: "By hand",
+          github_id: outside.node,
+          repository: "someone/tracker",
+          number: parent.number,
+        });
+        await connect(marfa, await row(child.node), named, "github.blocked-by");
+        const said = await create(marfa, "github.comment", {
+          body: "Where does this go?",
+          from: "me",
+        });
+        await connect(marfa, said, named, "in-thread");
+        const binnedRow = await edit(marfa, await row(binned.node), {
+          number: parent.number,
+          repository: "other/public",
+        });
+        await trash(marfa, binnedRow.id);
+        Object.assign(quiet, {
+          state: "closed",
+          state_reason: "completed",
+          closed_at: github.ago(200),
+          updated_at: github.ago(200),
+        });
+        second.name = "second-old";
+        const reused = github.addRepository("someone/second");
+        const decoy = github.addIssue(reused, { title: "Decoy" });
+        await runOnce();
+        await edit(marfa, await row(quiet.node), { title: "Quiet, edited" });
+        await runOnce();
+        const posted = github.comments.some(
+          (one) => one.body.includes("Where does this go?") && !one.deleted,
+        );
+        const states = [parent, outside, binned].map(
+          (one) => `${one.state} ${String(one.state_reason)}`,
+        );
+        if (
+          child.blocked_by.includes(outside.node) ||
+          posted ||
+          states.join() !== "open null,open null,closed not_planned" ||
+          quiet.title !== "Quiet, edited" ||
+          decoy.title !== "Decoy"
+        ) {
+          throw new Error(
+            `blocked by ${child.blocked_by.join()}, ${posted ? "posted" : "not posted"}, states ${states.join("; ")}, titles ${quiet.title} and ${decoy.title}`,
+          );
+        }
+        return `no relation to ${outside.node} and no comment posted; ${binned.node} closed as not planned and #${String(parent.number)} left open; the edit reached ${second.owner}/${second.name}#${String(quiet.number)}, not the repository now named someone/second`;
+      },
+    );
+
+    await check(
+      "github: a comment someone else wrote stays theirs: its edit in Marfa is put back and not sent, its trash leaves it on GitHub with the row in the bin, and the run says both",
+      async () => {
+        const said = await row(comment.node);
+        await edit(marfa, said, { body: "Edited in Marfa" });
+        await runOnce();
+        const edited = String((await lastRun(marfa, key.id)).summary);
+        const back = await row(comment.node);
+        const second = github.addComment(parent, "Second");
+        await runOnce();
+        const secondRow = await row(second.node);
+        await trash(marfa, secondRow.id);
+        await runOnce();
+        const binned = String((await lastRun(marfa, key.id)).summary);
+        const kept = await row(second.node);
+        await restore(marfa, secondRow.id);
+        await runOnce();
+        const restored = await row(second.node);
+        if (
+          comment.body !== "First!" ||
+          second.deleted === true ||
+          back.properties["body"] !== "First!" ||
+          kept.state !== "trashed" ||
+          restored.state !== "active" ||
+          !edited.includes("its edit in Marfa is not sent") ||
+          !binned.includes("so it stays there though it is in the bin")
+        ) {
+          throw new Error(
+            `GitHub holds ${JSON.stringify([comment, second])}; the row ${String(back.properties["body"])}, then ${kept.state}, then ${restored.state}; the runs said ${edited} and ${binned}`,
+          );
+        }
+        return "GitHub's comment unchanged and kept; the row put back, binned, and restored, each named in the run";
+      },
+    );
   } finally {
     await github.stop();
   }
