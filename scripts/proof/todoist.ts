@@ -699,6 +699,84 @@ export async function proveTodoist(
     );
 
     await check(
+      "todoist: an edit Todoist refuses is kept over Todoist's next read and not sent again, and lands once the row changes",
+      async () => {
+        todoist.put(todoist.task("w", { content: "Refuse me" }));
+        await runOnce();
+        const before = await row("w");
+        await edit(marfa, before, { title: "Refused title" });
+        todoist.scriptCommand("item_update", {
+          error_code: 20,
+          error: "Invalid argument value",
+          http_code: 400,
+        });
+        await runOnce();
+        const refused = await summary();
+        todoist.edit("w", { description: "Edited in Todoist" });
+        const updates = todoist.commands("item_update").length;
+        await runOnce();
+        const kept = await row("w");
+        const resent = todoist.commands("item_update").length - updates;
+        await edit(marfa, kept, { title: "Accepted title" });
+        await runOnce();
+        const landed = todoist.tasks.get("w")?.content;
+        const cleared = await summary();
+        if (
+          !refused.includes(
+            `the change to ${before.id} was refused, so it waits until the row changes in Marfa: Todoist refused updating task w: Invalid argument value (20)`,
+          ) ||
+          resent !== 0 ||
+          kept.properties["title"] !== "Refused title" ||
+          kept.properties["description"] !== "Edited in Todoist" ||
+          landed !== "Accepted title" ||
+          cleared.includes("was refused")
+        ) {
+          throw new Error(
+            `refused: ${refused}; resent ${String(resent)}; kept ${JSON.stringify(kept.properties)}; Todoist holds ${String(landed)}; then ${cleared}`,
+          );
+        }
+        return `refused run: ${refused}; the next run sent nothing and the row kept "Refused title" beside Todoist's description; once edited again Todoist holds "${landed}"`;
+      },
+    );
+
+    await check(
+      "todoist: an edit Todoist rate-limits past every resend waits, the run lands, and the next run carries it",
+      async () => {
+        const before = await row("w");
+        await edit(marfa, before, { title: "Limited title" });
+        todoist.scriptCommand(
+          "item_update",
+          {
+            error_code: 35,
+            error: "Too many requests",
+            http_code: 429,
+            error_extra: { retry_after: 0 },
+          },
+          6,
+        );
+        await runOnce();
+        const waited = await summary();
+        const held = todoist.tasks.get("w")?.content;
+        const kept = (await row("w")).properties["title"];
+        await runOnce();
+        const landed = todoist.tasks.get("w")?.content;
+        if (
+          !waited.includes(
+            "1 change waits: Todoist is not taking changes for now: Too many requests (35)",
+          ) ||
+          held !== "Accepted title" ||
+          kept !== "Limited title" ||
+          landed !== "Limited title"
+        ) {
+          throw new Error(
+            `${waited}; Todoist held ${String(held)}, the row ${String(kept)}, then Todoist ${String(landed)}`,
+          );
+        }
+        return `${waited}; Todoist kept "${held}" and the row "${kept}", and the next run sent it: Todoist holds "${landed}"`;
+      },
+    );
+
+    await check(
       "todoist: a key holding permissions beside its type is refused at start, before it registers the type or writes a row",
       async () => {
         const { data: wide, error } = await marfa.POST("/keys", {
