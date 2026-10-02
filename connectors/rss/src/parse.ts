@@ -12,12 +12,21 @@ export const parseLimits = {
 
 export const parseTimeoutMs = 30_000;
 
+/** What a read may hand back, serialized: about three times the largest real
+ *  feed checked. A value every entry repeats, such as the feed's title,
+ *  counts once per entry, as it is written once per row. */
+export const maxResultChars = 32 * 1024 * 1024;
+
 export class TooHeavy extends Error {
   override name = "TooHeavy";
 }
 
 export class TooSlow extends Error {
   override name = "TooSlow";
+}
+
+export class TooBig extends Error {
+  override name = "TooBig";
 }
 
 export class Unreadable extends Error {
@@ -32,7 +41,9 @@ export interface ParseInput {
 }
 
 export type ParseAnswer =
-  { read: Read } | { refused: "entries" | "elements" } | { unreadable: true };
+  | { read: string }
+  | { refused: "entries" | "elements" | "size" }
+  | { unreadable: true };
 
 /**
  * Decodes and reads a feed in a worker whose heap is capped, so a document
@@ -42,8 +53,15 @@ export type ParseAnswer =
 export function readBounded(
   input: ParseInput,
   signal: AbortSignal,
+  { timeoutMs = parseTimeoutMs }: { timeoutMs?: number } = {},
 ): Promise<Read> {
   return new Promise((done, fail) => {
+    if (signal.aborted) {
+      fail(
+        signal.reason instanceof Error ? signal.reason : new Error("aborted"),
+      );
+      return;
+    }
     const worker = new Worker(new URL("./parse-worker.js", import.meta.url), {
       workerData: input,
       resourceLimits: parseLimits,
@@ -61,7 +79,7 @@ export function readBounded(
       settle(() => {
         fail(new TooSlow());
       });
-    }, parseTimeoutMs);
+    }, timeoutMs);
     const onAbort = (): void => {
       settle(() => {
         fail(
@@ -72,12 +90,14 @@ export function readBounded(
     signal.addEventListener("abort", onAbort, { once: true });
     worker.once("message", (answer: ParseAnswer) => {
       settle(() => {
-        if ("read" in answer) done(answer.read);
+        if ("read" in answer) done(JSON.parse(answer.read) as Read);
         else if ("refused" in answer) {
           fail(
             answer.refused === "entries"
               ? new TooManyEntries()
-              : new TooManyElements(),
+              : answer.refused === "elements"
+                ? new TooManyElements()
+                : new TooBig(),
           );
         } else fail(new Unreadable());
       });

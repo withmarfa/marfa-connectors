@@ -10,6 +10,7 @@ import {
   fetchFeed,
   maxFeedElements,
   maxFeedEntries,
+  maxFieldLength,
   privateHosts,
   TooManyElements,
   TooManyEntries,
@@ -26,7 +27,9 @@ import {
 import {
   parseLimits,
   parseTimeoutMs,
+  maxResultChars,
   readBounded,
+  TooBig,
   TooHeavy,
   TooSlow,
 } from "./parse.js";
@@ -45,6 +48,7 @@ interface FeedState {
    *  where they are rather than handed to either. */
   shared?: string[];
   unkeyed?: number;
+  dropped?: number;
   declared?: string;
   /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
    *  named again if it returns. */
@@ -75,6 +79,9 @@ function refusal(error: unknown): string | undefined {
   }
   if (error instanceof TooHeavy) {
     return `needs more than ${String(parseLimits.maxOldGenerationSizeMb)} MB to read, so it is skipped`;
+  }
+  if (error instanceof TooBig) {
+    return `reads to more than ${String(maxResultChars / 1024 / 1024)} MiB of entries, so it is skipped`;
   }
   if (error instanceof TooSlow) {
     return `takes longer than ${String(parseTimeoutMs / 1000)} seconds to read, so it is skipped`;
@@ -171,6 +178,15 @@ const connector = defineConnector({
     // the kit would otherwise take them as cleared.
     const raise = (feed: Feed, held: FeedState): void => {
       const name = feedName(feed);
+      const long = held.dropped ?? 0;
+      if (long > 0) {
+        log.condition(
+          `long:${feed.key}`,
+          long === 1
+            ? `a value in ${name} is longer than ${String(maxFieldLength)} characters, and is left out`
+            : `${String(long)} values in ${name} are longer than ${String(maxFieldLength)} characters, and are left out`,
+        );
+      }
       const count = held.unkeyed ?? 0;
       if (count > 0) {
         log.condition(
@@ -281,10 +297,12 @@ const connector = defineConnector({
         ...(was.length > 0 && { was }),
         ...(shared.length > 0 && { shared }),
         ...(read.unkeyed > 0 && { unkeyed: read.unkeyed }),
+        ...(read.dropped > 0 && { dropped: read.dropped }),
         ...(read.declared !== undefined && { declared: read.declared }),
       };
       kept[feed.key] = now;
       raise(feed, now);
+      signal.throwIfAborted();
       await upsert(
         rssEntry.id,
         was.length === 0

@@ -420,9 +420,15 @@ function atomTextOf(
     : textOf(text?.value);
 }
 
+/** Marfa's default cap on a string property: a longer one is refused, and
+ *  the entry with it. */
+export const maxFieldLength = 100_000;
+
 export interface Read {
   entries: Entry[];
   unkeyed: number;
+  /** Values longer than Marfa takes, left out of their entries. */
+  dropped: number;
   /** A hash of the id an Atom feed declares for itself, which identifies
    *  nothing here and is compared only to say two feeds claim one id. */
   declared: string | undefined;
@@ -470,6 +476,7 @@ export function readFeed(
   };
   const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
+  let dropped = 0;
   const entries: Entry[] = [];
   const keep = (
     entryId: string | undefined,
@@ -477,13 +484,20 @@ export function readFeed(
     occurredAt: string | undefined,
   ): void => {
     const id = textOf(entryId);
-    if (id === undefined) {
+    if (id === undefined || id.length > maxFieldLength) {
       unkeyed += 1;
       return;
     }
+    const kept = Object.fromEntries(
+      Object.entries(properties).filter(([, value]) => {
+        const long = typeof value === "string" && value.length > maxFieldLength;
+        if (long) dropped += 1;
+        return !long;
+      }),
+    );
     entries.push({
       source_id: `${key}:${id}`,
-      properties: { ...properties, entry_id: id, ...named },
+      properties: { ...kept, entry_id: id, ...named },
       occurred_at: occurredAt,
     });
   };
@@ -527,6 +541,7 @@ export function readFeed(
     return {
       entries,
       unkeyed,
+      dropped,
       declared:
         declared === undefined || declared === ""
           ? undefined
@@ -567,7 +582,7 @@ export function readFeed(
         published ?? isoOf(item.dc?.dates?.[0]),
       );
     }
-    return { entries, unkeyed, declared: undefined };
+    return { entries, unkeyed, dropped, declared: undefined };
   }
   throw new Error(
     `a ${parsed.format} feed, where this connector reads Atom and RSS 2.0`,

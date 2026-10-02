@@ -16,6 +16,7 @@ import {
   privateHosts,
   maxFeedElements,
   maxFeedEntries,
+  maxFieldLength,
   readFeed,
   TooManyElements,
   TooManyEntries,
@@ -806,26 +807,96 @@ describe("fetching a feed", () => {
     }
   });
 
+  /** Runs a read in a fresh process, whose high-water marks start clean,
+   *  and answers how it ended and how much it grew. */
+  async function measured(document: string): Promise<{
+    outcome: string;
+    rssMiB: number;
+    heapMiB: number;
+  }> {
+    const { stdout } = await run(
+      "node",
+      [resolve(import.meta.dirname, "fixtures/measure.js"), document],
+      { timeout: 90_000, maxBuffer: 1024 * 1024 },
+    );
+    return JSON.parse(stdout) as {
+      outcome: string;
+      rssMiB: number;
+      heapMiB: number;
+    };
+  }
+
   it("reads a feed in a worker whose heap limit, not the feed, bounds the memory it takes", async () => {
-    const { readBounded } = (await import(
+    const { outcome, rssMiB } = await measured("heavy");
+    expect(outcome).toBe("TooHeavy");
+    expect(rssMiB).toBeLessThan(450);
+  }, 90_000);
+
+  it("refuses a read whose entries come to more than the cap, which shared feed values multiply, without that copy reaching the connector", async () => {
+    const { outcome, rssMiB, heapMiB } = await measured("shared");
+    expect(outcome).toBe("TooBig");
+    expect(heapMiB).toBeLessThan(64);
+    expect(rssMiB).toBeLessThan(450);
+  }, 90_000);
+
+  it("gives up on a read that runs past its time limit", async () => {
+    const { readBounded, TooSlow } = (await import(
       resolve(import.meta.dirname, "../dist/parse.js")
     )) as typeof import("../src/parse.js");
-    const bytes = new TextEncoder().encode(heavyFeed(44 * 1024 * 1024));
-    const before = process.resourceUsage().maxRSS;
     await expect(
       readBounded(
         {
           feed: at("https://example.org/rss.xml"),
-          bytes,
+          bytes: new TextEncoder().encode(fixture("rss.xml")),
           contentType: null,
           documentUrl: "https://example.org/rss.xml",
         },
         AbortSignal.timeout(60_000),
+        { timeoutMs: 1 },
       ),
-    ).rejects.toMatchObject({ name: "TooHeavy" });
-    const grewMiB = (process.resourceUsage().maxRSS - before) / 1024;
-    expect(grewMiB).toBeLessThan(450);
-  }, 60_000);
+    ).rejects.toBeInstanceOf(TooSlow);
+  });
+
+  it("reads nothing once the run is stopped, even when it stopped before the read began", async () => {
+    const { readBounded } = (await import(
+      resolve(import.meta.dirname, "../dist/parse.js")
+    )) as typeof import("../src/parse.js");
+    const stopped = new AbortController();
+    stopped.abort(new Error("stopped"));
+    await expect(
+      readBounded(
+        {
+          feed: at("https://example.org/rss.xml"),
+          bytes: new TextEncoder().encode(fixture("rss.xml")),
+          contentType: null,
+          documentUrl: "https://example.org/rss.xml",
+        },
+        stopped.signal,
+      ),
+    ).rejects.toThrow("stopped");
+  });
+
+  it("leaves out a field longer than Marfa takes, and keeps the rest of the entry", () => {
+    const long = "x".repeat(maxFieldLength + 1);
+    const read = readFeed(
+      at("https://example.org/rss.xml"),
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>${long}</title>
+        <item><title>A</title><guid>a</guid><description>${long}</description></item>
+        <item><title>B</title><guid>b</guid></item></channel></rss>`,
+    );
+    expect(read.entries.map((entry) => entry.properties["title"])).toEqual([
+      "A",
+      "B",
+    ]);
+    expect(
+      read.entries.some(
+        (entry) =>
+          entry.properties["source_title"] !== undefined ||
+          entry.properties["description"] !== undefined,
+      ),
+    ).toBe(false);
+    expect(read.dropped).toBe(3);
+  });
 });
 
 interface Served {
@@ -1673,5 +1744,16 @@ describe("the connector, run as a process", () => {
     expect(JSON.stringify(marfa.states.get("rss"))).not.toContain("eeee");
     expect(asked[1]?.headers["if-none-match"]).toBeUndefined();
     expect(asked.map((request) => request.answered)).toEqual([200, 200]);
+  });
+
+  it("writes the entries of a feed whose shared title is longer than Marfa takes, without it, and says so", async () => {
+    served["/long-title.xml"] = {
+      body: `<?xml version="1.0"?><rss version="2.0"><channel><title>${"x".repeat(maxFieldLength + 1)}</title><item><title>a</title><guid>a</guid></item><item><title>b</title><guid>b</guid></item></channel></rss>`,
+    };
+    expect((await once(["/long-title.xml"])).code).toBe(0);
+    expect(marfa.rows).toHaveLength(2);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `2 values in feed 1 in RSS_FEEDS (${base}) are longer than 100000 characters, and are left out`,
+    );
   });
 });
