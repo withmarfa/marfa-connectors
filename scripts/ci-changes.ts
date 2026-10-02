@@ -4,9 +4,11 @@
  * `Checks` always formats every file and reads it for personal details, so
  * it runs for any change; `code` says whether it also fetches the pinned
  * monorepo, builds, typechecks, lints and runs every test. `Proof` runs only
- * when `proof` is true, and a skipped job satisfies a required check where a
- * workflow filtered out by `paths` would leave it pending. A push to `main`,
- * an empty diff and one that cannot be read answer `true` for every job.
+ * when `proof` is true, and `Image`, which builds the template's image and
+ * checks the launchd example, only when `image` is true. A skipped job
+ * satisfies a required check where a workflow filtered out by `paths` would
+ * leave it pending. A push to `main`, an empty diff and one that cannot be
+ * read answer `true` for every job.
  *
  * A path is matched against `RULES` in order and the first match names the
  * jobs it can affect. A path no rule matches affects every job.
@@ -16,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const JOBS = ["code", "proof"] as const;
+export const JOBS = ["code", "proof", "image"] as const;
 
 export type Job = (typeof JOBS)[number];
 
@@ -36,16 +38,19 @@ export const RULES: readonly (readonly [RegExp, readonly Job[]])[] = [
   // Markdown, the licence and settings are read only by Prettier and the
   // personal-detail scan, which `Checks` runs for every change.
   [/\.md$/i, []],
-  [
-    /^(LICENSE|\.claude\/.*|\.gitignore|\.prettierignore|\.dockerignore|\.infisical\.json)$/,
-    [],
-  ],
+  [/^(LICENSE|\.claude\/.*|\.gitignore|\.prettierignore)$/, []],
 
   // The proof runs every connector from what `pnpm build` makes, and the
   // build leaves tests out.
   [/^(kit|connectors\/[^/]+)\/test\//, ["code"]],
   [/^scripts\/(test\/|no-skipped-tests\.ts$)/, ["code"]],
-  [/^template\/(Dockerfile|launchd\.plist\.example)$/, []],
+  // The image copies the tree, so a source or dependency change, which runs
+  // every job, reaches it too. These only the image and its checks read.
+  [
+    /^(template\/(Dockerfile|launchd\.plist\.example)|\.dockerignore)$/,
+    ["image"],
+  ],
+  [/^scripts\/check-image-client\.ts$/, ["code", "image"]],
   [/^(eslint\.config\.js|vitest\.config\.ts|tsconfig\.check\.json)$/, ["code"]],
 ];
 
@@ -61,7 +66,10 @@ export function classify(paths: readonly string[]): Record<Job, boolean> {
   for (const path of paths) {
     for (const job of affected(path)) jobs.add(job);
   }
-  return { code: jobs.has("code"), proof: jobs.has("proof") };
+  return Object.fromEntries(JOBS.map((job) => [job, jobs.has(job)])) as Record<
+    Job,
+    boolean
+  >;
 }
 
 /** The pull request's changed paths, or `undefined` for any other event. */

@@ -24,11 +24,12 @@ jobs:
     outputs:
       code: ${{ steps.classify.outputs.code }}
       proof: ${{ steps.classify.outputs.proof }}
+      image: ${{ steps.classify.outputs.image }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
       - id: classify
@@ -44,11 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           dest: ${{ runner.temp }}/setup-pnpm
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -79,11 +80,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           dest: ${{ runner.temp }}/setup-pnpm
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -92,3 +93,35 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm proof
+
+  # Not a required check: nothing else builds the image or reads the launchd
+  # example, so a change to either, or to what the image copies, runs this.
+  image:
+    name: Image
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.image != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check the LaunchAgent example is well-formed
+        run: |
+          command -v xmllint >/dev/null || sudo apt-get install -y --no-install-recommends libxml2-utils
+          xmllint --noout --nonet template/launchd.plist.example
+      - run: scripts/monorepo.sh
+      - run: scripts/vendor-client.sh
+      - name: Build the template's image and each connector's
+        run: |
+          for dir in template/connector connectors/*; do
+            name="$(node -p "require('./${dir}/package.json').name")"
+            docker build -f template/Dockerfile --build-arg CONNECTOR="${name}" -t "image-${name}" .
+          done
+      - name: Check each image holds the pinned client
+        run: node --experimental-strip-types scripts/check-image-client.ts $(docker images --format '{{.Repository}}' 'image-*')

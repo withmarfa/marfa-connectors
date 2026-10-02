@@ -21,37 +21,57 @@ describe("what a change runs beyond formatting and the scan", () => {
     [
       "a connector's source",
       ["connectors/todoist/src/main.ts"],
-      ["code", "proof"],
+      ["code", "proof", "image"],
     ],
     ["a connector's test", ["connectors/github/test/read.test.ts"], ["code"]],
     [
       "a fixture the proof reads",
       ["connectors/rss/test/fixtures/atom.xml"],
-      ["code", "proof"],
+      ["code", "proof", "image"],
     ],
-    ["the kit", ["kit/src/main.ts"], ["code", "proof"]],
+    ["the kit", ["kit/src/main.ts"], ["code", "proof", "image"]],
     ["the kit's tests", ["kit/test/scripted-server.ts"], ["code"]],
-    ["the template", ["template/connector/src/main.ts"], ["code", "proof"]],
-    ["the template's image", ["template/Dockerfile"], []],
-    ["the proof", ["scripts/proof/rss.ts"], ["code", "proof"]],
-    ["the monorepo pin", ["scripts/monorepo.commit"], ["code", "proof"]],
+    [
+      "the template",
+      ["template/connector/src/main.ts"],
+      ["code", "proof", "image"],
+    ],
+    ["the template's image", ["template/Dockerfile"], ["image"]],
+    ["the LaunchAgent example", ["template/launchd.plist.example"], ["image"]],
+    ["what the image leaves out", [".dockerignore"], ["image"]],
+    [
+      "the script that reads the image's client",
+      ["scripts/check-image-client.ts"],
+      ["code", "image"],
+    ],
+    [
+      "dependency and workflow settings",
+      [".github/dependabot.yml", ".github/workflows/audit.yml"],
+      [],
+    ],
+    ["the proof", ["scripts/proof/rss.ts"], ["code", "proof", "image"]],
+    [
+      "the monorepo pin",
+      ["scripts/monorepo.commit"],
+      ["code", "proof", "image"],
+    ],
     ["a repository test", ["scripts/test/tree.test.ts"], ["code"]],
     ["lint settings", ["eslint.config.js"], ["code"]],
-    ["a dependency", ["pnpm-lock.yaml"], ["code", "proof"]],
-    ["the workflow", [".github/workflows/ci.yml"], ["code", "proof"]],
+    ["a dependency", ["pnpm-lock.yaml"], ["code", "proof", "image"]],
+    ["the workflow", [".github/workflows/ci.yml"], ["code", "proof", "image"]],
     [
       "the CodeQL workflow, which a test reads",
       [".github/workflows/codeql.yml"],
       ["code"],
     ],
-    ["the classifier", ["scripts/ci-changes.ts"], ["code", "proof"]],
-    ["a path no rule names", ["tools/new.ts"], ["code", "proof"]],
+    ["the classifier", ["scripts/ci-changes.ts"], ["code", "proof", "image"]],
+    ["a path no rule names", ["tools/new.ts"], ["code", "proof", "image"]],
     [
       "documentation beside a test",
       ["README.md", "kit/test/main.test.ts"],
       ["code"],
     ],
-    ["an empty change", [], ["code", "proof"]],
+    ["an empty change", [], ["code", "proof", "image"]],
   ])("%s", (_, paths, expected) => {
     expect(runs(paths)).toEqual(expected);
   });
@@ -91,10 +111,24 @@ describe("each job reads its answer", () => {
     expect(jobs["changes"]?.outputs).toEqual({
       code: "${{ steps.classify.outputs.code }}",
       proof: "${{ steps.classify.outputs.proof }}",
+      image: "${{ steps.classify.outputs.image }}",
     });
     expect(jobs["proof"]?.needs).toBe("changes");
     expect(jobs["proof"]?.if).toBe(
       "${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.proof != 'false') }}",
+    );
+  });
+
+  it("runs Image only when the classifier says so, and when it cannot tell", () => {
+    expect(jobs["image"]?.needs).toBe("changes");
+    expect(jobs["image"]?.if).toBe(
+      "${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.image != 'false') }}",
+    );
+    const runs = (jobs["image"]?.steps ?? []).flatMap((step) => step.run ?? []);
+    expect(runs.some((run) => run.includes("xmllint"))).toBe(true);
+    expect(runs.some((run) => run.includes("docker build"))).toBe(true);
+    expect(runs.some((run) => run.includes("check-image-client.ts"))).toBe(
+      true,
     );
   });
 
@@ -244,15 +278,19 @@ describe("the classifier as CI runs it", () => {
 
   it("skips the code checks and the proof for documentation", () => {
     expect(outputs("pull_request", base, docs)).toBe(
-      "code=false\nproof=false\n",
+      "code=false\nproof=false\nimage=false\n",
     );
   });
 
   it("runs everything for an unreadable diff, an empty one and a push", () => {
     expect(outputs("pull_request", "invalid", docs)).toBe(
-      "code=true\nproof=true\n",
+      "code=true\nproof=true\nimage=true\n",
     );
-    expect(outputs("pull_request", docs, docs)).toBe("code=true\nproof=true\n");
-    expect(outputs("push", base, docs)).toBe("code=true\nproof=true\n");
+    expect(outputs("pull_request", docs, docs)).toBe(
+      "code=true\nproof=true\nimage=true\n",
+    );
+    expect(outputs("push", base, docs)).toBe(
+      "code=true\nproof=true\nimage=true\n",
+    );
   });
 });

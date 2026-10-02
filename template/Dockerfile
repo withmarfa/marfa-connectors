@@ -4,7 +4,7 @@
 # Only the manifests, the packed client and the kit's and the connector's
 # sources are copied, so no other file in the checkout, such as one of
 # secrets, reaches the build.
-FROM node:22-slim AS build
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS build
 ARG CONNECTOR
 WORKDIR /repo
 RUN corepack enable
@@ -18,7 +18,7 @@ RUN pnpm install --frozen-lockfile --filter "${CONNECTOR}..." --filter marfa-con
   && pnpm exec tsc -b "connectors/${CONNECTOR}" \
   && pnpm --filter "${CONNECTOR}" deploy --prod --legacy /out
 
-FROM node:22-slim
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 WORKDIR /connector
 COPY --from=build /out .
 USER node
