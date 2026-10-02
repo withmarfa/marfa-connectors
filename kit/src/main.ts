@@ -96,7 +96,7 @@ function keyWiderThanTypes(
 ): string[] {
   const wider: string[] = [];
   if (key.is_operator) wider.push("it is the operator key");
-  for (const permission of key.permissions ?? []) wider.push(permission);
+  for (const permission of key.permissions) wider.push(permission);
   const held = (
     family: string,
     map: Record<string, string> | undefined,
@@ -136,7 +136,7 @@ function keyNarrowerThanTypes(
       .filter((name) => key.type_permissions[name] !== "write")
       .map((name) => `type ${name}`),
     ...[...connections]
-      .filter((name) => key.edge_permissions?.[name] !== "write")
+      .filter((name) => key.edge_permissions[name] !== "write")
       .map((name) => `edge ${name}`),
   ];
 }
