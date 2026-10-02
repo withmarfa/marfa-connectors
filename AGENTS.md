@@ -19,8 +19,6 @@ Moving the pin: write the commit into `scripts/monorepo.commit`, run both script
 
 A connector reads its secrets from the environment, and nothing here holds a value. `.infisical.json` maps this repository to its Infisical project, environment and path, so a run by hand that needs a secret takes it from there with `aic-infisical-run -- <command>` from the checkout, which puts the values into the command's environment without printing them.
 
-- Independent pull requests and hosted jobs may run concurrently. Do not delay pushes or verification to ration a personal runner pool. Keep dependency order for stacked changes and cancel superseded PR runs.
-
 ## Versions
 
 - Every version is the previous one plus 0.0.1, whatever the size of the change. Numbering starts from 0: the first version is 0.0.1.
@@ -32,7 +30,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Feature branches and pull requests; never push `main`. A session merges its own pull request once every required check is green and the review its risk calls for is done, with that depth stated on the pull request: squash, branch deleted.
 - Before closing, remove the worktrees you created once their branches are merged, with `git worktree remove`, and run `git worktree prune`; if git refuses one, report it rather than forcing it.
 - This repository is public while development continues. Public visibility is not a release milestone.
-- Every Actions workflow uses standard GitHub-hosted runners, never personal self-hosted runners or paid third-party runners.
+- Every Actions workflow uses standard GitHub-hosted runners, never personal self-hosted runners or paid third-party runners. Never hold back a push or a check to ration runners; keep stacked changes in order and cancel superseded runs.
 - `scripts/ci-changes.ts` decides what a pull request runs: `Checks` always formats and scans every file, and it builds, lints and tests, and `Proof` runs, only for a change that can affect them. Markdown anywhere is documentation, and an unnamed path or a push runs everything. A skipped job passes its required check; `scripts/test/ci-changes.test.ts` pins the rules.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
