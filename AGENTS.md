@@ -33,6 +33,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Before closing, remove the worktrees you created once their branches are merged, with `git worktree remove`, and run `git worktree prune`; if git refuses one, report it rather than forcing it.
 - This repository is public while development continues. Public visibility is not a release milestone.
 - Every Actions workflow uses standard GitHub-hosted runners, never personal self-hosted runners or paid third-party runners.
+- `scripts/ci-changes.ts` decides what a pull request runs: `Checks` always formats and scans every file, and it builds, lints and tests, and `Proof` runs, only for a change that can affect them. Markdown anywhere is documentation, and an unnamed path or a push runs everything. A skipped job passes its required check; `scripts/test/ci-changes.test.ts` pins the rules.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
 - A comment survives only if it explains a why the code cannot; when in doubt, it goes.

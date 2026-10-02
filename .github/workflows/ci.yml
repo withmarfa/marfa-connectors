@@ -14,35 +14,33 @@ permissions:
   contents: read
 
 jobs:
-  # A skipped job satisfies a required check; a workflow filtered out by
-  # `paths` would leave it pending, hence a job and not a filter.
+  # `scripts/ci-changes.ts` says what a pull request can affect. A skipped
+  # job satisfies a required check; a workflow filtered out by `paths` would
+  # leave it pending, hence jobs and not a filter.
   changes:
     name: Classify changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.classify.outputs.code }}
+      proof: ${{ steps.classify.outputs.proof }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - id: classify
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          code=true
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] && paths="$(git diff --name-only --no-renames "$BASE...$HEAD")"; then
-            if [ -n "$paths" ] && ! grep -qvE '^([^/]+\.md|LICENSE)$' <<<"$paths"; then
-              code=false
-            fi
-          fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci-changes.ts
 
+  # Every file is formatted and read for personal details, so a change to
+  # documentation runs those two, on the root's own dependencies, which need
+  # no monorepo.
   checks:
     name: Checks
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -54,19 +52,30 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: scripts/monorepo.sh
-      - run: scripts/vendor-client.sh
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: pnpm typecheck
-      - run: pnpm lint
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: scripts/monorepo.sh
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: scripts/vendor-client.sh
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: pnpm install --frozen-lockfile
+      - if: ${{ needs.changes.outputs.code == 'false' }}
+        run: pnpm install --frozen-lockfile --filter .
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: pnpm build
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: pnpm typecheck
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: pnpm lint
       - run: pnpm format:check
-      - run: pnpm test
+      - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: pnpm test
+      - if: ${{ needs.changes.outputs.code == 'false' }}
+        run: pnpm exec vitest run scripts/test/tree.test.ts
 
   proof:
     name: Proof
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.proof != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
