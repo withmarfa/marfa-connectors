@@ -477,6 +477,7 @@ export class Marfa {
     version: number,
     properties: Record<string, unknown>,
     occurredAt: string | undefined,
+    sourceId?: string,
   ): Promise<Item> {
     const { data, error, response } = await this.client.PATCH("/items/{id}", {
       params: { path: { id } },
@@ -485,6 +486,7 @@ export class Marfa {
         properties,
         properties_mode: "replace",
         ...(occurredAt !== undefined && { occurred_at: occurredAt }),
+        ...(sourceId !== undefined && { source_id: sourceId }),
       },
     });
     if (data === undefined) throw refusal(response, error);

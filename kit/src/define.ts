@@ -62,8 +62,8 @@ export interface Entry {
   changed_at?: string | undefined;
   /**
    * The link the row was known by before the vendor moved it, such as an
-   * issue transferred to another repository: the row is found by it and
-   * takes the entry's link.
+   * issue transferred to another repository, or its `source_id` where the
+   * type names no link: the row is found by it and takes the entry's.
    */
   movedFrom?: string | undefined;
   /**

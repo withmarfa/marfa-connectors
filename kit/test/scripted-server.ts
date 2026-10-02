@@ -1702,6 +1702,19 @@ export class ScriptedServer {
       });
       return;
     }
+    const sourceId = input["source_id"];
+    if (
+      typeof sourceId === "string" &&
+      this.rows.some(
+        (candidate) =>
+          candidate.id !== row.id &&
+          candidate.source === row.source &&
+          candidate.source_id === sourceId,
+      )
+    ) {
+      refuse(409, "source_id_conflict");
+      return;
+    }
     if (version !== row.version) {
       const ancestor = this.snapshots
         .get(row.id)
@@ -1747,8 +1760,10 @@ export class ScriptedServer {
         if (Object.hasOwn(properties, key)) merged[key] = properties[key];
         else Reflect.deleteProperty(merged, key);
       }
+      if (typeof sourceId === "string") row.source_id = sourceId;
       this.write(row, merged, movesTime ? occurredAt : undefined);
     } else {
+      if (typeof sourceId === "string") row.source_id = sourceId;
       this.write(
         row,
         input["properties_mode"] === "replace"

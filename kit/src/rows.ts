@@ -227,7 +227,12 @@ export class Rows {
         ),
         ...(entry.movedFrom === undefined ? [] : [entry.movedFrom]),
       ]),
-      keys: [...latest.keys()],
+      keys: [...latest.values()].flatMap((entry) => [
+        entry.source_id,
+        ...(this.kind.link === undefined && entry.movedFrom !== undefined
+          ? [entry.movedFrom]
+          : []),
+      ]),
     });
     const matched: [Entry, Item][] = [];
     const creates: [Entry, NewRow][] = [];
@@ -286,7 +291,9 @@ export class Rows {
         (value === undefined ? undefined : this.buried.get(`link:${value}`)) ??
         (entry.movedFrom === undefined
           ? undefined
-          : this.buried.get(`link:${entry.movedFrom}`)) ??
+          : this.buried.get(
+              `${this.kind.link === undefined ? "key" : "link"}:${entry.movedFrom}`,
+            )) ??
         this.buried.get(`key:${entry.source_id}`);
       if (
         buried !== undefined &&
@@ -474,7 +481,11 @@ export class Rows {
     }
     for (let attempt = 0; ; attempt += 1) {
       const merged = this.merged(entry, row, agreement);
-      if (!merged.write) {
+      const rekey =
+        this.kind.link === undefined && row.source_id !== entry.source_id
+          ? entry.source_id
+          : undefined;
+      if (!merged.write && rekey === undefined) {
         this.agree(row.id, merged.agreement, entry);
         this.report(row.id, merged);
         if (moved) this.counts.updated += 1;
@@ -488,6 +499,7 @@ export class Rows {
           row.version,
           merged.properties,
           merged.occurredAt,
+          rekey,
         );
         this.index(written);
         this.agree(row.id, merged.agreement, entry);
@@ -599,7 +611,11 @@ export class Rows {
     };
     const linked = byLink(value) ?? byLink(movedFrom);
     if (linked !== undefined) return linked;
-    const id = this.byKey.get(sourceId);
+    const id =
+      this.byKey.get(sourceId) ??
+      (this.kind.link === undefined && movedFrom !== undefined
+        ? this.byKey.get(movedFrom)
+        : undefined);
     const keyed = id === undefined ? undefined : this.byId.get(id);
     if (keyed === undefined) return undefined;
     const held = this.linkOf(keyed.properties);
@@ -925,6 +941,8 @@ export class Rows {
   }
 
   private index(item: Item): void {
+    const was = this.byId.get(item.id)?.source_id;
+    if (was !== undefined && was !== item.source_id) this.byKey.delete(was);
     this.byId.set(item.id, item);
     if (item.source === this.kind.source && item.source_id !== undefined) {
       this.byKey.set(item.source_id, item.id);
