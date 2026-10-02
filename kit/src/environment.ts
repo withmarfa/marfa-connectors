@@ -39,7 +39,8 @@ export function readEnvironment<E extends EnvDeclaration>(
   const missing: string[] = [];
   const present = (name: string): string | undefined => {
     const value = env[name];
-    return value === undefined || value.trim() === "" ? undefined : value;
+    const trimmed = value?.trim();
+    return trimmed === undefined || trimmed === "" ? undefined : trimmed;
   };
   const need = (name: string): string => {
     const value = present(name);

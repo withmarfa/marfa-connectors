@@ -337,6 +337,7 @@ export class Harness {
   readonly lines: string[] = [];
   readonly clock = new ManualClock();
   requestTimeoutMs = 5000;
+  random = (): number => 0;
   private stopListener: (() => void) | undefined;
 
   constructor(readonly server: ScriptedServer) {}
@@ -366,6 +367,7 @@ export class Harness {
       write: (line) => this.lines.push(line),
       clock: this.clock,
       requestTimeoutMs: this.requestTimeoutMs,
+      random: () => this.random(),
       onStop: (listener) => {
         this.stopListener = listener;
       },

@@ -38,11 +38,184 @@ export class Refusal extends Error {
     readonly code: string,
     readonly detail: string,
     readonly details: Readonly<Record<string, unknown>> = {},
+    /** What a `Retry-After` named, where the answer carried one. */
+    readonly retryAfterMs?: number | undefined,
   ) {
     super(
       `${status === undefined ? "" : `${String(status)} `}${code}: ${detail}`,
     );
   }
+}
+
+/** A call that got no answer from Marfa: the connection was refused, cut
+ *  or timed out, or could not be made. A timeout carries no cause; any
+ *  other keeps the transport's, so it reads as the error it replaces. */
+export class MarfaUnreachable extends Error {
+  override name = "MarfaUnreachable";
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & {
+      timedOut?: boolean;
+      fault?: string | undefined;
+    },
+  ) {
+    super(message, options);
+    this.timedOut = options?.timedOut === true;
+    this.fault = options?.fault;
+  }
+
+  /** The request ran out of time, as against being refused or cut. */
+  readonly timedOut: boolean;
+
+  /** Says what is wrong with the address where the transport names it: a
+   *  host that is not found, or a certificate or TLS handshake refused. A
+   *  mistake in a setting when a connector starts, and what a resolver or a
+   *  proxy can do to one that has run, so a start refuses it and a running
+   *  connector waits it out. */
+  readonly fault: string | undefined;
+}
+
+/** The address cannot be used whatever Marfa does: it redirects, or is not a
+ *  URL. No retry mends it. */
+export class MarfaAddress extends Error {
+  override name = "MarfaAddress";
+}
+
+/** What the transport's code says is wrong with the address, for a code a
+ *  start refuses and a running connector waits out. */
+const faults = new Map<string, string>([
+  ["ENOTFOUND", "the host was not found"],
+  ["EPROTO", "the TLS handshake was refused"],
+  ["DEPTH_ZERO_SELF_SIGNED_CERT", "the certificate is not trusted"],
+  ["SELF_SIGNED_CERT_IN_CHAIN", "the certificate is not trusted"],
+  ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "the certificate is not trusted"],
+  ["UNABLE_TO_GET_ISSUER_CERT", "the certificate is not trusted"],
+  ["UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "the certificate is not trusted"],
+  ["CERT_UNTRUSTED", "the certificate is not trusted"],
+  ["CERT_HAS_EXPIRED", "the certificate has expired"],
+  ["CERT_NOT_YET_VALID", "the certificate is not yet valid"],
+  ["ERR_TLS_CERT_ALTNAME_INVALID", "the certificate is for another host"],
+  ["HOSTNAME_MISMATCH", "the certificate is for another host"],
+]);
+
+function transportError(error: TypeError): Error {
+  const cause: unknown = error.cause;
+  const code = (value: unknown): unknown =>
+    value instanceof Error ? (value as NodeJS.ErrnoException).code : undefined;
+  const named = code(cause) ?? code(error);
+  // A redirect is the one failure undici gives no code, only this message.
+  if (cause instanceof Error && cause.message === "unexpected redirect") {
+    return new MarfaAddress("the server redirected the request", { cause });
+  }
+  if (named === "ERR_INVALID_URL") {
+    return new MarfaAddress(`${error.message} (ERR_INVALID_URL)`, { cause });
+  }
+  return new MarfaUnreachable(error.message, {
+    cause,
+    fault: typeof named === "string" ? faults.get(named) : undefined,
+  });
+}
+
+/** The transport for every call to Marfa: a call that gets no answer fails
+ *  as `MarfaUnreachable` or, where the address itself is at fault, as
+ *  `MarfaAddress`. A timeout is wrapped whoever's timer it was, and a call
+ *  its caller aborted is left as it was. `signal`, where given, ends every
+ *  call made through it. */
+export function marfaFetch(ms: number, signal?: AbortSignal): typeof fetch {
+  return async (input, init) => {
+    try {
+      const request = new Request(input, init);
+      // Handed to fetch as its own option: built into a copy of the request,
+      // the timer's signal is collected before it fires.
+      return await fetch(request, {
+        signal: AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(ms),
+          ...(signal === undefined ? [] : [signal]),
+        ]),
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new MarfaUnreachable(error.message, { timedOut: true });
+      }
+      if (error instanceof TypeError) throw transportError(error);
+      throw error;
+    }
+  };
+}
+
+/** Whose failure an error is, by what it is and never by what it says:
+ *  - `marfa`: no answer from Marfa, or one that asks for time (408, 429,
+ *    5xx);
+ *  - `key`: a key Marfa refuses;
+ *  - `registration`: a connector Marfa no longer holds;
+ *  - `address`: an address that cannot be used;
+ *  - `refused`: Marfa answered, and refused or could not be understood;
+ *  - `run`: anything else, which is the connector's own run and its vendor. */
+export type Cause =
+  "marfa" | "refused" | "key" | "registration" | "address" | "run";
+
+export function causeOf(error: unknown): Cause {
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 8;
+    at = at.cause, depth += 1
+  ) {
+    if (at instanceof MarfaUnreachable) return "marfa";
+    if (at instanceof MarfaAddress) return "address";
+    if (!(at instanceof Refusal)) continue;
+    if (at.status === 401) return "key";
+    if (at.status === 404 && at.code === "connector_not_found") {
+      return "registration";
+    }
+    if (
+      at.status !== undefined &&
+      (at.status >= 500 || at.status === 429 || at.status === 408)
+    ) {
+      return "marfa";
+    }
+    return "refused";
+  }
+  return "run";
+}
+
+/** What is wrong with the address, where the transport said, however deep
+ *  in the error. */
+export function faultOf(error: unknown): string | undefined {
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 8;
+    at = at.cause, depth += 1
+  ) {
+    if (at instanceof MarfaUnreachable) return at.fault;
+  }
+  return undefined;
+}
+
+/** The wait a refusal asked for, however deep in the error it sits. */
+export function retryAfterOf(error: unknown): number | undefined {
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 8;
+    at = at.cause, depth += 1
+  ) {
+    if (at instanceof Refusal) return at.retryAfterMs;
+  }
+  return undefined;
+}
+
+function retryAfter(response: Response): number | undefined {
+  const header = response.headers.get("retry-after");
+  if (header === null) return undefined;
+  const seconds = Number(header);
+  if (header.trim() !== "" && Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  const at = Date.parse(header);
+  const date = Date.parse(response.headers.get("date") ?? "");
+  const from = Number.isFinite(date) ? date : Date.now();
+  return Number.isFinite(at) ? Math.max(0, at - from) : undefined;
 }
 
 function refusal(response: Response, error: unknown): Refusal {
@@ -60,7 +233,13 @@ function refusal(response: Response, error: unknown): Refusal {
     typeof envelope?.details === "object" && envelope.details !== null
       ? (envelope.details as Record<string, unknown>)
       : {};
-  return new Refusal(response.status, code, message, details);
+  return new Refusal(
+    response.status,
+    code,
+    message,
+    details,
+    retryAfter(response),
+  );
 }
 
 export interface NewRow {
@@ -69,8 +248,26 @@ export interface NewRow {
   occurred_at?: string;
 }
 
+/** The longest a run's report is given to land, which no fence cuts short. */
+const reportMs = 15_000;
+
 export class Marfa {
-  constructor(private readonly client: MarfaClient) {}
+  /** `scope` makes a client every call of which `signal` ends, which is how
+   *  a run's calls are held to its hold: the hold's signal aborts when the
+   *  hold can no longer be trusted, so a write sent just before that cannot
+   *  land after the hold lapsed. */
+  constructor(
+    private readonly client: MarfaClient,
+    private readonly scope?: (signal: AbortSignal) => MarfaClient,
+    private readonly root: MarfaClient = client,
+  ) {}
+
+  /** This connection, every call of which but the run's report ends with
+   *  `signal`. */
+  scoped(signal: AbortSignal): Marfa {
+    if (this.scope === undefined) return this;
+    return new Marfa(this.scope(signal), this.scope, this.root);
+  }
 
   async register(
     name: string,
@@ -91,12 +288,14 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
+  /** Sent after a fence too, so it is not held to a run's signal. */
   async report(id: string, run: RunReport): Promise<void> {
-    const { data, error, response } = await this.client.POST(
+    const { data, error, response } = await this.root.POST(
       "/connectors/{id}/runs",
       {
         params: { path: { id } },
         body: run,
+        signal: AbortSignal.timeout(reportMs),
       },
     );
     if (data === undefined) throw refusal(response, error);
@@ -575,8 +774,8 @@ export class Marfa {
         elsewhere: false;
         until: string;
         renewed: boolean;
-        /** How long the instance holds it, by its own clock, where it says. */
-        window: number | undefined;
+        /** How long the instance holds it, in milliseconds. */
+        ttlMs: number;
       }
     | { elsewhere: true; until: string }
   > {
@@ -585,14 +784,19 @@ export class Marfa {
       { params: { path: { id } }, body: { process }, signal },
     );
     if (data !== undefined) {
-      const window =
-        Date.parse(data.expires_at) -
-        Date.parse(response.headers.get("date") ?? "");
+      // A window that is no positive number would never fence a run.
+      if (!Number.isFinite(data.ttl_ms) || data.ttl_ms <= 0) {
+        throw new Refusal(
+          response.status,
+          "invalid_hold_window",
+          `the hold answered no usable hold window (ttl_ms ${String(data.ttl_ms)})`,
+        );
+      }
       return {
         elsewhere: false,
         until: data.expires_at,
         renewed: data.renewed,
-        window: Number.isFinite(window) && window > 0 ? window : undefined,
+        ttlMs: data.ttl_ms,
       };
     }
     const refused = refusal(response, error);

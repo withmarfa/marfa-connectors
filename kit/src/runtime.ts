@@ -9,6 +9,8 @@ export interface Runtime {
   write(line: string): void;
   readonly clock: Clock;
   readonly requestTimeoutMs: number;
+  /** A number from 0 up to, not including, 1. */
+  readonly random: () => number;
   onStop(listener: () => void): void;
 }
 
@@ -52,6 +54,7 @@ export function nodeRuntime(): Runtime {
     },
     clock: systemClock,
     requestTimeoutMs: 60_000,
+    random: Math.random,
     onStop: (listener) => {
       let called = false;
       const once = (): void => {

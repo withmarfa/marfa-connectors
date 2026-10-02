@@ -83,6 +83,21 @@ describe("configuration", () => {
     expect(harness.server.requests.length).toBeGreaterThan(0);
   });
 
+  it("says what to run it with when it is given nothing, and on --help", async () => {
+    expect(await start(testConnector(vendor()), harness.runtime([]))).toBe(2);
+    expect(harness.lines.join("\n")).not.toContain('got ""');
+    expect(harness.lines.join("\n")).toContain("no schedule was given");
+    harness.lines.length = 0;
+    expect(
+      await start(testConnector(vendor()), harness.runtime(["--help"])),
+    ).toBe(0);
+    const help = harness.lines.join("\n");
+    expect(help).toContain("--every");
+    expect(help).toContain("MARFA_URL");
+    expect(help).toContain("TEST_TOKEN");
+    expect(harness.server.requests).toEqual([]);
+  });
+
   it("refuses a source under a reserved prefix", async () => {
     const connector = { ...testConnector(vendor()), source: "Connector:test" };
     expect(await start(connector, harness.runtime(["--once"]))).toBe(2);

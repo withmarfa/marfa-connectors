@@ -108,6 +108,14 @@ export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
   readonly env: EnvValues<E>;
+  /**
+   * Aborts when the process is told to stop or the run's hold can no longer
+   * be trusted, which is by five sixths of the instance's hold window after
+   * the last renewal that landed, and the window may be as short as a
+   * second. Hand it to every call to the vendor: a call that ignores it can
+   * outlast the hold, and what it did at the vendor cannot be fenced or
+   * undone, though every write to Marfa after it is refused.
+   */
   readonly signal: AbortSignal;
   readonly state: State;
   readonly log: Log;
@@ -175,6 +183,14 @@ export interface Change {
 
 export interface WatchContext<E extends EnvDeclaration> {
   readonly env: EnvValues<E>;
+  /**
+   * Aborts when the process is told to stop or the run's hold can no longer
+   * be trusted, which is by five sixths of the instance's hold window after
+   * the last renewal that landed, and the window may be as short as a
+   * second. Hand it to every call to the vendor: a call that ignores it can
+   * outlast the hold, and what it did at the vendor cannot be fenced or
+   * undone, though every write to Marfa after it is refused.
+   */
   readonly signal: AbortSignal;
   readonly state: State;
   readonly log: Log;

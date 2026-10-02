@@ -175,6 +175,28 @@ describe("connections from the vendor", () => {
     expect(held.changes).toEqual([]);
   });
 
+  it("keep a removal that Marfa rate-limited or timed out as a failed run, never a refused connection", async () => {
+    for (const [status, refusal] of [
+      [429, "rate_limited"],
+      [408, "request_timeout"],
+    ] as const) {
+      const held = connected([entry(1, [2]), entry(2)]);
+      await harness.twoWay(held);
+      const edge = harness.server.edges[0];
+      held.entries = [entry(1, [])];
+      harness.server.refuseNext(
+        `DELETE /edges/${edge?.id ?? ""}`,
+        status,
+        refusal,
+      );
+      expect(await harness.twoWay(held)).toBe(1);
+      expect(harness.lastRun().outcome).toBe("failed");
+      expect(harness.lines.join("\n")).not.toContain("the server refused the");
+      expect(await harness.twoWay(held)).toBe(0);
+      expect(targets(1)).toEqual([]);
+    }
+  });
+
   it("leave a connection type the entry does not name as it is", async () => {
     const held = connected([entry(1, [2]), entry(2)]);
     await harness.twoWay(held);

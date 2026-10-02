@@ -160,7 +160,7 @@ describe("the hold", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
-  it("stops a run once its hold has gone unrenewed past two minutes, and keeps nothing it read", async () => {
+  it("stops a run once its hold has gone unrenewed past five sixths of the window, and keeps nothing it read", async () => {
     const held = vendor([one]);
     const release = gate(held);
     const exit = harness.once(held);
@@ -191,6 +191,33 @@ describe("the hold", () => {
     expect(
       harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
     ).toHaveLength(saves);
+  });
+
+  it("goes on after one renewal times out, since the next is asked inside the window", async () => {
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    // A renewal that ran its fifteen seconds out before failing.
+    harness.server.beforeAnswer = (request) => {
+      if (request.path === "/connectors/connector-1/hold") {
+        harness.clock.advance(15_000);
+        harness.server.beforeAnswer = undefined;
+      }
+    };
+    harness.server.refuseNext("POST /connectors/connector-1/hold", 503, "down");
+    await harness.clock.wake(minute);
+    await until(() =>
+      harness.lines.some((line) => line.includes("could not be renewed")),
+    );
+    // Asked a minute after the last ask began, not after it ended.
+    await harness.clock.wake(45_000);
+    await until(() => harness.server.holds.length === 2);
+    harness.clock.advance(20_000);
+    release();
+    expect(await exit).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.lines.join("\n")).not.toContain("went unrenewed");
   });
 
   it("stops a run whose hold lapsed and was taken again, since another process may have written", async () => {
@@ -279,6 +306,18 @@ describe("the hold's window", () => {
     expect(await exit).toBe(0);
   });
 
+  it("is renewed a third of the window apart, whatever window the instance names", async () => {
+    harness.server.holdMs = 90_000;
+    const held = vendor([linked]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(30_000);
+    const renewals = harness.server.holds.length;
+    await harness.clock.wake(30_000);
+    await until(() => harness.server.holds.length > renewals);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("is taken anew by the next run under --every, after a run was fenced", async () => {
     const held = vendor([linked]);
     const release = gate(held);
@@ -299,6 +338,132 @@ describe("the hold's window", () => {
     await until(() => harness.server.runs.length === 2);
     expect(harness.lastRun().outcome).toBe("succeeded");
     harness.stop();
+    expect(await exit).toBe(0);
+  });
+});
+
+describe("the hold at any window the server allows", () => {
+  it("refuses an answer whose ttl_ms is no positive number, and the run does not start", async () => {
+    for (const value of [undefined, null, 0, -5, "180000"]) {
+      harness.server.ttlAnswer = { value };
+      harness.server.holder = undefined;
+      const held = vendor([one]);
+      expect(await harness.once(held)).toBe(1);
+      expect(held.runs).toBe(0);
+      expect(harness.lines.join("\n")).toContain("hold window");
+      harness.lines.length = 0;
+    }
+  });
+
+  it("bounds a carry by the signal it hands out: aborted when the trust runs out, so a call to the vendor cannot outlast it", async () => {
+    harness.server.holdMs = 400;
+    let aborted = false;
+    const connector = testConnector(vendor([one]));
+    const exit = start(
+      {
+        ...connector,
+        run: async (context) => {
+          await new Promise<void>((resolve) => {
+            context.signal.addEventListener("abort", () => {
+              aborted = true;
+              resolve();
+            });
+          });
+          await connector.run(context);
+        },
+      },
+      harness.runtime(["--once"]),
+    );
+    expect(await exit).toBe(1);
+    expect(aborted).toBe(true);
+    expect(harness.lines.join("\n")).toContain("went unrenewed too long");
+  });
+
+  it("renews at a third of a one second window, with a gap shorter than that, whatever the heartbeat does", async () => {
+    harness.server.holdMs = 1200;
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    await harness.clock.sleeping(400);
+    const renewals = harness.server.holds.length;
+    await harness.clock.wake(400);
+    await until(() => harness.server.holds.length > renewals);
+    release();
+    expect(await exit).toBe(0);
+  });
+
+  it("aborts an update to Marfa sent when the trust runs out, so it cannot land after the hold lapsed, and records nothing as agreed", async () => {
+    const linked = {
+      source_id: "a:1",
+      properties: { title: "One", vendor_id: "v1" },
+    };
+    const held = vendor([linked]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    const agreed = JSON.stringify(harness.agreement(row.id));
+    harness.server.holdMs = 400;
+    held.entries = [
+      {
+        ...linked,
+        properties: { ...linked.properties, title: "One, changed" },
+      },
+    ];
+    let aborted = false;
+    harness.server.beforeAnswer = async (request) => {
+      if (request.method === "PATCH" && request.path.startsWith("/items/")) {
+        // Held until the connection goes, as a slow instance holds it.
+        await new Promise<void>((resolve) => {
+          const done = setTimeout(resolve, 3000);
+          request.onClose(() => {
+            aborted = true;
+            clearTimeout(done);
+            resolve();
+          });
+        });
+        if (!aborted) throw new Error("the update was never aborted");
+      }
+    };
+    expect(await harness.twoWay(held)).toBe(1);
+    // The client dropped the connection while the update was pending.
+    expect(aborted).toBe(true);
+    expect(JSON.stringify(harness.agreement(row.id))).toBe(agreed);
+    expect(harness.lastRun().outcome).toBe("failed");
+  });
+
+  it("beats the heartbeat every minute whatever the renewal's own spacing", async () => {
+    harness.server.holdMs = 150_000;
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1 && harness.server.heartbeats === 1);
+    // Renewals fifty seconds apart; the heartbeat still lands at sixty.
+    await harness.clock.wake(50_000);
+    await harness.clock.wake(10_000);
+    await until(() => harness.server.heartbeats === 2);
+    release();
+    expect(await exit).toBe(0);
+  });
+
+  it("is not kept waiting by a heartbeat that has not answered", async () => {
+    const held = vendor([one]);
+    const release = gate(held);
+    let letGo!: () => void;
+    const hanging = new Promise<void>((resolve) => {
+      letGo = resolve;
+    });
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    harness.server.beforeAnswer = async (request) => {
+      if (request.path === "/connectors/connector-1/heartbeat") await hanging;
+    };
+    await harness.clock.wake(minute);
+    await until(() => harness.server.holds.length === 2);
+    // The next renewal is asked a minute on, with the heartbeat still waiting.
+    await harness.clock.sleeping(minute);
+    harness.server.beforeAnswer = undefined;
+    letGo();
+    release();
     expect(await exit).toBe(0);
   });
 });
