@@ -40,6 +40,7 @@ import {
   deleteComment,
   issuesByNode,
   relate,
+  repositoriesByNode,
   repositoryByNode,
   updateComment,
 } from "./graph.js";
@@ -284,31 +285,45 @@ async function repositoryAt(
   return placeIn(context, app, found);
 }
 
-/** Tells a target GitHub dropped from one out of the App's reach, by the
- *  repository the row was last read in, which chooses no target: gone, the
- *  change is not sent and the run names it; out of reach, it waits. */
+/** Tells a target GitHub dropped from one out of the App's reach. A node
+ *  that shows under no installation is in none of the synced repositories
+ *  once each of them, asked by its own node, still reads; while any does
+ *  not, the target may be there, and the change waits. No row's text takes
+ *  part, so neither an edited row nor a reused name can settle a change. */
 async function goneOrWaits(
   context: Context,
   app: App,
   item: Item,
-  holder: Item = item,
 ): Promise<void> {
-  const name = text(holder, "repository") ?? "";
-  const [owner = "", repo = ""] = name.split("/");
-  const readable =
-    owner !== "" &&
-    repo !== "" &&
-    (await seek(context, app, async (octokit) =>
-      (await reads(octokit, owner, repo)) ? true : undefined,
-    )) === true;
-  if (!readable) {
-    throw new Unreachable(
-      `GitHub shows the App nothing ${holder.id} is linked to, so the change to ${item.id} waits`,
-    );
+  const byInstallation = new Map<number, string[]>();
+  for (const [node, kept] of Object.entries(allKept(context))) {
+    byInstallation.set(kept.installation, [
+      ...(byInstallation.get(kept.installation) ?? []),
+      node,
+    ]);
   }
+  for (const [installation, nodes] of byInstallation) {
+    let found: Map<string, string>;
+    try {
+      found = await repositoriesByNode(
+        asInstallation(app, installation, context.secret, context.signal),
+        nodes,
+      );
+    } catch (error) {
+      if (!refusedApp(error)) throw error;
+      found = new Map();
+    }
+    if (nodes.some((node) => !found.has(node))) {
+      throw new Unreachable(
+        `GitHub shows the App nothing ${item.id} is linked to, and a repository the connector syncs is out of its reach, so the change waits`,
+      );
+    }
+  }
+  // Settled, unlike a refusal: GitHub dropped the target, which is no
+  // fault of the change, and the read that follows archives the row.
   context.log.condition(
     `target-gone:${item.id}`,
-    `GitHub no longer shows what ${holder.id} is linked to, though ${name} still reads, so the change to ${item.id} is not sent`,
+    `GitHub no longer shows what ${item.id} is linked to in any repository the connector syncs, so the change to it is not sent`,
   );
 }
 
@@ -362,10 +377,6 @@ async function answerIssue(
     connections[type] = [...said].map((id) => ({ type: issueType, id }));
   }
   return { ...entry, connections };
-}
-
-function closedAt(item: Item): boolean {
-  return typeof item.properties["completed_at"] === "string";
 }
 
 async function relations(
@@ -604,8 +615,8 @@ async function carryIssue(
   const fromBin = change.kind === "restored" && change.was === "trashed";
   if (change.changed.has("status") || fromBin) {
     const state = wanted(item.properties["status"]);
-    const closed = fromBin ? !issue.open : closedAt(item);
-    const reason = fromBin ? issue.reason : item.properties["state_reason"];
+    const closed = !issue.open;
+    const reason = issue.reason;
     const moving =
       (state.state === "closed") !== closed ||
       (state.state === "closed" && reason !== state.state_reason);
@@ -845,7 +856,7 @@ async function createComment(
   }
   const thread = await issueAt(context, app, issueNode);
   if (thread === undefined) {
-    await goneOrWaits(context, app, item, issue);
+    await goneOrWaits(context, app, item);
     return undefined;
   }
   const { octokit, owner, repo, repository } = thread.place;
@@ -922,6 +933,7 @@ export async function remake(
   if (node === undefined) return false;
   return waiting(change, async () => {
     if ((await commentAt(context, app, node)) !== undefined) return false;
+    // Read-only: put back to what GitHub last said before a remake is asked.
     if (text(item, "from") !== (await botOf(app, context.signal))) {
       throw new Declined(
         `${item.id} is gone from GitHub and was written there by someone other than the App, so it is not posted again under the App's name`,

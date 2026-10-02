@@ -231,17 +231,28 @@ export async function commentsByNode(
   return found;
 }
 
+export async function repositoriesByNode(
+  octokit: Client,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  for (const batch of batches([...new Set(ids)])) {
+    const answer = (await query(octokit, repositoriesQuery, {
+      ids: batch,
+    })) as Nodes<{ __typename: string; id: string; nameWithOwner: string }>;
+    for (const node of known(answer.nodes, "Repository")) {
+      found.set(node.id, node.nameWithOwner);
+    }
+  }
+  return found;
+}
+
 export async function repositoryByNode(
   octokit: Client,
   id: string,
 ): Promise<{ node: string; name: string } | undefined> {
-  const answer = (await query(octokit, repositoriesQuery, {
-    ids: [id],
-  })) as Nodes<{ __typename: string; id: string; nameWithOwner: string }>;
-  const [found] = known(answer.nodes, "Repository");
-  return found === undefined
-    ? undefined
-    : { node: found.id, name: found.nameWithOwner };
+  const name = (await repositoriesByNode(octokit, [id])).get(id);
+  return name === undefined ? undefined : { node: id, name };
 }
 
 export async function nodesOfNumbers(

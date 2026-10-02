@@ -982,7 +982,7 @@ describe("where a write lands", () => {
     marfa.edit(row(issue.node).id, { title: "After" });
     const output = await ok();
     expect(output).toContain(
-      `GitHub shows the App nothing ${row(issue.node).id} is linked to, so the change to ${row(issue.node).id} waits`,
+      `GitHub shows the App nothing ${row(issue.node).id} is linked to, and a repository the connector syncs is out of its reach, so the change waits`,
     );
     repository.hidden = false;
     await ok();
@@ -1044,6 +1044,45 @@ describe("a target GitHub no longer has", () => {
     const output = await settled();
     expect(output).toContain(`GitHub no longer shows what ${id} is linked to`);
     expect(marfa.agreements.get(id)?.waiting).toBe(false);
+  });
+});
+
+describe("telling a target GitHub dropped from one out of reach", () => {
+  it("waits for a binned row whose repository text names another repository that reads", async () => {
+    const other = github.addRepository("someone/other");
+    github.addIssue(other, { title: "Elsewhere" });
+    const issue = github.addIssue(repository, { title: "Binned" });
+    await ok();
+    const id = row(issue.node).id;
+    marfa.edit(id, { repository: "someone/other" });
+    marfa.trash(id);
+    repository.hidden = true;
+    const output = await ok();
+    expect(output).toContain("waits");
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(marfa.agreements.get(id)?.waiting).toBe(true);
+    repository.hidden = false;
+    await ok();
+    expect([issue.state, issue.state_reason]).toEqual([
+      "closed",
+      "not_planned",
+    ]);
+  });
+
+  it("waits where the repository went out of reach and another took its name", async () => {
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    const id = row(issue.node).id;
+    repository.name = "tracker-old";
+    repository.hidden = true;
+    github.addRepository("someone/tracker");
+    marfa.edit(id, { title: "After" });
+    const output = await ok();
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(marfa.agreements.get(id)?.waiting).toBe(true);
+    repository.hidden = false;
+    await ok();
+    expect(issue.title).toBe("After");
   });
 });
 
