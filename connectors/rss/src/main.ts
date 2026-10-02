@@ -40,7 +40,14 @@ interface FeedState {
   shared?: string[];
   unkeyed?: number;
   declared?: string;
+  /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
+   *  named again if it returns. */
+  left?: string;
 }
+
+/** Feeds kept after leaving the list, newest first; one leaves only by the
+ *  owner's edit, so this holds a long history of them. */
+const maxDeparted = 100;
 
 function refusal(error: unknown): string | undefined {
   if (error instanceof TooLarge) {
@@ -82,6 +89,7 @@ const connector = defineConnector({
   },
   checkEnv(env) {
     feedList(env.RSS_FEEDS);
+    privateHosts(env.RSS_PRIVATE_HOSTS);
   },
   async run({ env, signal, state, log, upsert }) {
     const feeds = feedList(env.RSS_FEEDS);
@@ -91,33 +99,58 @@ const connector = defineConnector({
     const claimed = new Set<string>();
     const kept: Record<string, FeedState> = {};
     const declaredBy = new Map<string, Feed>();
-    const holders = new Map<string, number>();
-    for (const held of Object.values(known)) {
-      for (const key of new Set([
-        ...(held.key === undefined ? [] : [held.key]),
-        ...(held.was ?? []),
-      ])) {
-        holders.set(key, (holders.get(key) ?? 0) + 1);
+    const holders = new Map<string, Set<string>>();
+    for (const [id, held] of Object.entries(known)) {
+      for (const key of [held.key ?? [], held.was ?? []].flat()) {
+        holders.set(key, (holders.get(key) ?? new Set()).add(id));
       }
     }
 
     // A feed renamed, or named for the first time, finds its rows by its
     // address; one moved under its name keeps its key.
-    const previous = (feed: Feed): FeedState => {
+    const previous = (feed: Feed): { held: FeedState; id?: string } => {
       const own = known[feed.key];
       if (own !== undefined) {
-        return { ...own, address: own.address ?? feed.key };
+        claimed.add(feed.key);
+        return {
+          held: { ...own, address: own.address ?? feed.key },
+          id: feed.key,
+        };
       }
-      for (const [key, held] of Object.entries(known)) {
-        if (configured.has(key) || claimed.has(key)) continue;
-        const address = held.address ?? key;
+      for (const [id, held] of Object.entries(known)) {
+        if (configured.has(id) || claimed.has(id)) continue;
+        const address = held.address ?? id;
         if (address === feed.address) {
-          claimed.add(key);
-          return { ...held, address };
+          claimed.add(id);
+          return { held: { ...held, address }, id };
         }
       }
-      return {};
+      return { held: {} };
     };
+    const records = new Map(feeds.map((feed) => [feed, previous(feed)]));
+
+    // Rows are moved from an earlier key only when this feed alone held it:
+    // never from a key another listed feed now owns, nor one another saved
+    // feed also wrote under.
+    const sharedWith = (key: string, id: string | undefined): boolean =>
+      configured.has(key) ||
+      [...(holders.get(key) ?? [])].some((holder) => holder !== id);
+
+    const now = new Date().toISOString();
+    const departed = Object.entries(known)
+      .filter(([id]) => !claimed.has(id) && !configured.has(id))
+      .map(([id, held]): [string, FeedState] => [
+        id,
+        {
+          ...(held.address !== undefined && { address: held.address }),
+          ...(held.key !== undefined && { key: held.key }),
+          ...(held.was !== undefined && { was: held.was }),
+          ...(held.shared !== undefined && { shared: held.shared }),
+          left: held.left ?? now,
+        },
+      ])
+      .sort(([, a], [, b]) => (b.left ?? "").localeCompare(a.left ?? ""))
+      .slice(0, maxDeparted);
 
     // A feed not read this run (304 or failed) raises its conditions again;
     // the kit would otherwise take them as cleared.
@@ -152,7 +185,7 @@ const connector = defineConnector({
 
     for (const feed of feeds) {
       const name = feedName(feed);
-      const held = previous(feed);
+      const { held, id } = records.get(feed) ?? { held: {} };
       const earlier = [
         ...new Set([
           ...(held.key === undefined ? [] : [held.key]),
@@ -162,7 +195,7 @@ const connector = defineConnector({
       const shared = [
         ...new Set([
           ...(held.shared ?? []),
-          ...earlier.filter((key) => (holders.get(key) ?? 0) > 1),
+          ...earlier.filter((key) => sharedWith(key, id)),
         ]),
       ];
       const was = earlier.filter((key) => !shared.includes(key));
@@ -238,7 +271,7 @@ const connector = defineConnector({
             }),
       );
     }
-    state.set("feeds", kept);
+    state.set("feeds", { ...kept, ...Object.fromEntries(departed) });
   },
 });
 

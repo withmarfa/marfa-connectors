@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
 import { parseFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
-import { getFeed } from "./fetch.js";
+import { isIP } from "node:net";
+import { getFeed, hostOf } from "./fetch.js";
 
 /** Past it a feed is skipped: its entries would be a run's worth of writes. */
 export const maxFeedEntries = 5000;
@@ -20,17 +21,39 @@ export class TooManyElements extends Error {
   override name = "TooManyElements";
 }
 
-/** Counted in the text before it is parsed, so a feed past either cap costs
- *  no parse; a tag inside CDATA counts too, which errs toward refusing. */
+/**
+ * Counted in the text before it is parsed, so a feed past either cap costs no
+ * parse. Every `<` that opens an element counts, whatever its name, and an
+ * entry is any element whose local name is `item` or `entry` in any case and
+ * under any prefix: the parser lowercases names and maps prefixes, so this
+ * counts at least what it builds. Comments and CDATA are skipped, as the
+ * parser builds nothing from them.
+ */
 function countTags(text: string): void {
-  const tag = /<(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)/g;
+  const name = /[^\s/>]*/y;
   let elements = 0;
   let entries = 0;
-  for (let match = tag.exec(text); match !== null; match = tag.exec(text)) {
+  for (let at = text.indexOf("<"); at !== -1; at = text.indexOf("<", at)) {
+    if (text.startsWith("<!--", at)) {
+      const end = text.indexOf("-->", at + 4);
+      if (end === -1) return;
+      at = end + 3;
+      continue;
+    }
+    if (text.startsWith("<![CDATA[", at)) {
+      const end = text.indexOf("]]>", at + 9);
+      if (end === -1) return;
+      at = end + 3;
+      continue;
+    }
+    const next = text[at + 1];
+    at += 1;
+    if (next === "!" || next === "?" || next === "/") continue;
     elements += 1;
     if (elements > maxFeedElements) throw new TooManyElements();
-    const name = match[1];
-    if (name === "item" || name === "entry") {
+    name.lastIndex = at;
+    const local = (name.exec(text)?.[0] ?? "").toLowerCase().split(":").pop();
+    if (local === "item" || local === "entry") {
       entries += 1;
       if (entries > maxFeedEntries) throw new TooManyEntries();
     }
@@ -173,15 +196,33 @@ export function decodeFeed(
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-/** Hosts the owner allows to resolve to this machine or a private network,
- *  separated by whitespace. */
+/**
+ * Hosts the owner allows to resolve to this machine or a private network,
+ * separated by whitespace, each read as a URL reads its host: lowercased,
+ * an international name in its ASCII form, an IPv6 address in brackets or
+ * bare.
+ */
 export function privateHosts(value: string | undefined): Set<string> {
-  return new Set(
-    (value ?? "")
-      .split(/\s+/)
-      .filter((host) => host !== "")
-      .map((host) => host.toLowerCase().replace(/^\[|\]$/g, "")),
-  );
+  const hosts = new Set<string>();
+  for (const entry of (value ?? "")
+    .split(/\s+/)
+    .filter((part) => part !== "")) {
+    const url = URL.parse(`http://${isIP(entry) === 6 ? `[${entry}]` : entry}`);
+    if (
+      url?.username !== "" ||
+      url.password !== "" ||
+      url.port !== "" ||
+      url.pathname !== "/" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      throw new Error(
+        "RSS_PRIVATE_HOSTS holds an entry that is not a host name",
+      );
+    }
+    hosts.add(hostOf(url));
+  }
+  return hosts;
 }
 
 export async function fetchFeed(

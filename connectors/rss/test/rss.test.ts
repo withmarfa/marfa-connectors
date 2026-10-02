@@ -13,6 +13,7 @@ import {
   decodeFeed,
   feedKey,
   feedList,
+  privateHosts,
   maxFeedElements,
   maxFeedEntries,
   readFeed,
@@ -450,6 +451,29 @@ describe("reading a feed", () => {
     ]);
   });
 
+  it("reads RSS_PRIVATE_HOSTS as a URL reads a host, and refuses what is not one", () => {
+    expect([
+      ...privateHosts(" LOCALHOST.  bücher.example\n[::1] fd00::1 10.0.0.2 "),
+    ]).toEqual([
+      "localhost",
+      "xn--bcher-kva.example",
+      "::1",
+      "fd00::1",
+      "10.0.0.2",
+    ]);
+    expect(privateHosts(undefined).size).toBe(0);
+    for (const bad of [
+      "http://nas.example",
+      "nas.example:8080",
+      "nas.example/feed",
+      "user@nas.example",
+    ]) {
+      expect(() => privateHosts(bad)).toThrow(
+        "RSS_PRIVATE_HOSTS holds an entry that is not a host name",
+      );
+    }
+  });
+
   it("lists a feed once however it is spelled, keeping the first spelling", () => {
     expect(
       feedList(
@@ -659,6 +683,37 @@ describe("fetching a feed", () => {
         getFeed(`${base}/big.xml`, {}, new Set(), AbortSignal.timeout(30_000)),
       ).rejects.toBeInstanceOf(TooLarge);
     }
+  });
+
+  it("counts every element and every entry the parser would build, whatever their names' case, prefix or alphabet", () => {
+    const rss = (items: string): string =>
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>${items}</channel></rss>`;
+    const read = (text: string) => () =>
+      readFeed(at("https://example.org/rss.xml"), text);
+    expect(read(rss("<é/>".repeat(maxFeedElements)))).toThrow(TooManyElements);
+    expect(read(rss("<_:x/>".repeat(maxFeedElements)))).toThrow(
+      TooManyElements,
+    );
+    for (const item of ["ITEM", "Item", "rss:item", "x:ENTRY", "Entry"]) {
+      expect(
+        read(
+          rss(`<${item}><title>a</title></${item}>`.repeat(maxFeedEntries + 1)),
+        ),
+      ).toThrow(TooManyEntries);
+    }
+    const upper = readFeed(
+      at("https://example.org/rss.xml"),
+      rss("<ITEM><TITLE>A</TITLE><GUID>a</GUID></ITEM>"),
+    );
+    expect(upper.entries).toHaveLength(1);
+    expect(
+      readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          `<!-- <item> --><![CDATA[x]]>${"<item><title>a</title><guid>a</guid></item>".repeat(maxFeedEntries)}`,
+        ),
+      ).entries,
+    ).toHaveLength(maxFeedEntries);
   });
 
   it("refuses a feed with more entries or elements than the caps before parsing it, counting entries the parser would drop", () => {
@@ -1233,6 +1288,32 @@ describe("the connector, run as a process", () => {
     expect(marfa.rows).toHaveLength(2);
   });
 
+  it("lets a host named in RSS_PRIVATE_HOSTS through only for the feed listed at it, never as another feed's redirect", async () => {
+    const port = new URL(base).port;
+    served["/onto-named"] = {
+      body: "",
+      redirect: `http://localhost:${port}/rss.xml`,
+    };
+    expect(
+      (
+        await once(
+          [],
+          ["--once"],
+          `${base}/onto-named\nhttp://localhost.:${port}/atom.xml`,
+          { RSS_PRIVATE_HOSTS: "localhost" },
+        )
+      ).code,
+    ).toBe(0);
+    expect(asked.map((request) => [request.path, request.answered])).toEqual([
+      ["/onto-named", 301],
+      ["/atom.xml", 200],
+    ]);
+    expect(marfa.rows).toHaveLength(2);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) redirected to an address on this machine or a private network, which is not followed`,
+    );
+  });
+
   it("stops following a feed's redirects after five", async () => {
     for (let hop = 0; hop < 7; hop += 1) {
       served[`/hop/${String(hop)}`] = {
@@ -1420,5 +1501,69 @@ describe("the connector, run as a process", () => {
         `rows written for feed ${String(position)} in RSS_FEEDS (${base}) before share their key with another feed's, so they are left as they are and its entries are written anew`,
       );
     }
+  });
+
+  it("keeps a feed's earlier keys while it is out of the list, so an entry trashed before it left stays out when it returns", async () => {
+    expect((await once([], ["--once"], `blog=${base}/atom.xml`)).code).toBe(0);
+    marfa.trash(row("tag:example.com,2026:entry:1").id);
+    const atom = served["/atom.xml"];
+    if (typeof atom?.body !== "string") throw new Error("no atom fixture");
+    const runs = [
+      `journal=${base}/atom.xml`,
+      `${base}/rss.xml`,
+      `journal=${base}/atom.xml`,
+    ];
+    for (const [run, list] of runs.entries()) {
+      atom.body = atom.body.replace("</feed>", "<!-- changed --></feed>");
+      atom.etag = `"atom-away-${String(run)}"`;
+      expect((await once([], ["--once"], list)).code).toBe(0);
+    }
+    const entries = marfa.rows.filter((candidate) =>
+      String(candidate.properties["entry_id"]).startsWith("tag:example.com"),
+    );
+    expect(entries.map((candidate) => candidate.state).sort()).toEqual([
+      "active",
+      "trashed",
+    ]);
+  });
+
+  it("never moves a row from a key another listed feed now owns", async () => {
+    expect((await once([], ["--once"], `first=${base}/atom.xml`)).code).toBe(0);
+    expect((await once([], ["--once"], `second=${base}/atom.xml`)).code).toBe(
+      0,
+    );
+    const second = feedKey(`${base}/atom.xml`, "second");
+    const gone = marfa.rows.find(
+      (candidate) =>
+        candidate.source_id === `${second}:tag:example.com,2026:entry:2`,
+    );
+    if (gone === undefined) throw new Error("no second row");
+    marfa.trash(gone.id);
+    marfa.purgeById(gone.id);
+    served["/other.xml"] = { body: fixture("atom.xml") };
+    const atom = served["/atom.xml"];
+    if (typeof atom?.body !== "string") throw new Error("no atom fixture");
+    atom.body = atom.body.replace("</feed>", "<!-- changed --></feed>");
+    atom.etag = '"atom-shared"';
+    expect(
+      (
+        await once(
+          [],
+          ["--once"],
+          `first=${base}/other.xml second=${base}/atom.xml`,
+        )
+      ).code,
+    ).toBe(0);
+    const first = feedKey(`${base}/other.xml`, "first");
+    expect(
+      marfa.rows
+        .filter((candidate) => candidate.source_id?.startsWith(`${first}:`))
+        .map((candidate) => candidate.state),
+    ).toEqual(["active", "active"]);
+    expect(
+      marfa.rows.filter((candidate) =>
+        candidate.source_id?.startsWith(`${second}:`),
+      ),
+    ).toHaveLength(1);
   });
 });

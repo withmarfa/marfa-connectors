@@ -116,6 +116,11 @@ function embedded(address: string): string[] {
   return found;
 }
 
+/** A URL's host as the checks compare it: no IPv6 brackets, no trailing dot. */
+export function hostOf(url: URL): string {
+  return url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+}
+
 export function isPrivate(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return unreachable.check(address, "ipv4");
@@ -260,13 +265,14 @@ export async function getFeed(
   start.username = "";
   start.password = "";
   start.hash = "";
-  const bare = (url: URL): string => url.hostname.replace(/^\[|\]$/g, "");
-  const listedPrivate = isPrivate(bare(start));
+  const listed = hostOf(start);
+  // The owner's leave covers the host they listed and no other, so a public
+  // feed cannot redirect onto a host named for another feed.
+  const ownerAllows = isPrivate(listed) || privateHosts.has(listed);
   let url = start;
   for (let hop = 0; ; hop += 1) {
-    const host = bare(url);
-    const allowed =
-      privateHosts.has(host) || (listedPrivate && host === bare(start));
+    const host = hostOf(url);
+    const allowed = ownerAllows && host === listed;
     if (!allowed && isPrivate(host)) throw new RefusedAddress(hop);
     let response;
     try {
