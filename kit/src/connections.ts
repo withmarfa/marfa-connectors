@@ -315,9 +315,10 @@ export class Connections {
       const removed = [...was].filter((target) => !now.has(target));
       if (added.length === 0 && removed.length === 0) continue;
       const rows = await this.rows([...added, ...removed]);
+      const atVendor = await this.told([...rows.values()]);
       const told = (target: string): Item | undefined => {
         const row = rows.get(target);
-        return row !== undefined && this.linked(row) ? row : undefined;
+        return row !== undefined && atVendor.has(target) ? row : undefined;
       };
       const carried: Connected = {
         added: added.flatMap((target) => told(target) ?? []),
@@ -407,13 +408,12 @@ export class Connections {
     return new Set(ids.filter((id) => !rows.has(id)));
   }
 
-  private linked(row: Item): boolean {
-    const lane = this.lanes.get(row.type);
-    if (lane === undefined) return false;
-    return (
-      lane.spec.link === undefined ||
-      lane.rows.linkOf(row.properties) !== undefined
-    );
+  private async told(rows: readonly Item[]): Promise<Set<string>> {
+    const told = new Set<string>();
+    for (const { rows: lane } of this.lanes.values()) {
+      for (const id of await lane.told(rows)) told.add(id);
+    }
+    return told;
   }
 
   private rowOf(id: string): { item: Item; spec: Spec } | undefined {

@@ -9,7 +9,7 @@ import {
   type TypeDefinition,
 } from "../src/define.js";
 import { start } from "../src/main.js";
-import { Refused, Unreachable } from "../src/rows.js";
+import { Declined, Refused, Unreachable } from "../src/rows.js";
 import { verifyHmac } from "../src/verify.js";
 import type { Clock, Runtime } from "../src/runtime.js";
 import { ScriptedServer } from "./scripted-server.js";
@@ -117,6 +117,7 @@ export interface Vendor {
   remakeFail?: { id: string; error: Error } | undefined;
   unreachable?: Set<string> | undefined;
   refused?: Map<string, string> | undefined;
+  declined?: Set<string> | undefined;
   unreachableIn?: Map<string, string> | undefined;
   vendorIdFor?: ((change: Change) => string | undefined) | undefined;
   gone?: Map<string, string>;
@@ -203,6 +204,9 @@ function twoWayConnector(held: Vendor) {
       if (held.unreachable?.has(change.item.id) === true) {
         throw new Unreachable(`${change.item.id} cannot be reached`);
       }
+      if (held.declined?.has(change.item.id) === true) {
+        throw new Declined(`${change.item.id} is not the vendor's to take`);
+      }
       const scope = held.unreachableIn?.get(change.item.id);
       if (scope !== undefined) {
         throw new Unreachable(`${scope} cannot be reached`, { scope });
@@ -225,6 +229,9 @@ function twoWayConnector(held: Vendor) {
       }
       const reason = held.refused?.get(change.item.id);
       if (reason !== undefined) throw new Refused(reason);
+      if (held.declined?.has(change.item.id) === true) {
+        throw new Declined(`${change.item.id} is not the vendor's to take`);
+      }
       if (held.remakeFail?.id === change.item.id) {
         const { error } = held.remakeFail;
         held.remakeFail = undefined;

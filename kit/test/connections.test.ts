@@ -299,6 +299,38 @@ describe("connections made in Marfa", () => {
     ).toEqual([one.id]);
   });
 
+  it("wait for a target made by hand under a link the vendor never agreed, and are carried once it does", async () => {
+    const held = connected([entry(1)]);
+    await harness.twoWay(held);
+    const one = harness.server.row("a:1");
+    const forged = harness.server.insert(
+      undefined,
+      { title: "By hand", vendor_id: "v9" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(one.id, forged.id, "test.blocks");
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.flatMap((change) =>
+        (change.connections?.["test.blocks"]?.added ?? []).map((row) => row.id),
+      ),
+    ).toEqual([]);
+    expect(harness.agreement(one.id)?.["connections"]).toEqual({
+      "test.blocks": [],
+    });
+    held.entries = [entry(9)];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.flatMap((change) =>
+        (change.connections?.["test.blocks"]?.added ?? []).map((row) => row.id),
+      ),
+    ).toEqual([forged.id]);
+  });
+
   it("carry nothing a purge took, where a person's removal is carried", async () => {
     const held = connected([entry(1, [2]), entry(2), entry(3, [2])]);
     await harness.twoWay(held);
@@ -407,6 +439,29 @@ describe("what a run finds linked", () => {
     };
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.answers).toEqual([["v4"]]);
+  });
+
+  it("leaves out a row made by hand under a link the vendor never agreed", async () => {
+    const held = connected([entry(1, [2]), entry(2)]);
+    await harness.twoWay(held);
+    const forged = harness.server.insert(
+      undefined,
+      { title: "By hand", vendor_id: "v9" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(
+      forged.id,
+      harness.server.row("a:2").id,
+      "test.blocks",
+    );
+    held.entries = [];
+    held.ask = {
+      connection: "test.blocks",
+      target: { type: "test.entry", id: "v2" },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.answers).toEqual([["v1"]]);
   });
 
   it("leaves out a row an answer before the run moved elsewhere", async () => {

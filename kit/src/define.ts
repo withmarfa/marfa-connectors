@@ -168,8 +168,10 @@ export interface Change {
   readonly was?: "trashed" | "archived";
   /**
    * The connections made or removed in Marfa since the vendor last had them,
-   * by connection type; a target the vendor has not been told about waits
-   * until it has, and one purged is never carried.
+   * by connection type, each target with the link agreed with the vendor; a
+   * target the vendor has not been told about, such as one made by hand
+   * under a link of its own, waits until it has, and one purged is never
+   * carried.
    */
   readonly connections?: Readonly<Record<string, Connected>>;
   /**

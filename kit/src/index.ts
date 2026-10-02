@@ -26,5 +26,5 @@ export {
   type WatchContext,
 } from "./define.js";
 export { main } from "./main.js";
-export { LinkTaken, Refused, Unreachable } from "./rows.js";
+export { Declined, LinkTaken, Refused, Unreachable } from "./rows.js";
 export { verifyHmac, type HmacCheck } from "./verify.js";
