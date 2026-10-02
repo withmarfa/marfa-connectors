@@ -2,6 +2,8 @@ import {
   defineConnector,
   LinkTaken,
   main,
+  Refused,
+  Unreachable,
   type Entry,
   type TypeDefinition,
 } from "@withmarfa/connector";
@@ -17,10 +19,27 @@ interface VendorItem {
   deleted?: boolean;
 }
 
-class Refused extends Error {
-  constructor(readonly status: number) {
-    super(`the example vendor answered ${String(status)}`);
+class Answered extends Error {
+  constructor(readonly status: number | undefined) {
+    super(
+      status === undefined
+        ? "the example vendor did not answer"
+        : `the example vendor answered ${String(status)}`,
+    );
   }
+}
+
+// What a write the vendor did not take means for the change: one that can
+// pass by itself waits for the next run, and one that will not waits for the
+// row to change. A refused token stays thrown, and fails the run.
+function undelivered(error: unknown, signal: AbortSignal): unknown {
+  if (signal.aborted) return error;
+  if (error instanceof LinkTaken) return new Refused(error.message);
+  if (!(error instanceof Answered)) return error;
+  const { status } = error;
+  return status === undefined || status === 429 || status >= 500
+    ? new Unreachable(error.message, { scope: "the example vendor" })
+    : new Refused(error.message);
 }
 
 async function call(
@@ -31,22 +50,28 @@ async function call(
   body?: Record<string, unknown>,
   headers: Record<string, string> = {},
 ): Promise<Response> {
-  const response = await fetch(new URL(path, env.EXAMPLE_URL), {
-    method,
-    headers: {
-      Authorization: `Bearer ${env.EXAMPLE_TOKEN}`,
-      ...(body !== undefined && { "Content-Type": "application/json" }),
-      ...headers,
-    },
-    ...(body !== undefined && { body: JSON.stringify(body) }),
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, env.EXAMPLE_URL), {
+      method,
+      headers: {
+        Authorization: `Bearer ${env.EXAMPLE_TOKEN}`,
+        ...(body !== undefined && { "Content-Type": "application/json" }),
+        ...headers,
+      },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+      signal,
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new Answered(undefined);
+  }
   if (response.status === 401 || response.status === 403) {
     throw new Error(
       `the example vendor refused the token: ${String(response.status)}`,
     );
   }
-  if (!response.ok) throw new Refused(response.status);
+  if (!response.ok) throw new Answered(response.status);
   return response;
 }
 
@@ -115,7 +140,7 @@ const connector = defineConnector({
       items.filter((item) => item.deleted === true).map((item) => item.id),
     );
   },
-  async onChange({ kind, item, changed }, { env, signal, log, setLink }) {
+  async onChange({ kind, item, changed }, { env, signal, setLink }) {
     // The vendor has no state for a row set aside: only what changed
     // beside it travels.
     if (kind === "archived" && changed.size === 0) return;
@@ -147,7 +172,7 @@ const connector = defineConnector({
         // purge alone, so the purge must delete too. A 404 is what either
         // asked for.
         await call(env, signal, "DELETE", path).catch((error: unknown) => {
-          if (!(error instanceof Refused) || error.status !== 404) throw error;
+          if (!(error instanceof Answered) || error.status !== 404) throw error;
         });
         return;
       }
@@ -156,23 +181,19 @@ const connector = defineConnector({
         ...(kind === "restored" && { deleted: false }),
       });
     } catch (error) {
-      // One row the vendor refuses is a condition, and the run goes on;
-      // a refused token was thrown past this, and fails the run.
-      if (error instanceof LinkTaken || error instanceof Refused) {
-        log.condition(`refused:${item.id}`, `${item.id}: ${error.message}`);
-        return;
-      }
-      throw error;
+      throw undelivered(error, signal);
     }
   },
-  async remake({ item }, { env, signal, log, setLink }) {
+  async remake({ item }, { env, signal, setLink }) {
     const id = item.properties["example_id"];
     if (typeof id !== "string" || id === "") return false;
     try {
       await call(env, signal, "GET", `items/${encodeURIComponent(id)}`);
       return false;
     } catch (error) {
-      if (!(error instanceof Refused) || error.status !== 404) throw error;
+      if (!(error instanceof Answered) || error.status !== 404) {
+        throw undelivered(error, signal);
+      }
     }
     // Made again and linked, under a key of its own so the vendor does
     // not answer the first create again.
@@ -193,11 +214,7 @@ const connector = defineConnector({
       ).json()) as { id: string };
       await setLink(item, made.id);
     } catch (error) {
-      if (error instanceof LinkTaken || error instanceof Refused) {
-        log.condition(`refused:${item.id}`, `${item.id}: ${error.message}`);
-        return true;
-      }
-      throw error;
+      throw undelivered(error, signal);
     }
     return true;
   },

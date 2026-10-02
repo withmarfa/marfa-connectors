@@ -346,7 +346,7 @@ describe("the template, run as a process", () => {
     expect(marfa.row("acct:1").state).toBe("active");
   });
 
-  it("records a row the vendor refuses as a condition, and the run lands", async () => {
+  it("keeps a change the vendor refuses, unsent until the row changes, and the run lands", async () => {
     items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
     expect((await once()).code).toBe(0);
     const mine = marfa.row("acct:1");
@@ -355,11 +355,61 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
     expect(marfa.runs.at(-1)?.summary).toContain(
-      `${mine.id}: the example vendor answered 422`,
+      `the change to ${mine.id} was refused, so it waits until the row changes in Marfa: the example vendor answered 422`,
     );
+    writes.length = 0;
+    expect((await once()).code).toBe(0);
+    expect(writes).toEqual([]);
+    expect(marfa.byId(mine.id).properties["title"]).toBe("One, refused");
     marfa.edit(mine.id, { title: "One, taken" });
     expect((await once()).code).toBe(0);
     expect(items[0]?.title).toBe("One, taken");
+  });
+
+  it("sends an edit again on the next run where the vendor answered 503, and never takes the vendor's old value over it", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.edit(mine.id, { title: "One, edited" });
+    refuseNextWrite = 503;
+    expect((await once()).code).toBe(0);
+    expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "1 change waits: the example vendor answered 503",
+    );
+    expect(items[0]?.title).toBe("One");
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.title).toBe("One, edited");
+    expect(marfa.byId(mine.id).properties["title"]).toBe("One, edited");
+  });
+
+  it("deletes on the next run where the vendor answered a trash with 429", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    marfa.trash(marfa.row("acct:1").id);
+    refuseNextWrite = 429;
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.deleted).toBeUndefined();
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.deleted).toBe(true);
+  });
+
+  it("makes the item again on the next run where the vendor answered the remake with 503", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.trash(mine.id);
+    expect((await once()).code).toBe(0);
+    items = items.filter((item) => item.id !== "1");
+    marfa.restore(mine.id);
+    refuseNextWrite = 503;
+    expect((await once()).code).toBe(0);
+    expect(items).toEqual([]);
+    expect(marfa.row("acct:1").properties["example_id"]).toBe("1");
+    expect((await once()).code).toBe(0);
+    const made = items.find((item) => item.id.startsWith("made-"));
+    expect(made?.title).toBe("One");
+    expect(marfa.row("acct:1").properties["example_id"]).toBe(made?.id);
   });
 
   it("fails the run when the vendor refuses the token, and never prints it", async () => {
