@@ -2,47 +2,29 @@ import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
 import { parseFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
+import { getFeed } from "./fetch.js";
 
-const fetchTimeoutMs = 60_000;
+/** Past it a feed is skipped: its entries would be a run's worth of writes. */
+export const maxFeedEntries = 5000;
 
-// Two spellings of one feed would write the same rows and rewrite each other's
-// `feed_origin` and `feed_hash`.
-export function feedList(value: string): string[] {
-  const parts = value.split(/[\s,]+/).filter((part) => part !== "");
-  const bad = parts.filter((feed) => {
-    try {
-      const url = new URL(feed);
-      return url.protocol !== "http:" && url.protocol !== "https:";
-    } catch {
-      return true;
-    }
-  });
-  if (bad.length > 0) {
-    throw new Error(
-      bad.length === 1
-        ? "RSS_FEEDS holds an entry that is not an http or https address"
-        : `RSS_FEEDS holds ${String(bad.length)} entries that are not http or https addresses`,
-    );
-  }
-  const byFeed = new Map<string, string>();
-  for (const feed of parts) {
-    const canonical = canonicalFeedUrl(feed);
-    if (!byFeed.has(canonical)) byFeed.set(canonical, feed);
-  }
-  return [...byFeed.values()];
+export class TooManyEntries extends Error {
+  override name = "TooManyEntries";
 }
 
-// Never the path or query: a private feed carries its token in either.
-export function feedName(feedUrl: string): string {
-  return `${new URL(feedUrl).origin} (${feedHash(feedUrl)})`;
+export interface Feed {
+  /** Its place in RSS_FEEDS, counted from 1, by which a condition names it
+   *  where its address may not go. */
+  position: number;
+  url: string;
+  /** What its entries are keyed by: its name in RSS_FEEDS, else its address.
+   *  Owned by the configuration, never by what the feed says of itself. */
+  key: string;
+  /** The key of its address, which its validators belong to. */
+  address: string;
 }
 
 function hashed(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 32);
-}
-
-export function feedHash(feedUrl: string): string {
-  return hashed(`feed-url:${canonicalFeedUrl(feedUrl)}`);
 }
 
 // A port names another server and stays. Only the host is lowercased: a path is
@@ -53,16 +35,65 @@ export function canonicalFeedUrl(feedUrl: string): string {
   return `${host}${url.pathname.replace(/\/+$/, "")}${url.search}`;
 }
 
-// Hashed because an Atom id is an IRI whose colons would make `<feed>:<entry>`
-// read two ways.
-export function feedKey(
-  feedUrl: string,
-  declaredId: string | undefined,
-): string {
-  const declared = declaredId?.trim();
-  return declared !== undefined && declared !== ""
-    ? hashed(`feed-id:${declared}`)
-    : feedHash(feedUrl);
+export function feedKey(feedUrl: string, name?: string): string {
+  return name === undefined
+    ? hashed(`feed-url:${canonicalFeedUrl(feedUrl)}`)
+    : hashed(`feed-name:${name}`);
+}
+
+function isAddress(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Each entry is an address, or `name=address`: a feed named keeps its
+ * entries when its address moves or a token in it rotates. Two spellings of
+ * one unnamed address are one feed, read once.
+ */
+export function feedList(value: string): Feed[] {
+  const parts = value.split(/[\s,]+/).filter((part) => part !== "");
+  const read = parts.map((part, at) => {
+    const named = /^https?:\/\//i.test(part)
+      ? undefined
+      : /^([^=]+)=(.*)$/.exec(part);
+    const url = named?.[2] ?? part;
+    return { position: at + 1, name: named?.[1], url };
+  });
+  const bad = read.filter((feed) => !isAddress(feed.url));
+  if (bad.length > 0) {
+    throw new Error(
+      bad.length === 1
+        ? "RSS_FEEDS holds an entry that is not an http or https address"
+        : `RSS_FEEDS holds ${String(bad.length)} entries that are not http or https addresses`,
+    );
+  }
+  const byKey = new Map<string, Feed>();
+  const byName = new Map<string, { position: number; address: string }>();
+  for (const { position, name, url } of read) {
+    const address = feedKey(url);
+    if (name !== undefined) {
+      const other = byName.get(name);
+      if (other !== undefined && other.address !== address) {
+        throw new Error(
+          `RSS_FEEDS gives entries ${String(other.position)} and ${String(position)} one name`,
+        );
+      }
+      byName.set(name, { position, address });
+    }
+    const key = feedKey(url, name);
+    if (!byKey.has(key)) byKey.set(key, { position, url, key, address });
+  }
+  return [...byKey.values()];
+}
+
+// Never the path or query: a private feed carries its token in either.
+export function feedName(feed: Feed): string {
+  return `feed ${String(feed.position)} in RSS_FEEDS (${new URL(feed.url).origin})`;
 }
 
 export interface Validators {
@@ -71,7 +102,6 @@ export interface Validators {
 }
 
 export type Fetched =
-  | { status: 304 }
   | {
       status: 200;
       text: string;
@@ -118,7 +148,7 @@ export function decodeFeed(
 }
 
 export async function fetchFeed(
-  feedUrl: string,
+  feed: Feed,
   validators: Validators | undefined,
   signal: AbortSignal,
 ): Promise<Fetched> {
@@ -131,37 +161,22 @@ export async function fetchFeed(
   if (validators?.last_modified !== undefined) {
     headers["If-Modified-Since"] = validators.last_modified;
   }
-  // fetch refuses an address that carries credentials, so they are sent as
-  // the Basic authorization its userinfo stands for.
-  const url = new URL(feedUrl);
-  if (url.username !== "" || url.password !== "") {
-    const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
-    headers["Authorization"] = `Basic ${Buffer.from(pair).toString("base64")}`;
-    url.username = "";
-    url.password = "";
-  }
-  const response = await fetch(url, {
-    headers,
-    signal: AbortSignal.any([signal, AbortSignal.timeout(fetchTimeoutMs)]),
-  });
-  if (response.status === 304) return { status: 304 };
-  if (response.status !== 200) {
-    await response.body?.cancel();
-    return { status: response.status };
-  }
-  const etag = response.headers.get("ETag") ?? undefined;
-  const lastModified = response.headers.get("Last-Modified") ?? undefined;
+  const answer = await getFeed(feed.url, headers, signal);
+  if (answer.bytes === undefined) return { status: answer.status };
+  const header = (name: string): string | undefined => {
+    const value = answer.headers[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const etag = header("etag");
+  const lastModified = header("last-modified");
   return {
     status: 200,
-    text: decodeFeed(
-      new Uint8Array(await response.arrayBuffer()),
-      response.headers.get("Content-Type"),
-    ),
+    text: decodeFeed(answer.bytes, header("content-type") ?? null),
     validators: {
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),
     },
-    url: response.url === "" ? url.href : response.url,
+    url: answer.url,
   };
 }
 
@@ -301,9 +316,11 @@ function atomTextOf(
 }
 
 export interface Read {
-  key: string;
   entries: Entry[];
   unkeyed: number;
+  /** A hash of the id an Atom feed declares for itself, which identifies
+   *  nothing here and is compared only to say two feeds claim one id. */
+  declared: string | undefined;
 }
 
 export const entryFields = [
@@ -332,14 +349,24 @@ function channelBaseOf(text: string): string | undefined {
 }
 
 export function readFeed(
-  feedUrl: string,
+  feed: Pick<Feed, "url" | "key">,
   text: string,
-  documentUrl: string = feedUrl,
+  documentUrl: string = feed.url,
 ): Read {
   const parsed = parseFeed(text);
+  const count =
+    parsed.format === "atom"
+      ? parsed.feed.entries?.length
+      : parsed.format === "rss"
+        ? parsed.feed.items?.length
+        : undefined;
+  if (count !== undefined && count > maxFeedEntries) {
+    throw new TooManyEntries();
+  }
+  const { key } = feed;
   const named = {
-    feed_origin: new URL(feedUrl).origin,
-    feed_hash: feedHash(feedUrl),
+    feed_origin: new URL(feed.url).origin,
+    feed_hash: key,
   };
   const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
@@ -348,7 +375,6 @@ export function readFeed(
     entryId: string | undefined,
     properties: Record<string, unknown>,
     occurredAt: string | undefined,
-    key: string,
   ): void => {
     const id = textOf(entryId);
     if (id === undefined) {
@@ -363,17 +389,17 @@ export function readFeed(
   };
 
   if (parsed.format === "atom") {
-    const feed = parsed.feed;
-    const key = feedKey(feedUrl, feed.id);
-    const feedBase = baseOf(documentBase, feed.xml?.base);
+    const atom = parsed.feed;
+    const declared = atom.id?.trim();
+    const feedBase = baseOf(documentBase, atom.xml?.base);
     const alternate = (
       links: { href?: string; rel?: string }[] | undefined,
     ): string | undefined =>
       links?.find((link) => link.rel === undefined || link.rel === "alternate")
         ?.href;
-    const siteUrl = linkOf(alternate(feed.links), feedBase);
-    const language = languageOf(feed.xml?.lang);
-    for (const entry of feed.entries ?? []) {
+    const siteUrl = linkOf(alternate(atom.links), feedBase);
+    const language = languageOf(atom.xml?.lang);
+    for (const entry of atom.entries ?? []) {
       const entryBase = baseOf(feedBase, entry.xml?.base);
       const url = linkOf(alternate(entry.links), entryBase);
       const image = entry.links?.find(
@@ -388,29 +414,34 @@ export function readFeed(
           title: atomTextOf(entry.title),
           description: atomTextOf(entry.summary),
           body: textOf(entry.content?.value),
-          author: textOf(entry.authors?.[0]?.name ?? feed.authors?.[0]?.name),
+          author: textOf(entry.authors?.[0]?.name ?? atom.authors?.[0]?.name),
           published_at: published,
           image_url: linkOf(image, entryBase),
           language,
           source_url: siteUrl,
-          source_title: atomTextOf(feed.title),
+          source_title: atomTextOf(atom.title),
         },
         published ?? isoOf(entry.updated),
-        key,
       );
     }
-    return { key, entries, unkeyed };
+    return {
+      entries,
+      unkeyed,
+      declared:
+        declared === undefined || declared === ""
+          ? undefined
+          : hashed(`feed-id:${declared}`),
+    };
   }
   if (parsed.format === "rss") {
-    const feed = parsed.feed;
-    const key = feedKey(feedUrl, undefined);
+    const rss = parsed.feed;
     const channelBase = baseOf(
-      baseOf(documentBase, feed.xml?.base),
+      baseOf(documentBase, rss.xml?.base),
       channelBaseOf(text),
     );
-    const siteUrl = linkOf(feed.link, channelBase);
-    const language = languageOf(feed.language);
-    for (const item of feed.items ?? []) {
+    const siteUrl = linkOf(rss.link, channelBase);
+    const language = languageOf(rss.language);
+    for (const item of rss.items ?? []) {
       const itemBase = baseOf(channelBase, item.xml?.base);
       const url = linkOf(item.link, itemBase);
       const image = item.enclosures?.find(
@@ -431,13 +462,12 @@ export function readFeed(
           image_url: linkOf(image, itemBase),
           language,
           source_url: siteUrl,
-          source_title: textOf(feed.title),
+          source_title: textOf(rss.title),
         },
         published ?? isoOf(item.dc?.dates?.[0]),
-        key,
       );
     }
-    return { key, entries, unkeyed };
+    return { entries, unkeyed, declared: undefined };
   }
   throw new Error(
     `a ${parsed.format} feed, where this connector reads Atom and RSS 2.0`,

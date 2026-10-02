@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
@@ -27,8 +28,10 @@ const fixtures = resolve(
 );
 
 interface Feed {
-  body: string;
+  body: string | Buffer;
   etag: string;
+  encoding?: string;
+  redirect?: string;
 }
 
 async function serveFeeds(): Promise<{
@@ -56,13 +59,24 @@ async function serveFeeds(): Promise<{
         : req.headers["if-none-match"] === feed.etag
           ? 304
           : 200;
+    if (feed?.redirect !== undefined) {
+      answers.push(302);
+      res.writeHead(302, { Location: feed.redirect }).end();
+      return;
+    }
     answers.push(status);
     if (status !== 200 || feed === undefined) {
       res.writeHead(status).end();
       return;
     }
     res
-      .writeHead(200, { "Content-Type": "application/xml", ETag: feed.etag })
+      .writeHead(200, {
+        "Content-Type": "application/xml",
+        ETag: feed.etag,
+        ...(feed.encoding !== undefined && {
+          "Content-Encoding": feed.encoding,
+        }),
+      })
       .end(feed.body);
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
@@ -80,13 +94,17 @@ async function serveFeeds(): Promise<{
   };
 }
 
+function feedHashed(item: Item): unknown {
+  return item.properties["feed_hash"];
+}
+
 function edit(
   feed: Feed | undefined,
   change: (body: string) => string,
   etag: string,
 ): void {
   if (feed === undefined) throw new Error("no such fixture");
-  feed.body = change(feed.body);
+  feed.body = change(String(feed.body));
   feed.etag = etag;
 }
 
@@ -309,6 +327,77 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
           );
         }
         return `the feed row moved ${String(source.version)}→${String(moving.version)}; the copy stays at version ${String(copy.version)}`;
+      },
+    );
+
+    await check(
+      "rss: a compressed bomb, a feed declaring another's id and a redirect to this machine are each refused or kept apart, and the honest feed still lands",
+      async () => {
+        const port = new URL(served.url).port;
+        const atom = served.feeds["/atom.xml"];
+        if (atom === undefined) throw new Error("no atom fixture");
+        served.feeds["/bomb.xml"] = {
+          body: gzipSync(Buffer.alloc(256 * 1024 * 1024)),
+          etag: '"bomb"',
+          encoding: "gzip",
+        };
+        served.feeds["/thief.xml"] = {
+          body: String(atom.body).replace(
+            /<title>[^<]*<\/title>/g,
+            "<title>Stolen</title>",
+          ),
+          etag: '"thief"',
+        };
+        served.feeds["/hop"] = {
+          body: "",
+          etag: '"hop"',
+          redirect: `${served.url}/rss.xml`,
+        };
+        const hostile = new ConnectorUnderProof("rss", url, key.key, {
+          RSS_FEEDS: [
+            `${served.url}/bomb.xml`,
+            `${served.url}/thief.xml`,
+            `http://localhost:${port}/hop`,
+            `${served.url}/atom.xml`,
+          ].join("\n"),
+        });
+        const before = await rows();
+        const { code, output } = await hostile.once();
+        if (code !== 0)
+          throw new Error(`the run exited ${String(code)}: ${output}`);
+        const after = [...(await rows()).values()];
+        const thieves = after.filter(
+          (row) => row.properties["title"] === "Stolen",
+        );
+        const honest = after.filter(
+          (row) =>
+            String(row.properties["entry_id"]).startsWith("tag:example.com") &&
+            row.properties["title"] !== "Stolen",
+        );
+        const { summary } = await lastRun(marfa, key.id);
+        const said = [
+          "feed 1 in RSS_FEEDS",
+          "is larger than 16 MiB, so it is skipped",
+          "feed 4 in RSS_FEEDS",
+          "declares the same feed id as feed 2 in RSS_FEEDS",
+          `feed 3 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine or a private network`,
+        ];
+        const missing = said.filter((text) => summary?.includes(text) !== true);
+        if (
+          thieves.length !== 2 ||
+          honest.length < 2 ||
+          new Set(thieves.map(feedHashed)).size !== 1 ||
+          thieves.some((row) => before.has(row.source_id ?? "")) ||
+          honest.some((row) =>
+            thieves.some((thief) => feedHashed(thief) === feedHashed(row)),
+          ) ||
+          missing.length > 0
+        ) {
+          throw new Error(
+            `${String(thieves.length)} stolen rows, ${String(honest.length)} honest; missing ${missing.join(" | ")}; reported ${String(summary)}`,
+          );
+        }
+        return `the bomb skipped, the redirect refused, the thief's 2 entries written under its own key beside the honest feed's rows, which kept their titles; reported ${String(summary)}`;
       },
     );
   } finally {

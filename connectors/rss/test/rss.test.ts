@@ -4,6 +4,8 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { createGzip } from "node:zlib";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import {
@@ -11,13 +13,43 @@ import {
   decodeFeed,
   feedKey,
   feedList,
+  maxFeedEntries,
   readFeed,
+  TooManyEntries,
 } from "../src/feeds.js";
+import { getFeed, maxFeedBytes, TooLarge } from "../src/fetch.js";
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const fixture = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "fixtures", name), "utf8");
+const at = (url: string, name?: string) => ({ url, key: feedKey(url, name) });
+
+/** Zeros, gzipped: a few hundred KiB on the wire for every 256 MiB inside. */
+async function gzipBomb(bytes: number): Promise<Buffer> {
+  const gzip = createGzip({ level: 9 });
+  const chunks: Buffer[] = [];
+  gzip.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const done = new Promise((ended) => gzip.on("end", ended));
+  const zeros = Buffer.alloc(16 * 1024 * 1024);
+  for (let written = 0; written < bytes; written += zeros.byteLength) {
+    if (!gzip.write(zeros)) {
+      await new Promise((drained) => gzip.once("drain", drained));
+    }
+  }
+  gzip.end();
+  await done;
+  return Buffer.concat(chunks);
+}
+
+function manyItems(count: number): string {
+  const items = Array.from(
+    { length: count },
+    (_, at) =>
+      `<item><title>${String(at)}</title><guid>${String(at)}</guid></item>`,
+  ).join("");
+  return `<?xml version="1.0"?><rss version="2.0"><channel><title>Many</title>${items}</channel></rss>`;
+}
 
 describe("a feed's identity", () => {
   it("keeps a path's case and drops the scheme, www and a trailing slash", () => {
@@ -36,8 +68,8 @@ describe("a feed's identity", () => {
     expect(
       canonicalFeedUrl("https://reader:pass@www.example.org:443/rss.xml#top"),
     ).toBe("example.org/rss.xml");
-    expect(feedKey("https://reader:pass@example.org/rss.xml", undefined)).toBe(
-      feedKey("https://reader:rotated@example.org/rss.xml", undefined),
+    expect(feedKey("https://reader:pass@example.org/rss.xml")).toBe(
+      feedKey("https://reader:rotated@example.org/rss.xml"),
     );
     expect(canonicalFeedUrl("https://example.org:8443/rss.xml")).toBe(
       "example.org:8443/rss.xml",
@@ -47,34 +79,36 @@ describe("a feed's identity", () => {
     );
   });
 
-  it("hashes an Atom id with colons to one fixed shape, apart from any address", () => {
-    const byId = feedKey(
-      "https://example.com/atom.xml",
-      "tag:example.com,2026:feed",
+  it("keys a feed by its name in the list, else its address, and never by an id it declares", () => {
+    const named = feedKey("https://example.org/rss.xml?token=a", "news");
+    expect(named).toMatch(/^[0-9a-f]{32}$/);
+    expect(named).toBe(
+      feedKey("https://elsewhere.example.net/feed?token=b", "news"),
     );
-    expect(byId).toMatch(/^[0-9a-f]{32}$/);
-    expect(byId).toBe(
-      feedKey(
-        "https://elsewhere.example.net/moved.xml",
-        "tag:example.com,2026:feed",
+    expect(named).not.toBe(feedKey("https://example.org/rss.xml?token=a"));
+    const thief = `<?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom"><title>T</title><id>tag:example.com,2026:feed</id>
+        <entry><title>Stolen</title><id>tag:example.com,2026:entry:1</id></entry></feed>`;
+    const victim = readFeed(
+      at("https://example.com/atom.xml"),
+      fixture("atom.xml"),
+    );
+    const stolen = readFeed(at("https://thief.example.net/atom.xml"), thief);
+    expect(stolen.declared).toBe(victim.declared);
+    expect(stolen.entries[0]?.source_id).not.toBe(victim.entries[0]?.source_id);
+    expect(
+      stolen.entries[0]?.source_id.startsWith(
+        feedKey("https://thief.example.net/atom.xml"),
       ),
-    );
-    expect(byId).not.toBe(feedKey("tag:example.com,2026:feed", undefined));
-    expect(feedKey("https://example.com/a.xml", "tag:x:2")).not.toBe(
-      feedKey("https://example.com/a.xml", "tag:x"),
-    );
-  });
-
-  it("keys a feed by its Atom id apart from its address, where the two read alike", () => {
-    const address = "https://example.com/feed.xml";
-    const id = canonicalFeedUrl(address);
-    expect(id).toBe("example.com/feed.xml");
-    expect(feedKey(address, id)).not.toBe(feedKey(address, undefined));
+    ).toBe(true);
   });
 
   it("keys two feeds' bare guid of 1 apart", () => {
-    const one = readFeed("https://example.org/rss.xml", fixture("rss.xml"));
-    const other = readFeed("https://example.net/rss.xml", fixture("rss.xml"));
+    const one = readFeed(at("https://example.org/rss.xml"), fixture("rss.xml"));
+    const other = readFeed(
+      at("https://example.net/rss.xml"),
+      fixture("rss.xml"),
+    );
     expect(one.entries[0]?.source_id).toMatch(/^[0-9a-f]{32}:1$/);
     expect(one.entries[0]?.source_id).not.toBe(other.entries[0]?.source_id);
   });
@@ -83,14 +117,11 @@ describe("a feed's identity", () => {
 describe("reading a feed", () => {
   it("reads an Atom feed's entries under bookmark names", () => {
     const { entries, unkeyed } = readFeed(
-      "https://example.com/atom.xml",
+      at("https://example.com/atom.xml"),
       fixture("atom.xml"),
     );
     expect(unkeyed).toBe(0);
-    const key = feedKey(
-      "https://example.com/atom.xml",
-      "tag:example.com,2026:feed",
-    );
+    const key = feedKey("https://example.com/atom.xml");
     expect(entries).toEqual([
       {
         source_id: `${key}:tag:example.com,2026:entry:1`,
@@ -107,7 +138,7 @@ describe("reading a feed", () => {
           source_title: "Example Atom Feed",
           entry_id: "tag:example.com,2026:entry:1",
           feed_origin: "https://example.com",
-          feed_hash: feedKey("https://example.com/atom.xml", undefined),
+          feed_hash: feedKey("https://example.com/atom.xml"),
         },
         occurred_at: "2026-09-18T09:00:00.000Z",
       },
@@ -126,7 +157,7 @@ describe("reading a feed", () => {
           source_title: "Example Atom Feed",
           entry_id: "tag:example.com,2026:entry:2",
           feed_origin: "https://example.com",
-          feed_hash: feedKey("https://example.com/atom.xml", undefined),
+          feed_hash: feedKey("https://example.com/atom.xml"),
         },
         occurred_at: "2026-09-19T09:00:00.000Z",
       },
@@ -135,7 +166,7 @@ describe("reading a feed", () => {
 
   it("reads an RSS 2.0 feed, keying an entry without a guid by its link and leaving out one with neither", () => {
     const { entries, unkeyed } = readFeed(
-      "https://example.org/rss.xml",
+      at("https://example.org/rss.xml"),
       fixture("rss.xml"),
     );
     expect(unkeyed).toBe(1);
@@ -161,7 +192,7 @@ describe("reading a feed", () => {
 
   it("keeps no credentials of the address it was given, in any link it resolves", () => {
     const rss = readFeed(
-      "https://reader:pass@example.org/feed.xml#top",
+      at("https://reader:pass@example.org/feed.xml#top"),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>/</link>
         <item><title>A</title><link>/posts/a</link><guid>a</guid></item>
       </channel></rss>`,
@@ -170,10 +201,10 @@ describe("reading a feed", () => {
       url: "https://example.org/posts/a",
       source_url: "https://example.org/",
       feed_origin: "https://example.org",
-      feed_hash: feedKey("https://example.org/feed.xml", undefined),
+      feed_hash: feedKey("https://example.org/feed.xml"),
     });
     const atom = readFeed(
-      "https://reader:pass@example.com/atom.xml",
+      at("https://reader:pass@example.com/atom.xml"),
       fixture("atom.xml"),
     );
     expect(atom.entries[1]?.properties["url"]).toBe(
@@ -186,7 +217,7 @@ describe("reading a feed", () => {
 
   it("writes no credentials a feed's own links carry", () => {
     const { entries } = readFeed(
-      "https://example.org/feed.xml",
+      at("https://example.org/feed.xml"),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://site:key@example.org/</link>
         <item><title>A</title><link>https://viewer:secret@example.org/a</link><guid>a</guid></item>
       </channel></rss>`,
@@ -200,7 +231,7 @@ describe("reading a feed", () => {
 
   it("reads Atom's html and xhtml text as plain text, and its text as it is", () => {
     const { entries } = readFeed(
-      "https://example.com/atom.xml",
+      at("https://example.com/atom.xml"),
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <title type="html">Site &amp;amp; Co</title>
@@ -229,7 +260,7 @@ describe("reading a feed", () => {
 
   it("reads an RSS 2.0 description's entity-encoded HTML as plain text", () => {
     const { entries } = readFeed(
-      "https://example.org/rss.xml",
+      at("https://example.org/rss.xml"),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://example.org/</link>
         <item><title>A</title><guid>a</guid>
           <description>&lt;p&gt;Fish &amp;amp; &lt;a href="/c"&gt;chips&lt;/a&gt;&lt;/p&gt;&lt;p&gt;Peas.&lt;/p&gt;</description>
@@ -241,7 +272,7 @@ describe("reading a feed", () => {
 
   it("resolves links against xml:base, the feed's and an entry's", () => {
     const { entries } = readFeed(
-      "https://example.com/atom.xml",
+      at("https://example.com/atom.xml"),
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom" xml:base="https://example.com/blog/2026/">
         <title>T</title>
@@ -273,13 +304,13 @@ describe("reading a feed", () => {
 
   it("keys an entry whose id is blank by its link", () => {
     const rss = readFeed(
-      "https://example.org/rss.xml",
+      at("https://example.org/rss.xml"),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://example.org/</link>
         <item><title>A</title><link>https://example.org/a</link><guid> </guid></item>
       </channel></rss>`,
     );
     const atom = readFeed(
-      "https://example.com/atom.xml",
+      at("https://example.com/atom.xml"),
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <title>T</title><id>tag:example.com,2026:feed</id><updated>2026-09-20T10:00:00Z</updated>
@@ -342,7 +373,7 @@ describe("reading a feed", () => {
       "application/rss+xml",
     );
     expect(
-      readFeed("https://example.org/rss.xml", text).entries.map(
+      readFeed(at("https://example.org/rss.xml"), text).entries.map(
         (entry) => entry.properties["title"],
       ),
     ).toEqual(["Résumé"]);
@@ -350,7 +381,10 @@ describe("reading a feed", () => {
 
   it("refuses what is neither Atom nor RSS 2.0", () => {
     expect(() =>
-      readFeed("https://example.org/x", "<html><body>not a feed</body></html>"),
+      readFeed(
+        at("https://example.org/x"),
+        "<html><body>not a feed</body></html>",
+      ),
     ).toThrow();
   });
 
@@ -359,23 +393,58 @@ describe("reading a feed", () => {
       feedList(
         "https://a.example.com/1\nhttps://b.example.com/2, https://a.example.com/1",
       ),
-    ).toEqual(["https://a.example.com/1", "https://b.example.com/2"]);
+    ).toEqual([
+      {
+        position: 1,
+        url: "https://a.example.com/1",
+        key: feedKey("https://a.example.com/1"),
+        address: feedKey("https://a.example.com/1"),
+      },
+      {
+        position: 2,
+        url: "https://b.example.com/2",
+        key: feedKey("https://b.example.com/2"),
+        address: feedKey("https://b.example.com/2"),
+      },
+    ]);
     expect(() =>
       feedList("https://a.example.com/1 ftp://b.example.com/2"),
     ).toThrow("an entry that is not an http or https address");
-    expect(() => feedList("ftp://a.example.com/1 mailto:b")).toThrow(
-      "2 entries that are not",
+    expect(() =>
+      feedList("ftp://a.example.com/1 mailto:b news=ftp://c"),
+    ).toThrow("3 entries that are not");
+  });
+
+  it("reads a name given as name=address, which keys the feed, and refuses one name for two addresses", () => {
+    const [named, plain] = feedList(
+      "news=https://a.example.com/feed?token=t1 https://b.example.com/q?x=1",
     );
+    expect(named).toEqual({
+      position: 1,
+      url: "https://a.example.com/feed?token=t1",
+      key: feedKey("https://a.example.com/feed?token=t1", "news"),
+      address: feedKey("https://a.example.com/feed?token=t1"),
+    });
+    expect(plain?.url).toBe("https://b.example.com/q?x=1");
+    expect(plain?.key).toBe(feedKey("https://b.example.com/q?x=1"));
+    expect(() =>
+      feedList("news=https://a.example.com/1 news=https://a.example.com/2"),
+    ).toThrow("RSS_FEEDS gives entries 1 and 2 one name");
+    expect(
+      feedList(
+        "news=https://a.example.com/1 news=https://www.a.example.com/1/",
+      ),
+    ).toHaveLength(1);
   });
 
   it("lists a feed once however it is spelled, keeping the first spelling", () => {
     expect(
       feedList(
         "https://a.example.com/feed https://a.example.com/feed/ http://www.a.example.com/feed https://a.example.com/feed?page=2",
-      ),
+      ).map((feed) => [feed.position, feed.url]),
     ).toEqual([
-      "https://a.example.com/feed",
-      "https://a.example.com/feed?page=2",
+      [1, "https://a.example.com/feed"],
+      [4, "https://a.example.com/feed?page=2"],
     ]);
   });
 
@@ -383,7 +452,7 @@ describe("reading a feed", () => {
     const address =
       "https://example.org/private/p4th-t0ken/feed.xml?token=s3cr3t-token";
     const rss = readFeed(
-      address,
+      at(address),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>./</link>
         <item><title>A</title><link>#frag</link><guid>a</guid></item>
         <item><title>B</title><link>item/2</link><guid>b</guid>
@@ -393,7 +462,7 @@ describe("reading a feed", () => {
       </channel></rss>`,
     );
     const atom = readFeed(
-      address,
+      at(address),
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <title>T</title><id>tag:example.org,2026:feed</id><updated>2026-09-20T10:00:00Z</updated>
@@ -414,14 +483,14 @@ describe("reading a feed", () => {
     expect(rss.unkeyed).toBe(1);
     expect(rss.entries[0]?.properties).toMatchObject({
       feed_origin: "https://example.org",
-      feed_hash: feedKey(address, undefined),
+      feed_hash: feedKey(address),
     });
   });
 
   it("reads markup as text, and a < that opens no tag as text", () => {
     const description = (html: string): unknown =>
       readFeed(
-        "https://example.org/rss.xml",
+        at("https://example.org/rss.xml"),
         `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://example.org/</link>
           <item><title>A</title><guid>a</guid><description>${html}</description></item>
         </channel></rss>`,
@@ -444,7 +513,7 @@ describe("reading a feed", () => {
 
   it("resolves an RSS 2.0 feed's links against its rss, channel and item xml:base", () => {
     const { entries } = readFeed(
-      "https://example.org/rss.xml",
+      at("https://example.org/rss.xml"),
       `<?xml version="1.0"?><rss version="2.0" xml:base="https://a.example.org/root/">
         <channel xml:base="chan/"><title>T</title><link>site</link>
           <item><title>A</title><guid>a</guid><link>p</link>
@@ -467,7 +536,7 @@ describe("reading a feed", () => {
   it("writes no link that resolves against the feed's path, however it is spelled", () => {
     const address = "https://example.org/private/p4th-t0ken/feed.xml";
     const rss = readFeed(
-      address,
+      at(address),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https:./</link>
         <item><title>A</title><link>https:item/2</link><guid>a</guid></item>
         <item><title>B</title><link>HTTPS:item/3</link><guid>b</guid></item>
@@ -476,13 +545,13 @@ describe("reading a feed", () => {
       </channel></rss>`,
     );
     const based = readFeed(
-      address,
+      at(address),
       `<?xml version="1.0"?><rss version="2.0"><channel xml:base="./"><title>T</title><link>https://example.org/</link>
         <item><title>D</title><link>item/5</link><guid>d</guid></item>
       </channel></rss>`,
     );
     const atom = readFeed(
-      address,
+      at(address),
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom" xml:base="https:sub/">
         <title>T</title><id>tag:example.org,2026:feed</id><updated>2026-09-20T10:00:00Z</updated>
@@ -507,7 +576,7 @@ describe("reading a feed", () => {
 
   it("resolves links against the origin a redirect took the fetch to, and never against its path", () => {
     const { entries } = readFeed(
-      "https://example.org/old/feed",
+      at("https://example.org/old/feed"),
       `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>/</link>
         <item><title>A</title><guid>a</guid><link>/posts/a</link></item>
         <item><title>B</title><guid>b</guid><link>post-b</link></item>
@@ -518,9 +587,78 @@ describe("reading a feed", () => {
       url: "https://cdn.example.net/posts/a",
       source_url: "https://cdn.example.net/",
       feed_origin: "https://example.org",
-      feed_hash: feedKey("https://example.org/old/feed", undefined),
+      feed_hash: feedKey("https://example.org/old/feed"),
     });
     expect(entries[1]?.properties["url"]).toBeUndefined();
+  });
+});
+
+describe("fetching a feed", () => {
+  let server: Server;
+  let base: string;
+  let answer: (res: import("node:http").ServerResponse) => void;
+
+  beforeEach(async () => {
+    server = createServer((_, res) => {
+      answer(res);
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  });
+
+  afterEach(async () => {
+    server.closeAllConnections();
+    await new Promise((done) => server.close(done));
+  });
+
+  it("stops a compressed bomb at the cap, holding memory to a fraction of what it unpacks to", async () => {
+    const unpacked = 1024 * 1024 * 1024;
+    const bomb = await gzipBomb(unpacked);
+    expect(bomb.byteLength).toBeLessThan(maxFeedBytes);
+    answer = (res) => {
+      res
+        .writeHead(200, {
+          "Content-Type": "application/xml",
+          "Content-Encoding": "gzip",
+        })
+        .end(bomb);
+    };
+    const before = process.resourceUsage().maxRSS;
+    await expect(
+      getFeed(`${base}/bomb.xml`, {}, AbortSignal.timeout(30_000)),
+    ).rejects.toBeInstanceOf(TooLarge);
+    const grewKiB = process.resourceUsage().maxRSS - before;
+    expect(grewKiB * 1024).toBeLessThan(unpacked / 8);
+  });
+
+  it("stops a plain body past the cap, whether or not it declares its length", async () => {
+    const big = Buffer.alloc(maxFeedBytes + 1, 0x20);
+    for (const declared of [true, false]) {
+      answer = (res) => {
+        res.writeHead(200, {
+          "Content-Type": "application/xml",
+          ...(!declared && { "Transfer-Encoding": "chunked" }),
+          ...(declared && { "Content-Length": String(big.byteLength) }),
+        });
+        res.end(big);
+      };
+      await expect(
+        getFeed(`${base}/big.xml`, {}, AbortSignal.timeout(30_000)),
+      ).rejects.toBeInstanceOf(TooLarge);
+    }
+  });
+
+  it("refuses a feed with more entries than the cap", () => {
+    expect(() =>
+      readFeed(
+        at("https://example.org/rss.xml"),
+        manyItems(maxFeedEntries + 1),
+      ),
+    ).toThrow(TooManyEntries);
+    expect(
+      readFeed(at("https://example.org/rss.xml"), manyItems(maxFeedEntries))
+        .entries,
+    ).toHaveLength(maxFeedEntries);
   });
 });
 
@@ -528,6 +666,7 @@ interface Served {
   body: string | Buffer;
   authorization?: string;
   redirect?: string;
+  encoding?: string;
   contentType?: string;
   etag?: string;
   lastModified?: string;
@@ -589,6 +728,9 @@ describe("the connector, run as a process", () => {
         200,
         {
           "Content-Type": feed.contentType ?? "application/xml",
+          ...(feed.encoding !== undefined && {
+            "Content-Encoding": feed.encoding,
+          }),
           ...(feed.etag !== undefined && { ETag: feed.etag }),
           ...(feed.lastModified !== undefined && {
             "Last-Modified": feed.lastModified,
@@ -655,7 +797,7 @@ describe("the connector, run as a process", () => {
       "2026-09-18T09:00:00.000Z",
     );
     expect(marfa.runs.at(-1)?.summary).toMatch(
-      /^created 4, updated 0, archived 0, unchanged 0, skipped 0\. an entry in the feed/,
+      /^created 4, updated 0, archived 0, unchanged 0, skipped 0\. an entry in feed 2 in RSS_FEEDS \(http:\/\/127\.0\.0\.1:\d+\) carries neither/,
     );
   });
 
@@ -749,37 +891,32 @@ describe("the connector, run as a process", () => {
     ]);
   });
 
-  it("writes a feed reached at two addresses once, and says so once", async () => {
+  it("keeps two feeds that declare one id apart, whichever is listed first, and says so", async () => {
     const atom = served["/atom.xml"];
     if (typeof atom?.body !== "string") throw new Error("no atom fixture");
-    served["/mirror.xml"] = { body: atom.body };
-    served["/atom.xml"] = { body: atom.body };
-    for (let run = 0; run < 3; run += 1) {
-      expect((await once(["/atom.xml", "/mirror.xml"])).code).toBe(0);
+    served["/thief.xml"] = {
+      body: atom.body
+        .replace("<title>First entry</title>", "<title>Stolen</title>")
+        .replace("<title>Second entry</title>", "<title>Stolen too</title>")
+        .replaceAll("https://example.com/", "https://thief.example.net/"),
+    };
+    for (let run = 0; run < 2; run += 1) {
+      expect((await once(["/thief.xml", "/atom.xml"])).code).toBe(0);
     }
-    expect(asked.map((request) => request.answered)).toEqual([
-      200, 200, 200, 200, 200, 200,
-    ]);
-    expect(marfa.rows).toHaveLength(2);
-    expect(marfa.rows.map((candidate) => candidate.version)).toEqual([1, 1]);
-    const atomHash = feedKey(`${base}/atom.xml`, undefined);
-    const mirrorHash = feedKey(`${base}/mirror.xml`, undefined);
-    expect(
-      marfa.rows.map((candidate) => [
-        candidate.properties["feed_origin"],
-        candidate.properties["feed_hash"],
-      ]),
-    ).toEqual([
-      [base, atomHash],
-      [base, atomHash],
-    ]);
-    expect(marfa.runs.map((reported) => reported.summary)).toEqual([
-      expect.stringContaining(
-        `the feed ${base} (${mirrorHash}) is the feed ${base} (${atomHash}) under another address`,
-      ),
-      "created 0, updated 0, archived 0, unchanged 2, skipped 0",
-      "created 0, updated 0, archived 0, unchanged 2, skipped 0",
-    ]);
+    expect(marfa.rows).toHaveLength(4);
+    const byFeed = (path: string): unknown[] =>
+      marfa.rows
+        .filter(
+          (candidate) =>
+            candidate.properties["feed_hash"] === feedKey(`${base}${path}`),
+        )
+        .map((candidate) => candidate.properties["title"]);
+    expect(byFeed("/atom.xml")).toEqual(["First entry", "Second entry"]);
+    expect(byFeed("/thief.xml")).toEqual(["Stolen", "Stolen too"]);
+    expect(marfa.rows.every((candidate) => candidate.version === 1)).toBe(true);
+    expect(marfa.runs[0]?.summary).toContain(
+      `feed 2 in RSS_FEEDS (${base}) declares the same feed id as feed 1 in RSS_FEEDS (${base}), and each keeps its own entries`,
+    );
   });
 
   it("keeps a token in a feed's query out of the rows and the kept state", async () => {
@@ -792,7 +929,7 @@ describe("the connector, run as a process", () => {
     expect(stored).not.toContain("s3cr3t");
   });
 
-  it("names a private feed by its origin and a hash, and its path reaches no row, log line, condition, report or state", async () => {
+  it("names a private feed by its place in the list and its origin, and its path reaches no row, log line, condition, report or state", async () => {
     const token = "s3cr3t-path-token";
     served[`/private/${token}/feed.xml`] = { body: fixture("rss.xml") };
     served[`/private/${token}/page.html`] = {
@@ -821,20 +958,18 @@ describe("the connector, run as a process", () => {
       expect(text).not.toContain(token);
       expect(text).not.toContain("/private/");
     }
-    const hash = feedKey(`${base}${paths[0] ?? ""}`, undefined);
+    const hash = feedKey(`${base}${paths[0] ?? ""}`);
     expect(marfa.rows[0]?.properties).toMatchObject({
       feed_origin: base,
       feed_hash: hash,
     });
-    expect(reported).toContain(`an entry in the feed ${base} (${hash})`);
+    expect(reported).toContain(`an entry in feed 1 in RSS_FEEDS (${base})`);
+    expect(reported).toContain(`feed 2 in RSS_FEEDS (${base}) answered 404`);
     expect(reported).toContain(
-      `the feed ${base} (${feedKey(`${base}${paths[1] ?? ""}`, undefined)}) answered 404`,
+      `feed 3 in RSS_FEEDS (${base}) is not an Atom or RSS 2.0 feed`,
     );
     expect(reported).toContain(
-      `the feed ${base} (${feedKey(`${base}${paths[2] ?? ""}`, undefined)}) is not an Atom or RSS 2.0 feed`,
-    );
-    expect(reported).toContain(
-      `the feed http://127.0.0.1:1 (${feedKey(closed, undefined)}) could not be fetched`,
+      "feed 4 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched",
     );
     expect(stored).toContain(`unkeyed:${hash}`);
   });
@@ -892,7 +1027,7 @@ describe("the connector, run as a process", () => {
       url: `${base}/posts/b`,
       source_url: `${base}/`,
       feed_origin: base,
-      feed_hash: feedKey(`${base}/old/feed`, undefined),
+      feed_hash: feedKey(`${base}/old/feed`),
     });
     expect(JSON.stringify(marfa.rows)).not.toContain("/new/blog");
   });
@@ -935,7 +1070,7 @@ describe("the connector, run as a process", () => {
     expect(marfa.rows).toHaveLength(4);
     expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
     expect(marfa.runs.at(-1)?.summary).toContain(
-      `the feed ${base} (${feedKey(`${base}/gone.xml`, undefined)}) answered 404`,
+      `feed 2 in RSS_FEEDS (${base}) answered 404`,
     );
     expect((await once(["/atom.xml", "/gone.xml", "/rss.xml"])).code).toBe(0);
     expect(marfa.runs).toHaveLength(2);
@@ -945,8 +1080,8 @@ describe("the connector, run as a process", () => {
 
   it("asks a feed whose entries did not land again whole", async () => {
     const entryKey =
-      readFeed(`${base}/atom.xml`, fixture("atom.xml")).entries[0]?.source_id ??
-      "";
+      readFeed(at(`${base}/atom.xml`), fixture("atom.xml")).entries[0]
+        ?.source_id ?? "";
     marfa.entryRefusals.set(entryKey, {
       status: 400,
       code: "invalid_properties",
@@ -960,5 +1095,198 @@ describe("the connector, run as a process", () => {
     expect(asked[0]?.path).toBe("/atom.xml");
     expect(asked[1]?.headers["if-none-match"]).toBeUndefined();
     expect(marfa.rows).toHaveLength(2);
+  });
+
+  it("skips a feed past the size cap, plain or compressed, naming it, and reads the others", async () => {
+    served["/bomb.xml"] = {
+      body: await gzipBomb(64 * 1024 * 1024),
+      encoding: "gzip",
+    };
+    served["/big.xml"] = { body: Buffer.alloc(maxFeedBytes + 1, 0x20) };
+    expect((await once(["/bomb.xml", "/rss.xml", "/big.xml"])).code).toBe(0);
+    expect(marfa.rows).toHaveLength(2);
+    const summary = marfa.runs.at(-1)?.summary ?? "";
+    for (const position of [1, 3]) {
+      expect(summary).toContain(
+        `feed ${String(position)} in RSS_FEEDS (${base}) is larger than 16 MiB, so it is skipped`,
+      );
+    }
+  });
+
+  it("skips a feed with more entries than the cap, naming it, and reads the others", async () => {
+    served["/many.xml"] = { body: manyItems(maxFeedEntries + 1) };
+    expect((await once(["/rss.xml", "/many.xml"])).code).toBe(0);
+    expect(marfa.rows).toHaveLength(2);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 2 in RSS_FEEDS (${base}) carries more than 5000 entries, so it is skipped`,
+    );
+  });
+
+  it("refuses a redirect to this machine, by address or by a name resolved to it, and follows one on the listed host", async () => {
+    const port = new URL(base).port;
+    served["/to-loopback"] = { body: "", redirect: `${base}/rss.xml` };
+    served["/to-name"] = {
+      body: "",
+      redirect: `http://localhost:${port}/rss.xml`,
+    };
+    served["/to-v6"] = { body: "", redirect: `http://[::1]:${port}/rss.xml` };
+    served["/to-metadata"] = {
+      body: "",
+      redirect: "http://169.254.169.254/latest/meta-data/",
+    };
+    const { code } = await once(
+      [],
+      ["--once"],
+      [
+        `http://localhost:${port}/to-loopback`,
+        `${base}/to-name`,
+        `http://localhost:${port}/to-v6`,
+        `http://localhost:${port}/to-metadata`,
+      ].join("\n"),
+    );
+    expect(code).toBe(0);
+    expect(marfa.rows).toHaveLength(0);
+    expect(asked.map((request) => request.path)).toEqual([
+      "/to-loopback",
+      "/to-name",
+      "/to-v6",
+      "/to-metadata",
+    ]);
+    const summary = marfa.runs.at(-1)?.summary ?? "";
+    expect(summary).toContain(
+      `feed 1 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine or a private network, which is not followed`,
+    );
+    expect(summary).toContain(
+      `feed 2 in RSS_FEEDS (${base}) redirected to an address on this machine or a private network`,
+    );
+    expect(summary).toContain(
+      `feed 3 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine`,
+    );
+    expect(summary).toContain(
+      `feed 4 in RSS_FEEDS (http://localhost:${port}) redirected to an address on this machine`,
+    );
+  });
+
+  it("stops following a feed's redirects after five", async () => {
+    for (let hop = 0; hop < 7; hop += 1) {
+      served[`/hop/${String(hop)}`] = {
+        body: "",
+        redirect: `/hop/${String(hop + 1)}`,
+      };
+    }
+    served["/hop/7"] = { body: fixture("rss.xml") };
+    expect((await once(["/hop/0"])).code).toBe(0);
+    expect(asked).toHaveLength(6);
+    expect(marfa.rows).toHaveLength(0);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) redirected more than 5 times, so it is skipped`,
+    );
+  });
+
+  it("sends a listed address's credentials to its own origin alone", async () => {
+    const seen: (string | undefined)[] = [];
+    const other = createServer((req, res) => {
+      seen.push(req.headers.authorization);
+      res
+        .writeHead(200, { "Content-Type": "application/xml" })
+        .end(fixture("rss.xml"));
+    });
+    await new Promise<void>((done) => other.listen(0, "127.0.0.1", done));
+    try {
+      const elsewhere = `http://127.0.0.1:${String((other.address() as AddressInfo).port)}/feed.xml`;
+      served["/basic-hop"] = { body: "", redirect: elsewhere };
+      const address = `${base.replace("http://", "http://reader:s3cr3t-pass@")}/basic-hop`;
+      expect((await once([], ["--once"], address)).code).toBe(0);
+      expect(asked[0]?.headers.authorization).toBe(
+        `Basic ${Buffer.from("reader:s3cr3t-pass").toString("base64")}`,
+      );
+      expect(seen).toEqual([undefined]);
+      expect(marfa.rows).toHaveLength(2);
+    } finally {
+      other.closeAllConnections();
+      await new Promise((done) => other.close(done));
+    }
+  });
+
+  it("keeps a named feed's entries when its address moves or its token rotates", async () => {
+    served["/moved.xml"] = { body: fixture("rss.xml") };
+    expect(
+      (await once([], ["--once"], `news=${base}/rss.xml?token=t1`)).code,
+    ).toBe(0);
+    const before = new Map(
+      marfa.rows.map((candidate) => [candidate.source_id, candidate.id]),
+    );
+    expect(before.size).toBe(2);
+    expect(
+      (await once([], ["--once"], `news=${base}/rss.xml?token=t2`)).code,
+    ).toBe(0);
+    expect(
+      (await once([], ["--once"], `news=${base}/moved.xml?token=t3`)).code,
+    ).toBe(0);
+    expect(
+      new Map(
+        marfa.rows.map((candidate) => [candidate.source_id, candidate.id]),
+      ),
+    ).toEqual(before);
+    expect(row("https://example.org/beta").properties["feed_hash"]).toBe(
+      feedKey(`${base}/rss.xml`, "news"),
+    );
+    expect(asked.map((request) => request.answered)).toEqual([200, 200, 200]);
+  });
+
+  it("moves a feed's rows to its key when it is first named, or renamed, rather than writing them twice", async () => {
+    expect((await once(["/atom.xml"])).code).toBe(0);
+    const ids = marfa.rows.map((candidate) => candidate.id);
+    expect((await once([], ["--once"], `blog=${base}/atom.xml`)).code).toBe(0);
+    expect(marfa.rows.map((candidate) => candidate.id)).toEqual(ids);
+    expect(
+      marfa.rows.every((candidate) =>
+        candidate.source_id?.startsWith(
+          `${feedKey(`${base}/atom.xml`, "blog")}:`,
+        ),
+      ),
+    ).toBe(true);
+    expect((await once([], ["--once"], `journal=${base}/atom.xml`)).code).toBe(
+      0,
+    );
+    expect(marfa.rows.map((candidate) => candidate.id)).toEqual(ids);
+    expect(
+      marfa.rows.map((candidate) => candidate.properties["feed_hash"]),
+    ).toEqual([
+      feedKey(`${base}/atom.xml`, "journal"),
+      feedKey(`${base}/atom.xml`, "journal"),
+    ]);
+    expect((await once([], ["--once"], `journal=${base}/atom.xml`)).code).toBe(
+      0,
+    );
+    expect(asked.at(-1)?.answered).toBe(304);
+  });
+
+  it("moves rows an Atom feed's declared id keyed to its listed address's key", async () => {
+    expect((await once(["/atom.xml"])).code).toBe(0);
+    const address = feedKey(`${base}/atom.xml`);
+    const declared = createHash("sha256")
+      .update("feed-id:tag:example.com,2026:feed")
+      .digest("hex")
+      .slice(0, 32);
+    for (const candidate of marfa.rows) {
+      candidate.source_id = candidate.source_id?.replace(address, declared);
+    }
+    const kept = marfa.states.get("rss") as {
+      state: { feeds: Record<string, Record<string, unknown>> };
+    };
+    kept.state.feeds = {
+      [address]: {
+        validators: { etag: '"atom-1"' },
+        key: declared,
+      },
+    };
+    const ids = marfa.rows.map((candidate) => candidate.id);
+    expect((await once(["/atom.xml"])).code).toBe(0);
+    expect(asked.at(-1)?.answered).toBe(200);
+    expect(marfa.rows.map((candidate) => candidate.id)).toEqual(ids);
+    expect(
+      marfa.rows.map((candidate) => candidate.source_id?.split(":")[0]),
+    ).toEqual([address, address]);
   });
 });

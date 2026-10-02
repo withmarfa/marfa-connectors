@@ -18,7 +18,7 @@ import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
-const statements = 78;
+const statements = 79;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
