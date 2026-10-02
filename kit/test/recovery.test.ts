@@ -1,6 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { start } from "../src/main.js";
-import { causeOf, MarfaUnreachable, Refusal } from "../src/marfa.js";
+import {
+  causeOf,
+  marfaFetch,
+  MarfaAddress,
+  MarfaUnreachable,
+  Refusal,
+} from "../src/marfa.js";
 import { Harness, testConnector, vendor, type Vendor } from "./harness.js";
 
 let harness: Harness;
@@ -50,15 +58,127 @@ describe("what failed, by its cause", () => {
     expect(causeOf(new Refusal(404, "connector_not_found", "gone"))).toBe(
       "registration",
     );
-    expect(causeOf(new Refusal(404, "item_not_found", "gone"))).toBe("vendor");
+    expect(causeOf(new Refusal(404, "item_not_found", "gone"))).toBe("refused");
   });
 
   it("does not read the text of an error", () => {
-    expect(causeOf(new TypeError("fetch failed"))).toBe("vendor");
-    expect(causeOf(new Error("503 unavailable"))).toBe("vendor");
+    expect(causeOf(new TypeError("fetch failed"))).toBe("run");
+    expect(causeOf(new Error("503 unavailable"))).toBe("run");
     expect(causeOf(new Refusal(400, "validation_error", "401 503"))).toBe(
-      "vendor",
+      "refused",
     );
+  });
+
+  it("says address for an address that cannot be used", () => {
+    expect(causeOf(new MarfaAddress("fetch failed"))).toBe("address");
+  });
+});
+
+describe("a call that gets no answer, by what the transport says", () => {
+  async function failing(
+    message: string,
+    cause: { code?: string; message?: string } | undefined,
+  ): Promise<unknown> {
+    const error = new TypeError(message, {
+      cause:
+        cause === undefined
+          ? undefined
+          : Object.assign(new Error(cause.message ?? "x"), cause),
+    });
+    vi.stubGlobal("fetch", () => Promise.reject(error));
+    try {
+      return await marfaFetch(1000)("http://marfa.test/").catch(
+        (thrown: unknown) => thrown,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("is unreachable for a refused or cut connection and a temporary DNS failure", async () => {
+    for (const code of [
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "EHOSTUNREACH",
+      "EAI_AGAIN",
+      "UND_ERR_SOCKET",
+    ]) {
+      const thrown = await failing("fetch failed", { code });
+      expect(thrown).toBeInstanceOf(MarfaUnreachable);
+      expect(causeOf(thrown)).toBe("marfa");
+    }
+  });
+
+  it("is an address that cannot be used for a redirect, a malformed URL and a certificate the connection refuses", async () => {
+    for (const cause of [
+      { message: "unexpected redirect" },
+      { code: "ERR_INVALID_URL" },
+      { code: "DEPTH_ZERO_SELF_SIGNED_CERT" },
+      { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
+      { code: "CERT_HAS_EXPIRED" },
+      { code: "ERR_TLS_CERT_ALTNAME_INVALID" },
+      { code: "EPROTO" },
+    ]) {
+      const thrown = await failing("fetch failed", cause);
+      expect(thrown).toBeInstanceOf(MarfaAddress);
+      expect(causeOf(thrown)).toBe("address");
+    }
+  });
+
+  it("is a host that is not found, which a start refuses and a running connector waits out", async () => {
+    const thrown = await failing("fetch failed", { code: "ENOTFOUND" });
+    expect(thrown).toBeInstanceOf(MarfaUnreachable);
+    expect((thrown as MarfaUnreachable).hostNotFound).toBe(true);
+    expect(causeOf(thrown)).toBe("marfa");
+  });
+});
+
+describe("an address that cannot be used", () => {
+  it("refuses a start at once under --every, naming MARFA_URL, where it was retried for ever", async () => {
+    const redirecting = createServer((_request, response) => {
+      response.writeHead(302, { Location: "http://elsewhere.invalid/" });
+      response.end();
+    });
+    await new Promise<void>((done) => redirecting.listen(0, "127.0.0.1", done));
+    const { port } = redirecting.address() as AddressInfo;
+    try {
+      const code = await start(
+        testConnector(vendor([one])),
+        harness.runtime(["--every", "5m"], {
+          MARFA_URL: `http://127.0.0.1:${String(port)}`,
+        }),
+      );
+      expect(code).toBe(2);
+      expect(said()).toContain("MARFA_URL");
+      expect(said()).toContain("redirect");
+    } finally {
+      redirecting.closeAllConnections();
+      await new Promise((done) => redirecting.close(done));
+    }
+  });
+
+  it("refuses a start where the host is not found, under either schedule", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.reject(
+        new TypeError("fetch failed", {
+          cause: Object.assign(new Error("getaddrinfo ENOTFOUND"), {
+            code: "ENOTFOUND",
+          }),
+        }),
+      ),
+    );
+    try {
+      for (const argv of [["--once"], ["--every", "5m"]]) {
+        harness.lines.length = 0;
+        expect(
+          await start(testConnector(vendor([one])), harness.runtime(argv)),
+        ).toBe(2);
+        expect(said()).toContain("MARFA_URL");
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -232,6 +352,100 @@ describe("a run that failed because Marfa was unreachable", () => {
     await harness.clock.wake(15_000);
     await until(() => harness.server.runs.length === 3);
     await harness.clock.sleeping(40 * minute);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("asks once for a run a Marfa that answers still fails, and gives it no more load than the backoff after that", async () => {
+    const held = vendor([one]);
+    const exit = every(held, "10m");
+    await harness.clock.sleeping(10 * minute);
+    for (let times = 0; times < 3; times += 1) {
+      harness.server.refuseNext(
+        "GET /connectors/connector-1/state",
+        503,
+        "unavailable",
+      );
+    }
+    await harness.clock.wake(10 * minute);
+    await harness.clock.wake(15_000);
+    await harness.clock.wake(40 * minute);
+    await until(() => harness.server.runs.length === 4);
+    // The third failure in a row waits the full eight intervals, and does not ask.
+    await harness.clock.sleeping(80 * minute);
+    expect(harness.clock.requested.filter((ms) => ms === 15_000)).toHaveLength(
+      1,
+    );
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("waits at least what Retry-After names on a run's own door before it asks, where a probe would have come sooner", async () => {
+    const held = vendor([one]);
+    const exit = every(held, "10m");
+    await harness.clock.sleeping(10 * minute);
+    harness.server.refuseNext(
+      "GET /connectors/connector-1/state",
+      429,
+      "rate_limited",
+      "slow down",
+      "120",
+    );
+    await harness.clock.wake(10 * minute);
+    await harness.clock.sleeping(120_000);
+    expect(harness.clock.requested).not.toContain(15_000);
+    await harness.clock.wake(120_000);
+    await until(() => harness.server.runs.length === 3);
+    expect(harness.lastRun().outcome).toBe("succeeded");
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("spreads its asks, and the first run after an answer, so connectors do not arrive together", async () => {
+    harness.random = () => 0.5;
+    const held = vendor([one]);
+    const exit = every(held, "10m");
+    await harness.clock.sleeping(10 * minute);
+    harness.server.refuseNext(
+      "GET /connectors/connector-1/state",
+      503,
+      "unavailable",
+    );
+    await harness.clock.wake(10 * minute);
+    await harness.clock.wake(16_500);
+    await harness.clock.wake(2500);
+    await until(() => harness.server.runs.length === 3);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("is the cause of a run fenced because Marfa did not answer its renewals", async () => {
+    const held = vendor([one]);
+    let open!: () => void;
+    held.gate = new Promise((resolve) => {
+      open = resolve;
+    });
+    const exit = every(held, "10m");
+    await until(() => held.runs === 1);
+    for (let beat = 1; beat <= 3; beat += 1) {
+      harness.server.refuseNext(
+        "POST /connectors/connector-1/hold",
+        503,
+        "unavailable",
+      );
+      await harness.clock.wake(minute);
+      await until(
+        () =>
+          harness.lines.filter((line) => line.includes("could not be renewed"))
+            .length === beat,
+      );
+    }
+    held.gate = undefined;
+    open();
+    await until(() => harness.server.runs.length === 1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    await harness.clock.sleeping(15_000);
+    expect(harness.clock.requested).not.toContain(20 * minute);
     harness.stop();
     expect(await exit).toBe(0);
   });

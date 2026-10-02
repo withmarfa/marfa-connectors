@@ -5,7 +5,7 @@ import type {
   Item,
   Target,
 } from "./define.js";
-import { Refusal, type Edge, type Marfa } from "./marfa.js";
+import { causeOf, Refusal, type Edge, type Marfa } from "./marfa.js";
 import {
   connectKey,
   Stopped,
@@ -438,7 +438,7 @@ export class Connections {
       if (!(error instanceof Refusal) || error.status === undefined) {
         throw error;
       }
-      if (error.status >= 500 || error.status === 401) throw error;
+      if (causeOf(error) !== "refused") throw error;
       this.refused(item, type, target, `${error.code}, ${error.detail}`);
       return false;
     }

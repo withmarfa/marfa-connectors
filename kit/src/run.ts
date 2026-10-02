@@ -26,7 +26,13 @@ import { Connections, connectionsKey, type Carried } from "./connections.js";
 import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, keepSecret, reportCap, type Logger } from "./log.js";
-import { causeOf, type Cause, type Edge, type Marfa } from "./marfa.js";
+import {
+  causeOf,
+  retryAfterOf,
+  type Cause,
+  type Edge,
+  type Marfa,
+} from "./marfa.js";
 import {
   carriable,
   cascaded,
@@ -69,6 +75,8 @@ export interface RunResult {
   readonly succeeded: boolean;
   /** Whose failure ended a run that did not succeed. */
   readonly cause: Cause | undefined;
+  /** What a refusal that failed the run asked to wait, where it did. */
+  readonly retryAfterMs: number | undefined;
   readonly cursor: string | undefined;
   readonly settled: boolean;
 }
@@ -1437,7 +1445,9 @@ export async function runOnce<E extends EnvDeclaration>(
   if (reported && failure === undefined && whole) {
     for (const [key, message] of Object.entries(stored.conditions)) {
       if (!raised.has(key)) {
-        logger.info(`cleared: ${message} (this run did not raise it again)`);
+        logger.info(
+          `cleared: ${message} (this run read everything and did not find it again)`,
+        );
       }
     }
     conditions = Object.fromEntries(known);
@@ -1464,6 +1474,7 @@ export async function runOnce<E extends EnvDeclaration>(
   return {
     succeeded: failure === undefined,
     cause: failure === undefined ? undefined : causeOf(failure),
+    retryAfterMs: failure === undefined ? undefined : retryAfterOf(failure),
     settled,
     cursor: pastLog ? read?.cursor : stored.cursor,
   };

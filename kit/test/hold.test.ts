@@ -342,6 +342,80 @@ describe("the hold's window", () => {
   });
 });
 
+describe("the hold at any window the server allows", () => {
+  it("refuses an answer whose ttl_ms is no positive number, and the run does not start", async () => {
+    for (const value of [undefined, null, 0, -5, "180000"]) {
+      harness.server.ttlAnswer = { value };
+      harness.server.holder = undefined;
+      const held = vendor([one]);
+      expect(await harness.once(held)).toBe(1);
+      expect(held.runs).toBe(0);
+      expect(harness.lines.join("\n")).toContain("hold window");
+      harness.lines.length = 0;
+    }
+  });
+
+  it("bounds a carry by the signal it hands out: aborted when the trust runs out, so a call to the vendor cannot outlast it", async () => {
+    harness.server.holdMs = 400;
+    let aborted = false;
+    const connector = testConnector(vendor([one]));
+    const exit = start(
+      {
+        ...connector,
+        run: async (context) => {
+          await new Promise<void>((resolve) => {
+            context.signal.addEventListener("abort", () => {
+              aborted = true;
+              resolve();
+            });
+          });
+          await connector.run(context);
+        },
+      },
+      harness.runtime(["--once"]),
+    );
+    expect(await exit).toBe(1);
+    expect(aborted).toBe(true);
+    expect(harness.lines.join("\n")).toContain("went unrenewed too long");
+  });
+
+  it("renews at a third of a one second window, with a gap shorter than that, whatever the heartbeat does", async () => {
+    harness.server.holdMs = 1200;
+    const held = vendor([one]);
+    const release = gate(held);
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    await harness.clock.sleeping(400);
+    const renewals = harness.server.holds.length;
+    await harness.clock.wake(400);
+    await until(() => harness.server.holds.length > renewals);
+    release();
+    expect(await exit).toBe(0);
+  });
+
+  it("is not kept waiting by a heartbeat that has not answered", async () => {
+    const held = vendor([one]);
+    const release = gate(held);
+    let letGo!: () => void;
+    const hanging = new Promise<void>((resolve) => {
+      letGo = resolve;
+    });
+    const exit = harness.once(held);
+    await until(() => held.runs === 1);
+    harness.server.beforeAnswer = async (request) => {
+      if (request.path === "/connectors/connector-1/heartbeat") await hanging;
+    };
+    await harness.clock.wake(minute);
+    await until(() => harness.server.holds.length === 2);
+    // The next renewal is asked a minute on, with the heartbeat still waiting.
+    await harness.clock.sleeping(minute);
+    harness.server.beforeAnswer = undefined;
+    letGo();
+    release();
+    expect(await exit).toBe(0);
+  });
+});
+
 describe("the wait for another process's hold", () => {
   const hour = 60 * minute;
   const now = Date.parse("2026-09-26T00:00:00.000Z");

@@ -180,6 +180,9 @@ export class ScriptedServer {
   /** The registration is gone: every door under it answers 404 until the
    *  connector registers again. */
   lost = false;
+  /** What the hold answers for `ttl_ms`, where it is not the window: a
+   *  value that is no number, or none at all. */
+  ttlAnswer: { value: unknown } | undefined;
   bodyCap: number | undefined;
   tooOld = false;
   incompleteAfter: number | undefined;
@@ -950,7 +953,8 @@ export class ScriptedServer {
       res.setHeader("Date", new Date(now).toUTCString());
       send(200, {
         expires_at: new Date(this.holder.until).toISOString(),
-        ttl_ms: this.holdMs,
+        ttl_ms:
+          this.ttlAnswer === undefined ? this.holdMs : this.ttlAnswer.value,
         renewed,
       });
       return;
