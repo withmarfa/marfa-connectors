@@ -377,3 +377,135 @@ describe("a row the connector archived", () => {
     expect(harness.lastRun().summary).toContain("updated 1");
   });
 });
+
+function relinkedRows(kept: Record<string, unknown>): string[] {
+  const held = kept["relinked"] as { rows?: object } | undefined;
+  return Object.keys(held?.rows ?? {});
+}
+
+describe("a purge of a row whose link a person changed before its trash", () => {
+  it("is carried by the link agreed with the vendor, which a restore lets go", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1").id;
+    harness.server.edit(first, { vendor_id: "v-other" });
+    harness.server.trash(first);
+    held.entries = [two];
+    await harness.twoWay(held);
+    harness.server.purge("a:1");
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    const purge = held.changes.find((change) => change.kind === "purged");
+    expect(purge?.item.properties["vendor_id"]).toBe("v1");
+
+    const second = harness.server.row("a:2").id;
+    harness.server.edit(second, { vendor_id: "v-other" });
+    harness.server.trash(second);
+    await harness.twoWay(held);
+    const relinked = () => relinkedRows(harness.kept());
+    expect(relinked()).toEqual([second]);
+    harness.server.restore(second);
+    await harness.twoWay(held);
+    expect(relinked()).toEqual([]);
+  });
+
+  it("is not carried where the link was changed, the row trashed and purged between two runs, and the run names it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1").id;
+    harness.server.edit(row, { vendor_id: "v-other" });
+    harness.server.trash(row);
+    harness.server.purge("a:1");
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+    expect(harness.lastRun().summary).toContain(
+      `the purge of ${row} is not carried`,
+    );
+  });
+
+  it("is carried where the row was trashed and purged between two runs with its link untouched", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1").id;
+    harness.server.trash(row);
+    harness.server.purge("a:1");
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.map((change) => [
+        change.kind,
+        change.item.properties["vendor_id"],
+      ]),
+    ).toEqual([["purged", "v1"]]);
+  });
+
+  it("past what the kit keeps, is not carried by the row's own link, and the run names it", async () => {
+    const many = Array.from({ length: 1001 }, (_, at) => ({
+      source_id: `m:${String(at)}`,
+      properties: { title: `Many ${String(at)}`, vendor_id: `m${String(at)}` },
+    }));
+    const held = vendor(many);
+    await harness.twoWay(held);
+    for (const entry of many) {
+      const id = harness.server.row(entry.source_id).id;
+      harness.server.edit(id, { vendor_id: `other-${entry.source_id}` });
+      harness.server.trash(id);
+    }
+    held.entries = [];
+    await harness.twoWay(held);
+    expect(relinkedRows(harness.kept())).toHaveLength(1000);
+    for (const entry of many) harness.server.purge(entry.source_id);
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    const purged = held.changes.filter((change) => change.kind === "purged");
+    expect(purged).toHaveLength(1000);
+    expect(
+      purged.every((change) =>
+        /^m\d+$/.test(String(change.item.properties["vendor_id"])),
+      ),
+    ).toBe(true);
+    expect(harness.lastRun().summary).toMatch(
+      /the purge of \S+ is not carried/,
+    );
+  }, 120_000);
+
+  it("lets go of what it kept for a row purged while the log was out of reach", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1").id;
+    harness.server.edit(row, { vendor_id: "v-other" });
+    harness.server.trash(row);
+    held.entries = [];
+    await harness.twoWay(held);
+    expect(relinkedRows(harness.kept())).toEqual([row]);
+    harness.server.purge("a:1");
+    harness.server.tooOld = true;
+    await harness.twoWay(held);
+    harness.server.tooOld = false;
+    expect(harness.kept()["relinked"]).toBeUndefined();
+  });
+
+  it("goes by the agreed link where a put-back failed partway through the run that read the link's change", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    const first = harness.server.row("a:1").id;
+    const second = harness.server.row("a:2").id;
+    harness.server.edit(first, { vendor_id: "v-first-other" });
+    harness.server.edit(second, { vendor_id: "v-second-other" });
+    harness.server.refuseNext(`PATCH /items/${first}`, 500, "internal");
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.trash(second);
+    harness.server.purge("a:2");
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(
+      held.changes
+        .filter((change) => change.item.id === second)
+        .map((change) => [change.kind, change.item.properties["vendor_id"]]),
+    ).toEqual([["purged", "v2"]]);
+  });
+});

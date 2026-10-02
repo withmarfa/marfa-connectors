@@ -8,6 +8,12 @@ export function markOf(rowId: string): string {
   return `<!-- marfa:${digest.slice(0, 16)} -->`;
 }
 
+/** Whether a body ends with the row's mark, as the App writes it: one
+ *  quoted anywhere else names nothing. */
+export function markedFor(body: string, rowId: string): boolean {
+  return body.trimEnd().endsWith(markOf(rowId));
+}
+
 export function unmarked(body: string): string {
   return body.replace(/\s*<!-- marfa:[0-9a-f]{16} -->\s*$/, "");
 }

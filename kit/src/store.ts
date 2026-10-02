@@ -5,11 +5,20 @@ import type { Marfa } from "./marfa.js";
 /** A purge still to carry, with when and why the vendor last refused it. */
 export type Purge = Item & { refused?: { at: string; reason?: string } };
 
+export interface Relinked {
+  rows: Record<string, { link: string; type: string }>;
+  overflowed?: true;
+}
+
 export interface Kept {
   state: Record<string, unknown>;
   conditions: Record<string, string>;
   cursor?: string;
   purges?: Purge[];
+  /** The link agreed for each row whose own link differs and could not be
+   *  put back, which a purge, dropping the agreement, would otherwise lose;
+   *  `overflowed` once one was past what is kept. */
+  relinked?: Relinked;
 }
 
 const perRequest = 500;
@@ -35,11 +44,27 @@ function keptOf(value: unknown): Kept {
   const purges = Array.isArray(kept["purges"])
     ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Purge)
     : [];
+  const held = isRecord(kept["relinked"]) ? kept["relinked"] : {};
+  const relinked: Relinked = {
+    rows: Object.fromEntries(
+      Object.entries(isRecord(held["rows"]) ? held["rows"] : {}).flatMap(
+        ([id, row]) =>
+          isRecord(row) &&
+          typeof row["link"] === "string" &&
+          typeof row["type"] === "string"
+            ? [[id, { link: row["link"], type: row["type"] }]]
+            : [],
+      ),
+    ),
+    ...(held["overflowed"] === true && { overflowed: true }),
+  };
   return {
     state,
     conditions,
     ...(typeof cursor === "string" && { cursor }),
     ...(purges.length > 0 && { purges }),
+    ...((Object.keys(relinked.rows).length > 0 ||
+      relinked.overflowed === true) && { relinked }),
   };
 }
 
@@ -110,6 +135,7 @@ export class Store {
       conditions: kept.conditions,
       ...(kept.cursor !== undefined && { cursor: kept.cursor }),
       ...(kept.purges !== undefined && { purges: kept.purges }),
+      ...(kept.relinked !== undefined && { relinked: kept.relinked }),
     });
   }
 

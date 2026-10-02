@@ -315,3 +315,22 @@ describe("a secret made at run time", () => {
     );
   });
 });
+
+describe("a read-only field a person changed that could not be put back", () => {
+  it("is named to the connector as not agreed, so it trusts none of it", async () => {
+    const held = vendor([
+      { ...one, properties: { ...one.properties, note: "vendor's" } },
+    ]);
+    held.readOnly = ["note"];
+    await harness.twoWay(held);
+    const id = harness.server.row("a:1").id;
+    harness.server.edit(id, { note: "a person's", title: "One, edited" });
+    harness.server.refuseNext(`PATCH /items/${id}`, 409, "version_conflict");
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => [...(change.unagreed ?? [])])).toEqual([
+      ["note"],
+    ]);
+  });
+});

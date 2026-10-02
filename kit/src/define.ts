@@ -198,6 +198,19 @@ export interface Change {
    * a lost answer would have the vendor answer the refusal again.
    */
   readonly refused?: string;
+  /**
+   * The read-only fields the row holds otherwise than was agreed with the
+   * vendor, where putting them back failed; none of them is to be trusted
+   * as the vendor's.
+   */
+  readonly unagreed?: ReadonlySet<string>;
+  /**
+   * For each connection type the vendor holds read only, such as the
+   * repository an issue sits in, the rows the agreed connections name, as
+   * the vendor was told of them: where the row sits, never what a person
+   * drew since.
+   */
+  readonly placement?: Readonly<Record<string, readonly Item[]>>;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {

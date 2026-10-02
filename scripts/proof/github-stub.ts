@@ -58,6 +58,7 @@ export interface Issue {
   deleted?: boolean;
   moved?: boolean;
   app?: boolean;
+  unlisted?: number;
 }
 
 export interface Comment {
@@ -70,6 +71,7 @@ export interface Comment {
   updated_at: string;
   deleted?: boolean;
   app?: boolean;
+  unlisted?: number;
 }
 
 type Access = "read" | "write";
@@ -108,11 +110,19 @@ export class GitHubStub {
   appId = 12345;
   appSlug = "marfa-connectors";
   loseNextCreate = false;
+  // With `loseNextCreate`, what the create made is missing from the next
+  // listing, as one GitHub has not indexed yet.
+  listLate = false;
   // GitHub answers either limit with 403 or 429; the stub pairs each status
   // with one limit's message.
   writesLimited:
     { left: number; status: 403 | 429; title?: string } | undefined;
   mutationsLimited = 0;
+  // GraphQL errors of a type GitHub gives for a passing fault.
+  mutationsFailing = 0;
+  // Answers this many listings of a repository's issues or an issue's
+  // comments 404, as a repository GitHub hides for a moment.
+  listingsFailing = 0;
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
@@ -260,6 +270,13 @@ export class GitHubStub {
 
   issue(node: string): Issue | undefined {
     return this.issues.find((one) => one.node === node);
+  }
+
+  /** Counts a listing against what is still to be left out of them. */
+  private listed(one: { unlisted?: number }): boolean {
+    if ((one.unlisted ?? 0) <= 0) return true;
+    one.unlisted = (one.unlisted ?? 0) - 1;
+    return false;
   }
 
   writes(): Asked[] {
@@ -571,6 +588,15 @@ export class GitHubStub {
         return;
       }
     }
+    if (
+      this.listingsFailing > 0 &&
+      method === "GET" &&
+      /^\/repos\/[^/]+\/[^/]+\/issues(\/\d+\/comments)?$/.test(path)
+    ) {
+      this.listingsFailing -= 1;
+      send(404, { message: "Not Found" });
+      return;
+    }
     if (this.rateLimited && path.startsWith("/repos/")) {
       send(
         403,
@@ -718,7 +744,10 @@ export class GitHubStub {
       }
       page(
         this.comments
-          .filter((one) => one.issue === issue.node && !one.deleted)
+          .filter(
+            (one) =>
+              one.issue === issue.node && !one.deleted && this.listed(one),
+          )
           .map((one) => this.restComment(one)),
       );
       return;
@@ -775,7 +804,8 @@ export class GitHubStub {
               !one.deleted &&
               !one.moved &&
               (state === "all" || one.state === state) &&
-              (since === null || one.updated_at >= since),
+              (since === null || one.updated_at >= since) &&
+              this.listed(one),
           )
           .sort((a, b) => a.id - b.id)
           .map((one) => this.restIssue(one)),
@@ -833,9 +863,11 @@ export class GitHubStub {
       }
       return false;
     };
-    const created = (made: unknown): void => {
+    const created = (held: { unlisted?: number }, made: unknown): void => {
       if (this.loseNextCreate) {
         this.loseNextCreate = false;
+        if (this.listLate) held.unlisted = 1;
+        this.listLate = false;
         send(502, { message: "Server Error" });
         return;
       }
@@ -866,7 +898,7 @@ export class GitHubStub {
         user: bot,
         app: true,
       });
-      created(this.restIssue(made));
+      created(made, this.restIssue(made));
       return true;
     }
     match = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(path);
@@ -920,7 +952,7 @@ export class GitHubStub {
       if (refused(this.repositoryOf(issue))) return true;
       const made = this.addComment(issue, String(fields["body"]), bot);
       made.app = true;
-      created(this.restComment(made));
+      created(made, this.restComment(made));
       return true;
     }
     return false;
@@ -938,6 +970,14 @@ export class GitHubStub {
         ? found
         : undefined;
     };
+    if (this.mutationsFailing > 0) {
+      this.mutationsFailing -= 1;
+      send(200, {
+        data: null,
+        errors: [{ type: "SERVICE_UNAVAILABLE", message: "Try again later" }],
+      });
+      return true;
+    }
     if (this.mutationsLimited > 0) {
       this.mutationsLimited -= 1;
       send(200, {
@@ -1123,6 +1163,9 @@ export class GitHubStub {
       const issue = this.issue(id);
       return issue === undefined ||
         issue.deleted === true ||
+        // Whether GitHub shows an issue whose repository turned issues off
+        // is not documented; the stand-in takes the stricter answer.
+        this.repositoryOf(issue).issuesOff === true ||
         // GitHub shows an App a public repository's issues, installed or not.
         (!this.visible(req, issue.repository) &&
           this.repositoryOf(issue).private)
@@ -1184,6 +1227,7 @@ export class GitHubStub {
                 __typename: "Repository",
                 id,
                 nameWithOwner: `${repository.owner}/${repository.name}`,
+                hasIssuesEnabled: repository.issuesOff !== true,
               };
         }),
       };

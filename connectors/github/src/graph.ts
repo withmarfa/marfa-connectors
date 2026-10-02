@@ -43,7 +43,9 @@ const commentsQuery = `query Comments($ids: [ID!]!) {
 }`;
 
 const repositoriesQuery = `query Repositories($ids: [ID!]!) {
-  nodes(ids: $ids) { __typename ... on Repository { id nameWithOwner } }
+  nodes(ids: $ids) {
+    __typename ... on Repository { id nameWithOwner hasIssuesEnabled }
+  }
 }`;
 
 const numbersQuery = (count: number): string =>
@@ -234,14 +236,22 @@ export async function commentsByNode(
 export async function repositoriesByNode(
   octokit: Client,
   ids: readonly string[],
-): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
+): Promise<Map<string, { name: string; issues: boolean }>> {
+  const found = new Map<string, { name: string; issues: boolean }>();
   for (const batch of batches([...new Set(ids)])) {
     const answer = (await query(octokit, repositoriesQuery, {
       ids: batch,
-    })) as Nodes<{ __typename: string; id: string; nameWithOwner: string }>;
+    })) as Nodes<{
+      __typename: string;
+      id: string;
+      nameWithOwner: string;
+      hasIssuesEnabled: boolean;
+    }>;
     for (const node of known(answer.nodes, "Repository")) {
-      found.set(node.id, node.nameWithOwner);
+      found.set(node.id, {
+        name: node.nameWithOwner,
+        issues: node.hasIssuesEnabled,
+      });
     }
   }
   return found;
@@ -251,8 +261,8 @@ export async function repositoryByNode(
   octokit: Client,
   id: string,
 ): Promise<{ node: string; name: string } | undefined> {
-  const name = (await repositoriesByNode(octokit, [id])).get(id);
-  return name === undefined ? undefined : { node: id, name };
+  const found = (await repositoriesByNode(octokit, [id])).get(id);
+  return found === undefined ? undefined : { node: id, name: found.name };
 }
 
 export async function nodesOfNumbers(
@@ -293,6 +303,13 @@ const mutations = {
   }`,
 };
 
+/** GraphQL's answers for what will not change by asking again. */
+export const refusedTypes: ReadonlySet<string> = new Set([
+  "NOT_FOUND",
+  "FORBIDDEN",
+  "UNPROCESSABLE",
+]);
+
 export async function relate(
   octokit: Client,
   change: keyof typeof mutations,
@@ -303,10 +320,11 @@ export async function relate(
     await octokit.graphql(mutations[change], { issueId, other });
     return undefined;
   } catch (error) {
-    if (error instanceof GraphqlResponseError) {
-      return (
-        error.errors?.map((one) => one.message).join("; ") ?? error.message
-      );
+    if (
+      error instanceof GraphqlResponseError &&
+      error.errors?.every((one) => refusedTypes.has(one.type)) === true
+    ) {
+      return error.errors.map((one) => one.message).join("; ");
     }
     throw error;
   }

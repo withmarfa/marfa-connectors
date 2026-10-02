@@ -408,6 +408,34 @@ export class Connections {
     return new Set(ids.filter((id) => !rows.has(id)));
   }
 
+  /** The rows the agreed connections of each type the vendor holds read
+   *  only name, as told: where the row sits at the vendor. */
+  async placementOf(
+    item: Item,
+    spec: Spec,
+    agreement: Agreement,
+  ): Promise<Record<string, Item[]> | undefined> {
+    const types = this.typesFrom(item.type).filter(
+      (type) => spec.twoWay && spec.readOnly.has(type),
+    );
+    const ids = types.flatMap((type) => agreement.connections?.[type] ?? []);
+    if (ids.length === 0) return undefined;
+    const rows = await this.rows(ids);
+    const told = await this.told([...rows.values()]);
+    const placement = Object.fromEntries(
+      types
+        .map((type): [string, Item[]] => [
+          type,
+          (agreement.connections?.[type] ?? []).flatMap((id) => {
+            const row = rows.get(id);
+            return row !== undefined && told.has(id) ? [row] : [];
+          }),
+        ])
+        .filter(([, rows]) => rows.length > 0),
+    );
+    return Object.keys(placement).length === 0 ? undefined : placement;
+  }
+
   private async told(rows: readonly Item[]): Promise<Set<string>> {
     const told = new Set<string>();
     for (const { rows: lane } of this.lanes.values()) {
