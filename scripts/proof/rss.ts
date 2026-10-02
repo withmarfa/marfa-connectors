@@ -12,7 +12,7 @@ import {
   typeHeld,
   item,
   lastRun,
-  mintAsReadmeSays,
+  mintWithTheReadmeKeyFlags,
   moved,
   promoteAndFind,
   registration,
@@ -93,7 +93,7 @@ function edit(
 export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
   const served = await serveFeeds();
   try {
-    const key = await mintAsReadmeSays(marfa, {
+    const key = await mintWithTheReadmeKeyFlags(marfa, {
       label: "rss",
       source: "rss",
       typePermission: "rss.entry",

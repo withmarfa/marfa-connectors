@@ -12,7 +12,7 @@ import {
   ConnectorUnderProof,
   edit,
   lastRun,
-  mintAsReadmeSays,
+  mintWithTheReadmeKeyFlags,
   registration,
   rowsOf,
 } from "./connector.js";
@@ -124,7 +124,7 @@ export async function proveInbound(
 ): Promise<void> {
   const vendor = await serveThings();
   try {
-    const key = await mintAsReadmeSays(marfa, {
+    const key = await mintWithTheReadmeKeyFlags(marfa, {
       label: "proof-inbound",
       source: "proof-inbound",
       typePermission: "proof.thing",
