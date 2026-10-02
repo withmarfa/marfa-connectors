@@ -10,8 +10,8 @@ import {
   fetchFeed,
   maxFeedElements,
   maxFeedEntries,
+  maxFieldLength,
   privateHosts,
-  readFeed,
   TooManyElements,
   TooManyEntries,
   type Feed,
@@ -24,6 +24,15 @@ import {
   TooLarge,
   TooManyRedirects,
 } from "./fetch.js";
+import {
+  parseLimits,
+  parseTimeoutMs,
+  maxResultChars,
+  readBounded,
+  TooBig,
+  TooHeavy,
+  TooSlow,
+} from "./parse.js";
 import rssEntry from "./rss.entry.json" with { type: "json" };
 
 interface FeedState {
@@ -39,6 +48,7 @@ interface FeedState {
    *  where they are rather than handed to either. */
   shared?: string[];
   unkeyed?: number;
+  dropped?: number;
   declared?: string;
   /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
    *  named again if it returns. */
@@ -66,6 +76,15 @@ function refusal(error: unknown): string | undefined {
   }
   if (error instanceof TooManyRedirects) {
     return `redirected more than ${String(maxRedirects)} times, so it is skipped`;
+  }
+  if (error instanceof TooHeavy) {
+    return `needs more than ${String(parseLimits.maxOldGenerationSizeMb)} MB to read, so it is skipped`;
+  }
+  if (error instanceof TooBig) {
+    return `reads to more than ${String(maxResultChars / 1024 / 1024)} Mi characters of entries, so it is skipped`;
+  }
+  if (error instanceof TooSlow) {
+    return `takes longer than ${String(parseTimeoutMs / 1000)} seconds to read, so it is skipped`;
   }
   return undefined;
 }
@@ -106,19 +125,22 @@ const connector = defineConnector({
       }
     }
 
-    // A feed renamed, or named for the first time, finds its rows by its
-    // address; one moved under its name keeps its key.
+    // A feed renamed, or named for the first time, in the same edit finds
+    // its rows by its address; one moved under its name keeps its key. A
+    // feed that left the list is found again by its key alone: another
+    // account can be read at the same address.
     const previous = (feed: Feed): { held: FeedState; id?: string } => {
       const own = known[feed.key];
       if (own !== undefined) {
         claimed.add(feed.key);
-        return {
-          held: { ...own, address: own.address ?? feed.key },
-          id: feed.key,
-        };
+        const held: FeedState = { ...own, address: own.address ?? feed.key };
+        Reflect.deleteProperty(held, "left");
+        return { held, id: feed.key };
       }
       for (const [id, held] of Object.entries(known)) {
-        if (configured.has(id) || claimed.has(id)) continue;
+        if (configured.has(id) || claimed.has(id) || held.left !== undefined) {
+          continue;
+        }
         const address = held.address ?? id;
         if (address === feed.address) {
           claimed.add(id);
@@ -156,13 +178,22 @@ const connector = defineConnector({
     // the kit would otherwise take them as cleared.
     const raise = (feed: Feed, held: FeedState): void => {
       const name = feedName(feed);
+      const long = held.dropped ?? 0;
+      if (long > 0) {
+        log.condition(
+          `long:${feed.key}`,
+          long === 1
+            ? `a value in ${name} is longer than ${String(maxFieldLength)} characters, and is left out`
+            : `${String(long)} values in ${name} are longer than ${String(maxFieldLength)} characters, and are left out`,
+        );
+      }
       const count = held.unkeyed ?? 0;
       if (count > 0) {
         log.condition(
           `unkeyed:${feed.key}`,
           count === 1
-            ? `an entry in ${name} carries neither an id nor a link, and is left out`
-            : `${String(count)} entries in ${name} carry neither an id nor a link, and are left out`,
+            ? `an entry in ${name} has no id or link to be known by, or only one over 100,000 characters, and is left out`
+            : `${String(count)} entries in ${name} have no id or link to be known by, or only one over 100,000 characters, and are left out`,
         );
       }
       if ((held.shared ?? []).length > 0) {
@@ -230,7 +261,7 @@ const connector = defineConnector({
         raise(feed, carried);
         continue;
       }
-      if (!("text" in fetched)) {
+      if (!("bytes" in fetched)) {
         log.condition(
           `status:${feed.key}`,
           `${name} answered ${String(fetched.status)}`,
@@ -240,8 +271,17 @@ const connector = defineConnector({
       }
       let read;
       try {
-        read = readFeed(feed, fetched.text, fetched.url);
+        read = await readBounded(
+          {
+            feed,
+            bytes: fetched.bytes,
+            contentType: fetched.contentType,
+            documentUrl: fetched.url,
+          },
+          signal,
+        );
       } catch (error) {
+        if (signal.aborted) throw error;
         const why = refusal(error);
         log.condition(
           why === undefined ? `unreadable:${feed.key}` : `refused:${feed.key}`,
@@ -257,10 +297,12 @@ const connector = defineConnector({
         ...(was.length > 0 && { was }),
         ...(shared.length > 0 && { shared }),
         ...(read.unkeyed > 0 && { unkeyed: read.unkeyed }),
+        ...(read.dropped > 0 && { dropped: read.dropped }),
         ...(read.declared !== undefined && { declared: read.declared }),
       };
       kept[feed.key] = now;
       raise(feed, now);
+      signal.throwIfAborted();
       await upsert(
         rssEntry.id,
         was.length === 0

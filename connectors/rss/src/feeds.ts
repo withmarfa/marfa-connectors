@@ -22,40 +22,54 @@ export class TooManyElements extends Error {
 }
 
 /**
- * Counted in the text before it is parsed, so a feed past either cap costs no
- * parse. Every `<` that opens an element counts, whatever its name, and an
- * entry is any element whose local name is `item` or `entry` in any case and
- * under any prefix: the parser lowercases names and maps prefixes, so this
- * counts at least what it builds. Comments and CDATA are skipped, as the
- * parser builds nothing from them.
+ * A cheap refusal before the parse, which runs bounded in a worker either
+ * way: counts each `<` that opens an element or a `<!` declaration, and as
+ * entries those whose local name is `item` or `entry` in any case. Comments,
+ * CDATA, the doctype, processing instructions, end tags and quoted attribute
+ * values are passed over.
  */
 function countTags(text: string): void {
   const name = /[^\s/>]*/y;
+  const tagEnd = /["'>]/g;
   let elements = 0;
   let entries = 0;
   for (let at = text.indexOf("<"); at !== -1; at = text.indexOf("<", at)) {
-    if (text.startsWith("<!--", at)) {
-      const end = text.indexOf("-->", at + 4);
+    const skipTo = text.startsWith("<!--", at)
+      ? "-->"
+      : text.startsWith("<![", at)
+        ? "]]>"
+        : undefined;
+    if (skipTo !== undefined) {
+      const end = text.indexOf(skipTo, at + 3);
       if (end === -1) return;
-      at = end + 3;
-      continue;
-    }
-    if (text.startsWith("<![CDATA[", at)) {
-      const end = text.indexOf("]]>", at + 9);
-      if (end === -1) return;
-      at = end + 3;
+      at = end + skipTo.length;
       continue;
     }
     const next = text[at + 1];
-    at += 1;
-    if (next === "!" || next === "?" || next === "/") continue;
+    if (next === "?" || next === "/" || text.startsWith("<!D", at)) {
+      at += 1;
+      continue;
+    }
     elements += 1;
     if (elements > maxFeedElements) throw new TooManyElements();
-    name.lastIndex = at;
-    const local = (name.exec(text)?.[0] ?? "").toLowerCase().split(":").pop();
+    name.lastIndex = next === "!" ? at + 2 : at + 1;
+    const found = name.exec(text)?.[0] ?? "";
+    const local = found.toLowerCase().split(":").pop();
     if (local === "item" || local === "entry") {
       entries += 1;
       if (entries > maxFeedEntries) throw new TooManyEntries();
+    }
+    tagEnd.lastIndex = name.lastIndex;
+    for (;;) {
+      const mark = tagEnd.exec(text);
+      if (mark === null) return;
+      if (mark[0] === ">") {
+        at = mark.index + 1;
+        break;
+      }
+      const close = text.indexOf(mark[0], mark.index + 1);
+      if (close === -1) return;
+      tagEnd.lastIndex = close + 1;
     }
   }
 }
@@ -153,11 +167,16 @@ export interface Validators {
 export type Fetched =
   | {
       status: 200;
-      text: string;
+      bytes: Uint8Array;
+      contentType: string | null;
       validators: Validators;
       url: string;
     }
   | { status: number };
+
+/** A validator is echoed back verbatim; past this a server is not using it
+ *  as one, and it is not kept. */
+const maxValidatorLength = 1024;
 
 function sniffed(bytes: Uint8Array): string | undefined {
   const [a, b, c, d] = bytes;
@@ -246,11 +265,18 @@ export async function fetchFeed(
     const value = answer.headers[name];
     return Array.isArray(value) ? value[0] : value;
   };
-  const etag = header("etag");
-  const lastModified = header("last-modified");
+  const kept = (name: string): string | undefined => {
+    const value = header(name);
+    return value !== undefined && value.length <= maxValidatorLength
+      ? value
+      : undefined;
+  };
+  const etag = kept("etag");
+  const lastModified = kept("last-modified");
   return {
     status: 200,
-    text: decodeFeed(answer.bytes, header("content-type") ?? null),
+    bytes: answer.bytes,
+    contentType: header("content-type") ?? null,
     validators: {
       ...(etag !== undefined && { etag }),
       ...(lastModified !== undefined && { last_modified: lastModified }),
@@ -394,9 +420,15 @@ function atomTextOf(
     : textOf(text?.value);
 }
 
+/** Marfa's default cap on a string property: a longer one is refused, and
+ *  the entry with it. */
+export const maxFieldLength = 100_000;
+
 export interface Read {
   entries: Entry[];
   unkeyed: number;
+  /** Values longer than Marfa takes, left out of their entries. */
+  dropped: number;
   /** A hash of the id an Atom feed declares for itself, which identifies
    *  nothing here and is compared only to say two feeds claim one id. */
   declared: string | undefined;
@@ -444,6 +476,7 @@ export function readFeed(
   };
   const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
+  let dropped = 0;
   const entries: Entry[] = [];
   const keep = (
     entryId: string | undefined,
@@ -451,13 +484,20 @@ export function readFeed(
     occurredAt: string | undefined,
   ): void => {
     const id = textOf(entryId);
-    if (id === undefined) {
+    if (id === undefined || id.length > maxFieldLength) {
       unkeyed += 1;
       return;
     }
+    const kept = Object.fromEntries(
+      Object.entries(properties).filter(([, value]) => {
+        const long = typeof value === "string" && value.length > maxFieldLength;
+        if (long) dropped += 1;
+        return !long;
+      }),
+    );
     entries.push({
       source_id: `${key}:${id}`,
-      properties: { ...properties, entry_id: id, ...named },
+      properties: { ...kept, entry_id: id, ...named },
       occurred_at: occurredAt,
     });
   };
@@ -501,6 +541,7 @@ export function readFeed(
     return {
       entries,
       unkeyed,
+      dropped,
       declared:
         declared === undefined || declared === ""
           ? undefined
@@ -541,7 +582,7 @@ export function readFeed(
         published ?? isoOf(item.dc?.dates?.[0]),
       );
     }
-    return { entries, unkeyed, declared: undefined };
+    return { entries, unkeyed, dropped, declared: undefined };
   }
   throw new Error(
     `a ${parsed.format} feed, where this connector reads Atom and RSS 2.0`,
