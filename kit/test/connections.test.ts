@@ -757,6 +757,22 @@ describe("a read-only connection type on a two-way kind", () => {
   const addedTo = (held: Vendor, at: number) =>
     held.changes[at]?.connections?.["test.blocks"]?.added.map((row) => row.id);
 
+  it("hands a change the rows it agreed with the vendor, whatever a person drew since", async () => {
+    const held = mirrored([entry(1, [2]), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    const one = harness.server.row("a:1");
+    const two = harness.server.row("a:2");
+    harness.server.edit(one.id, { title: "One, edited" });
+    held.entries = [];
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.map((change) =>
+        (change.placement?.["test.blocks"] ?? []).map((row) => row.id),
+      ),
+    ).toEqual([[two.id]]);
+  });
+
   it("is put back when changed in Marfa, carried nowhere, and the run names it", async () => {
     const held = mirrored([entry(1, [2]), entry(2), entry(3)]);
     await harness.twoWay(held);

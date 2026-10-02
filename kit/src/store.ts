@@ -5,14 +5,20 @@ import type { Marfa } from "./marfa.js";
 /** A purge still to carry, with when and why the vendor last refused it. */
 export type Purge = Item & { refused?: { at: string; reason?: string } };
 
+export interface Relinked {
+  rows: Record<string, { link: string; type: string }>;
+  overflowed?: true;
+}
+
 export interface Kept {
   state: Record<string, unknown>;
   conditions: Record<string, string>;
   cursor?: string;
   purges?: Purge[];
-  /** The link agreed for each row in the bin whose own link differs, which
-   *  a purge, dropping the agreement, would otherwise lose. */
-  relinked?: Record<string, string>;
+  /** The link agreed for each row whose own link differs and could not be
+   *  put back, which a purge, dropping the agreement, would otherwise lose;
+   *  `overflowed` once one was past what is kept. */
+  relinked?: Relinked;
 }
 
 const perRequest = 500;
@@ -38,19 +44,27 @@ function keptOf(value: unknown): Kept {
   const purges = Array.isArray(kept["purges"])
     ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Purge)
     : [];
-  const relinked = isRecord(kept["relinked"])
-    ? Object.fromEntries(
-        Object.entries(kept["relinked"]).filter(
-          (entry): entry is [string, string] => typeof entry[1] === "string",
-        ),
-      )
-    : {};
+  const held = isRecord(kept["relinked"]) ? kept["relinked"] : {};
+  const relinked: Relinked = {
+    rows: Object.fromEntries(
+      Object.entries(isRecord(held["rows"]) ? held["rows"] : {}).flatMap(
+        ([id, row]) =>
+          isRecord(row) &&
+          typeof row["link"] === "string" &&
+          typeof row["type"] === "string"
+            ? [[id, { link: row["link"], type: row["type"] }]]
+            : [],
+      ),
+    ),
+    ...(held["overflowed"] === true && { overflowed: true }),
+  };
   return {
     state,
     conditions,
     ...(typeof cursor === "string" && { cursor }),
     ...(purges.length > 0 && { purges }),
-    ...(Object.keys(relinked).length > 0 && { relinked }),
+    ...((Object.keys(relinked.rows).length > 0 ||
+      relinked.overflowed === true) && { relinked }),
   };
 }
 

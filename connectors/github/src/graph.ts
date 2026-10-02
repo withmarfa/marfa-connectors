@@ -303,6 +303,13 @@ const mutations = {
   }`,
 };
 
+/** GraphQL's answers for what will not change by asking again. */
+export const refusedTypes: ReadonlySet<string> = new Set([
+  "NOT_FOUND",
+  "FORBIDDEN",
+  "UNPROCESSABLE",
+]);
+
 export async function relate(
   octokit: Client,
   change: keyof typeof mutations,
@@ -313,10 +320,11 @@ export async function relate(
     await octokit.graphql(mutations[change], { issueId, other });
     return undefined;
   } catch (error) {
-    if (error instanceof GraphqlResponseError) {
-      return (
-        error.errors?.map((one) => one.message).join("; ") ?? error.message
-      );
+    if (
+      error instanceof GraphqlResponseError &&
+      error.errors?.every((one) => refusedTypes.has(one.type)) === true
+    ) {
+      return error.errors.map((one) => one.message).join("; ");
     }
     throw error;
   }

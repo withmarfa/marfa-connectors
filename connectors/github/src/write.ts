@@ -20,6 +20,7 @@ import {
   inRepository,
   issueEntry,
   issueOfRest,
+  markedFor,
   markOf,
   unmarked,
   issueType,
@@ -42,12 +43,14 @@ import {
   commentsByNode,
   deleteComment,
   issuesByNode,
+  refusedTypes,
   relate,
   repositoriesByNode,
   repositoryByNode,
   updateComment,
 } from "./graph.js";
 import type { Kept } from "./read.js";
+import { everywhere, unsettle } from "./unsettled.js";
 
 type Context = WatchContext<EnvDeclaration>;
 
@@ -94,9 +97,7 @@ function refusal(error: unknown): string | undefined {
   }
   if (
     error instanceof GraphqlResponseError &&
-    error.errors?.every((one) =>
-      ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"].includes(one.type),
-    ) === true
+    error.errors?.every((one) => refusedTypes.has(one.type)) === true
   ) {
     return error.errors.map((one) => one.message).join("; ");
   }
@@ -120,12 +121,18 @@ function unreachable(error: unknown): string | undefined {
   ) {
     return "GitHub's rate limit ran out";
   }
+  if (
+    error instanceof GraphqlResponseError &&
+    error.errors?.some((one) => !refusedTypes.has(one.type)) === true
+  ) {
+    return `GitHub's GraphQL API answered ${error.errors.map((one) => one.type).join(", ")}`;
+  }
   if (!(error instanceof RequestError)) return undefined;
   if (refusedApp(error)) {
     return `the App's installation refused it (${String(error.status)})`;
   }
-  // A create GitHub made before failing answers so too; the next try looks
-  // for it first.
+  // A create is never sent again on one: it may have landed, and is looked
+  // for first.
   if (error.status >= 500) {
     return `GitHub answered ${String(error.status)}`;
   }
@@ -161,14 +168,41 @@ async function refusedOrWaits(
   throw new Refused(`GitHub refused ${what}: ${why}`);
 }
 
-/** A create GitHub may have made though it answered a server error, and
- *  does not list yet: the run stops, never reading GitHub's copy into a
- *  twin, and the next looks for it first. Not `Unreachable`, which would
- *  let the run read on. */
-function unknownCreate(item: Item, error: unknown): Error {
-  return new Error(
-    `GitHub answered ${String(status(error))} to the create of ${item.id} and lists nothing it made yet, so the next run looks for it first`,
-    { cause: error },
+/** A create GitHub may have made, found by its mark. Whatever stops the
+ *  look, or where nothing is listed yet, the create waits, and the
+ *  repository it may be in is not read this run, so what it made is never
+ *  read in as a row of its own; the next run looks again before sending. */
+async function looking<T>(
+  context: Context,
+  item: Item,
+  fence: string,
+  look: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await look();
+  } catch (error) {
+    if (
+      context.signal.aborted ||
+      error instanceof Refused ||
+      error instanceof Declined
+    ) {
+      throw error;
+    }
+    unsettle(context.state, fence);
+    const why =
+      error instanceof Error
+        ? (unreachable(error) ?? error.message)
+        : String(error);
+    throw new Unreachable(
+      `${item.id} may already be on GitHub and could not be looked for (${why}), so its create waits and ${fence === everywhere ? "GitHub is" : "its repository is"} not read until it is found`,
+    );
+  }
+}
+
+function unlisted(context: Context, item: Item, fence: string): Unreachable {
+  unsettle(context.state, fence);
+  return new Unreachable(
+    `GitHub answered a server error to the create of ${item.id} and lists nothing it made yet, so the create waits and its repository is not read until it is found`,
   );
 }
 
@@ -381,15 +415,18 @@ async function repositoryAt(
 async function goneOrWaits(
   context: Context,
   app: App,
-  item: Item,
+  change: Change,
 ): Promise<void> {
+  const { item } = change;
+  const kept = allKept(context);
   const byInstallation = new Map<number, string[]>();
-  for (const [node, kept] of Object.entries(allKept(context))) {
-    byInstallation.set(kept.installation, [
-      ...(byInstallation.get(kept.installation) ?? []),
+  for (const [node, one] of Object.entries(kept)) {
+    byInstallation.set(one.installation, [
+      ...(byInstallation.get(one.installation) ?? []),
       node,
     ]);
   }
+  const all = new Map<string, { name: string; issues: boolean }>();
   for (const [installation, nodes] of byInstallation) {
     let found: Map<string, { name: string; issues: boolean }>;
     try {
@@ -401,19 +438,25 @@ async function goneOrWaits(
       if (!refusedApp(error)) throw error;
       found = new Map();
     }
-    if (nodes.some((node) => !found.has(node))) {
+    const missing = nodes.find((node) => !found.has(node));
+    if (missing !== undefined) {
       throw new Unreachable(
-        `GitHub shows the App nothing ${item.id} is linked to, and a repository the connector syncs is out of its reach, so the change waits`,
+        `${kept[missing]?.name ?? missing} is out of the App's reach, so the changes whose targets GitHub shows nowhere wait`,
+        { scope: `out-of-reach:${missing}` },
       );
     }
-    // GitHub does not say whether it shows the issues of a repository that
-    // turned them off, so one may hold the target.
-    const off = [...found.values()].find((one) => !one.issues);
-    if (off !== undefined) {
-      throw new Unreachable(
-        `GitHub shows the App nothing ${item.id} is linked to, and ${off.name} has issues turned off, so the change waits`,
-      );
-    }
+    for (const [node, one] of found) all.set(node, one);
+  }
+  // Where the row sits as agreed, never as its text says. GitHub does not
+  // say whether it shows the issues of a repository that turned them off.
+  const home = change.placement?.[inRepository]?.[0];
+  const node = home === undefined ? undefined : text(home, "github_id");
+  const off = node === undefined ? undefined : all.get(node);
+  if (node !== undefined && off?.issues === false) {
+    throw new Unreachable(
+      `${off.name} has its issues turned off, and GitHub does not say whether it still shows them, so the changes to what is in it wait`,
+      { scope: `issues-off:${node}` },
+    );
   }
   // Settled, unlike a refusal: the App can no longer find the target, which
   // is no fault of the change, and the daily check or a delivery archives it.
@@ -632,9 +675,8 @@ async function linkMade<T extends { node_id: string; body?: string | null }>(
   item: Item,
   candidates: readonly T[],
 ): Promise<T | undefined> {
-  const mark = markOf(item.id);
   for (const one of candidates) {
-    if (!(one.body ?? "").includes(mark)) continue;
+    if (!markedFor(one.body ?? "", item.id)) continue;
     try {
       await context.setLink(item, one.node_id);
       return one;
@@ -712,7 +754,7 @@ async function carryIssue(
   }
   const found = await issueAt(context, app, node);
   if (found === undefined) {
-    await goneOrWaits(context, app, item);
+    await goneOrWaits(context, app, change);
     return undefined;
   }
   const { place, issue } = found;
@@ -790,25 +832,28 @@ async function createIssue(
   if (title === "") {
     throw new Refused(`${item.id} has no title, which GitHub requires`);
   }
-  const where = await repositoryAt(context, app, node);
-  const { octokit, owner, repo } = where;
-  const made =
-    change.attempted === undefined
-      ? undefined
-      : await linkMade(
+  const { attempted } = change;
+  let where: Place;
+  if (attempted === undefined) {
+    where = await repositoryAt(context, app, node);
+  } else {
+    let made: RestIssue | undefined;
+    [where, made] = await looking(context, item, node, async () => {
+      const at = await repositoryAt(context, app, node);
+      return [
+        at,
+        await linkMade(
           context,
           item,
-          await issuesMadeSince(
-            octokit,
-            app,
-            context.signal,
-            { owner, repo },
-            change.attempted,
-          ),
-        );
-  if (made !== undefined) {
-    return placeIssue(change, context, app, where, made, true);
+          await issuesMadeSince(at.octokit, app, context.signal, at, attempted),
+        ),
+      ] as const;
+    });
+    if (made !== undefined) {
+      return placeIssue(change, context, app, where, made, true);
+    }
   }
+  const { octokit, owner, repo } = where;
   let posted: RestIssue;
   const sent = new Date().toISOString();
   try {
@@ -826,15 +871,17 @@ async function createIssue(
     ).data as RestIssue;
   } catch (error) {
     if ((status(error) ?? 0) >= 500) {
-      const landed = await linkMade(
-        context,
-        item,
-        await issuesMadeSince(octokit, app, context.signal, where, sent),
+      const landed = await looking(context, item, node, async () =>
+        linkMade(
+          context,
+          item,
+          await issuesMadeSince(octokit, app, context.signal, where, sent),
+        ),
       );
       if (landed !== undefined) {
         return placeIssue(change, context, app, where, landed, true);
       }
-      throw unknownCreate(item, error);
+      throw unlisted(context, item, node);
     }
     return refusedOrWaits(
       error,
@@ -921,7 +968,7 @@ async function carryComment(
   if (!binned && !change.changed.has("body")) return undefined;
   const found = await commentAt(context, app, node);
   if (found === undefined) {
-    await goneOrWaits(context, app, item);
+    await goneOrWaits(context, app, change);
     return undefined;
   }
   const { octokit, owner, repo } = found.place;
@@ -975,26 +1022,34 @@ async function createComment(
     );
     return undefined;
   }
-  const thread = await issueAt(context, app, issueNode);
+  const { attempted } = change;
+  const thread =
+    attempted === undefined
+      ? await issueAt(context, app, issueNode)
+      : await looking(context, item, everywhere, () =>
+          issueAt(context, app, issueNode),
+        );
   if (thread === undefined) {
-    await goneOrWaits(context, app, item);
+    await goneOrWaits(context, app, change);
     return undefined;
   }
   const { octokit, owner, repo, repository } = thread.place;
   const { number } = thread.issue;
   const body = text(item, "body") ?? "";
   let made =
-    change.attempted === undefined
+    attempted === undefined
       ? undefined
-      : await linkMade(
-          context,
-          item,
-          await commentsMadeSince(
-            octokit,
-            app,
-            context.signal,
-            { owner, repo, issue_number: number },
-            change.attempted,
+      : await looking(context, item, repository.node, async () =>
+          linkMade(
+            context,
+            item,
+            await commentsMadeSince(
+              octokit,
+              app,
+              context.signal,
+              { owner, repo, issue_number: number },
+              attempted,
+            ),
           ),
         );
   if (made === undefined) {
@@ -1022,18 +1077,20 @@ async function createComment(
           `${item.id} on ${owner}/${repo}#${String(number)}`,
         );
       }
-      made = await linkMade(
-        context,
-        item,
-        await commentsMadeSince(
-          octokit,
-          app,
-          context.signal,
-          { owner, repo, issue_number: number },
-          sent,
+      made = await looking(context, item, repository.node, async () =>
+        linkMade(
+          context,
+          item,
+          await commentsMadeSince(
+            octokit,
+            app,
+            context.signal,
+            { owner, repo, issue_number: number },
+            sent,
+          ),
         ),
       );
-      if (made === undefined) throw unknownCreate(item, error);
+      if (made === undefined) throw unlisted(context, item, repository.node);
       linked = true;
     }
     if (!linked) {

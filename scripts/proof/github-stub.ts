@@ -118,6 +118,11 @@ export class GitHubStub {
   writesLimited:
     { left: number; status: 403 | 429; title?: string } | undefined;
   mutationsLimited = 0;
+  // GraphQL errors of a type GitHub gives for a passing fault.
+  mutationsFailing = 0;
+  // Answers this many listings of a repository's issues or an issue's
+  // comments 404, as a repository GitHub hides for a moment.
+  listingsFailing = 0;
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
@@ -583,6 +588,15 @@ export class GitHubStub {
         return;
       }
     }
+    if (
+      this.listingsFailing > 0 &&
+      method === "GET" &&
+      /^\/repos\/[^/]+\/[^/]+\/issues(\/\d+\/comments)?$/.test(path)
+    ) {
+      this.listingsFailing -= 1;
+      send(404, { message: "Not Found" });
+      return;
+    }
     if (this.rateLimited && path.startsWith("/repos/")) {
       send(
         403,
@@ -956,6 +970,14 @@ export class GitHubStub {
         ? found
         : undefined;
     };
+    if (this.mutationsFailing > 0) {
+      this.mutationsFailing -= 1;
+      send(200, {
+        data: null,
+        errors: [{ type: "SERVICE_UNAVAILABLE", message: "Try again later" }],
+      });
+      return true;
+    }
     if (this.mutationsLimited > 0) {
       this.mutationsLimited -= 1;
       send(200, {

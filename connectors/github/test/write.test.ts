@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
-import { markOf, unmarked } from "../src/entries.js";
+import { markedFor, markOf, unmarked } from "../src/entries.js";
 import {
   appKey,
   GitHubStub,
@@ -522,7 +522,7 @@ describe("what the write review found", () => {
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     await ok();
     expect(
       github.issues.filter((one) => one.title === "Made once"),
@@ -536,7 +536,7 @@ describe("what the write review found", () => {
     marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     await ok();
     expect(
       github.comments.filter((one) => unmarked(one.body) === "Said once"),
@@ -596,7 +596,7 @@ describe("what the adversarial review found", () => {
       marfa.edit(row(comment.node).id, { body: "Said, edited" });
       marfa.edit(row(beside.node).id, { title: "Beside, edited" });
       const output = await ok();
-      expect(output).toContain("waits");
+      expect(output).toMatch(/changes? waits?/);
       expect(beside.title).toBe("Beside, edited");
       github.installations = installations;
       if (first !== undefined) first.lost = false;
@@ -620,7 +620,7 @@ describe("what the adversarial review found", () => {
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     marfa.trash(made.id);
     expect(await ok()).toContain("trashed before GitHub answered its create");
     const [onGitHub, ...more] = github.issues.filter(
@@ -649,7 +649,7 @@ describe("what the adversarial review found", () => {
     marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     marfa.trash(said.id);
     expect(await ok()).toContain("trashed before GitHub answered its create");
     const [onGitHub, ...more] = github.comments.filter(
@@ -673,7 +673,7 @@ describe("what the adversarial review found", () => {
     const second = place("Same");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     await ok();
     await ok();
     const made = github.issues.filter((one) => one.title === "Same");
@@ -698,7 +698,7 @@ describe("what the adversarial review found", () => {
     marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     marfa.edit(made.id, { title: "Second name" });
     await ok();
     await ok();
@@ -720,7 +720,7 @@ describe("what the adversarial review found", () => {
     marfa.restore(id);
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     await ok();
     await ok();
     expect(
@@ -843,7 +843,7 @@ describe("what the fix review found", () => {
     marfa.drawEdge(second.id, row(repository.node).id, "github.in-repository");
     github.loseNextCreate = true;
     github.listLate = true;
-    await expect(ok()).rejects.toThrow();
+    expect(await ok()).toContain("waits");
     const made = github.issues.find((one) => one.title === "Row B");
     github.writesLimited = undefined;
     await ok();
@@ -1082,7 +1082,7 @@ describe("where a write lands", () => {
     marfa.edit(row(issue.node).id, { title: "After" });
     const output = await ok();
     expect(output).toContain(
-      `GitHub shows the App nothing ${row(issue.node).id} is linked to, and a repository the connector syncs is out of its reach, so the change waits`,
+      "someone/tracker is out of the App's reach, so the changes whose targets GitHub shows nowhere wait",
     );
     repository.hidden = false;
     await ok();
@@ -1293,5 +1293,117 @@ describe("a change GitHub does not take", () => {
     const output = await ok();
     expect(github.comments.filter((one) => !one.deleted)).toEqual([]);
     expect(output).toContain("waits");
+  });
+});
+
+describe("a create GitHub may have made, while looking for it fails", () => {
+  function place(title: string) {
+    const made = marfa.insert(undefined, { title }, "github.issue", "person");
+    marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
+    return made;
+  }
+
+  function once(title: string) {
+    expect(github.issues.filter((one) => one.title === title)).toHaveLength(1);
+    expect(
+      marfa.rows.filter(
+        (one) =>
+          one.type === "github.issue" && one.properties["title"] === title,
+      ),
+    ).toHaveLength(1);
+  }
+
+  it("is neither read in as a new row nor sent again, where the look at once fails", async () => {
+    await ok();
+    place("Made once, unseen");
+    github.loseNextCreate = true;
+    github.listingsFailing = 1;
+    expect(await ok()).toContain("waits");
+    await ok();
+    await ok();
+    once("Made once, unseen");
+  });
+
+  it("is neither read in as a new row nor sent again, where a later run's look fails", async () => {
+    await ok();
+    place("Made once, later");
+    github.loseNextCreate = true;
+    github.listLate = true;
+    expect(await ok()).toContain("waits");
+    github.listingsFailing = 1;
+    await ok();
+    expect(github.listingsFailing).toBe(0);
+    once("Made once, later");
+    await ok();
+    await ok();
+    once("Made once, later");
+  });
+
+  it("leaves only its own repository unread, and the rest of the run goes on", async () => {
+    const other = github.addRepository("someone/other");
+    const elsewhere = github.addIssue(other, { title: "Elsewhere" });
+    await ok();
+    place("Stuck in a 502");
+    github.loseNextCreate = true;
+    github.listLate = true;
+    github.edit(elsewhere, { title: "Elsewhere, edited on GitHub" });
+    expect(await ok()).toContain("waits");
+    expect(row(elsewhere.node).properties["title"]).toBe(
+      "Elsewhere, edited on GitHub",
+    );
+    await ok();
+    once("Stuck in a 502");
+  });
+});
+
+describe("a target GitHub shows nowhere beside a repository with issues turned off", () => {
+  it("settles as gone where its own repository has issues on, and waits under one condition where it is the one with them off", async () => {
+    const off = github.addRepository("someone/quiet");
+    const first = github.addIssue(off, { title: "First" });
+    const second = github.addIssue(off, { title: "Second" });
+    const gone = github.addIssue(repository, { title: "Gone" });
+    await ok();
+    off.issuesOff = true;
+    gone.deleted = true;
+    marfa.edit(row(gone.node).id, { title: "Gone, edited" });
+    marfa.edit(row(first.node).id, { title: "First, edited" });
+    marfa.edit(row(second.node).id, { title: "Second, edited" });
+    const output = await ok();
+    expect(output).toContain(
+      `GitHub no longer shows what ${row(gone.node).id} is linked to`,
+    );
+    expect(marfa.agreements.get(row(gone.node).id)?.waiting).toBe(false);
+    expect(output).toContain("2 changes wait");
+    expect(marfa.agreements.get(row(first.node).id)?.waiting).toBe(true);
+  });
+});
+
+describe("a relation GitHub could not make for a passing fault", () => {
+  it("waits rather than being taken back, and lands after", async () => {
+    const child = github.addIssue(repository, { title: "Child" });
+    const blocker = github.addIssue(repository, { title: "Blocker" });
+    await ok();
+    marfa.drawEdge(
+      row(child.node).id,
+      row(blocker.node).id,
+      "github.blocked-by",
+    );
+    github.mutationsFailing = 1;
+    expect(await ok()).toContain("waits");
+    expect(marfa.targetsOf(row(child.node).id, "github.blocked-by")).toEqual([
+      row(blocker.node).id,
+    ]);
+    await ok();
+    expect(child.blocked_by).toEqual([blocker.node]);
+  });
+});
+
+describe("the mark a create leaves", () => {
+  it("names its row only at the end of a body", () => {
+    expect(markedFor(`Text\n\n${markOf("row-1")}`, "row-1")).toBe(true);
+    expect(markedFor(`Quoted ${markOf("row-1")} in the middle`, "row-1")).toBe(
+      false,
+    );
+    expect(markedFor(`Text\n\n${markOf("row-2")}`, "row-1")).toBe(false);
   });
 });

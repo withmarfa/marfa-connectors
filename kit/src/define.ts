@@ -204,6 +204,13 @@ export interface Change {
    * as the vendor's.
    */
   readonly unagreed?: ReadonlySet<string>;
+  /**
+   * For each connection type the vendor holds read only, such as the
+   * repository an issue sits in, the rows the agreed connections name, as
+   * the vendor was told of them: where the row sits, never what a person
+   * drew since.
+   */
+  readonly placement?: Readonly<Record<string, readonly Item[]>>;
 }
 
 export interface WatchContext<E extends EnvDeclaration> {

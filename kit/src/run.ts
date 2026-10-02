@@ -91,6 +91,14 @@ const marksPerRequest = 200;
 /** At about a hundred bytes each, a small part of the state's cap. */
 const relinkedCap = 1000;
 
+/** Events that move a row between states and change none of its fields. */
+const quiet = new Set([
+  "item.deleted",
+  "item.restored",
+  "item.state_changed",
+  "item.purged",
+]);
+
 export function describe(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const cause: unknown = error.cause;
@@ -563,19 +571,38 @@ export async function runOnce<E extends EnvDeclaration>(
   const purged = new Map<string, Purge>(
     (stored.purges ?? []).map((purge) => [purge.id, purge]),
   );
-  const relinked = new Map(Object.entries(stored.relinked ?? {}));
-  const relinkedFull = (id: string): void => {
-    raised.set(
-      "relinked-full",
-      `more than ${String(relinkedCap)} rows in the bin carry a link other than the one agreed, so the agreed link of ${id} is not kept, and a purge of it goes by the link it carries`,
-    );
+  const relinked = new Map(
+    Object.entries(stored.relinked?.rows ?? {}).filter(
+      ([, row]) => specs.get(row.type)?.twoWay === true,
+    ),
+  );
+  let overflowed = stored.relinked?.overflowed === true;
+  /** A row in the bin, or one whose put-back failed, keeps a link other
+   *  than the agreed one, which its purge, dropping the agreement, would
+   *  otherwise go by. */
+  /** A link a person changed and the row purged before a run saw it would
+   *  steer the purge. The window's first frame vouches for the link it
+   *  shows where it changed no field, or is the connector's own create; any
+   *  later frame showing another link, or a first one that may have set it,
+   *  leaves nothing vouched for. Outside the window, a link that differed
+   *  from the agreed one was kept. */
+  const vouched = (kind: Spec, seen: Seen): string | undefined => {
+    const [first, ...rest] = seen.frames;
+    if (first === undefined) return undefined;
+    const { rows } = lane(kind.type);
+    const own =
+      first.event === "item.created" && first.item.source === kind.source;
+    if (!own && (first.event === undefined || !quiet.has(first.event))) {
+      return undefined;
+    }
+    const link = rows.linkOf(first.item.properties);
+    return rest.every((frame) => rows.linkOf(frame.item.properties) === link)
+      ? link
+      : undefined;
   };
-  /** A row in the bin cannot have its link put back, so the agreed one is
-   *  kept for its purge, which drops the agreement. */
   const keepAgreedLink = (kind: Spec, item: Item, agreement: Agreement) => {
     const own = lane(kind.type).rows.linkOf(item.properties);
     if (
-      item.state !== "trashed" ||
       kind.link === undefined ||
       agreement.link === undefined ||
       own === agreement.link
@@ -584,10 +611,14 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     if (!relinked.has(item.id) && relinked.size >= relinkedCap) {
-      relinkedFull(item.id);
+      overflowed = true;
+      raised.set(
+        "relinked-full",
+        `more than ${String(relinkedCap)} rows carry a link other than the one agreed, so the agreed link of ${item.id} is not kept, and a purge the kit cannot vouch for is not carried until a resync of the log finds them again`,
+      );
       return;
     }
-    relinked.set(item.id, agreement.link);
+    relinked.set(item.id, { link: agreement.link, type: kind.type });
   };
   const unagreedOf = (
     kind: Spec,
@@ -614,7 +645,7 @@ export async function runOnce<E extends EnvDeclaration>(
   const putBack = async (id: string): Promise<void> => {
     const agreement = store.get(id);
     const found = await find(id);
-    if (agreement !== undefined && found !== undefined) {
+    if (agreement !== undefined && found?.item.state === "trashed") {
       keepAgreedLink(found.spec, found.item, agreement);
     }
     if (
@@ -638,9 +669,11 @@ export async function runOnce<E extends EnvDeclaration>(
           `link-taken:${id}`,
           `the ${kind.link ?? "link"} of ${id} was changed in Marfa and cannot be put back: ${error.message}`,
         );
+        keepAgreedLink(kind, current, agreement);
         return;
       }
       current = rows.known(id) ?? current;
+      keepAgreedLink(kind, current, agreement);
       raised.set(
         `link-put-back:${id}`,
         `the ${kind.link ?? "link"} of ${id} was changed in Marfa and put back, since it names the vendor's own item`,
@@ -881,6 +914,8 @@ export async function runOnce<E extends EnvDeclaration>(
     };
     const unagreed = unagreedOf(kind, current, agreement);
     if (unagreed !== undefined) Object.assign(change, { unagreed });
+    const placement = await connections.placementOf(current, kind, agreement);
+    if (placement !== undefined) Object.assign(change, { placement });
     if (refusedBefore(current.id, agreement, change)) return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
@@ -1100,6 +1135,14 @@ export async function runOnce<E extends EnvDeclaration>(
     if (read.incomplete !== undefined) {
       logger.warn(`${read.incomplete}; the rest of the log is read next run`);
     }
+    if (read.resync && read.incomplete === undefined) {
+      // Every row of the connector's types is in hand: one not among them
+      // was purged unseen, and each still relinked is found again below.
+      for (const id of relinked.keys()) {
+        if (!read.rows.has(id)) relinked.delete(id);
+      }
+      overflowed = false;
+    }
     const waitingIds = await store.waiting(setup.signal);
     await store.fetch([
       ...read.rows.keys(),
@@ -1121,22 +1164,27 @@ export async function runOnce<E extends EnvDeclaration>(
         // The instance drops a purged row's agreement and keeps its
         // keys as tombstones, named as the log last showed the row.
         store.clear(id);
-        const agreed = relinked.get(id);
+        const agreed = relinked.get(id)?.link;
         relinked.delete(id);
+        const own = rows.linkOf(last.properties);
         if (
           kind.twoWay &&
-          rows.linkOf(last.properties) !== undefined &&
+          kind.link !== undefined &&
+          own !== undefined &&
           !cascaded(last)
         ) {
-          purged.set(
-            id,
-            agreed === undefined || kind.link === undefined
-              ? last
-              : {
-                  ...last,
-                  properties: { ...last.properties, [kind.link]: agreed },
-                },
-          );
+          const link = agreed ?? (overflowed ? undefined : vouched(kind, seen));
+          if (link === undefined) {
+            raised.set(
+              `purge-unvouched:${id}`,
+              `the purge of ${id} is not carried, since its link may have been changed in Marfa since the vendor last had it`,
+            );
+          } else {
+            purged.set(id, {
+              ...last,
+              properties: { ...last.properties, [kind.link]: link },
+            });
+          }
         }
         continue;
       }
@@ -1272,6 +1320,12 @@ export async function runOnce<E extends EnvDeclaration>(
           };
           const unagreed = unagreedOf(kind, item, agreement);
           if (unagreed !== undefined) Object.assign(change, { unagreed });
+          const placement = await connections.placementOf(
+            item,
+            kind,
+            agreement,
+          );
+          if (placement !== undefined) Object.assign(change, { placement });
           if (placed?.unplaced === true) {
             heldBack(id);
             done.add(id);
@@ -1586,7 +1640,12 @@ export async function runOnce<E extends EnvDeclaration>(
           ? { cursor: read.cursor }
           : stored.cursor !== undefined && { cursor: stored.cursor }),
         ...(purged.size > 0 && { purges: [...purged.values()] }),
-        ...(relinked.size > 0 && { relinked: Object.fromEntries(relinked) }),
+        ...((relinked.size > 0 || overflowed) && {
+          relinked: {
+            rows: Object.fromEntries(relinked),
+            ...(overflowed && { overflowed: true as const }),
+          },
+        }),
       });
     } catch (error) {
       logger.warn(

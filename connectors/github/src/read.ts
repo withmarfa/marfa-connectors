@@ -39,6 +39,7 @@ import {
   relationsOf,
 } from "./graph.js";
 import type { Scope } from "./scope.js";
+import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
 
@@ -138,6 +139,14 @@ async function readAll(
   scope: Scope | undefined,
 ): Promise<void> {
   const { state, log, secret, signal, upsert } = context;
+  const unsettled = takeUnsettled(state);
+  if (unsettled.has(everywhere)) {
+    log.condition(
+      "unsettled",
+      "a create GitHub may have made is not found yet, so nothing is read from GitHub this run",
+    );
+    return;
+  }
   const kept = keptOf(state.get("repositories"));
   const installations = (await asApp(app, signal).paginate(
     "GET /app/installations",
@@ -243,7 +252,13 @@ async function readAll(
   }
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
-    await readNamed(context, listed, clients, paused, privacy);
+    await readNamed(
+      context,
+      new Map([...listed].filter(([node]) => !unsettled.has(node))),
+      clients,
+      new Set([...paused, ...unsettled]),
+      privacy,
+    );
     return;
   }
   const next: Record<string, Kept> = {};
@@ -335,6 +350,13 @@ async function readAll(
     const left = octokit === undefined ? undefined : remaining(octokit);
     if (left !== undefined && left < reserve) {
       waiting.push(at.repository.full_name);
+      continue;
+    }
+    if (unsettled.has(node)) {
+      log.condition(
+        `unsettled:${node}`,
+        `a create GitHub may have made in ${at.repository.full_name} is not found yet, so ${at.repository.full_name} is not read this run`,
+      );
       continue;
     }
     const checked = next[node]?.checked;

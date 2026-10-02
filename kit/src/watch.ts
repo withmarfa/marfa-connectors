@@ -4,6 +4,8 @@ import { frames } from "./sse.js";
 
 export interface Frame {
   readonly item: Item;
+  /** The log's event; a resync's rows carry none. */
+  readonly event?: string;
 }
 
 export interface Seen {
@@ -132,7 +134,7 @@ export class Watch {
           // this connector's.
           if (item === undefined || !this.types.has(item.type)) continue;
           const seen = rows.get(item.id) ?? { frames: [], purged: false };
-          seen.frames.push({ item });
+          seen.frames.push({ item, event: frame.event });
           rows.delete(item.id);
           rows.set(item.id, {
             frames: seen.frames,
