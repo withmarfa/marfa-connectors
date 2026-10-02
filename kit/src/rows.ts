@@ -802,7 +802,7 @@ export class Rows {
           await this.marfa.update(row.id, row.version, properties, undefined),
         );
       } catch (error) {
-        this.absorb(error, row.source_id ?? row.id, refusedUpdate);
+        await this.absorb(error, row.source_id ?? row.id);
         continue;
       }
       const agreement = this.store.get(row.id);
