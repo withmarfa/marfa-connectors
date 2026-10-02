@@ -412,6 +412,45 @@ describe("the template, run as a process", () => {
     expect(marfa.row("acct:1").properties["example_id"]).toBe(made?.id);
   });
 
+  it("sends a create the vendor refused again under a key of its own once the row changes", async () => {
+    const theirs = marfa.insert(
+      undefined,
+      { title: "Theirs" },
+      "example.item",
+      "person",
+    );
+    refuseNextWrite = 422;
+    expect((await once()).code).toBe(0);
+    expect(items).toEqual([]);
+    marfa.edit(theirs.id, { title: "Theirs, shorter" });
+    expect((await once()).code).toBe(0);
+    const keys = writes
+      .filter((write) => write.method === "POST")
+      .map((write) => write.idempotencyKey);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(theirs.id);
+    expect(keys[1]).not.toBe(theirs.id);
+    expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
+  });
+
+  it("sends what the row holds now after a create the vendor answers with what an earlier try made", async () => {
+    const theirs = marfa.insert(
+      undefined,
+      { title: "Theirs" },
+      "example.item",
+      "person",
+    );
+    marfa.refuseNext(`PATCH /items/${theirs.id}`, 503, "unavailable");
+    expect((await once()).code).not.toBe(0);
+    expect(items.map((item) => item.title)).toEqual(["Theirs"]);
+    marfa.edit(theirs.id, { title: "Theirs, edited" });
+    expect((await once()).code).toBe(0);
+    expect(items.map((item) => item.title)).toEqual(["Theirs, edited"]);
+    expect(marfa.byId(theirs.id).properties["example_id"]).toBe("made-1");
+    expect((await once()).code).toBe(0);
+    expect(marfa.byId(theirs.id).properties["title"]).toBe("Theirs, edited");
+  });
+
   it("fails the run when the vendor refuses the token, and never prints it", async () => {
     const { code, output } = await once({ EXAMPLE_TOKEN: "wrong-token-value" });
     expect(code).toBe(1);

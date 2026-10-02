@@ -19,7 +19,7 @@ interface VendorItem {
   deleted?: boolean;
 }
 
-class Answered extends Error {
+class NotTaken extends Error {
   constructor(readonly status: number | undefined) {
     super(
       status === undefined
@@ -35,7 +35,7 @@ class Answered extends Error {
 function undelivered(error: unknown, signal: AbortSignal): unknown {
   if (signal.aborted) return error;
   if (error instanceof LinkTaken) return new Refused(error.message);
-  if (!(error instanceof Answered)) return error;
+  if (!(error instanceof NotTaken)) return error;
   const { status } = error;
   return status === undefined || status === 429 || status >= 500
     ? new Unreachable(error.message, { scope: "the example vendor" })
@@ -64,14 +64,14 @@ async function call(
     });
   } catch (error) {
     if (signal.aborted) throw error;
-    throw new Answered(undefined);
+    throw new NotTaken(undefined);
   }
   if (response.status === 401 || response.status === 403) {
     throw new Error(
       `the example vendor refused the token: ${String(response.status)}`,
     );
   }
-  if (!response.ok) throw new Answered(response.status);
+  if (!response.ok) throw new NotTaken(response.status);
   return response;
 }
 
@@ -140,7 +140,10 @@ const connector = defineConnector({
       items.filter((item) => item.deleted === true).map((item) => item.id),
     );
   },
-  async onChange({ kind, item, changed }, { env, signal, setLink }) {
+  async onChange(
+    { kind, item, changed, attempted, refused },
+    { env, signal, setLink },
+  ) {
     // The vendor has no state for a row set aside: only what changed
     // beside it travels.
     if (kind === "archived" && changed.size === 0) return;
@@ -157,12 +160,25 @@ const connector = defineConnector({
       if (linked === undefined) {
         if (kind === "trashed" || kind === "purged") return;
         // The row's id is the idempotency key, so a run that fails between
-        // the vendor's answer and the link makes one item when it retries.
+        // the vendor's answer and the link makes one item when it retries;
+        // a refused create made nothing, so the next takes a key of its own.
         const made = (await (
           await call(env, signal, "POST", "items", body, {
-            "Idempotency-Key": item.id,
+            "Idempotency-Key":
+              refused === undefined ? item.id : `${item.id}:${refused}`,
           })
         ).json()) as { id: string };
+        // A retry may be answered with what the first try made, from the
+        // values the row held then.
+        if (attempted !== undefined) {
+          await call(
+            env,
+            signal,
+            "PUT",
+            `items/${encodeURIComponent(made.id)}`,
+            body,
+          );
+        }
         await setLink(item, made.id);
         return;
       }
@@ -172,7 +188,7 @@ const connector = defineConnector({
         // purge alone, so the purge must delete too. A 404 is what either
         // asked for.
         await call(env, signal, "DELETE", path).catch((error: unknown) => {
-          if (!(error instanceof Answered) || error.status !== 404) throw error;
+          if (!(error instanceof NotTaken) || error.status !== 404) throw error;
         });
         return;
       }
@@ -184,34 +200,39 @@ const connector = defineConnector({
       throw undelivered(error, signal);
     }
   },
-  async remake({ item }, { env, signal, setLink }) {
+  async remake({ item, attempted, refused }, { env, signal, setLink }) {
     const id = item.properties["example_id"];
     if (typeof id !== "string" || id === "") return false;
     try {
       await call(env, signal, "GET", `items/${encodeURIComponent(id)}`);
       return false;
     } catch (error) {
-      if (!(error instanceof Answered) || error.status !== 404) {
+      if (!(error instanceof NotTaken) || error.status !== 404) {
         throw undelivered(error, signal);
       }
     }
     // Made again and linked, under a key of its own so the vendor does
-    // not answer the first create again.
+    // not answer the first create again, nor a refused remake's.
+    const body = {
+      title: item.properties["title"] ?? null,
+      url: item.properties["url"] ?? null,
+      note: item.properties["note"] ?? null,
+    };
     try {
       const made = (await (
+        await call(env, signal, "POST", "items", body, {
+          "Idempotency-Key": `${item.id}:${id}${refused === undefined ? "" : `:${refused}`}`,
+        })
+      ).json()) as { id: string };
+      if (attempted !== undefined) {
         await call(
           env,
           signal,
-          "POST",
-          "items",
-          {
-            title: item.properties["title"] ?? null,
-            url: item.properties["url"] ?? null,
-            note: item.properties["note"] ?? null,
-          },
-          { "Idempotency-Key": `${item.id}:${id}` },
-        )
-      ).json()) as { id: string };
+          "PUT",
+          `items/${encodeURIComponent(made.id)}`,
+          body,
+        );
+      }
       await setLink(item, made.id);
     } catch (error) {
       throw undelivered(error, signal);
