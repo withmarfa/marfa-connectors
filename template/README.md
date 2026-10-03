@@ -171,7 +171,7 @@ One process runs a connector at a time. Each run is made under a hold on the con
 
 ### A container
 
-`Dockerfile` builds an image that runs one connector `--every 15m`. It copies only the workspace's manifests, the packed client and the kit's and the connector's sources, so no other file in the checkout reaches the image. Build it from the repository root, once `scripts/monorepo.sh` and `scripts/vendor-client.sh` have packed the client:
+`Dockerfile` builds an image that runs one connector `--every 15m`. It copies only the workspace's manifests and the kit's and the connector's sources, so no other file in the checkout reaches the image. Build it from the repository root; its frozen install fetches the published client without a server checkout:
 
 ```bash
 docker build -f template/Dockerfile --build-arg CONNECTOR=<name> -t <name> .

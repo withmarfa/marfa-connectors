@@ -2,8 +2,7 @@
  * Which CI jobs a pull request's changes can affect.
  *
  * `Checks` always formats every file and reads it for personal details, so
- * it runs for any change; `code` says whether it also fetches the pinned
- * monorepo, builds, typechecks, lints and runs every test. `Proof` runs only
+ * it runs for any change; `code` says whether it also builds, typechecks, lints and runs every test. `Proof` runs only
  * when `proof` is true, and `Image`, which builds the template's image and
  * checks the launchd example, only when `image` is true. A skipped job
  * satisfies a required check where a workflow filtered out by `paths` would
