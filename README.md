@@ -27,7 +27,9 @@ pnpm install
 pnpm build
 ```
 
-`scripts/monorepo.sh` leaves a checkout of the Marfa monorepo in `vendor/marfa`. Build its server and boot a throwaway one, which exports the server's address as `MARFA_TEST_URL` and a first key as `MARFA_TEST_KEY`, and stop it afterward:
+The client is packed from the pinned server because the registry client serves contract version 3 while this server serves 0. Remove the tarball override and `scripts/vendor-client.sh` when a published client serves the same contract as the pinned server.
+
+`scripts/monorepo.sh` leaves a checkout of the Marfa monorepo in `vendor/marfa`. Build its server and boot a throwaway one, which exports the server's address as `MARFA_TEST_URL`, a working key as `MARFA_TEST_KEY`, and an operator key for connector report inspection as `MARFA_TEST_OPERATOR_KEY`, and stop it afterward:
 
 ```bash
 (cd vendor/marfa && pnpm --filter "@withmarfa/server..." build)

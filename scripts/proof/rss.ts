@@ -115,7 +115,11 @@ function edit(
   feed.etag = etag;
 }
 
-export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
+export async function proveRss(
+  marfa: MarfaClient,
+  url: string,
+  operator: MarfaClient,
+): Promise<void> {
   const served = await serveFeeds();
   try {
     const key = await mintWithTheReadmeKeyFlags(marfa, {
@@ -170,7 +174,7 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
     await check(
       "rss: the registration shows its heartbeat and its last run",
       async () => {
-        const found = await registration(marfa, key.id);
+        const found = await registration(operator, key.id);
         if (
           found.last_heartbeat_at === null ||
           found.last_run?.outcome !== "succeeded"
@@ -261,7 +265,7 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
         const after = await rows();
         const trashed = after.get(target.source_id ?? "");
         const changed = moved(before, after);
-        const { summary } = await lastRun(marfa, key.id);
+        const { summary } = await lastRun(operator, key.id);
         if (
           trashed?.state !== "trashed" ||
           trashed.version !== target.version ||
@@ -379,7 +383,7 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
             String(row.properties["entry_id"]).startsWith("tag:example.com") &&
             row.properties["title"] !== "Twin",
         );
-        const { summary } = await lastRun(marfa, key.id);
+        const { summary } = await lastRun(operator, key.id);
         const said = [
           "feed 1 in RSS_FEEDS",
           "is larger than 24 MiB, so it is skipped",
@@ -421,11 +425,11 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
             refused,
           ].join("\n"),
         });
-        const before = (await runsOf(marfa, key.id)).length;
+        const before = (await runsOf(operator, key.id)).length;
         const seen: string[] = [];
         for (let at = 1; at <= 3; at += 1) {
           const { code, output } = await failing.once();
-          const runs = await runsOf(marfa, key.id);
+          const runs = await runsOf(operator, key.id);
           const last = runs[0];
           const missing = dead.filter(
             (text) => last?.summary?.includes(text) !== true,
@@ -455,7 +459,7 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
           RSS_FEEDS: [`${served.url}/dead.xml`, refused].join("\n"),
         });
         const { code, output } = await failing.once();
-        const last = await lastRun(marfa, key.id);
+        const last = await lastRun(operator, key.id);
         const named = [
           `feed 1 in RSS_FEEDS (${served.url}) answered 404`,
           "feed 2 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
@@ -492,9 +496,9 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
         const heavy = new ConnectorUnderProof("rss", url, key.key, {
           RSS_FEEDS: many.join("\n"),
         });
-        const before = (await runsOf(marfa, key.id)).length;
+        const before = (await runsOf(operator, key.id)).length;
         const { code, output } = await heavy.once();
-        const runs = await runsOf(marfa, key.id);
+        const runs = await runsOf(operator, key.id);
         const last = runs[0];
         if (
           code !== 1 ||
@@ -523,9 +527,9 @@ export async function proveRss(marfa: MarfaClient, url: string): Promise<void> {
         const slow = new ConnectorUnderProof("rss", url, key.key, {
           RSS_FEEDS: `${served.url}/atom.xml\n${served.url}/slow.xml`,
         });
-        const before = await runsOf(marfa, key.id);
+        const before = await runsOf(operator, key.id);
         const { code, output } = await slow.stopped(["--once"], () => fetching);
-        const after = await runsOf(marfa, key.id);
+        const after = await runsOf(operator, key.id);
         if (
           code !== 0 ||
           after.length !== before.length ||

@@ -22,6 +22,7 @@ const bootChoices = [
 export interface Booted {
   url: string;
   key: string;
+  operatorKey: string;
   commit: string;
 }
 
@@ -56,10 +57,19 @@ export class ProofServer {
     const vars = parseEnv(await readFile(this.envFile(), "utf8"));
     const url = vars.get("MARFA_TEST_URL");
     const key = vars.get("MARFA_TEST_KEY");
-    if (url === undefined || key === undefined || key === "") {
-      throw new Error("the boot script wrote no server URL or key");
+    const operatorKey = vars.get("MARFA_TEST_OPERATOR_KEY");
+    if (
+      url === undefined ||
+      key === undefined ||
+      key === "" ||
+      operatorKey === undefined ||
+      operatorKey === ""
+    ) {
+      throw new Error(
+        "the boot script wrote no server URL, working key or operator key",
+      );
     }
-    return { url, key, commit };
+    return { url, key, operatorKey, commit };
   }
 
   /** Safe to call more than once, and after a boot that failed. */
