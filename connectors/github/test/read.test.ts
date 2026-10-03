@@ -538,6 +538,230 @@ describe("what GitHub no longer lists", () => {
   });
 });
 
+function conditions(): Record<string, string> {
+  return (marfa.states.get("github")?.["conditions"] ?? {}) as Record<
+    string,
+    string
+  >;
+}
+
+function envelope(): Record<string, unknown> {
+  const value = marfa.states.get("github");
+  if (value === undefined) throw new Error("no connector state");
+  return value;
+}
+
+function installation() {
+  const value = github.installations[0];
+  if (value === undefined) throw new Error("no installation");
+  return value;
+}
+
+function seedConditions(values: Record<string, string>): void {
+  const document = envelope();
+  document["conditions"] = { ...conditions(), ...values };
+}
+
+describe("read check coverage", () => {
+  it("keeps disabled-issues evidence from an inaccessible installation while clearing a reached installation", async () => {
+    github.installations.push({ id: 2, login: "another" });
+    const a = github.addRepository("someone/a", { issuesOff: true });
+    const b = github.addRepository("another/b", {
+      installation: 2,
+      issuesOff: true,
+    });
+    await ok();
+    expect(conditions()).toHaveProperty(`issues-off:${a.node}`);
+    expect(conditions()).toHaveProperty(`issues-off:${b.node}`);
+    a.issuesOff = false;
+    b.issuesOff = false;
+    installation().lost = true;
+    github.asked = [];
+    const output = await ok();
+    expect(conditions()).toHaveProperty(`issues-off:${a.node}`);
+    expect(conditions()).not.toHaveProperty(`issues-off:${b.node}`);
+    expect(output).not.toContain(
+      `cleared: someone/a has its issues turned off`,
+    );
+    expect(output).toContain(`cleared: another/b has its issues turned off`);
+    expect(
+      github.asked.filter((request) =>
+        request.path.includes("/repos/someone/a/issues"),
+      ),
+    ).toEqual([]);
+    installation().lost = false;
+    await ok();
+    expect(conditions()).not.toHaveProperty(`issues-off:${a.node}`);
+  });
+
+  it.each(["unsettled", "reserve", "paused", "disabled"] as const)(
+    "reaches metadata while preserving body evidence for a %s repository",
+    async (skip) => {
+      const repository = github.addRepository("someone/tracker", {
+        issuesOff: true,
+      });
+      await ok();
+      seedConditions({
+        [`repository-unreadable:${repository.node}`]: "old body refusal",
+        "issue-missing:unlinked": "old unlinked issue",
+      });
+      repository.issuesOff = skip === "disabled";
+      if (skip === "unsettled") {
+        const document = envelope();
+        (document["state"] as Record<string, unknown>)["unsettled"] = [
+          repository.node,
+        ];
+      }
+      if (skip === "reserve") github.rateRemaining = 100;
+      github.asked = [];
+      const result = await once(
+        skip === "paused" ? { GITHUB_REPOSITORIES: "someone/other" } : {},
+      );
+      expect(result.code, result.output).toBe(0);
+      expect(conditions()).toHaveProperty(
+        `repository-unreadable:${repository.node}`,
+        "old body refusal",
+      );
+      expect(conditions()).toHaveProperty(
+        "issue-missing:unlinked",
+        "old unlinked issue",
+      );
+      expect(conditions()[`issues-off:${repository.node}`] !== undefined).toBe(
+        skip === "disabled",
+      );
+      expect(
+        github.asked.filter((request) =>
+          request.path.includes("/repos/someone/tracker/issues"),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it.each(["unsettled", "clock-skew", "suspended"] as const)(
+    "preserves unread evidence after %s",
+    async (skip) => {
+      const repository = github.addRepository("someone/tracker");
+      await ok();
+      seedConditions({
+        [`issues-off:${repository.node}`]: "old metadata",
+        [`repository-unreadable:${repository.node}`]: "old body",
+        "issue-moved:unlinked": "old moved",
+        "rate-limit-reserve": "old reserve",
+        "clock-skew": "old clock",
+      });
+      if (skip === "unsettled")
+        (envelope()["state"] as Record<string, unknown>)["unsettled"] = ["*"];
+      if (skip === "clock-skew") github.clockAhead = 3600;
+      if (skip === "suspended") installation().suspended = true;
+      github.asked = [];
+      await ok();
+      expect(conditions()).toHaveProperty(
+        `issues-off:${repository.node}`,
+        "old metadata",
+      );
+      expect(conditions()).toHaveProperty(
+        `repository-unreadable:${repository.node}`,
+        "old body",
+      );
+      expect(conditions()).toHaveProperty("issue-moved:unlinked", "old moved");
+      expect(conditions()).toHaveProperty("rate-limit-reserve", "old reserve");
+      if (skip === "unsettled")
+        expect(conditions()).toHaveProperty("clock-skew", "old clock");
+      expect(
+        github.asked.filter((request) =>
+          request.path.includes("/repos/someone/tracker/issues"),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it("keeps later checks after clock skew without undoing completed repository checks", async () => {
+    github.installations.push({ id: 2, login: "another" });
+    const a = github.addRepository("someone/a");
+    const b = github.addRepository("another/b", { installation: 2 });
+    await ok();
+    seedConditions({
+      [`repository-unreadable:${a.node}`]: "A body",
+      [`repository-unreadable:${b.node}`]: "B body",
+    });
+    github.asked = [];
+    Object.defineProperty(github, "clockAhead", {
+      get: () =>
+        github.asked.some(
+          (request) => request.path === "/repos/someone/a/issues/comments",
+        )
+          ? 3600
+          : 0,
+      configurable: true,
+    });
+    await ok();
+    expect(conditions()).not.toHaveProperty(`repository-unreadable:${a.node}`);
+    expect(conditions()).toHaveProperty(
+      `repository-unreadable:${b.node}`,
+      "B body",
+    );
+    expect(conditions()).toHaveProperty("clock-skew");
+  });
+
+  it("retains all old evidence when rate limiting fails the run", async () => {
+    const repository = github.addRepository("someone/tracker");
+    await ok();
+    seedConditions({
+      [`issues-off:${repository.node}`]: "metadata problem",
+      [`repository-unreadable:${repository.node}`]: "body problem",
+    });
+    github.rateLimited = true;
+    const result = await once();
+    expect(result.code).toBe(1);
+    expect(conditions()).toHaveProperty(
+      `issues-off:${repository.node}`,
+      "metadata problem",
+    );
+    expect(conditions()).toHaveProperty(
+      `repository-unreadable:${repository.node}`,
+      "body problem",
+    );
+    expect(result.output).not.toContain("cleared:");
+  });
+
+  it("updates body refusal evidence without clearing unseen issue checks", async () => {
+    const repository = github.addRepository("someone/tracker");
+    await ok();
+    seedConditions({
+      [`repository-unreadable:${repository.node}`]: "old body",
+      "issue-missing:unlinked": "old missing",
+    });
+    repository.hidden = true;
+    await ok();
+    expect(conditions()[`repository-unreadable:${repository.node}`]).toContain(
+      "answered 404",
+    );
+    expect(conditions()).toHaveProperty(
+      "issue-missing:unlinked",
+      "old missing",
+    );
+  });
+
+  it("clears completed conditional repository reads without claiming unperformed issue evidence", async () => {
+    const repository = github.addRepository("someone/tracker");
+    await ok();
+    seedConditions({
+      [`repository-unreadable:${repository.node}`]: "old body",
+      "issue-missing:unlinked": "old missing",
+    });
+    github.asked = [];
+    await ok();
+    expect(conditions()).not.toHaveProperty(
+      `repository-unreadable:${repository.node}`,
+    );
+    expect(conditions()).toHaveProperty(
+      "issue-missing:unlinked",
+      "old missing",
+    );
+    expect(github.asked.some((request) => request.status === 304)).toBe(true);
+  });
+});
+
 describe("a repository", () => {
   it("taken out of the installation has its rows archived, and they come back when it is added again", async () => {
     const repository = github.addRepository("someone/tracker");
