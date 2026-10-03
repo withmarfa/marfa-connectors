@@ -179,6 +179,10 @@ export class ScriptedServer {
   beforeAnswer: ((request: Request) => Promise<void> | void) | undefined;
   /** The connection is cut as an upload's first bytes arrive. */
   resetUploads = false;
+  /** Apply the next state request, then lose its response. */
+  loseStateAnswer = false;
+  /** Replace the next applied state write's acknowledgment payload. */
+  stateAnswer: { value: unknown } | undefined;
   /** The key is refused as a revoked one is: 401 at every door. */
   revoked = false;
   /** The registration is gone: every door under it answers 404 until the
@@ -1000,6 +1004,17 @@ export class ScriptedServer {
           structuredClone(state) as Record<string, unknown>,
         );
       }
+      if (method === "PUT" && this.loseStateAnswer) {
+        this.loseStateAnswer = false;
+        res.destroy();
+        return;
+      }
+      if (method === "PUT" && this.stateAnswer !== undefined) {
+        const payload = this.stateAnswer.value;
+        this.stateAnswer = undefined;
+        send(200, payload);
+        return;
+      }
       send(200, {
         state: this.connectorState ?? {},
         updated_at: this.connectorState === undefined ? null : this.now(),
@@ -1067,10 +1082,11 @@ export class ScriptedServer {
           updated_at: this.now(),
         });
       }
-      for (const id of clear) this.agreements.delete(id);
+      let cleared = 0;
+      for (const id of clear) if (this.agreements.delete(id)) cleared += 1;
       send(200, {
         written: set.length - skipped.length,
-        cleared: clear.length,
+        cleared,
         skipped,
       });
       return;

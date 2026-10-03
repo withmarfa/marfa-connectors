@@ -6,6 +6,7 @@ import {
   type Entry,
   type Inbound,
   type Log,
+  type RunContext,
   type Target,
   type TypeDefinition,
 } from "../src/define.js";
@@ -101,6 +102,9 @@ export const linkedType: TypeDefinition = {
 export const testFields = ["title", "note", "link", "vendor_id", "toString"];
 
 export interface Vendor {
+  read?: (
+    context: RunContext<{ TEST_TOKEN: "secret"; TEST_REGION: "optional" }>,
+  ) => Promise<void>;
   entries: Entry[];
   archived: string[];
   token: string | undefined;
@@ -161,6 +165,7 @@ export function testConnector(held: Vendor) {
       for (const selectors of held.unreachedBatches ?? [])
         context.log.unreached(selectors);
       if (held.fail !== undefined) throw held.fail;
+      if (held.read !== undefined) return held.read(context);
       if (held.token !== undefined) context.state.set("token", held.token);
       await context.upsert(testType.id, held.entries);
       if (held.archived.length > 0) {

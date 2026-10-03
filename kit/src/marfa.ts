@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   pages,
   type components,
@@ -915,6 +916,16 @@ export class Marfa {
       { params: { path: { id } }, body: { process, state } },
     );
     if (data === undefined) throw refusal(response, error);
+    if (
+      !isDeepStrictEqual(
+        data.state,
+        JSON.parse(JSON.stringify(state)) as unknown,
+      )
+    ) {
+      throw new Error(
+        "invalid state acknowledgment; restart before writing again",
+      );
+    }
   }
 
   async findAgreements(
@@ -958,7 +969,7 @@ export class Marfa {
     process: string,
     set: readonly { item_id: string; waiting: boolean; record: object }[],
     clear: readonly string[],
-  ): Promise<void> {
+  ): Promise<{ written: number; cleared: number; skipped: string[] }> {
     const { data, error, response } = await this.client.POST(
       "/connectors/{id}/agreements",
       {
@@ -974,5 +985,6 @@ export class Marfa {
       },
     );
     if (data === undefined) throw refusal(response, error);
+    return data;
   }
 }

@@ -165,7 +165,7 @@ export class Hold {
     return this.marfa.hold(
       this.connectorId,
       this.process,
-      AbortSignal.timeout(this.ttlMs / timeoutShare),
+      AbortSignal.timeout(Math.floor(this.ttlMs / timeoutShare)),
     );
   }
 

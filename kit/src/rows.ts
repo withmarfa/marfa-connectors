@@ -221,6 +221,7 @@ export interface Hooks {
    *  connector's types and connections. */
   narrowed(): Promise<string[]>;
   refused(sourceId: string, reason: string): void;
+  inboundRefused?(): void;
   condition(key: string, message: string): void;
   fenced(): boolean;
 }
@@ -1214,6 +1215,7 @@ export class Rows {
       }
       if (creating && error.code === "forbidden") throw error;
     }
+    this.hooks.inboundRefused?.();
     this.counts.skipped += 1;
     if (raced.has(error.code)) {
       this.held += 1;

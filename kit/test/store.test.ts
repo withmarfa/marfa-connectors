@@ -4,7 +4,7 @@ import type { Marfa } from "../src/marfa.js";
 import { Store, withRefusal } from "../src/store.js";
 
 describe("the store", () => {
-  it("drops an agreement past the instance's cap rather than have every flush refused", async () => {
+  it("retains an oversized prerequisite without clearing it or sending a batch", async () => {
     const written: { set: { item_id: string }[]; clear: string[] }[] = [];
     const marfa = {
       writeAgreements: (
@@ -30,13 +30,9 @@ describe("the store", () => {
     };
     store.set("small", small);
     store.set("large", large);
-    await store.flush();
-    expect(written).toEqual([
-      {
-        set: [expect.objectContaining({ item_id: "small" })],
-        clear: ["large"],
-      },
-    ]);
+    await expect(store.flush()).rejects.toThrow("oversized");
+    expect(written).toEqual([]);
+    expect(store.get("large")).toEqual(large);
     expect([...store.oversized]).toEqual(["large"]);
   });
 });
@@ -63,4 +59,144 @@ describe("a refusal kept with a row", () => {
     expect(size(bare)).toBeLessThanOrEqual(16 * 1024);
     expect(withRefusal(sized(16 * 1024 - 10), "mark", "why")).toBeUndefined();
   });
+});
+
+describe("agreement acknowledgments", () => {
+  const agreement: Agreement = { vendor: {}, marfa: {}, state: "active" };
+  function fixture(results: unknown[]) {
+    const calls: { set: { item_id: string }[]; clear: string[] }[] = [];
+    const store = new Store(
+      {
+        writeAgreements: (
+          _id: string,
+          _process: string,
+          set: { item_id: string }[],
+          clear: string[],
+        ) => {
+          calls.push({ set, clear });
+          const result = results.shift();
+          return result instanceof Error
+            ? Promise.reject(result)
+            : Promise.resolve(result);
+        },
+      } as unknown as Marfa,
+      "connector",
+      "process",
+    );
+    return { store, calls };
+  }
+  it("acknowledges a readable idempotent clear with no agreement", async () => {
+    const { store, calls } = fixture([{ written: 0, cleared: 0, skipped: [] }]);
+    store.clear("absent");
+    await store.flush();
+    await store.flush();
+    expect(calls).toHaveLength(1);
+  });
+  it("removes only acknowledged entries from a mixed skipped response", async () => {
+    const { store, calls } = fixture([
+      { written: 1, cleared: 0, skipped: ["skip"] },
+      { written: 1, cleared: 0, skipped: [] },
+    ]);
+    store.set("ok", agreement);
+    store.set("skip", agreement);
+    store.clear("absent");
+    await expect(store.flush()).rejects.toThrow("agreement-skipped");
+    await store.flush();
+    expect(calls[1]).toEqual({
+      set: [expect.objectContaining({ item_id: "skip" })],
+      clear: [],
+    });
+  });
+  it.each([
+    undefined,
+    {},
+    { written: 1, cleared: 0, skipped: ["outside"] },
+    { written: 1, cleared: 0, skipped: ["one", "one"] },
+    { written: 1, cleared: 0, skipped: ["one"] },
+    { written: 1, cleared: 1, skipped: [] },
+    { written: 1, cleared: -1, skipped: [] },
+    { written: 1.5, cleared: 0, skipped: [] },
+  ])("retains pending intent after a malformed response %j", async (result) => {
+    const { store, calls } = fixture([
+      result,
+      { written: 1, cleared: 0, skipped: [] },
+    ]);
+    store.set("one", agreement);
+    await expect(store.flush()).rejects.toThrow(
+      "invalid agreement acknowledgment",
+    );
+    await store.flush();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.set.map((x) => x.item_id)).toEqual(["one"]);
+  });
+  it("retains only the unacknowledged batch after a later batch fails", async () => {
+    const { store, calls } = fixture([
+      { written: 500, cleared: 0, skipped: [] },
+      new Error("cut"),
+      { written: 1, cleared: 0, skipped: [] },
+    ]);
+    for (let i = 0; i < 501; i++) store.set(String(i), agreement);
+    await expect(store.flush()).rejects.toThrow("cut");
+    await store.flush();
+    expect(calls.map((x) => x.set.length)).toEqual([500, 1, 1]);
+  });
+  it("does not acknowledge a replacement made while the request was pending", async () => {
+    let answer!: (result: unknown) => void;
+    let calls = 0;
+    const store = new Store(
+      {
+        writeAgreements: () => {
+          calls++;
+          return calls === 1
+            ? new Promise((resolve) => {
+                answer = resolve;
+              })
+            : Promise.resolve({ written: 1, cleared: 0, skipped: [] });
+        },
+      } as unknown as Marfa,
+      "connector",
+      "process",
+    );
+    store.set("one", agreement);
+    const flushing = store.flush();
+    store.set("one", { ...agreement, vendor: { title: "replacement" } });
+    answer({ written: 1, cleared: 0, skipped: [] });
+    await flushing;
+    await store.flush();
+    expect(calls).toBe(2);
+  });
+});
+
+it("accepts exactly 16 KiB, retaining one byte over without a clear", async () => {
+  const agreement: Agreement = {
+    vendor: {},
+    marfa: {},
+    state: "active",
+    link: "",
+  };
+  const padding = 16 * 1024 - Buffer.byteLength(JSON.stringify(agreement));
+  const calls: string[][] = [];
+  const store = new Store(
+    {
+      writeAgreements: (
+        _id: string,
+        _process: string,
+        set: { item_id: string }[],
+      ) => {
+        calls.push(set.map((entry) => entry.item_id));
+        return Promise.resolve({
+          written: set.length,
+          cleared: 0,
+          skipped: [],
+        });
+      },
+    } as unknown as Marfa,
+    "connector",
+    "process",
+  );
+  store.set("boundary", { ...agreement, link: "x".repeat(padding) });
+  await store.flush();
+  store.set("over", { ...agreement, link: "x".repeat(padding + 1) });
+  await expect(store.flush()).rejects.toThrow("agreement-oversized");
+  expect(calls).toEqual([["boundary"]]);
 });

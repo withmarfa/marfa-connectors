@@ -1,5 +1,8 @@
 export {
   defineConnector,
+  type CheckpointResult,
+  type CheckpointState,
+  type ScopedRunContext,
   type Change,
   type ChangeKind,
   type Connected,
