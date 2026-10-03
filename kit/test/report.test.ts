@@ -110,6 +110,57 @@ describe("a condition", () => {
     expect(harness.server.states.get("test")).not.toHaveProperty("unreached");
   });
 
+  it.each([
+    { batches: [{ prefixes: ["x:"], exceptKeys: ["x:A"] }], a: false },
+    {
+      batches: [{ keys: ["x:A"], prefixes: ["x:"], exceptKeys: ["x:A"] }],
+      a: true,
+    },
+    {
+      batches: [
+        { prefixes: ["x:"] },
+        { prefixes: ["x:"], exceptKeys: ["x:A", "x:B"] },
+      ],
+      a: true,
+    },
+  ])(
+    "keeps exceptions local to a batch and its prefixes: $a",
+    async ({ batches, a }) => {
+      const held = vendor([]);
+      held.conditions = [
+        ["x:A", "A problem"],
+        ["x:B", "B problem"],
+      ];
+      await harness.once(held);
+      held.conditions = [];
+      held.unreachedBatches = batches;
+      await harness.once(held);
+      expect(harness.lastRun().summary?.includes("A problem")).toBe(a);
+      expect(harness.lastRun().summary).toContain("B problem");
+    },
+  );
+
+  it("redacts batch exceptions with the same policy as keys and prefixes", async () => {
+    const held = vendor([]);
+    held.conditions = [
+      [`feed:${secretToken}:A`, "A problem"],
+      [`feed:${secretToken}:B`, "B problem"],
+    ];
+    await harness.once(held);
+    held.conditions = [];
+    held.unreached = {
+      prefixes: [`feed:${secretToken}:`],
+      exceptKeys: [`feed:${secretToken}:A`],
+    };
+    await harness.once(held);
+    expect(harness.lastRun().summary).not.toContain("A problem");
+    expect(harness.lastRun().summary).toContain("B problem");
+    expect(JSON.stringify(harness.server.states.get("test"))).not.toContain(
+      secretToken,
+    );
+    expect(harness.lines.join("\n")).not.toContain(secretToken);
+  });
+
   it("retains reached and unreached conditions after failure and emits no clearance on refused saves", async () => {
     const held = vendor([]);
     held.conditions = [

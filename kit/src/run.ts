@@ -326,7 +326,7 @@ export async function runOnce<E extends EnvDeclaration>(
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
   const unreachedKeys = new Set<string>();
-  const unreachedPrefixes = new Set<string>();
+  const unreachedBatches: { prefixes: string[]; exceptKeys: string[] }[] = [];
   const waiting = new Map<string, { message: string; ids: Set<string> }>();
   const unreached = (id: string, error: Unreachable): void => {
     if (error.scope === undefined) {
@@ -496,9 +496,12 @@ export async function runOnce<E extends EnvDeclaration>(
       logger.warn(message);
     },
     condition: (key, message) => raised.set(key, message),
-    unreached: ({ keys = [], prefixes = [] }) => {
+    unreached: ({ keys = [], prefixes = [], exceptKeys = [] }) => {
       for (const key of keys) unreachedKeys.add(key);
-      for (const prefix of prefixes) unreachedPrefixes.add(prefix);
+      unreachedBatches.push({
+        prefixes: [...prefixes],
+        exceptKeys: [...exceptKeys],
+      });
     },
   };
   let hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
@@ -1589,9 +1592,10 @@ export async function runOnce<E extends EnvDeclaration>(
   const skippedKeys = new Set(
     [...unreachedKeys].map((key) => logger.redact(key)),
   );
-  const skippedPrefixes = [...unreachedPrefixes].map((prefix) =>
-    logger.redact(prefix),
-  );
+  const skippedBatches = unreachedBatches.map(({ prefixes, exceptKeys }) => ({
+    prefixes: prefixes.map((prefix) => logger.redact(prefix)),
+    exceptKeys: new Set(exceptKeys.map((key) => logger.redact(key))),
+  }));
   // Only a finished scheduled run that reached its check can find one gone. The
   // newly raised go first, then the rest in the order kept, which puts those
   // the last report had no room for ahead of those it carried.
@@ -1606,7 +1610,11 @@ export async function runOnce<E extends EnvDeclaration>(
     else if (
       clears &&
       !skippedKeys.has(key) &&
-      !skippedPrefixes.some((prefix) => key.startsWith(prefix))
+      !skippedBatches.some(
+        ({ prefixes, exceptKeys }) =>
+          !exceptKeys.has(key) &&
+          prefixes.some((prefix) => key.startsWith(prefix)),
+      )
     )
       cleared.push(message);
     else standing.set(key, message);

@@ -594,6 +594,40 @@ describe("read check coverage", () => {
     expect(conditions()).not.toHaveProperty(`issues-off:${a.node}`);
   });
 
+  it("retains unread metadata even when no repository progress was saved", async () => {
+    github.installations.push({ id: 2, login: "another" });
+    const a = github.addRepository("someone/a", { issuesOff: true });
+    const b = github.addRepository("another/b", {
+      installation: 2,
+      issuesOff: true,
+    });
+    await ok();
+    (envelope()["state"] as Record<string, unknown>)["repositories"] = {};
+    a.issuesOff = false;
+    b.issuesOff = false;
+    installation().lost = true;
+    await ok();
+    expect(conditions()).toHaveProperty(`issues-off:${a.node}`);
+    expect(conditions()).not.toHaveProperty(`issues-off:${b.node}`);
+    installation().lost = false;
+    await ok();
+    expect(conditions()).not.toHaveProperty(`issues-off:${a.node}`);
+  });
+
+  it("preserves excluded identities unknown to saved progress", async () => {
+    const repository = github.addRepository("someone/tracker", {
+      issuesOff: true,
+    });
+    await ok();
+    (envelope()["state"] as Record<string, unknown>)["repositories"] = {};
+    const result = await once({ GITHUB_REPOSITORIES: "someone/other" });
+    expect(result.code, result.output).toBe(0);
+    expect(conditions()).toHaveProperty(`issues-off:${repository.node}`);
+    repository.issuesOff = false;
+    await ok();
+    expect(conditions()).not.toHaveProperty(`issues-off:${repository.node}`);
+  });
+
   it.each(["unsettled", "reserve", "paused", "disabled"] as const)(
     "reaches metadata while preserving body evidence for a %s repository",
     async (skip) => {

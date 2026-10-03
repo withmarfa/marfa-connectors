@@ -97,16 +97,19 @@ export interface Log {
   warn(message: string): void;
   /**
    * Something that lasts across runs, such as a feed that stopped answering.
-   * A connector raises it on every run it holds; it is reported on the first
+   * A connector raises it on every run it holds; it is reported on each run
    * and cleared only on a successful scheduled run that reaches its check
    * without raising it again.
    */
   condition(key: string, message: string): void;
   /** Keeps existing conditions whose checks this run skipped. Selectors are
-   * transient: exact keys or literal prefixes, and do not raise conditions. */
+   * transient: exact keys or literal prefixes, and do not raise conditions.
+   * exceptKeys subtracts exact keys from this call's prefix matches only;
+   * exact keys and other calls still preserve their matching conditions. */
   unreached(selectors: {
     keys?: readonly string[];
     prefixes?: readonly string[];
+    exceptKeys?: readonly string[];
   }): void;
 }
 

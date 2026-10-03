@@ -5,6 +5,7 @@ import {
   type ConnectionDefinition,
   type Entry,
   type Inbound,
+  type Log,
   type Target,
   type TypeDefinition,
 } from "../src/define.js";
@@ -106,7 +107,8 @@ export interface Vendor {
   gate?: Promise<void> | undefined;
   fail?: Error | undefined;
   conditions?: [string, string][];
-  unreached?: { keys?: readonly string[]; prefixes?: readonly string[] };
+  unreached?: Parameters<Log["unreached"]>[0];
+  unreachedBatches?: Parameters<Log["unreached"]>[0][];
   logs?: string[];
   warnings?: string[];
   runs: number;
@@ -156,6 +158,8 @@ export function testConnector(held: Vendor) {
         context.log.condition(key, message);
       }
       if (held.unreached !== undefined) context.log.unreached(held.unreached);
+      for (const selectors of held.unreachedBatches ?? [])
+        context.log.unreached(selectors);
       if (held.fail !== undefined) throw held.fail;
       if (held.token !== undefined) context.state.set("token", held.token);
       await context.upsert(testType.id, held.entries);
@@ -189,6 +193,8 @@ function twoWayConnector(held: Vendor) {
         context.log.condition(key, message);
       }
       if (held.unreached !== undefined) context.log.unreached(held.unreached);
+      for (const selectors of held.unreachedBatches ?? [])
+        context.log.unreached(selectors);
       if (held.fail !== undefined) throw held.fail;
       if (held.token !== undefined) context.state.set("token", held.token);
       await context.upsert(testType.id, held.entries);

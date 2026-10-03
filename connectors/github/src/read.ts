@@ -137,43 +137,24 @@ class Coverage {
   readonly keys = new Set(["unsettled", "rate-limit-reserve", "clock-skew"]);
   readonly prefixes = new Set(readPrefixes);
 
-  enumerated(
-    installations: readonly Installation[],
-    kept: Record<string, Kept>,
-  ): void {
-    for (const prefix of [
-      "installation-suspended:",
-      "installation-lost:",
-      "token-unnarrowed:",
-    ]) {
-      this.prefixes.delete(prefix);
-      for (const id of new Set([
-        ...installations.map((installation) => installation.id),
-        ...Object.values(kept).map((repository) => repository.installation),
-      ]))
-        this.keys.add(`${prefix}${String(id)}`);
-    }
-    for (const prefix of [
-      "repository-lost:",
-      "issues-off:",
-      "repository-unreadable:",
-      "unsettled:",
-    ]) {
-      this.prefixes.delete(prefix);
-      for (const node of Object.keys(kept)) this.keys.add(`${prefix}${node}`);
-    }
-  }
+  readonly exceptKeys = new Set<string>();
 
   reached(...keys: string[]): void {
-    for (const key of keys) this.keys.delete(key);
+    for (const key of keys) {
+      this.keys.delete(key);
+      this.exceptKeys.add(key);
+    }
   }
 
   retain(context: Context): void {
+    // Saved progress can be absent even when a condition stands. Keep unknown
+    // identities conservatively; exempt only checks this read actually reached.
     // Issue keys do not carry a repository and current edges cannot identify
     // every old condition, so unobserved issue evidence stays conservative.
     context.log.unreached({
       keys: [...this.keys],
       prefixes: [...this.prefixes],
+      exceptKeys: [...this.exceptKeys],
     });
   }
 }
@@ -214,7 +195,6 @@ async function readAll(
   const installations = (await asApp(app, signal).paginate(
     "GET /app/installations",
   )) as Installation[];
-  coverage.enumerated(installations, kept);
   coverage.reached("clock-skew");
   const clients = new Map<number, Client>();
   const listed = new Map<
@@ -255,16 +235,13 @@ async function readAll(
           coverage.reached(`repository-lost:${node}`);
       }
       for (const repository of repositories) {
-        coverage.reached(
-          `issues-off:${repository.node_id}`,
-          `repository-lost:${repository.node_id}`,
-        );
-        if (
-          repository.has_issues === false &&
-          (kept[repository.node_id] !== undefined ||
-            scope === undefined ||
-            scope.admits(repository.full_name))
-        ) {
+        coverage.reached(`repository-lost:${repository.node_id}`);
+        const assessed =
+          kept[repository.node_id] !== undefined ||
+          scope === undefined ||
+          scope.admits(repository.full_name);
+        if (assessed) coverage.reached(`issues-off:${repository.node_id}`);
+        if (repository.has_issues === false && assessed) {
           log.condition(
             `issues-off:${repository.node_id}`,
             `${repository.full_name} has its issues turned off on GitHub, so its rows are left as they are, bar the private marker, which follows its visibility`,
