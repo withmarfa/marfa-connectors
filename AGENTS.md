@@ -11,7 +11,7 @@ The connectors for Marfa: a small kit that makes a connector a page of code, a t
 
 ## Commands
 
-`pnpm install --frozen-lockfile` installs the published client pinned exactly in the kit and scripts manifests. Then run `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm test`. No server checkout is needed for those commands or image builds.
+Use Node 22.13 or later for pnpm 11; the connector runtime supports Node 22.12 or later. `pnpm install --frozen-lockfile` installs the published client pinned exactly in the kit and scripts manifests. Then run `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm test`. No server checkout is needed for those commands or image builds.
 
 Before `pnpm proof`, run `scripts/monorepo.sh`. It fetches the server at `scripts/monorepo.commit` into `vendor/marfa` and installs it. After a connector build, the proof boots that server and uses the installed registry client against it.
 

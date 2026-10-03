@@ -16,7 +16,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
 
 ## Run a connector by hand
 
-You need Node 22.12 or later, pnpm, Rust (for the `marfa` command), a Marfa server and a key for the connector.
+The connector runtime needs Node 22.12 or later. Repository tooling uses pnpm 11, which needs Node 22.13 or later. You also need Rust (for the `marfa` command), a Marfa server and a key for the connector.
 
 The kit and proof use the published `@withmarfa/client` version pinned in their manifests and the lockfile. Install and build without a server checkout:
 
