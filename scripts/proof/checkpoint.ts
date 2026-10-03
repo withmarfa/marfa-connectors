@@ -87,7 +87,7 @@ interface Request {
   path: string;
   input: Record<string, unknown>;
 }
-class Proxy {
+export class Proxy {
   url = "";
   before: (
     request: Request,
@@ -118,9 +118,28 @@ class Proxy {
     );
   }
   private async forward(req: IncomingMessage, res: ServerResponse) {
+    const path = req.url ?? "/";
+    if (
+      !path.startsWith("/") ||
+      path.startsWith("//") ||
+      path.includes("\\") ||
+      path.includes("#")
+    ) {
+      answer(res, 400, {
+        error: {
+          code: "validation_error",
+          message: "proof proxy requires an origin-form target",
+        },
+      });
+      return;
+    }
+    const target = new URL(this.upstream);
+    const query = path.indexOf("?");
+    target.pathname = query === -1 ? path : path.slice(0, query);
+    target.search = query === -1 ? "" : path.slice(query);
+    target.hash = "";
     const text = await body(req);
     const method = req.method ?? "GET";
-    const path = req.url ?? "/";
     const request = {
       method,
       path,
@@ -146,7 +165,8 @@ class Proxy {
     res.on("close", () => {
       if (!res.writableEnded) controller.abort();
     });
-    const response = await fetch(new URL(path, this.upstream), {
+    const response = await fetch(target, {
+      redirect: "manual",
       signal: controller.signal,
       method,
       headers,
