@@ -1,5 +1,6 @@
 import type { Agreement } from "./agreement.js";
-import type { Item } from "./define.js";
+import { readJournal } from "./inbound-retry.js";
+import type { PendingInbound, Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
 /** A purge still to carry, with when and why the vendor last refused it. */
@@ -11,6 +12,7 @@ export interface Relinked {
 }
 
 export interface Kept {
+  inbound?: PendingInbound[];
   state: Record<string, unknown>;
   conditions: Record<string, string>;
   cursor?: string;
@@ -61,6 +63,9 @@ function keptOf(value: unknown): Kept {
   return {
     state,
     conditions,
+    ...(kept["inbound"] !== undefined && {
+      inbound: readJournal(kept["inbound"]),
+    }),
     ...(typeof cursor === "string" && { cursor }),
     ...(purges.length > 0 && { purges }),
     ...((Object.keys(relinked.rows).length > 0 ||
@@ -141,7 +146,13 @@ export class Store {
   }
 
   save(kept: Kept): Promise<void> {
+    if (kept.inbound !== undefined) {
+      readJournal(kept.inbound);
+      if (Buffer.byteLength(JSON.stringify(kept), "utf8") > 512 * 1024)
+        throw new Error("inbound retry envelope exceeds 512 KiB");
+    }
     return this.marfa.putConnectorState(this.connectorId, this.process, {
+      ...(kept.inbound !== undefined && { inbound: kept.inbound }),
       state: kept.state,
       conditions: kept.conditions,
       ...(kept.cursor !== undefined && { cursor: kept.cursor }),

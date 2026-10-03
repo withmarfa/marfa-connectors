@@ -222,6 +222,15 @@ export interface Hooks {
   narrowed(): Promise<string[]>;
   refused(sourceId: string, reason: string): void;
   inboundRefused?(): void;
+  upsertRefused?(
+    type: string,
+    entry: Entry,
+    error: Refusal,
+    singleton: boolean,
+  ): boolean;
+  upserted?(type: string, entry: Entry): void;
+  suppressed?(type: string, entry: Entry): boolean;
+  omitted?(): void;
   condition(key: string, message: string): void;
   fenced(): boolean;
 }
@@ -319,6 +328,7 @@ export class Rows {
       ];
       if (stray.length > 0) {
         this.counts.skipped += 1;
+        this.hooks.omitted?.();
         this.hooks.condition(
           `undeclared:${entry.source_id}`,
           `the entry ${entry.source_id} carries ${stray.join(", ")}, which the connector does not declare among its fields or its type's connections, so it is not written`,
@@ -330,6 +340,7 @@ export class Rows {
         fileFields.some((field) => !this.kind.fields.includes(field))
       ) {
         this.counts.skipped += 1;
+        this.hooks.omitted?.();
         this.hooks.condition(
           `file-fields:${entry.source_id}`,
           `the entry ${entry.source_id} carries a file, and its type's fields do not list ${fileFields.join(" and ")}, so it is not written`,
@@ -339,6 +350,7 @@ export class Rows {
       const value = this.linkOf(properties);
       if (this.kind.link !== undefined && value === undefined) {
         this.counts.skipped += 1;
+        this.hooks.omitted?.();
         this.hooks.condition(
           `unlinked:${entry.source_id}`,
           `the entry ${entry.source_id} names no ${this.kind.link}, so it is not written`,
@@ -348,10 +360,16 @@ export class Rows {
       const row = this.find(value, earlier(entry), entry.source_id);
       if (row === "elsewhere") {
         this.counts.skipped += 1;
+        this.hooks.omitted?.();
         this.hooks.condition(
           `held-key:${entry.source_id}`,
           `the entry ${entry.source_id} names ${value ?? "no link"}, and a row linked to another of the vendor's items holds its natural key, so it is not written`,
         );
+        continue;
+      }
+      if (this.hooks.suppressed?.(this.kind.type, entry) === true) {
+        this.counts.skipped += 1;
+        this.held += 1;
         continue;
       }
       if (row !== undefined) {
@@ -429,6 +447,7 @@ export class Rows {
     this.checkStopped();
     const unloaded = (): void => {
       this.counts.skipped += 1;
+      this.hooks.omitted?.();
       this.hooks.condition(
         `file-unloaded:${entry.source_id}`,
         // Not quoted: a loader's error can hold a signed address.
@@ -450,7 +469,7 @@ export class Rows {
     } catch (error) {
       if (this.signal.aborted) throw error;
       if (read.failed(error)) unloaded();
-      else await this.absorb(error, entry.source_id);
+      else await this.absorb(error, entry.source_id, false, entry);
       return undefined;
     }
     const withFile = {
@@ -497,7 +516,7 @@ export class Rows {
       try {
         row = await this.marfa.transition(found.id, "active");
       } catch (error) {
-        await this.absorb(error, entry.source_id);
+        await this.absorb(error, entry.source_id, false, entry);
         return;
       }
       this.index(row);
@@ -607,7 +626,7 @@ export class Rows {
             continue;
           }
         }
-        await this.absorb(error, entry.source_id);
+        await this.absorb(error, entry.source_id, false, entry);
         return;
       }
     }
@@ -675,6 +694,7 @@ export class Rows {
   }
 
   private agree(id: string, agreement: Agreement, entry: Entry): void {
+    this.hooks.upserted?.(this.kind.type, entry);
     const value = this.linkOf(cleaned(entry.properties));
     const was = this.store.get(id);
     const file = this.files.get(entry) ?? was?.file;
@@ -744,7 +764,7 @@ export class Rows {
       }
       if (page.length === 1) {
         this.batch.tried += 1;
-        await this.absorb(error, first.source_id, true);
+        await this.absorb(error, first.source_id, true, made.get(first), true);
         return;
       }
       const half = Math.ceil(page.length / 2);
@@ -841,6 +861,7 @@ export class Rows {
     for (const { key, row } of rows) {
       if (this.archivable !== undefined && !this.archivable.has(key)) {
         this.counts.skipped += 1;
+        this.hooks.omitted?.();
         this.hooks.condition(
           `unhinted:${key}`,
           `${key} was named for archiving by a run for what deliveries named, which did not read it, so it was not archived`,
@@ -1179,6 +1200,7 @@ export class Rows {
       return;
     }
     if (result.outcome === "skipped") {
+      this.hooks.omitted?.();
       this.counts.skipped += 1;
       return;
     }
@@ -1191,6 +1213,7 @@ export class Rows {
       ),
       created.source_id,
       true,
+      entry,
     );
   }
 
@@ -1202,6 +1225,8 @@ export class Rows {
     error: unknown,
     sourceId: string,
     creating = false,
+    entry?: Entry,
+    singleton = false,
   ): Promise<void> {
     if (!(error instanceof Refusal) || causeOf(error) !== "refused") {
       throw error;
@@ -1215,7 +1240,11 @@ export class Rows {
       }
       if (creating && error.code === "forbidden") throw error;
     }
-    this.hooks.inboundRefused?.();
+    const parked =
+      entry !== undefined &&
+      this.hooks.upsertRefused?.(this.kind.type, entry, error, singleton) ===
+        true;
+    if (!parked) this.hooks.inboundRefused?.();
     this.counts.skipped += 1;
     if (raced.has(error.code)) {
       this.held += 1;

@@ -9,6 +9,8 @@ import {
   type Agreement,
 } from "./agreement.js";
 import type {
+  PendingInbound,
+  InboundRetryCapability,
   CheckpointResult,
   ScopedRunContext,
   Change,
@@ -61,6 +63,7 @@ import {
   withRefusal,
   type Purge,
 } from "./store.js";
+import { digest, identityKey, intentOf, fitsJournal } from "./inbound-retry.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
@@ -358,6 +361,9 @@ export async function runOnce<E extends EnvDeclaration>(
   const { connector, logger, clock } = setup;
   const env = setup.environment.values as EnvValues<E>;
   interface Scope {
+    name: string;
+    retry?: InboundRetryCapability;
+    journal: Map<string, PendingInbound | null>;
     ids: Set<string>;
     blocked?: "row-refused" | "connection-unresolved";
   }
@@ -516,6 +522,57 @@ export async function runOnce<E extends EnvDeclaration>(
   let acknowledged: Kept = structuredClone(stored);
   const draft = structuredClone(stored.state);
   let narrowed: Promise<string[]> | undefined;
+  const retryOwners = new Map<string, Scope>();
+  const retryContext = (scope: Scope): string =>
+    digest({
+      caller: scope.retry?.context,
+      declarations: JSON.parse(
+        JSON.stringify(
+          connector.types.map((kind) => ({
+            type: kind.type,
+            fields: kind.fields,
+            readOnly: kind.readOnly,
+            derived: kind.derived,
+          })),
+        ),
+      ) as unknown,
+      connections: JSON.parse(
+        JSON.stringify(connector.connections ?? []),
+      ) as unknown,
+    });
+  const journalFor = (scope?: Scope): PendingInbound[] => {
+    const entries = new Map(
+      (acknowledged.inbound ?? []).map((record) => [
+        identityKey(record.identity.type, record.identity.sourceId),
+        record,
+      ]),
+    );
+    for (const [key, record] of scope?.journal ?? []) {
+      if (record === null) entries.delete(key);
+      else entries.set(key, record);
+    }
+    return [...entries.values()];
+  };
+  const due = (scope: Scope, record: PendingInbound): boolean =>
+    scope.retry !== undefined &&
+    (record.context !== retryContext(scope) ||
+      clock.now().getTime() >= Date.parse(record.dueAt));
+  const ownRetry = (scope: Scope, key: string): boolean => {
+    const owner = retryOwners.get(key);
+    const saved = (acknowledged.inbound ?? []).find(
+      (record) =>
+        identityKey(record.identity.type, record.identity.sourceId) === key,
+    );
+    if (
+      (owner !== undefined && owner !== scope) ||
+      (saved !== undefined && saved.scope !== scope.name)
+    ) {
+      scope.blocked = "row-refused";
+      return false;
+    }
+    retryOwners.set(key, scope);
+    return true;
+  };
   const hooks = {
     narrowed: () =>
       (narrowed ??= setup.marfa.narrower(
@@ -527,6 +584,100 @@ export async function runOnce<E extends EnvDeclaration>(
         `refused:${sourceId}`,
         `the server refused ${sourceId}: ${reason}`,
       ),
+    omitted: () => {
+      if (activeScope !== undefined) activeScope.blocked = "row-refused";
+    },
+    suppressed: (type: string, entry: Entry): boolean => {
+      const scope = activeScope;
+      if (scope?.retry === undefined) return false;
+      const key = identityKey(type, entry.source_id);
+      const saved = journalFor(scope).find(
+        (record) =>
+          identityKey(record.identity.type, record.identity.sourceId) === key,
+      );
+      if (saved === undefined) return false;
+      if (!ownRetry(scope, key)) return false;
+      if (saved.mode !== scope.retry.mode) {
+        scope.blocked = "row-refused";
+        return false;
+      }
+      try {
+        return (
+          saved.fingerprint === digest(intentOf(type, entry)) &&
+          !due(scope, saved)
+        );
+      } catch {
+        scope.blocked = "row-refused";
+        return false;
+      }
+    },
+    upsertRefused: (
+      type: string,
+      entry: Entry,
+      error: Refusal,
+      singleton: boolean,
+    ): boolean => {
+      const scope = activeScope;
+      if (
+        scope?.retry === undefined ||
+        (error.code !== "invalid_properties" &&
+          !(singleton && error.code === "request_too_large"))
+      )
+        return false;
+      try {
+        const intent = intentOf(type, entry);
+        const key = identityKey(type, entry.source_id);
+        if (!ownRetry(scope, key)) return false;
+        const link = lanes.get(type)?.rows.linkOf(intent.entry.properties);
+        const reason = logger.redact(error.detail);
+        const boundedReason = capBytes(reason, reasonBytes);
+        const record: PendingInbound = {
+          identity: {
+            type,
+            sourceId: entry.source_id,
+            ...(link !== undefined && { link }),
+          },
+          scope: scope.name,
+          operation: "upsert",
+          fingerprint: digest(intent),
+          context: retryContext(scope),
+          code: error.code,
+          reason:
+            boundedReason === reason
+              ? reason
+              : `${capBytes(reason, reasonBytes - 14)} [abbreviated]`,
+          attemptedAt: clock.now().toISOString(),
+          dueAt: new Date(
+            clock.now().getTime() + 24 * 60 * 60 * 1000,
+          ).toISOString(),
+          ...(scope.retry.mode === "replay"
+            ? { mode: "replay" as const, intent }
+            : { mode: "refetch" as const }),
+        };
+        scope.journal.set(key, record);
+        if (!fitsJournal(journalFor(scope))) {
+          scope.blocked = "row-refused";
+          return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    upserted: (type: string, entry: Entry): void => {
+      const scope = activeScope;
+      const key = identityKey(type, entry.source_id);
+      const saved = journalFor(scope).find(
+        (record) =>
+          identityKey(record.identity.type, record.identity.sourceId) === key,
+      );
+      if (saved === undefined) return;
+      if (scope?.retry === undefined) {
+        if (scope !== undefined) scope.blocked = "row-refused";
+        return;
+      }
+      if (ownRetry(scope, key)) scope.journal.set(key, null);
+    },
     inboundRefused: () => {
       if (activeScope !== undefined) activeScope.blocked = "row-refused";
     },
@@ -647,11 +798,41 @@ export async function runOnce<E extends EnvDeclaration>(
     get hints() {
       return hints;
     },
-    forScope: (name) => {
+    forScope: (name, options) => {
       if (name.length === 0) throw new Error("a scope needs a name");
-      const scope = scopes.get(name) ?? { ids: new Set<string>() };
+      if (
+        options !== undefined &&
+        (!/^[a-f0-9]{64}$/.test(options.retry.context) ||
+          !["refetch", "replay"].includes(options.retry.mode))
+      )
+        throw new Error(
+          "retry capability needs a mode and full nonsecret SHA-256 context",
+        );
+      const existing = scopes.get(name);
+      if (
+        existing !== undefined &&
+        JSON.stringify(existing.retry) !== JSON.stringify(options?.retry)
+      )
+        throw new Error(
+          "scope retry capability must stay consistent within a run",
+        );
+      const scope: Scope = existing ?? {
+        name,
+        ...(options !== undefined && { retry: { ...options.retry } }),
+        journal: new Map(),
+        ids: new Set<string>(),
+      };
       scopes.set(name, scope);
       const scoped: ScopedRunContext<E> = {
+        refusals: {
+          pending: () =>
+            (acknowledged.inbound ?? [])
+              .filter((record) => record.scope === name)
+              .map((record) => ({
+                record: structuredClone(record),
+                due: due(scope, record),
+              })),
+        },
         env,
         signal: setup.signal,
         log,
@@ -769,7 +950,11 @@ export async function runOnce<E extends EnvDeclaration>(
   );
   let overflowed = stored.relinked?.overflowed === true;
   let overflowing = false;
-  const envelope = (vendorState: Record<string, unknown>): Kept => ({
+  const envelope = (
+    vendorState: Record<string, unknown>,
+    inbound = acknowledged.inbound ?? [],
+  ): Kept => ({
+    ...(inbound.length > 0 && { inbound }),
     state: vendorState,
     conditions: Object.fromEntries(
       [
@@ -822,8 +1007,12 @@ export async function runOnce<E extends EnvDeclaration>(
       throw new Error("checkpoint requires acknowledged loaded state");
     const candidate = jsonValue(value);
     const vendorState = { ...acknowledged.state, [key]: candidate };
+    const inbound = journalFor(scope);
+    if (!fitsJournal(inbound))
+      return { committed: false, reason: "state-oversized" };
     const fitsState = (): boolean =>
-      Buffer.byteLength(JSON.stringify(envelope(vendorState))) <= 512 * 1024;
+      Buffer.byteLength(JSON.stringify(envelope(vendorState, inbound))) <=
+      512 * 1024;
     if (!fitsState()) return { committed: false, reason: "state-oversized" };
     const refusal = blocked(scope);
     if (refusal !== undefined) return refusal;
@@ -859,7 +1048,7 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     check();
     if (!fitsState()) return { committed: false, reason: "state-oversized" };
-    const kept = jsonValue(envelope(vendorState)) as Kept;
+    const kept = jsonValue(envelope(vendorState, inbound)) as Kept;
     try {
       await store.save(kept);
     } catch (error) {
@@ -888,6 +1077,9 @@ export async function runOnce<E extends EnvDeclaration>(
       if (ownership?.size === 0) owners.delete(id);
     }
     scope.ids.clear();
+    scope.journal.clear();
+    for (const [identity, owner] of retryOwners)
+      if (owner === scope) retryOwners.delete(identity);
     return { committed: true };
   };
 
@@ -1888,6 +2080,12 @@ export async function runOnce<E extends EnvDeclaration>(
       "the state is held, so the next run reads the vendor again: a write did not land",
     );
   }
+  for (const record of acknowledged.inbound ?? []) {
+    raised.set(
+      `inbound:${identityKey(record.identity.type, record.identity.sourceId)}`,
+      `the server refused ${record.identity.type} ${record.identity.sourceId}: ${record.code}, ${record.reason}; durable retry intent waits`,
+    );
+  }
   // Kept redacted, key and message, since the conditions are kept on the
   // instance as they stand.
   const redacted = new Map(
@@ -1959,6 +2157,9 @@ export async function runOnce<E extends EnvDeclaration>(
   ) {
     try {
       await store.save({
+        ...(acknowledged.inbound !== undefined && {
+          inbound: acknowledged.inbound,
+        }),
         state: landed ? draft : acknowledged.state,
         conditions: Object.fromEntries(
           [
