@@ -92,6 +92,32 @@ export interface State {
   set(key: string, value: unknown): void;
 }
 
+/** A scope advances only after its row and connection intent is acknowledged. */
+export type CheckpointResult =
+  | { committed: true }
+  | {
+      committed: false;
+      reason:
+        | "row-refused"
+        | "agreement-skipped"
+        | "agreement-oversized"
+        | "connection-unresolved"
+        | "scope-overlap"
+        | "state-oversized";
+    };
+
+export interface CheckpointState {
+  /** A detached value from the last acknowledged state, never the root draft. */
+  get(key: string): unknown;
+  /** Await this before starting dependent work. Available only during a full read. */
+  checkpoint(key: string, value: unknown): Promise<CheckpointResult>;
+}
+
+export type ScopedRunContext<E extends EnvDeclaration> = Omit<
+  RunContext<E>,
+  "state" | "forScope"
+> & { readonly state: CheckpointState };
+
 export interface Log {
   info(message: string): void;
   warn(message: string): void;
@@ -131,6 +157,8 @@ export interface RunContext<E extends EnvDeclaration> {
    */
   readonly signal: AbortSignal;
   readonly state: State;
+  /** Bind a serial read scope. Unfinished scopes sharing an item cannot checkpoint. */
+  readonly forScope: (scope: string) => ScopedRunContext<E>;
   readonly log: Log;
   readonly secret: Secret;
   /**

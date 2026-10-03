@@ -114,6 +114,12 @@ export function withRefusal(
   return fits(bare) ? bare : undefined;
 }
 
+export class AgreementBlocked extends Error {
+  constructor(readonly reason: "agreement-skipped" | "agreement-oversized") {
+    super(reason);
+  }
+}
+
 export class Store {
   private readonly read = new Map<string, Agreement | null>();
   private readonly pending = new Map<string, Agreement | null>();
@@ -123,6 +129,11 @@ export class Store {
     private readonly marfa: Marfa,
     private readonly connectorId: string,
     private readonly process: string,
+    private readonly hooks?: {
+      changed(id: string): void;
+      acknowledged(id: string): void;
+      check(): void;
+    },
   ) {}
 
   async load(): Promise<Kept> {
@@ -162,51 +173,105 @@ export class Store {
   }
 
   set(id: string, agreement: Agreement): void {
+    this.hooks?.changed(id);
     this.pending.set(id, agreement);
   }
 
   clear(id: string): void {
+    this.hooks?.changed(id);
     this.pending.set(id, null);
   }
 
-  async flush(only?: readonly string[]): Promise<void> {
-    const ids = only ?? [...this.pending.keys()];
-    const set: { item_id: string; waiting: boolean; record: Agreement }[] = [];
-    const clear: string[] = [];
-    for (const id of ids) {
-      const agreement = this.pending.get(id);
-      if (agreement === undefined) continue;
-      if (agreement === null) clear.push(id);
-      // One the instance would refuse would stop every flush after it; the
-      // row is taken as the vendor has it next time.
-      else if (Buffer.byteLength(JSON.stringify(agreement)) > recordBytes) {
+  async flush(only?: readonly string[], check?: () => void): Promise<void> {
+    const snapshot = new Map(
+      [...new Set(only ?? this.pending.keys())].flatMap((id) => {
+        const agreement = this.pending.get(id);
+        return agreement === undefined ? [] : [[id, agreement] as const];
+      }),
+    );
+    // Preflight all prerequisites before writing any batch. An oversized
+    // intention remains pending; replacing it with a clear loses recovery.
+    let oversized = false;
+    for (const [id, agreement] of snapshot) {
+      if (agreement !== null && !fits(agreement)) {
         this.oversized.add(id);
-        clear.push(id);
+        oversized = true;
       } else {
-        set.push({
-          item_id: id,
-          waiting: agreement.waiting !== undefined,
-          record: agreement,
-        });
+        this.oversized.delete(id);
       }
     }
+    if (oversized) throw new AgreementBlocked("agreement-oversized");
+    const set = [...snapshot].flatMap(([id, agreement]) =>
+      agreement === null
+        ? []
+        : [
+            {
+              item_id: id,
+              waiting: agreement.waiting !== undefined,
+              record: agreement,
+            },
+          ],
+    );
+    const clear = [...snapshot].flatMap(([id, agreement]) =>
+      agreement === null ? [id] : [],
+    );
+    let skippedAny = false;
     for (
       let at = 0;
       at < Math.max(set.length, clear.length);
       at += perRequest
     ) {
-      await this.marfa.writeAgreements(
+      this.hooks?.check();
+      check?.();
+      const writing = set.slice(at, at + perRequest);
+      const clearing = clear.slice(at, at + perRequest);
+      const ids = new Set([
+        ...writing.map((entry) => entry.item_id),
+        ...clearing,
+      ]);
+      const result: unknown = await this.marfa.writeAgreements(
         this.connectorId,
         this.process,
-        set.slice(at, at + perRequest),
-        clear.slice(at, at + perRequest),
+        writing,
+        clearing,
       );
+      if (
+        !isRecord(result) ||
+        !Array.isArray(result["skipped"]) ||
+        !result["skipped"].every(
+          (id) => typeof id === "string" && ids.has(id),
+        ) ||
+        new Set(result["skipped"]).size !== result["skipped"].length ||
+        !Number.isInteger(result["written"]) ||
+        !Number.isInteger(result["cleared"])
+      ) {
+        throw new Error("invalid agreement acknowledgment");
+      }
+      const skipped = new Set(result["skipped"] as string[]);
+      const written = writing.filter(
+        (entry) => !skipped.has(entry.item_id),
+      ).length;
+      const clearable = clearing.filter((id) => !skipped.has(id)).length;
+      // cleared counts deleted rows, not accepted clear IDs. A readable row
+      // without an agreement correctly acknowledges an idempotent clear as 0.
+      if (
+        result["written"] !== written ||
+        (result["cleared"] as number) < 0 ||
+        (result["cleared"] as number) > clearable
+      ) {
+        throw new Error("invalid agreement acknowledgment counts");
+      }
+      skippedAny ||= skipped.size > 0;
+      for (const id of ids) {
+        if (skipped.has(id)) continue;
+        const agreement = snapshot.get(id);
+        if (agreement === undefined || this.pending.get(id) !== agreement)
+          continue;
+        this.read.set(id, agreement);
+        this.pending.delete(id);
+        this.hooks?.acknowledged(id);
+      }
     }
-    for (const id of ids) {
-      const agreement = this.pending.get(id);
-      if (agreement === undefined) continue;
-      this.read.set(id, agreement);
-      this.pending.delete(id);
-    }
+    if (skippedAny) throw new AgreementBlocked("agreement-skipped");
   }
 }

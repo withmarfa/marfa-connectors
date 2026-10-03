@@ -9,6 +9,8 @@ import {
   type Agreement,
 } from "./agreement.js";
 import type {
+  CheckpointResult,
+  ScopedRunContext,
   Change,
   ChangeKind,
   Connector,
@@ -27,6 +29,7 @@ import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, keepSecret, reportCap, type Logger } from "./log.js";
 import {
+  Refusal,
   causeOf,
   retryAfterOf,
   type Cause,
@@ -50,6 +53,8 @@ import {
 import { instant } from "./values.js";
 import type { Clock } from "./runtime.js";
 import {
+  AgreementBlocked,
+  type Kept,
   capBytes,
   reasonBytes,
   Store,
@@ -315,13 +320,118 @@ function sumOf(counts: readonly Counts[]): Counts {
   return total;
 }
 
+/** JSON is the durable contract: reject values JSON.stringify would silently lose. */
+function jsonValue(value: unknown, seen = new Set<object>()): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "object" || value === null || seen.has(value))
+    throw new Error("checkpoint state must be JSON-compatible");
+  if (
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) !== Object.prototype &&
+    Object.getPrototypeOf(value) !== null
+  ) {
+    throw new Error("checkpoint state must be JSON-compatible");
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0)
+    throw new Error("checkpoint state must be JSON-compatible");
+  seen.add(value);
+  try {
+    return Array.isArray(value)
+      ? Array.from(value, (entry) => jsonValue(entry, seen))
+      : Object.fromEntries(
+          Object.entries(value).map(([key, entry]) => [
+            key,
+            jsonValue(entry, seen),
+          ]),
+        );
+  } finally {
+    seen.delete(value);
+  }
+}
+
 export async function runOnce<E extends EnvDeclaration>(
   setup: RunSetup<E>,
   trigger: Trigger,
 ): Promise<RunResult> {
   const { connector, logger, clock } = setup;
   const env = setup.environment.values as EnvValues<E>;
-  const store = new Store(setup.marfa, setup.connectorId, setup.process);
+  interface Scope {
+    ids: Set<string>;
+    blocked?: "row-refused" | "connection-unresolved";
+  }
+  const scopes = new Map<string, Scope>();
+  const owners = new Map<string, Set<Scope | undefined>>();
+  let activeScope: Scope | undefined;
+  let mutating = false;
+  let reading = false;
+  let uncertainState = false;
+  let unfinishedOperations = false;
+  let rootInFlight = 0;
+  const checkDurability = (): void => {
+    if (unfinishedOperations)
+      throw new Error(
+        "scope operations were not awaited before the read ended",
+      );
+    if (uncertainState)
+      throw new Error(
+        "state acknowledgment was lost; restart before writing again",
+      );
+    if (setup.fenced?.() === true) throw new Stopped();
+  };
+  const check = (): void => {
+    checkDurability();
+    if (setup.signal.aborted) throw new Stopped();
+  };
+  const store = new Store(setup.marfa, setup.connectorId, setup.process, {
+    changed: (id) => {
+      const ownership = owners.get(id) ?? new Set<Scope | undefined>();
+      ownership.add(activeScope);
+      owners.set(id, ownership);
+      activeScope?.ids.add(id);
+    },
+    acknowledged: (id) => {
+      const ownership = owners.get(id);
+      ownership?.delete(undefined);
+      if (ownership?.size === 0) owners.delete(id);
+    },
+    check: checkDurability,
+  });
+  const serial = async <T>(
+    scope: Scope | undefined,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    check();
+    if (mutating) {
+      if (scope !== undefined) scope.blocked = "row-refused";
+      throw new Error("scope operations must be awaited serially");
+    }
+    mutating = true;
+    activeScope = scope;
+    try {
+      return await work();
+    } catch (error) {
+      if (scope !== undefined) scope.blocked ??= "row-refused";
+      throw error;
+    } finally {
+      activeScope = undefined;
+      mutating = false;
+    }
+  };
+  // Existing unscoped callers may read several feeds concurrently. Queue
+  // their shared row operations; scoped callers must await attribution.
+  let rootTail: Promise<unknown> = Promise.resolve();
+  const unscoped = <T>(work: () => Promise<T>): Promise<T> => {
+    rootInFlight += 1;
+    const next = rootTail
+      .then(() => serial(undefined, work))
+      .finally(() => {
+        rootInFlight -= 1;
+      });
+    rootTail = next.catch(() => undefined);
+    return next;
+  };
   const specs = specsOf(connector, env);
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
@@ -396,6 +506,7 @@ export async function runOnce<E extends EnvDeclaration>(
     loaded = undefined;
   }
   const stored = loaded ?? { state: {}, conditions: {} };
+  let acknowledged: Kept = structuredClone(stored);
   const draft = structuredClone(stored.state);
   let narrowed: Promise<string[]> | undefined;
   const hooks = {
@@ -409,8 +520,17 @@ export async function runOnce<E extends EnvDeclaration>(
         `refused:${sourceId}`,
         `the server refused ${sourceId}: ${reason}`,
       ),
-    condition: (key: string, message: string) => raised.set(key, message),
-    fenced: () => setup.fenced?.() === true,
+    inboundRefused: () => {
+      if (activeScope !== undefined) activeScope.blocked = "row-refused";
+    },
+    condition: (key: string, message: string) => {
+      raised.set(key, message);
+      if (activeScope !== undefined && key.startsWith("connection-refused:")) {
+        activeScope.blocked = "connection-unresolved";
+      }
+    },
+    fenced: () =>
+      uncertainState || unfinishedOperations || setup.fenced?.() === true,
   };
   const lanes = new Map(
     [...specs.values()].map((spec) => [
@@ -517,55 +637,87 @@ export async function runOnce<E extends EnvDeclaration>(
     get hints() {
       return hints;
     },
-    upsert: (type, entries) => lane(type).rows.upsert(entries),
-    archive: (type, keys) => lane(type).rows.archive(keys),
-    derive: (type, keys, values) => lane(type).rows.derive(keys, values),
-    linked: async (type, connection, target) => {
-      const { rows } = lane(type);
-      if (!specs.get(type)?.connections.has(connection)) {
-        throw new Error(`${type} declares no connection ${connection}`);
-      }
-      const held = (await lane(target.type).rows.named([target.id])).get(
-        target.id,
-      );
-      if (held === undefined) return [];
-      const found = await setup.marfa.connectedTo(type, connection, held.id);
-      const told = await rows.told(found);
-      return found
-        .filter((row) => {
-          if (!told.has(row.id)) return false;
-          const named =
-            rows.connecting.get(row.id)?.[connection] ??
-            answeredConnections.get(row.id)?.[connection];
-          return (
-            named === undefined ||
-            named.some(
-              (one) => one.type === target.type && one.id === target.id,
-            )
-          );
-        })
-        .map((row) => {
-          rows.adopt(row);
-          return structuredClone(row);
-        });
+    forScope: (name) => {
+      if (name.length === 0) throw new Error("a scope needs a name");
+      const scope = scopes.get(name) ?? { ids: new Set<string>() };
+      scopes.set(name, scope);
+      const scoped: ScopedRunContext<E> = {
+        env,
+        signal: setup.signal,
+        log,
+        secret,
+        get hints() {
+          return hints;
+        },
+        state: {
+          get: (key) =>
+            Object.hasOwn(acknowledged.state, key)
+              ? structuredClone(acknowledged.state[key])
+              : undefined,
+          checkpoint: (key, value) =>
+            serial(scope, () => checkpoint(scope, key, value)),
+        },
+        upsert: (type, entries) =>
+          serial(scope, () => lane(type).rows.upsert(entries)),
+        archive: (type, keys) =>
+          serial(scope, () => lane(type).rows.archive(keys)),
+        derive: (type, keys, values) =>
+          serial(scope, () => lane(type).rows.derive(keys, values)),
+        linked: (...args) => serial(scope, () => linked(...args)),
+        held: (type) => serial(scope, () => heldRows(type)),
+      };
+      return scoped;
     },
-    held: async (type) => {
-      const { rows, spec } = lane(type);
-      const found = await setup.marfa.ownRows(type, "active");
-      return found
-        .filter(
-          (row) =>
-            row.type === type &&
-            row.state === "active" &&
-            (spec.link === undefined
-              ? row.source === spec.source
-              : rows.linkOf(row.properties) !== undefined),
-        )
-        .map((row) => {
-          rows.adopt(row);
-          return structuredClone(row);
-        });
-    },
+    upsert: (type, entries) => unscoped(() => lane(type).rows.upsert(entries)),
+    archive: (type, keys) => unscoped(() => lane(type).rows.archive(keys)),
+    derive: (type, keys, values) =>
+      unscoped(() => lane(type).rows.derive(keys, values)),
+    linked: (...args) => unscoped(() => linked(...args)),
+    held: (type) => unscoped(() => heldRows(type)),
+  };
+  const linked: RunContext<E>["linked"] = async (type, connection, target) => {
+    const { rows } = lane(type);
+    if (!specs.get(type)?.connections.has(connection)) {
+      throw new Error(`${type} declares no connection ${connection}`);
+    }
+    const held = (await lane(target.type).rows.named([target.id])).get(
+      target.id,
+    );
+    if (held === undefined) return [];
+    const found = await setup.marfa.connectedTo(type, connection, held.id);
+    const told = await rows.told(found);
+    return found
+      .filter((row) => {
+        if (!told.has(row.id)) return false;
+        const named =
+          rows.connecting.get(row.id)?.[connection] ??
+          answeredConnections.get(row.id)?.[connection];
+        return (
+          named === undefined ||
+          named.some((one) => one.type === target.type && one.id === target.id)
+        );
+      })
+      .map((row) => {
+        rows.adopt(row);
+        return structuredClone(row);
+      });
+  };
+  const heldRows: RunContext<E>["held"] = async (type) => {
+    const { rows, spec } = lane(type);
+    const found = await setup.marfa.ownRows(type, "active");
+    return found
+      .filter(
+        (row) =>
+          row.type === type &&
+          row.state === "active" &&
+          (spec.link === undefined
+            ? row.source === spec.source
+            : rows.linkOf(row.properties) !== undefined),
+      )
+      .map((row) => {
+        rows.adopt(row);
+        return structuredClone(row);
+      });
   };
   const watchContext: WatchContext<E> = {
     env,
@@ -607,6 +759,123 @@ export async function runOnce<E extends EnvDeclaration>(
   );
   let overflowed = stored.relinked?.overflowed === true;
   let overflowing = false;
+  const envelope = (vendorState: Record<string, unknown>): Kept => ({
+    state: vendorState,
+    conditions: Object.fromEntries(
+      [
+        ...[
+          ...Object.entries(acknowledged.conditions),
+          ...[...raised].map(
+            ([key, message]) =>
+              [
+                logger.redact(key),
+                cap(logger.redact(message), conditionCap),
+              ] as const,
+          ),
+        ]
+          .reduce(
+            (map, [key, message]) => map.set(key, message),
+            new Map<string, string>(),
+          )
+          .entries(),
+      ].slice(0, keptConditions),
+    ),
+    ...(acknowledged.cursor !== undefined && { cursor: acknowledged.cursor }),
+    ...(purged.size > 0 && { purges: [...purged.values()] }),
+    ...((relinked.size > 0 || overflowed) && {
+      relinked: {
+        rows: Object.fromEntries(relinked),
+        ...(overflowed && { overflowed: true as const }),
+      },
+    }),
+  });
+  const overlaps = (scope: Scope): boolean =>
+    [...scope.ids].some((id) => {
+      const ownership = owners.get(id);
+      return (
+        ownership !== undefined &&
+        (ownership.size !== 1 || !ownership.has(scope))
+      );
+    });
+  const checkpoint = async (
+    scope: Scope,
+    key: string,
+    value: unknown,
+  ): Promise<CheckpointResult> => {
+    if (!reading || hints !== undefined)
+      throw new Error("checkpoint requires an active full vendor read");
+    if (loaded === undefined)
+      throw new Error("checkpoint requires acknowledged loaded state");
+    const candidate = jsonValue(value);
+    const vendorState = { ...acknowledged.state, [key]: candidate };
+    const fitsState = (): boolean =>
+      Buffer.byteLength(JSON.stringify(envelope(vendorState))) <= 512 * 1024;
+    if (!fitsState()) return { committed: false, reason: "state-oversized" };
+    if (scope.blocked !== undefined)
+      return { committed: false, reason: scope.blocked };
+    if (overlaps(scope)) return { committed: false, reason: "scope-overlap" };
+    check();
+    const named = new Map<string, Record<string, readonly Target[]>>();
+    const captured: {
+      rows: Rows;
+      id: string;
+      said: Record<string, readonly Target[]>;
+    }[] = [];
+    for (const { rows } of lanes.values()) {
+      for (const [id, said] of rows.connecting) {
+        if (!scope.ids.has(id)) continue;
+        named.set(id, said);
+        captured.push({ rows, id, said });
+      }
+    }
+    await connections.connect(named, []);
+    if (scope.blocked !== undefined)
+      return { committed: false, reason: scope.blocked };
+    if (overlaps(scope)) return { committed: false, reason: "scope-overlap" };
+    if (!fitsState()) return { committed: false, reason: "state-oversized" };
+    try {
+      await store.flush([...scope.ids], check);
+    } catch (error) {
+      if (error instanceof AgreementBlocked)
+        return { committed: false, reason: error.reason };
+      throw error;
+    }
+    for (const { rows, id, said } of captured) {
+      if (rows.connecting.get(id) === said) rows.connecting.delete(id);
+    }
+    check();
+    const kept = jsonValue(envelope(vendorState)) as Kept;
+    try {
+      await store.save(kept);
+    } catch (error) {
+      // A definite 4xx refusal applied no state. Every other failure may have
+      // committed it, so no old envelope may be sent after an uncertain answer.
+      if (!(
+        error instanceof Refusal &&
+        error.status !== undefined &&
+        error.status >= 400 &&
+        error.status < 500
+      )) {
+        uncertainState = true;
+      }
+      throw error;
+    }
+    acknowledged = structuredClone(kept);
+    Object.defineProperty(draft, key, {
+      value: structuredClone(candidate),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    for (const id of scope.ids) {
+      const ownership = owners.get(id);
+      ownership?.delete(scope);
+      if (ownership?.size === 0) owners.delete(id);
+    }
+    scope.ids.clear();
+    return { committed: true };
+  };
+
   /** A link a person changed and the row purged before a run saw it would
    *  steer the purge. The window's first frame vouches for the link it
    *  shows where it changed no field, or is the connector's own create; any
@@ -1443,7 +1712,14 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       for (const id of held) heldBack(id);
     }
-    await connector.run(context);
+    reading = true;
+    try {
+      await connector.run(context);
+    } finally {
+      reading = false;
+      unfinishedOperations = mutating || rootInFlight > 0;
+    }
+    check();
     // Once the vendor's rows are written, so a target made this run is found.
     // An answer from before the run gives way, type by type, to the
     // vendor's entry since.
@@ -1524,7 +1800,11 @@ export async function runOnce<E extends EnvDeclaration>(
     }
   } catch (error) {
     failure = error;
-    if (!(error instanceof Stopped) && setup.fenced?.() !== true) {
+    if (
+      !uncertainState &&
+      !(error instanceof Stopped) &&
+      setup.fenced?.() !== true
+    ) {
       try {
         await answeredBack();
       } catch {
@@ -1536,6 +1816,7 @@ export async function runOnce<E extends EnvDeclaration>(
   const fenced = setup.fenced?.() === true;
   try {
     // Another process may hold what this run read; the next run reads it again.
+    checkDurability();
     if (fenced) throw new Error("the hold was lost, so nothing more is kept");
     await store.flush();
   } catch (error) {
@@ -1553,7 +1834,7 @@ export async function runOnce<E extends EnvDeclaration>(
   for (const id of store.oversized) {
     raised.set(
       `oversized:${id}`,
-      `what was agreed for ${id} outgrew the instance's cap and was dropped, so the row takes the vendor's values when next sent`,
+      `what was agreed for ${id} outgrew the instance's cap and remains pending, so vendor progress cannot advance`,
     );
   }
   for (const [scope, { message, ids }] of waiting) {
@@ -1601,10 +1882,10 @@ export async function runOnce<E extends EnvDeclaration>(
   // the last report had no room for ahead of those it carried.
   const clears = failure === undefined && whole;
   const standing = new Map(
-    [...redacted].filter(([key]) => !(key in stored.conditions)),
+    [...redacted].filter(([key]) => !(key in acknowledged.conditions)),
   );
   const cleared: string[] = [];
-  for (const [key, message] of Object.entries(stored.conditions)) {
+  for (const [key, message] of Object.entries(acknowledged.conditions)) {
     const now = redacted.get(key);
     if (now !== undefined) standing.set(key, now);
     else if (
@@ -1643,10 +1924,15 @@ export async function runOnce<E extends EnvDeclaration>(
   const shown = fitting(tallied(marking ? taken.length : 0), standing);
   let saved = false;
   // A state that could not be read is not written over with nothing.
-  if (loaded !== undefined && !fenced) {
+  if (
+    loaded !== undefined &&
+    !fenced &&
+    !uncertainState &&
+    !unfinishedOperations
+  ) {
     try {
       await store.save({
-        state: landed ? draft : stored.state,
+        state: landed ? draft : acknowledged.state,
         conditions: Object.fromEntries(
           [
             ...[...standing].filter(([key]) => !shown.has(key)),
@@ -1655,7 +1941,9 @@ export async function runOnce<E extends EnvDeclaration>(
         ),
         ...(pastLog && read?.cursor !== undefined
           ? { cursor: read.cursor }
-          : stored.cursor !== undefined && { cursor: stored.cursor }),
+          : acknowledged.cursor !== undefined && {
+              cursor: acknowledged.cursor,
+            }),
         ...(purged.size > 0 && { purges: [...purged.values()] }),
         ...((relinked.size > 0 || overflowed) && {
           relinked: {
@@ -1753,7 +2041,64 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   if (read.rows.size === 0 && read.connected.size === 0) {
     return { waiting: false, cursor: read.cursor };
   }
-  const store = new Store(setup.marfa, setup.connectorId, setup.process);
+  interface Scope {
+    ids: Set<string>;
+    blocked?: "row-refused" | "connection-unresolved";
+  }
+  const scopes = new Map<string, Scope>();
+  const owners = new Map<string, Set<Scope | undefined>>();
+  let activeScope: Scope | undefined;
+  let mutating = false;
+  let reading = false;
+  let uncertainState = false;
+  let unfinishedOperations = false;
+  let rootInFlight = 0;
+  const check = (): void => {
+    if (unfinishedOperations)
+      throw new Error(
+        "scope operations were not awaited before the read ended",
+      );
+    if (uncertainState)
+      throw new Error(
+        "state acknowledgment was lost; restart before writing again",
+      );
+    if (setup.signal.aborted || setup.fenced?.() === true) throw new Stopped();
+  };
+  const store = new Store(setup.marfa, setup.connectorId, setup.process, {
+    changed: (id) => {
+      const ownership = owners.get(id) ?? new Set<Scope | undefined>();
+      ownership.add(activeScope);
+      owners.set(id, ownership);
+      activeScope?.ids.add(id);
+    },
+    acknowledged: (id) => {
+      const ownership = owners.get(id);
+      ownership?.delete(undefined);
+      if (ownership?.size === 0) owners.delete(id);
+    },
+    check,
+  });
+  const serial = async <T>(
+    scope: Scope | undefined,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    check();
+    if (mutating) {
+      if (scope !== undefined) scope.blocked = "row-refused";
+      throw new Error("scope operations must be awaited serially");
+    }
+    mutating = true;
+    activeScope = scope;
+    try {
+      return await work();
+    } catch (error) {
+      if (scope !== undefined) scope.blocked ??= "row-refused";
+      throw error;
+    } finally {
+      activeScope = undefined;
+      mutating = false;
+    }
+  };
   await store.fetch([...read.rows.keys(), ...read.connected.keys()]);
   const waiting = [...read.rows].some(([id, seen]) => {
     const last = seen.frames.at(-1)?.item;
