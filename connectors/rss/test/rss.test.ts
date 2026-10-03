@@ -1637,6 +1637,12 @@ describe("the connector, run as a process", () => {
     )) {
       candidate.source_id = candidate.source_id?.replace(atomKey, declared);
     }
+    // Match the server's agreement cascade when removing fixture rows.
+    for (const row of marfa.rows.filter((r) =>
+      r.source_id?.startsWith(otherKey),
+    )) {
+      marfa.agreements.delete(row.id);
+    }
     marfa.rows = marfa.rows.filter((r) => !r.source_id?.startsWith(otherKey));
     const kept = marfa.states.get("rss") as {
       state: { feeds: Record<string, Record<string, unknown>> };
@@ -1649,7 +1655,8 @@ describe("the connector, run as a process", () => {
       candidate.id,
       candidate.source_id,
     ]);
-    expect((await once(["/other.xml", "/atom.xml"])).code).toBe(0);
+    const result = await once(["/other.xml", "/atom.xml"]);
+    expect(result.code, result.output).toBe(0);
     expect(
       old.every(([id, key]) =>
         marfa.rows.some((r) => r.id === id && r.source_id === key),

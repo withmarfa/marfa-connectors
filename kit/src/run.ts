@@ -1472,7 +1472,6 @@ export async function runOnce<E extends EnvDeclaration>(
       if (seen.purged) {
         // The instance drops a purged row's agreement and keeps its
         // keys as tombstones, named as the log last showed the row.
-        store.clear(id);
         const agreed = relinked.get(id)?.link;
         relinked.delete(id);
         const own = rows.linkOf(last.properties);
