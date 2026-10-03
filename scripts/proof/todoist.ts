@@ -38,6 +38,7 @@ async function asTask(
 export async function proveTodoist(
   marfa: MarfaClient,
   url: string,
+  operator: MarfaClient,
 ): Promise<void> {
   const todoist = await new TodoistStub("todoist-proof-token").start();
   const account = todoist.account;
@@ -64,7 +65,7 @@ export async function proveTodoist(
       return found;
     };
     const summary = async (): Promise<string> =>
-      String((await lastRun(marfa, key.id)).summary);
+      String((await lastRun(operator, key.id)).summary);
 
     const a = todoist.task("a", {
       content: "Buy milk",
@@ -151,7 +152,7 @@ export async function proveTodoist(
     await check(
       "todoist: the registration shows its heartbeat and its last run, with the counts of what was carried back",
       async () => {
-        const found = await registration(marfa, key.id);
+        const found = await registration(operator, key.id);
         if (
           found.last_heartbeat_at === null ||
           found.last_run?.outcome !== "succeeded"
@@ -623,7 +624,7 @@ export async function proveTodoist(
       new Date(Date.now() - 60 * 60_000).toISOString();
     const completedDoor = "/api/v1/tasks/completed/by_completion_date";
     const clearState = async (): Promise<void> => {
-      const connectorId = (await registration(marfa, key.id)).id;
+      const connectorId = (await registration(operator, key.id)).id;
       const cleared = await createClient({
         baseUrl: url,
         credential: key.key,

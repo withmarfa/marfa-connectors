@@ -53,6 +53,7 @@ function lineOf(output: string, said: string): string {
 export async function proveKeys(
   marfa: MarfaClient,
   url: string,
+  operator: MarfaClient,
 ): Promise<void> {
   const vendor = await serveThings();
   try {
@@ -160,7 +161,7 @@ export async function proveKeys(
           elsewhere,
         ]);
         const refused = await runner(wide).once();
-        const error = (await lastRun(marfa, wide.id)).error ?? "";
+        const error = (await lastRun(operator, wide.id)).error ?? "";
         const narrow = `marfa keys update ${wide.id} --claim proof-inbound`;
         if (
           refused.code !== 1 ||
@@ -187,7 +188,7 @@ export async function proveKeys(
       async () => {
         const foreign = await mint(minter, "proof-foreign", []);
         const refused = await runner(foreign).once();
-        const error = (await lastRun(marfa, foreign.id)).error ?? "";
+        const error = (await lastRun(operator, foreign.id)).error ?? "";
         if (
           refused.code !== 1 ||
           !error.includes("own source proof-foreign") ||

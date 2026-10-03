@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
+import { deliverySettled, restorationSettled } from "./inbound-wait.js";
 import {
   ConnectorUnderProof,
   edit,
@@ -121,6 +122,7 @@ async function deliveries(
 export async function proveInbound(
   marfa: MarfaClient,
   url: string,
+  operator: MarfaClient,
 ): Promise<void> {
   const vendor = await serveThings();
   try {
@@ -155,8 +157,8 @@ export async function proveInbound(
       "inbound: the connector's first run registers it, and an endpoint made for it answers its address in full once",
       async () => {
         await runOnce();
-        connectorId = (await registration(marfa, key.id)).id;
-        const unmade = (await lastRun(marfa, key.id)).summary ?? "";
+        connectorId = (await registration(operator, key.id)).id;
+        const unmade = (await lastRun(operator, key.id)).summary ?? "";
         if (!unmade.includes("no webhook endpoint is live")) {
           throw new Error(`the first run's report said: ${unmade}`);
         }
@@ -179,6 +181,49 @@ export async function proveInbound(
           throw new Error(`made ${path}, listed ${String(shown?.path)}`);
         }
         return `the run said no endpoint was live; the endpoint answered /inbound/ and 43 characters, and is listed as ${shown.path}`;
+      },
+    );
+
+    await check(
+      "inbound: own and operator keys read reports, while an unrelated working key cannot list or read them",
+      async () => {
+        for (const reader of [own, operator]) {
+          const listed = await registration(reader, key.id);
+          const detail = await reader.GET("/connectors/{id}", {
+            params: { path: { id: connectorId } },
+          });
+          const runs = await reader.GET("/connectors/{id}/runs", {
+            params: { path: { id: connectorId } },
+          });
+          if (
+            listed.id !== connectorId ||
+            detail.data?.id !== connectorId ||
+            (runs.data?.data.length ?? 0) === 0
+          ) {
+            throw new Error(
+              "an authorized reader could not read the registration and its runs",
+            );
+          }
+        }
+        const listed = await marfa.GET("/connectors");
+        const detail = await marfa.GET("/connectors/{id}", {
+          params: { path: { id: connectorId } },
+        });
+        const runs = await marfa.GET("/connectors/{id}/runs", {
+          params: { path: { id: connectorId } },
+        });
+        if (
+          listed.data?.data.length !== 0 ||
+          detail.response.status !== 404 ||
+          detail.error?.error.code !== "connector_not_found" ||
+          runs.response.status !== 404 ||
+          runs.error?.error.code !== "connector_not_found"
+        ) {
+          throw new Error(
+            `unrelated key: list ${String(listed.response.status)}, detail ${String(detail.response.status)}, runs ${String(runs.response.status)}`,
+          );
+        }
+        return "own and operator list, detail and runs succeed; unrelated list is empty, detail and runs answer 404 connector_not_found";
       },
     );
 
@@ -218,7 +263,7 @@ export async function proveInbound(
         await runOnce();
         const handled = await deliveries(own, connectorId, "handled");
         const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-        const summary = (await lastRun(marfa, key.id)).summary ?? "";
+        const summary = (await lastRun(operator, key.id)).summary ?? "";
         if (
           handled.map((delivery) => delivery.outcome).join() !== "processed" ||
           rows.get("t2")?.properties["title"] !== "Second" ||
@@ -252,7 +297,7 @@ export async function proveInbound(
         await runOnce();
         const every = await deliveries(own, connectorId, "any");
         const outcomes = every.map((delivery) => delivery.outcome).join();
-        const summary = (await lastRun(marfa, key.id)).summary ?? "";
+        const summary = (await lastRun(operator, key.id)).summary ?? "";
         if (
           repeat?.duplicate_of?.outcome !== "processed" ||
           outcomes !== "processed,duplicate,rejected" ||
@@ -288,14 +333,16 @@ export async function proveInbound(
           }),
         );
         try {
-          const runsBefore = (await lastRun(marfa, key.id)).reported_at;
+          const runsBefore = (await lastRun(operator, key.id)).reported_at;
           await until(
             async () =>
-              (await lastRun(marfa, key.id)).reported_at !== runsBefore,
+              (await lastRun(operator, key.id)).reported_at !== runsBefore,
             "the scheduled run",
           );
           vendor.things.set("t3", "Third");
           vendor.asked.length = 0;
+          const deliveryReportBefore = (await lastRun(operator, key.id))
+            .reported_at;
           const sentAt = Date.now();
           await post(
             url,
@@ -304,7 +351,26 @@ export async function proveInbound(
           );
           await until(async () => {
             const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-            return rows.has("t3");
+            const report = await lastRun(operator, key.id);
+            const handled = await deliveries(own, connectorId, "handled");
+            return deliverySettled(
+              {
+                rowReady: rows.has("t3"),
+                vendorRequests: vendor.asked,
+                deliveryProcessed: handled.some(
+                  (delivery) =>
+                    delivery.headers.some(
+                      ([name, value]) =>
+                        name?.toLowerCase() === "x-github-delivery" &&
+                        value === "33333333-3333-3333-3333-333333333333",
+                    ) && delivery.outcome === "processed",
+                ),
+                reportedAt: report.reported_at,
+                summary: report.summary ?? "",
+              },
+              deliveryReportBefore,
+              "/things/t3",
+            );
           }, "t3 being written");
           const took = Date.now() - sentAt;
           if (vendor.asked.join() !== "/things/t3") {
@@ -316,14 +382,27 @@ export async function proveInbound(
             await rowsOf(marfa, "proof.thing", "proof-inbound")
           ).get("t2");
           if (second === undefined) throw new Error("t2 is not held");
+          const restorationReportBefore = (await lastRun(operator, key.id))
+            .reported_at;
           await edit(marfa, second, { title: "Edited in Marfa" });
           const editedAt = Date.now();
           await until(async () => {
             const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-            return rows.get("t2")?.properties["title"] === "Second";
+            const report = await lastRun(operator, key.id);
+            return restorationSettled(
+              {
+                rowReady: rows.get("t2")?.properties["title"] === "Second",
+                vendorRequests: vendor.asked,
+                deliveryProcessed: true,
+                reportedAt: report.reported_at,
+                summary: report.summary ?? "",
+              },
+              restorationReportBefore,
+              second.id,
+            );
           }, "t2 being put back");
           const putBack = Date.now() - editedAt;
-          const summary = (await lastRun(marfa, key.id)).summary ?? "";
+          const summary = (await lastRun(operator, key.id)).summary ?? "";
           if (
             !summary.includes(
               `title on ${second.id} was changed in Marfa and put back`,

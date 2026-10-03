@@ -62,6 +62,7 @@ async function connect(
 export async function proveGitHub(
   marfa: MarfaClient,
   url: string,
+  operator: MarfaClient,
 ): Promise<void> {
   const github = await new GitHubStub().start();
   try {
@@ -179,7 +180,7 @@ export async function proveGitHub(
       "github: the first run registers its types as kinds of the core's, writes the repository, the issues and the comment, and connects them, the comment in its issue's thread through the instance's in-thread",
       async () => {
         await runOnce();
-        const summary = String((await lastRun(marfa, key.id)).summary);
+        const summary = String((await lastRun(operator, key.id)).summary);
         const grown = await Promise.all(
           ["github.issue", "github.comment"].map(async (type) => {
             const { data } = await marfa.GET("/types/{id}", {
@@ -449,7 +450,7 @@ export async function proveGitHub(
         const still = [...(await rows()).values()].filter(
           (one) => one.state === "active",
         ).length;
-        const summary = String((await lastRun(marfa, key.id)).summary);
+        const summary = String((await lastRun(operator, key.id)).summary);
         if (back === 0 || still !== back || !lost.includes("refused it")) {
           throw new Error(
             `${String(back)} back, ${String(still)} after the loss: ${summary}`,
@@ -484,7 +485,7 @@ export async function proveGitHub(
       async () => {
         const installation = github.installations[0];
         if (installation !== undefined) installation.lost = false;
-        const connectorId = (await registration(marfa, key.id)).id;
+        const connectorId = (await registration(operator, key.id)).id;
         const own = createClient({ baseUrl: url, credential: key.key });
         const { data, error } = await own.POST("/connectors/{id}/endpoints", {
           params: { path: { id: connectorId } },
@@ -498,7 +499,7 @@ export async function proveGitHub(
           await post("ping", { zen: "Forged" }, "a guess"),
         ];
         await runOnce();
-        const summary = String((await lastRun(marfa, key.id)).summary);
+        const summary = String((await lastRun(operator, key.id)).summary);
         if (
           statuses.join() !== "202,202" ||
           !summary.includes("deliveries processed 1, rejected 1")
@@ -541,15 +542,17 @@ export async function proveGitHub(
           }
         };
         try {
-          const before = (await lastRun(marfa, key.id)).reported_at;
+          const before = (await lastRun(operator, key.id)).reported_at;
           await until(
-            async () => (await lastRun(marfa, key.id)).reported_at !== before,
+            async () =>
+              (await lastRun(operator, key.id)).reported_at !== before,
             "the scheduled run",
           );
-          const settled = (await lastRun(marfa, key.id)).reported_at;
+          const settled = (await lastRun(operator, key.id)).reported_at;
           await post("ping", {});
           await until(
-            async () => (await lastRun(marfa, key.id)).reported_at !== settled,
+            async () =>
+              (await lastRun(operator, key.id)).reported_at !== settled,
             "the first run for deliveries",
           );
           github.asked.length = 0;
@@ -656,14 +659,14 @@ export async function proveGitHub(
         const said = await row(comment.node);
         await edit(marfa, said, { body: "Edited in Marfa" });
         await runOnce();
-        const edited = String((await lastRun(marfa, key.id)).summary);
+        const edited = String((await lastRun(operator, key.id)).summary);
         const back = await row(comment.node);
         const second = github.addComment(parent, "Second");
         await runOnce();
         const secondRow = await row(second.node);
         await trash(marfa, secondRow.id);
         await runOnce();
-        const binned = String((await lastRun(marfa, key.id)).summary);
+        const binned = String((await lastRun(operator, key.id)).summary);
         const kept = await row(second.node);
         await restore(marfa, secondRow.id);
         await runOnce();

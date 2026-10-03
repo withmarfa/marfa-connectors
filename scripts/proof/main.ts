@@ -18,7 +18,7 @@ import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
-const statements = 98;
+const statements = 99;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -60,6 +60,11 @@ try {
   if (booted === undefined) throw new Error("the boot answered nothing");
   const marfa = createClient({ baseUrl: booted.url, credential: booted.key });
 
+  const operator = createClient({
+    baseUrl: booted.url,
+    credential: booted.operatorKey,
+  });
+
   await check("the server speaks the client's contract", async () => {
     const { data } = await marfa.GET("/");
     if (data === undefined) throw new Error("the root was refused");
@@ -81,12 +86,12 @@ try {
     () => witnessTypeAnswers(marfa),
   );
 
-  await proveRss(marfa, booted.url);
-  await proveTodoist(marfa, booted.url);
-  await proveInbound(marfa, booted.url);
-  await proveKeys(marfa, booted.url);
-  await proveTracker(marfa, booted.url);
-  await proveGitHub(marfa, booted.url);
+  await proveRss(marfa, booted.url, operator);
+  await proveTodoist(marfa, booted.url, operator);
+  await proveInbound(marfa, booted.url, operator);
+  await proveKeys(marfa, booted.url, operator);
+  await proveTracker(marfa, booted.url, operator);
+  await proveGitHub(marfa, booted.url, operator);
   if (statementsHeld() !== statements) {
     throw new Error(
       `${String(statementsHeld())} statements held, where the proof expects ${String(statements)}; the count is the literal \`statements\` in scripts/proof/main.ts, so update it when a statement is added or removed`,
