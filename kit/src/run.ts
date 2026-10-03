@@ -325,6 +325,8 @@ export async function runOnce<E extends EnvDeclaration>(
   const specs = specsOf(connector, env);
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
+  const unreachedKeys = new Set<string>();
+  const unreachedBatches: { prefixes: string[]; exceptKeys: string[] }[] = [];
   const waiting = new Map<string, { message: string; ids: Set<string> }>();
   const unreached = (id: string, error: Unreachable): void => {
     if (error.scope === undefined) {
@@ -494,6 +496,13 @@ export async function runOnce<E extends EnvDeclaration>(
       logger.warn(message);
     },
     condition: (key, message) => raised.set(key, message),
+    unreached: ({ keys = [], prefixes = [], exceptKeys = [] }) => {
+      for (const key of keys) unreachedKeys.add(key);
+      unreachedBatches.push({
+        prefixes: [...prefixes],
+        exceptKeys: [...exceptKeys],
+      });
+    },
   };
   let hints: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   const secret = (value: string): void => {
@@ -1580,7 +1589,14 @@ export async function runOnce<E extends EnvDeclaration>(
       cap(logger.redact(message), conditionCap),
     ]),
   );
-  // Only a run that read everything and finished can find one gone. The
+  const skippedKeys = new Set(
+    [...unreachedKeys].map((key) => logger.redact(key)),
+  );
+  const skippedBatches = unreachedBatches.map(({ prefixes, exceptKeys }) => ({
+    prefixes: prefixes.map((prefix) => logger.redact(prefix)),
+    exceptKeys: new Set(exceptKeys.map((key) => logger.redact(key))),
+  }));
+  // Only a finished scheduled run that reached its check can find one gone. The
   // newly raised go first, then the rest in the order kept, which puts those
   // the last report had no room for ahead of those it carried.
   const clears = failure === undefined && whole;
@@ -1591,7 +1607,16 @@ export async function runOnce<E extends EnvDeclaration>(
   for (const [key, message] of Object.entries(stored.conditions)) {
     const now = redacted.get(key);
     if (now !== undefined) standing.set(key, now);
-    else if (clears) cleared.push(message);
+    else if (
+      clears &&
+      !skippedKeys.has(key) &&
+      !skippedBatches.some(
+        ({ prefixes, exceptKeys }) =>
+          !exceptKeys.has(key) &&
+          prefixes.some((prefix) => key.startsWith(prefix)),
+      )
+    )
+      cleared.push(message);
     else standing.set(key, message);
   }
   for (const message of standing.values()) logger.warn(message);
@@ -1650,7 +1675,7 @@ export async function runOnce<E extends EnvDeclaration>(
   if (saved) {
     for (const message of cleared) {
       logger.info(
-        `cleared: ${message} (this run read everything and did not find it again)`,
+        `cleared: ${message} (this run reached its check and did not find it again)`,
       );
     }
   }

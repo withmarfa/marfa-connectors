@@ -71,6 +71,135 @@ describe("a condition", () => {
       (line) => line.includes(" warn ") && line.includes(text),
     ).length;
 
+  it("keeps only conditions whose checks were not reached, for this run alone", async () => {
+    const held = vendor([]);
+    held.conditions = [
+      ["issues-off:A", "A disabled"],
+      ["issues-off:B", "B disabled"],
+    ];
+    await harness.once(held);
+    held.conditions = [];
+    held.unreached = { keys: ["issues-off:A"] };
+    await harness.once(held);
+    expect(harness.lastRun().summary).toContain("A disabled");
+    expect(harness.lastRun().summary).not.toContain("B disabled");
+    held.unreached = {};
+    await harness.once(held);
+    expect(harness.lastRun().summary).not.toContain("A disabled");
+  });
+
+  it("matches exact keys and literal prefixes, accumulating selectors without replacing raised messages", async () => {
+    const held = vendor([]);
+    held.conditions = [
+      ["x:A", "A"],
+      ["x:AB", "AB"],
+      ["family.[a]:one", "family"],
+      ["familyXa:one", "neighbor"],
+    ];
+    await harness.once(held);
+    held.conditions = [["x:A", "A updated"]];
+    held.unreached = {
+      keys: ["x:A", "x:A"],
+      prefixes: ["family.[a]:", "family.[a]:"],
+    };
+    await harness.once(held);
+    expect(harness.lastRun().summary).toContain("A updated");
+    expect(harness.lastRun().summary).toContain("family");
+    expect(harness.lastRun().summary).not.toContain("AB");
+    expect(harness.lastRun().summary).not.toContain("neighbor");
+    expect(harness.server.states.get("test")).not.toHaveProperty("unreached");
+  });
+
+  it.each([
+    { batches: [{ prefixes: ["x:"], exceptKeys: ["x:A"] }], a: false },
+    {
+      batches: [{ keys: ["x:A"], prefixes: ["x:"], exceptKeys: ["x:A"] }],
+      a: true,
+    },
+    {
+      batches: [
+        { prefixes: ["x:"] },
+        { prefixes: ["x:"], exceptKeys: ["x:A", "x:B"] },
+      ],
+      a: true,
+    },
+  ])(
+    "keeps exceptions local to a batch and its prefixes: $a",
+    async ({ batches, a }) => {
+      const held = vendor([]);
+      held.conditions = [
+        ["x:A", "A problem"],
+        ["x:B", "B problem"],
+      ];
+      await harness.once(held);
+      held.conditions = [];
+      held.unreachedBatches = batches;
+      await harness.once(held);
+      expect(harness.lastRun().summary?.includes("A problem")).toBe(a);
+      expect(harness.lastRun().summary).toContain("B problem");
+    },
+  );
+
+  it("redacts batch exceptions with the same policy as keys and prefixes", async () => {
+    const held = vendor([]);
+    held.conditions = [
+      [`feed:${secretToken}:A`, "A problem"],
+      [`feed:${secretToken}:B`, "B problem"],
+    ];
+    await harness.once(held);
+    held.conditions = [];
+    held.unreached = {
+      prefixes: [`feed:${secretToken}:`],
+      exceptKeys: [`feed:${secretToken}:A`],
+    };
+    await harness.once(held);
+    expect(harness.lastRun().summary).not.toContain("A problem");
+    expect(harness.lastRun().summary).toContain("B problem");
+    expect(JSON.stringify(harness.server.states.get("test"))).not.toContain(
+      secretToken,
+    );
+    expect(harness.lines.join("\n")).not.toContain(secretToken);
+  });
+
+  it("retains reached and unreached conditions after failure and emits no clearance on refused saves", async () => {
+    const held = vendor([]);
+    held.conditions = [
+      ["x:A", "A problem"],
+      ["x:B", "B problem"],
+    ];
+    await harness.once(held);
+    held.conditions = [];
+    held.unreached = { keys: ["x:A"] };
+    held.fail = new Error("vendor down");
+    expect(await harness.once(held)).toBe(1);
+    expect(harness.lastRun().summary).toContain("A problem");
+    expect(harness.lastRun().summary).toContain("B problem");
+    held.fail = undefined;
+    harness.server.refuseNext(
+      "PUT /connectors/connector-1/state",
+      400,
+      "validation_error",
+    );
+    expect(await harness.once(held)).toBe(1);
+    expect(harness.lines.filter((line) => line.includes("cleared:"))).toEqual(
+      [],
+    );
+  });
+
+  it("redacts selectors like stored keys", async () => {
+    const held = vendor([]);
+    held.conditions = [[`feed:${secretToken}`, "secret feed problem"]];
+    await harness.once(held);
+    held.conditions = [];
+    held.unreached = { prefixes: [`feed:${secretToken}`] };
+    await harness.once(held);
+    expect(harness.lastRun().summary).toContain("secret feed problem");
+    expect(JSON.stringify(harness.server.states.get("test"))).not.toContain(
+      secretToken,
+    );
+    expect(harness.lines.join("\n")).not.toContain(secretToken);
+  });
+
   it("is reported and warned on every run it holds, and said to be cleared when it stops", async () => {
     const held = vendor([one]);
     held.conditions = [["feed-gone:x", "the feed x answers 410"]];

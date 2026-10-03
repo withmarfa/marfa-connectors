@@ -120,16 +120,58 @@ function linkOf(row: Item): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+const readPrefixes = [
+  "installation-suspended:",
+  "installation-lost:",
+  "repositories-unmatched:",
+  "token-unnarrowed:",
+  "repository-lost:",
+  "issues-off:",
+  "repository-unreadable:",
+  "unsettled:",
+  "issue-missing:",
+  "issue-moved:",
+];
+
+class Coverage {
+  readonly keys = new Set(["unsettled", "rate-limit-reserve", "clock-skew"]);
+  readonly prefixes = new Set(readPrefixes);
+
+  readonly exceptKeys = new Set<string>();
+
+  reached(...keys: string[]): void {
+    for (const key of keys) {
+      this.keys.delete(key);
+      this.exceptKeys.add(key);
+    }
+  }
+
+  retain(context: Context): void {
+    // Saved progress can be absent even when a condition stands. Keep unknown
+    // identities conservatively; exempt only checks this read actually reached.
+    // Issue keys do not carry a repository and current edges cannot identify
+    // every old condition, so unobserved issue evidence stays conservative.
+    context.log.unreached({
+      keys: [...this.keys],
+      prefixes: [...this.prefixes],
+      exceptKeys: [...this.exceptKeys],
+    });
+  }
+}
+
 export async function read(
   context: Context,
   app: App,
   scope: Scope | undefined,
 ): Promise<void> {
+  const coverage = new Coverage();
   try {
-    await readAll(context, app, scope);
+    await readAll(context, app, scope, coverage);
   } catch (error) {
     if (!(error instanceof ClockSkew)) throw error;
     context.log.condition("clock-skew", error.message);
+  } finally {
+    coverage.retain(context);
   }
 }
 
@@ -137,6 +179,7 @@ async function readAll(
   context: Context,
   app: App,
   scope: Scope | undefined,
+  coverage: Coverage,
 ): Promise<void> {
   const { state, log, secret, signal, upsert } = context;
   const unsettled = takeUnsettled(state);
@@ -147,10 +190,12 @@ async function readAll(
     );
     return;
   }
+  coverage.reached("unsettled");
   const kept = keptOf(state.get("repositories"));
   const installations = (await asApp(app, signal).paginate(
     "GET /app/installations",
   )) as Installation[];
+  coverage.reached("clock-skew");
   const clients = new Map<number, Client>();
   const listed = new Map<
     string,
@@ -163,6 +208,7 @@ async function readAll(
   >();
   const seen: string[] = [];
   for (const installation of installations) {
+    coverage.reached(`installation-suspended:${String(installation.id)}`);
     const who = installation.account?.login ?? String(installation.id);
     if (installation.suspended_at) {
       log.condition(
@@ -182,8 +228,25 @@ async function readAll(
       const repositories = (await lister.paginate(
         "GET /installation/repositories",
       )) as RestRepository[];
+      coverage.reached(`installation-lost:${String(installation.id)}`);
       answered.add(installation.id);
+      for (const [node, old] of Object.entries(kept)) {
+        if (old.installation === installation.id)
+          coverage.reached(`repository-lost:${node}`);
+      }
       for (const repository of repositories) {
+        coverage.reached(`repository-lost:${repository.node_id}`);
+        const assessed =
+          kept[repository.node_id] !== undefined ||
+          scope === undefined ||
+          scope.admits(repository.full_name);
+        if (assessed) coverage.reached(`issues-off:${repository.node_id}`);
+        if (repository.has_issues === false && assessed) {
+          log.condition(
+            `issues-off:${repository.node_id}`,
+            `${repository.full_name} has its issues turned off on GitHub, so its rows are left as they are, bar the private marker, which follows its visibility`,
+          );
+        }
         seen.push(repository.full_name);
         if (scope !== undefined && !scope.admits(repository.full_name)) {
           outside.set(repository.node_id, {
@@ -205,6 +268,8 @@ async function readAll(
       );
     }
   }
+  if (answered.size === installations.length)
+    coverage.prefixes.delete("repositories-unmatched:");
   if (scope !== undefined && answered.size === installations.length) {
     for (const one of scope.unmatched(seen)) {
       log.condition(
@@ -233,6 +298,7 @@ async function readAll(
     ]);
   }
   for (const [installation, repositoryIds] of reached) {
+    coverage.reached(`token-unnarrowed:${String(installation)}`);
     if (repositoryIds.length > namedAtMost) {
       log.condition(
         `token-unnarrowed:${String(installation)}`,
@@ -310,10 +376,6 @@ async function readAll(
     if (octokit === undefined || repository === undefined) return;
     // GitHub answers each issue of such a repository 410, as if deleted.
     if (at?.repository.has_issues === false) {
-      log.condition(
-        `issues-off:${node}`,
-        `${repository.name} has its issues turned off on GitHub, so its rows are left as they are, bar the private marker, which follows its visibility`,
-      );
       next[node] = await marked(
         context,
         node,
@@ -329,6 +391,7 @@ async function readAll(
         privacy,
         check,
       });
+      coverage.reached(`repository-unreadable:${node}`);
     } catch (error) {
       if (!lostAccess(error)) throw error;
       log.condition(
@@ -352,6 +415,7 @@ async function readAll(
       waiting.push(at.repository.full_name);
       continue;
     }
+    coverage.reached(`unsettled:${node}`);
     if (unsettled.has(node)) {
       log.condition(
         `unsettled:${node}`,
@@ -370,6 +434,14 @@ async function readAll(
       "rate-limit-reserve",
       `GitHub's hourly limit ran low, so ${waiting.join(", ")} ${waiting.length === 1 ? "waits" : "wait"} for the next run`,
     );
+  }
+  if (
+    answered.size === installations.length &&
+    Object.values(kept).every((repository) =>
+      answered.has(repository.installation),
+    )
+  ) {
+    coverage.reached("rate-limit-reserve");
   }
   state.set("repositories", next);
 }
