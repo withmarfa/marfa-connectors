@@ -793,4 +793,256 @@ export async function proveGitHub(
   } finally {
     await github.stop();
   }
+  await proveGitHubCoverage(url, operator);
+}
+
+interface CoverageEnvelope {
+  state?: { repositories?: Record<string, unknown> };
+  conditions?: Record<string, string>;
+}
+
+export async function proveGitHubCoverage(
+  url: string,
+  operator: MarfaClient,
+): Promise<void> {
+  const github = await new GitHubStub().start();
+  try {
+    github.installations.push({ id: 2, login: "another" });
+    const first = github.installations[0];
+    if (first === undefined) throw new Error("no first installation");
+    const a = github.addRepository("someone/coverage-a", {
+      id: 9001,
+      node: "R_coverage_a",
+      issuesOff: true,
+    });
+    const b = github.addRepository("another/coverage-b", {
+      id: 9002,
+      node: "R_coverage_b",
+      installation: 2,
+      issuesOff: true,
+    });
+    const { data: key, error } = await operator.POST("/keys", {
+      body: {
+        label: "github read coverage",
+        source: "proof-github-coverage",
+        sources: [source],
+        type_permissions: Object.fromEntries(
+          types.map((type) => [type, "write" as const]),
+        ),
+        edge_permissions: Object.fromEntries(
+          connections.map((type) => [type, "write" as const]),
+        ),
+        metadata_permissions: { types: "write", edge_types: "write" },
+        default_tier: "feed",
+      },
+    });
+    if (key === undefined)
+      throw new Error(`coverage key refused: ${JSON.stringify(error)}`);
+    const own = createClient({ baseUrl: url, credential: key.key });
+    const runner = () =>
+      new ConnectorUnderProof(source, url, key.key, {
+        GITHUB_APP_ID: "12345",
+        GITHUB_PRIVATE_KEY: privateKey,
+        GITHUB_WEBHOOK_SECRET: "github-coverage-webhook-secret",
+        GITHUB_API_URL: github.url,
+      });
+    const privateKey = appKey();
+    const run = async () => {
+      const result = await runner().once();
+      if (result.code !== 0)
+        throw new Error(
+          `coverage exit ${String(result.code)}: ${result.output}`,
+        );
+      return result.output;
+    };
+    const state = async (): Promise<CoverageEnvelope> => {
+      const connector = await registration(own, key.id);
+      const { data, error } = await own.GET("/connectors/{id}/state", {
+        params: { path: { id: connector.id } },
+      });
+      if (data === undefined)
+        throw new Error(`coverage state refused: ${JSON.stringify(error)}`);
+      return data.state;
+    };
+    const disabled = (envelope: CoverageEnvelope, node: string): boolean =>
+      envelope.conditions?.[`issues-off:${node}`] !== undefined;
+
+    await check(
+      "github: a handled clock skew saves disabled-issues evidence without repository progress, and a later inaccessible installation preserves it until its metadata is reached",
+      async () => {
+        Object.defineProperty(github, "clockAhead", {
+          configurable: true,
+          get: () =>
+            github.asked.some(
+              (request) =>
+                request.path === "/app/installations/2/access_tokens",
+            )
+              ? 3600
+              : 0,
+        });
+        const skewed = await run();
+        const empty = await state();
+        if (
+          !disabled(empty, a.node) ||
+          Object.keys(empty.state?.repositories ?? {}).length !== 0 ||
+          !skewed.includes("past the 10 minutes")
+        ) {
+          throw new Error(
+            `clock skew did not save a condition with empty progress: ${JSON.stringify(empty)}; ${skewed}`,
+          );
+        }
+        Object.defineProperty(github, "clockAhead", {
+          configurable: true,
+          writable: true,
+          value: 0,
+        });
+        first.lost = true;
+        b.issuesOff = false;
+        github.asked.length = 0;
+        const skipped = await run();
+        const retained = await state();
+        const report = await lastRun(operator, key.id);
+        if (
+          !disabled(retained, a.node) ||
+          !String(report.summary).includes(
+            "coverage-a has its issues turned off",
+          ) ||
+          skipped.includes(
+            "cleared: someone/coverage-a has its issues turned off",
+          ) ||
+          github.asked.some((request) =>
+            request.path.startsWith("/repos/someone/coverage-a/"),
+          )
+        ) {
+          throw new Error(
+            `missing-progress condition did not survive: ${JSON.stringify(retained)}; ${skipped}`,
+          );
+        }
+        first.lost = false;
+        a.issuesOff = false;
+        await run();
+        if (disabled(await state(), a.node))
+          throw new Error("reached A metadata did not clear its condition");
+        return "actual clock skew left vendor progress empty with A's condition; a restarted process retained A while B was read, then another cleared A after access returned";
+      },
+    );
+
+    await check(
+      "github: with standing disabled-issues conditions in two installations, a restarted run retains inaccessible A and clears reached B, then clears restored A",
+      async () => {
+        a.issuesOff = true;
+        b.issuesOff = true;
+        await run();
+        const before = await state();
+        if (!disabled(before, a.node) || !disabled(before, b.node))
+          throw new Error("both disabled conditions were not saved");
+        a.issuesOff = false;
+        b.issuesOff = false;
+        first.lost = true;
+        const skipped = await run();
+        const partial = await state();
+        const report = await lastRun(operator, key.id);
+        if (
+          !disabled(partial, a.node) ||
+          disabled(partial, b.node) ||
+          !String(report.summary).includes(
+            "coverage-a has its issues turned off",
+          ) ||
+          String(report.summary).includes(
+            "coverage-b has its issues turned off",
+          ) ||
+          skipped.includes(
+            "cleared: someone/coverage-a has its issues turned off",
+          ) ||
+          !skipped.includes(
+            "cleared: another/coverage-b has its issues turned off",
+          )
+        ) {
+          throw new Error(
+            `partial coverage was wrong: ${JSON.stringify(partial)}; ${skipped}`,
+          );
+        }
+        first.lost = false;
+        const reached = await run();
+        if (
+          disabled(await state(), a.node) ||
+          !reached.includes(
+            "cleared: someone/coverage-a has its issues turned off",
+          )
+        )
+          throw new Error(`A did not clear: ${reached}`);
+        return "own-key state and operator reports retained A, cleared B, then cleared A; every run was a fresh executable process";
+      },
+    );
+
+    await check(
+      "github: a failed rate-limited run retains both installations' saved conditions and reports failure without claiming clearance",
+      async () => {
+        a.issuesOff = true;
+        b.issuesOff = true;
+        await run();
+        a.issuesOff = false;
+        b.issuesOff = false;
+        github.rateLimited = true;
+        const failed = await runner().once();
+        github.rateLimited = false;
+        const retained = await state();
+        const report = await lastRun(operator, key.id);
+        if (
+          failed.code !== 1 ||
+          report.outcome !== "failed" ||
+          !disabled(retained, a.node) ||
+          !disabled(retained, b.node) ||
+          failed.output.includes("cleared:")
+        ) {
+          throw new Error(
+            `failed retention wrong: ${JSON.stringify(retained)}; ${JSON.stringify(report)}; ${failed.output}`,
+          );
+        }
+        return "exit 1 and a failed operator report, with both original conditions durable and no clearance log";
+      },
+    );
+
+    await check(
+      "github: a real issue-by-ID refusal remains standing through subsequent conditional 304 listings that omit that check",
+      async () => {
+        a.issuesOff = false;
+        b.issuesOff = false;
+        const missing = github.addIssue(a, {
+          node: "I_coverage_missing",
+          title: "Coverage missing issue",
+        });
+        await run();
+        missing.repository = "R_not_installed";
+        await run();
+        const condition = `issue-missing:${missing.node}`;
+        if ((await state()).conditions?.[condition] === undefined)
+          throw new Error("the actual 404 did not raise issue-missing");
+        github.asked.length = 0;
+        await run();
+        const retained = await state();
+        const report = await lastRun(operator, key.id);
+        const listings = github.asked.filter(
+          (request) =>
+            request.path.startsWith("/repos/") &&
+            !/\/issues\/\d+$/.test(request.path),
+        );
+        if (
+          retained.conditions?.[condition] === undefined ||
+          !String(report.summary).includes(
+            "answered 404 though its repository reads",
+          ) ||
+          !listings.some((request) => request.status === 304) ||
+          github.asked.some((request) => /\/issues\/\d+$/.test(request.path))
+        ) {
+          throw new Error(
+            `304 falsely cleared or rechecked missing issue: ${JSON.stringify(retained)}; ${JSON.stringify(github.asked)}`,
+          );
+        }
+        return "an actual point-fetch 404 raised the condition; after restart the saved condition and report survived 304 listings with no issue-by-ID request";
+      },
+    );
+  } finally {
+    await github.stop();
+  }
 }
