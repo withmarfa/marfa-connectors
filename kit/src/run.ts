@@ -368,10 +368,15 @@ export async function runOnce<E extends EnvDeclaration>(
     mutating: false,
     reading: false,
     uncertainState: false,
+    failedPrerequisite: false,
     unfinishedOperations: false,
     rootInFlight: 0,
   };
   const checkDurability = (): void => {
+    if (phase.failedPrerequisite)
+      throw new Error(
+        "watch agreement prerequisite was not acknowledged; restart before writing again",
+      );
     if (phase.unfinishedOperations)
       throw new Error(
         "scope operations were not awaited before the read ended",
@@ -533,6 +538,7 @@ export async function runOnce<E extends EnvDeclaration>(
     },
     fenced: () =>
       phase.uncertainState ||
+      phase.failedPrerequisite ||
       phase.unfinishedOperations ||
       setup.fenced?.() === true,
   };
@@ -1720,6 +1726,16 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       for (const id of held) heldBack(id);
     }
+    // Watch observations and completed early carries must be durable before
+    // a scoped reader can safely rescan their rows. Ownership leaves only on ACK.
+    try {
+      check();
+      await store.flush(undefined, check);
+      check();
+    } catch (error) {
+      phase.failedPrerequisite = true;
+      throw error;
+    }
     phase.reading = true;
     try {
       await connector.run(context);
@@ -1811,6 +1827,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (
       !phase.unfinishedOperations &&
       !phase.uncertainState &&
+      !phase.failedPrerequisite &&
       !(error instanceof Stopped) &&
       setup.fenced?.() !== true
     ) {
@@ -1937,6 +1954,7 @@ export async function runOnce<E extends EnvDeclaration>(
     loaded !== undefined &&
     !fenced &&
     !phase.uncertainState &&
+    !phase.failedPrerequisite &&
     !phase.unfinishedOperations
   ) {
     try {
