@@ -98,9 +98,16 @@ export interface Log {
   /**
    * Something that lasts across runs, such as a feed that stopped answering.
    * A connector raises it on every run it holds; it is reported on the first
-   * and cleared only on a scheduled run that succeeds and reports without it.
+   * and cleared only on a successful scheduled run that reaches its check
+   * without raising it again.
    */
   condition(key: string, message: string): void;
+  /** Keeps existing conditions whose checks this run skipped. Selectors are
+   * transient: exact keys or literal prefixes, and do not raise conditions. */
+  unreached(selectors: {
+    keys?: readonly string[];
+    prefixes?: readonly string[];
+  }): void;
 }
 
 /**
