@@ -737,7 +737,7 @@ export async function runOnce<E extends EnvDeclaration>(
   let own = 0;
   let collected: Collected | undefined;
   const whole = trigger === "schedule";
-  // A failure phase.reading deliveries is a condition, and the vendor is still read
+  // A failure reading deliveries is a condition, and the vendor is still read
   // whole.
   const bookkeeping = async <T>(
     key: string,
