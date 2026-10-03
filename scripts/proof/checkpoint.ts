@@ -89,16 +89,24 @@ interface Request {
 }
 export class Proxy {
   url = "";
+  error: unknown;
   before: (
     request: Request,
-  ) => Promise<number | undefined> | number | undefined = () => undefined;
+  ) =>
+    | Promise<number | { status: number; value: unknown } | undefined>
+    | number
+    | { status: number; value: unknown }
+    | undefined = () => undefined;
   after: (request: Request, response: Response) => Promise<boolean> | boolean =
     () => false;
   requests: Request[] = [];
   readonly server;
   constructor(private readonly upstream: string) {
     this.server = createServer((req, res) => {
-      void this.forward(req, res).catch(() => res.destroy());
+      void this.forward(req, res).catch((error: unknown) => {
+        this.error = error;
+        res.destroy();
+      });
     });
   }
   async start() {
@@ -148,9 +156,11 @@ export class Proxy {
     this.requests.push(request);
     const cut = await this.before(request);
     if (cut !== undefined) {
-      answer(res, cut, {
-        error: { code: "internal_error", message: "proof cut" },
-      });
+      if (typeof cut === "number")
+        answer(res, cut, {
+          error: { code: "internal_error", message: "proof cut" },
+        });
+      else answer(res, cut.status, cut.value);
       return;
     }
     const headers = new Headers();
@@ -190,8 +200,9 @@ export class Proxy {
       res.end();
       return;
     }
+    const acknowledgment = response.clone();
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (await this.after(request, response)) {
+    if (await this.after(request, acknowledgment)) {
       res.destroy();
       return;
     }

@@ -158,3 +158,17 @@ it("streams events before the upstream ends and cancels on disconnect", async ()
   expect(reached).toEqual(["/events"]);
   expect(escaped).toEqual([]);
 });
+
+it("lets an after-cut inspector read the full response without consuming the forwarded bytes", async () => {
+  let inspected = "";
+  proxy.after = async (_request, response) => {
+    inspected = await response.text();
+    return false;
+  };
+  const served = await send("/ack?batch=1");
+  expect(inspected).toBe("/ack?batch=1");
+  expect(served.text).toBe(inspected);
+  expect(served.contentType).toBe("text/plain; charset=utf-8");
+  expect(served.nosniff).toBe("nosniff");
+  expect(escaped).toEqual([]);
+});
