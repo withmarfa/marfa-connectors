@@ -33,8 +33,9 @@ export const RULES: readonly (readonly [RegExp, readonly Job[]])[] = [
   // What decides what runs is proven on everything it decides.
   [/^scripts\/ci-changes\.ts$/, ALL],
   [/^\.github\/workflows\/ci\.yml$/, ALL],
-  // A test pins when CodeQL runs.
-  [/^\.github\/workflows\/codeql\.yml$/, ["code"]],
+  // A test pins when CodeQL runs, and one pins what the description check
+  // reads and when it runs.
+  [/^\.github\/workflows\/(codeql|pr-description)\.yml$/, ["code"]],
   [/^\.github\//, []],
 
   // A fixture is test input, and the proof reads the RSS connector's.
@@ -47,7 +48,10 @@ export const RULES: readonly (readonly [RegExp, readonly Job[]])[] = [
   // The proof runs every connector from what `pnpm build` makes, and the
   // build leaves tests out.
   [/^(kit|connectors\/[^/]+)\/test\//, ["code"]],
-  [/^scripts\/(test\/|no-skipped-tests\.ts$)/, ["code"]],
+  [
+    /^scripts\/(test\/|no-skipped-tests\.ts$|check-pr-description\.ts$)/,
+    ["code"],
+  ],
   // The image copies the tree, so a source or dependency change, which runs
   // every job, reaches it too. These only the image and its checks read.
   [
