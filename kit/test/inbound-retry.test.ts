@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { fitsJournal } from "../src/inbound-retry.js";
 import { Harness, testType, vendor } from "./harness.js";
 let harness: Harness;
 beforeEach(async () => {
@@ -441,7 +442,7 @@ it("blocks lost capability or changed mode while acknowledged intent remains", a
   expect(await harness.once(held)).toBe(0);
   expect(harness.kept()["state"]).toEqual({ page: 1 });
 });
-it("keeps oversized singleton 413 blocked even when a refetch digest would fit", async () => {
+it("parks complete oversized singleton 413 through a bounded refetch record", async () => {
   harness.server.refuseNext("POST /items/bulk", 413, "request_too_large");
   const held = vendor();
   held.read = async (context) => {
@@ -450,12 +451,13 @@ it("keeps oversized singleton 413 blocked even when a refetch digest would fit",
       { ...bad, properties: { title: "x".repeat(65536) } },
     ]);
     expect(await a.state.checkpoint("page", 1)).toEqual({
-      committed: false,
-      reason: "row-refused",
+      committed: true,
     });
   };
   expect(await harness.once(held)).toBe(0);
-  expect(inbound()).toBeUndefined();
+  expect(inbound()).toHaveLength(1);
+  expect(inbound()[0]?.mode).toBe("refetch");
+  expect(Object.hasOwn(inbound()[0] ?? {}, "intent")).toBe(false);
 });
 it("allows a complete replay above 4KiB without an arbitrary per-record cap", async () => {
   refused();
@@ -472,4 +474,31 @@ it("allows a complete replay above 4KiB without an arbitrary per-record cap", as
   expect(record?.mode).toBe("replay");
   if (record?.mode !== "replay") throw new Error("missing replay");
   expect(record.intent.entry.properties["title"]).toBe("é".repeat(6000));
+});
+
+it("checks exact UTF-8 journal bytes and the independent record count", () => {
+  const record: import("../src/define.js").PendingInbound = {
+    identity: { type: "test.entry", sourceId: "bad" },
+    scope: "A",
+    operation: "upsert",
+    mode: "refetch",
+    fingerprint: "a".repeat(64),
+    context: "b".repeat(64),
+    code: "invalid_properties",
+    reason: "",
+    attemptedAt: "2026-10-03T00:00:00.000Z",
+    dueAt: "2026-10-04T00:00:00.000Z",
+  };
+  const room = 65536 - Buffer.byteLength(JSON.stringify([record]), "utf8");
+  record.reason = "é".repeat(Math.floor(room / 2)) + "x".repeat(room % 2);
+  expect(Buffer.byteLength(JSON.stringify([record]), "utf8")).toBe(65536);
+  expect(fitsJournal([record])).toBe(true);
+  expect(fitsJournal([{ ...record, reason: record.reason + "x" }])).toBe(false);
+  const many = Array.from({ length: 128 }, (_, index) => ({
+    ...record,
+    reason: "",
+    identity: { ...record.identity, sourceId: String(index) },
+  }));
+  expect(fitsJournal(many)).toBe(true);
+  expect(fitsJournal([...many, { ...record, reason: "" }])).toBe(false);
 });

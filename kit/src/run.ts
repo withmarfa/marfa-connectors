@@ -654,18 +654,6 @@ export async function runOnce<E extends EnvDeclaration>(
             ? { mode: "replay" as const, intent }
             : { mode: "refetch" as const }),
         };
-        if (record.code === "request_too_large" && record.mode === "refetch") {
-          const complete: PendingInbound = {
-            ...record,
-            mode: "replay",
-            intent,
-          };
-          const others = journalFor(scope).filter(
-            (saved) =>
-              identityKey(saved.identity.type, saved.identity.sourceId) !== key,
-          );
-          if (!fitsJournal([...others, complete])) return false;
-        }
         scope.journal.set(key, record);
         if (!fitsJournal(journalFor(scope))) {
           scope.blocked = "row-refused";

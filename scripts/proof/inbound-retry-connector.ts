@@ -8,6 +8,7 @@ export interface RetryConfig {
   retrySaved: boolean;
   rootState?: boolean;
   conditions?: number;
+  notModified?: boolean;
 }
 const source = process.env["PROOF_SOURCE"] ?? "proof-retry";
 const url = process.env["PROOF_CONTROL_URL"];
@@ -64,8 +65,15 @@ await main(
           ? undefined
           : { retry: { mode: config.mode, context: config.context } },
       );
-      const current = new Set(config.entries.map((entry) => entry.source_id));
-      const attempts = [...config.entries];
+      const listing = await fetch(`${context.env.PROOF_CONTROL_URL}/entries`, {
+        headers: { "If-None-Match": '"owned"' },
+      });
+      if (!listing.ok && listing.status !== 304)
+        throw new Error(`Listing failed: ${String(listing.status)}`);
+      const entries =
+        listing.status === 304 ? [] : ((await listing.json()) as Entry[]);
+      const current = new Set(entries.map((entry) => entry.source_id));
+      const attempts = [...entries];
       if (config.retrySaved)
         for (const { record, due } of scope.refusals.pending()) {
           if (!due || current.has(record.identity.sourceId)) continue;

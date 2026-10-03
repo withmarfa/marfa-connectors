@@ -27,6 +27,7 @@ class Source {
     pending: { record: PendingInbound; due: boolean }[];
   }[] = [];
   refetches: string[] = [];
+  notModified = 0;
   answer: Entry | undefined;
   url = "";
   error: unknown;
@@ -38,6 +39,13 @@ class Source {
         for await (const chunk of req) text += String(chunk);
         this.events.push(JSON.parse(text) as Source["events"][number]);
         res.end("{}");
+      } else if (req.url === "/entries") {
+        if (this.config.notModified === true) {
+          assert.equal(req.headers["if-none-match"], '"owned"');
+          this.notModified++;
+          res.statusCode = 304;
+          res.end();
+        } else res.end(JSON.stringify(this.config.entries));
       } else if (req.url?.startsWith("/refetch/") === true) {
         this.refetches.push(decodeURIComponent(req.url.slice(9)));
         if (this.answer === undefined) {
@@ -223,6 +231,7 @@ export async function proveInboundRetry(
           if (record.mode === "replay")
             assert.deepEqual(record.intent.entry, fixture.bad);
           fixture.control.config.entries = [];
+          fixture.control.config.notModified = true;
           fixture.control.config.page = 2;
           fixture.control.config.retrySaved = true;
           const beforeDue = await fixture.run();
@@ -231,6 +240,7 @@ export async function proveInboundRetry(
           const unchanged = await fixture.snapshot();
           assert.deepEqual(unchanged.state.inbound, initial.state.inbound);
           assert.equal(fixture.control.refetches.length, 0);
+          assert.equal(fixture.control.notModified, 1);
           if (mode === "replay") await fixture.repairSchema();
           else
             fixture.control.answer = {
@@ -289,6 +299,7 @@ export async function proveInboundRetry(
         "capability-lost",
         "mode-changed",
         "root-state",
+        "changed-current",
       ]) {
         const fixture = new Fixture(url, admin);
         try {
@@ -323,7 +334,12 @@ export async function proveInboundRetry(
           if (kind === "unreadable") fixture.control.config.mode = "refetch";
           const first = await fixture.run();
           if (
-            ["capability-lost", "mode-changed", "root-state"].includes(kind)
+            [
+              "capability-lost",
+              "mode-changed",
+              "root-state",
+              "changed-current",
+            ].includes(kind)
           ) {
             assert.equal(first.code, 0, first.output);
             const saved = await fixture.snapshot();
@@ -333,15 +349,41 @@ export async function proveInboundRetry(
             if (kind === "mode-changed")
               fixture.control.config.mode = "refetch";
             if (kind === "root-state") fixture.control.config.rootState = true;
+            if (kind === "changed-current") {
+              fixture.control.config.context = "b".repeat(64);
+              fixture.control.config.retrySaved = true;
+              fixture.control.config.entries = [
+                {
+                  ...fixture.bad,
+                  properties: {
+                    ...fixture.bad.properties,
+                    title: "Current",
+                    note: "Newest",
+                  },
+                },
+              ];
+            }
             const blocked = await fixture.run();
             assert.equal(
               blocked.code,
-              kind === "root-state" ? 0 : 1,
+              ["root-state", "changed-current"].includes(kind) ? 0 : 1,
               blocked.output,
             );
             const after = await fixture.snapshot();
-            assert.equal(after.state.state?.page, 1);
-            assert.deepEqual(after.state.inbound, saved.state.inbound);
+            if (kind === "changed-current") {
+              assert.equal(after.state.state?.page, 2);
+              assert.equal(after.state.inbound, undefined);
+              assert.equal(
+                after.rows.find((row) => row.source_id === "bad")?.properties[
+                  "title"
+                ],
+                "Current",
+              );
+              assert.equal(fixture.control.refetches.length, 0);
+            } else {
+              assert.equal(after.state.state?.page, 1);
+              assert.deepEqual(after.state.inbound, saved.state.inbound);
+            }
           } else if (kind === "unreadable") {
             assert.equal(first.code, 0, first.output);
             const saved = await fixture.snapshot();
@@ -476,6 +518,125 @@ export async function proveInboundRetry(
       } finally {
         await fixture.stop();
       }
+    },
+  );
+  await check(
+    "kit inbound retries: mode-specific singleton413 bounds preserve a large point-refetch operation",
+    async () => {
+      const outcomes: unknown[] = [];
+      for (const mode of ["refetch", "replay"] as const) {
+        const fixture = new Fixture(url, admin);
+        try {
+          await fixture.start();
+          const large: Entry = {
+            ...fixture.bad,
+            properties: {
+              ...fixture.bad.properties,
+              title: "Bad",
+              note: "é".repeat(40000),
+            },
+          };
+          const operationBytes = Buffer.byteLength(
+            JSON.stringify({
+              operation: "upsert",
+              type: fixture.type,
+              entry: large,
+            }),
+            "utf8",
+          );
+          assert.ok(operationBytes > 65536);
+          fixture.control.config.mode = mode;
+          fixture.control.config.entries = [fixture.good, large];
+          fixture.control.answer = large;
+          let gatewayLimit = 32000;
+          const rejected: number[] = [];
+          fixture.proxy.before = (request) => {
+            if (request.method !== "POST" || request.path !== "/items/bulk")
+              return undefined;
+            const bytes = Buffer.byteLength(
+              JSON.stringify(request.input),
+              "utf8",
+            );
+            if (bytes <= gatewayLimit) return undefined;
+            const items = request.input["items"] as unknown[];
+            rejected.push(items.length);
+            return {
+              status: 413,
+              value: {
+                error: {
+                  code: "request_too_large",
+                  message: "owned gateway request-body limit",
+                },
+              },
+            };
+          };
+          const first = await fixture.run();
+          const initial = await fixture.snapshot();
+          assert.deepEqual(rejected, [2, 1]);
+          assert.equal(initial.rows.length, 1);
+          assert.equal(initial.rows[0]?.source_id, "good");
+          if (mode === "replay") {
+            assert.equal(first.code, 1, first.output);
+            assert.equal(initial.state.state?.page, undefined);
+            assert.equal(initial.state.inbound, undefined);
+            outcomes.push({ mode, operationBytes, rejected, initial });
+            continue;
+          }
+          assert.equal(first.code, 0, first.output);
+          assert.equal(initial.state.state?.page, 1);
+          const record = required(initial.state.inbound?.[0]);
+          assert.equal(record.mode, "refetch");
+          assert.equal(record.code, "request_too_large");
+          assert.equal(Object.hasOwn(record, "intent"), false);
+          assert.ok(
+            Buffer.byteLength(JSON.stringify(initial.state.inbound), "utf8") <=
+              65536,
+          );
+          // This owned gateway alone imposes the refusal. Repair it before the
+          // separate process point-fetches the unchanged complete operation.
+          gatewayLimit = 1000000;
+          fixture.control.config.context = "b".repeat(64);
+          fixture.control.config.page = 2;
+          fixture.control.config.entries = [];
+          fixture.control.config.retrySaved = true;
+          const recovery = await fixture.run();
+          assert.equal(recovery.code, 0, recovery.output);
+          const settled = await fixture.snapshot();
+          assert.equal(settled.state.state?.page, 2);
+          assert.equal(settled.state.inbound, undefined);
+          const row = required(
+            settled.rows.find((row) => row.source_id === "bad"),
+          );
+          assert.deepEqual(row.properties, large.properties);
+          assert.equal(row.occurred_at, large.occurred_at);
+          assert.equal(settled.agreements.length, 2);
+          const edges = required(
+            (
+              await fixture.own.GET("/items/{id}/edges", {
+                params: { path: { id: row.id } },
+              })
+            ).data,
+          );
+          assert.ok(
+            JSON.stringify(edges).includes(
+              required(settled.rows.find((row) => row.source_id === "good")).id,
+            ),
+          );
+          assert.deepEqual(fixture.control.refetches, ["bad"]);
+          outcomes.push({
+            mode,
+            operationBytes,
+            rejected,
+            initial,
+            settled,
+            refetches: fixture.control.refetches,
+          });
+        } finally {
+          await fixture.stop();
+        }
+      }
+      console.log(JSON.stringify({ modeSpecific413: outcomes }));
+      return "same complete payload above64KiB: owned byte-limit2→1 split; replay blocks, bounded refetch record advances; actual point-fetch after gateway repair lands unchanged row/edge/agreement and clears";
     },
   );
 }
