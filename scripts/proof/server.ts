@@ -17,6 +17,7 @@ const bootChoices = [
   "MARFA_SERVER_KEEP",
   "MARFA_AUTH_SECRET",
   "API_KEY_SALT",
+  "MARFA_CONNECTOR_HOLD_MS",
 ];
 
 export interface Booted {
@@ -38,6 +39,7 @@ function parseEnv(text: string): Map<string, string> {
 }
 
 export class ProofServer {
+  constructor(private readonly connectorHoldMs?: number) {}
   private dir: string | undefined;
   private stopped: Promise<void> | undefined;
 
@@ -92,6 +94,8 @@ export class ProofServer {
       MARFA_ENRICHMENT_INTERVAL_MS: "1000",
     };
     for (const name of bootChoices) Reflect.deleteProperty(env, name);
+    if (this.connectorHoldMs !== undefined)
+      env["MARFA_CONNECTOR_HOLD_MS"] = String(this.connectorHoldMs);
     return env;
   }
 
