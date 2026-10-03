@@ -166,3 +166,37 @@ describe("agreement acknowledgments", () => {
     expect(calls).toBe(2);
   });
 });
+
+it("accepts exactly 16 KiB, retaining one byte over without a clear", async () => {
+  const agreement: Agreement = {
+    vendor: {},
+    marfa: {},
+    state: "active",
+    link: "",
+  };
+  const padding = 16 * 1024 - Buffer.byteLength(JSON.stringify(agreement));
+  const calls: string[][] = [];
+  const store = new Store(
+    {
+      writeAgreements: (
+        _id: string,
+        _process: string,
+        set: { item_id: string }[],
+      ) => {
+        calls.push(set.map((entry) => entry.item_id));
+        return Promise.resolve({
+          written: set.length,
+          cleared: 0,
+          skipped: [],
+        });
+      },
+    } as unknown as Marfa,
+    "connector",
+    "process",
+  );
+  store.set("boundary", { ...agreement, link: "x".repeat(padding) });
+  await store.flush();
+  store.set("over", { ...agreement, link: "x".repeat(padding + 1) });
+  await expect(store.flush()).rejects.toThrow("agreement-oversized");
+  expect(calls).toEqual([["boundary"]]);
+});

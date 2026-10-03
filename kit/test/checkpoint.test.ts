@@ -271,8 +271,12 @@ it("drains applicable edges and durably retains missing target identity before p
     ]);
     expect(harness.agreement(source)).toMatchObject({
       pending: { "test.blocks": ["test.entry later"] },
-      waiting: { "@connect": expect.any(String) },
     });
+    expect(
+      typeof (
+        harness.agreement(source)?.["waiting"] as Record<string, unknown>
+      )["@connect"],
+    ).toBe("string");
     expect(await a.state.checkpoint("A", 2)).toEqual({ committed: true });
     throw new Error("later scope failed");
   };
@@ -334,8 +338,9 @@ it("stops every later write after the state applied but its response was lost", 
   expect(
     harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
   ).toHaveLength(2);
-  held.read = async (context) => {
+  held.read = (context) => {
     expect(context.forScope("A").state.get("A")).toBe(2);
+    return Promise.resolve();
   };
   expect(await harness.once(held)).toBe(0);
 });
@@ -380,4 +385,105 @@ it("keeps unfinished ownership after agreements land but state is definitely ref
   };
   expect(await harness.once(held)).toBe(0);
   expect(harness.kept()["state"]).toEqual({});
+});
+
+it("accepts the complete 512 KiB checkpoint envelope and blocks one byte over", async () => {
+  const held = vendor();
+  held.read = async (context) => {
+    const a = context.forScope("A");
+    const overhead = Buffer.byteLength(
+      JSON.stringify({ state: { A: "" }, conditions: {} }),
+    );
+    const candidate = "x".repeat(512 * 1024 - overhead);
+    expect(await a.state.checkpoint("A", candidate)).toEqual({
+      committed: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(harness.kept()))).toBe(512 * 1024);
+    expect(await a.state.checkpoint("A", candidate + "x")).toEqual({
+      committed: false,
+      reason: "state-oversized",
+    });
+    throw new Error("end");
+  };
+  expect(await harness.once(held), harness.lines.join("\n")).toBe(1);
+  expect(Buffer.byteLength(JSON.stringify(harness.kept()))).toBe(512 * 1024);
+});
+
+it("blocks full missing-target identities that grow past the agreement cap during drain", async () => {
+  harness.server.grants = {
+    type_permissions: { "test.entry": "write" },
+    edge_permissions: { "test.blocks": "write" },
+    metadata_permissions: { types: "write", edge_types: "write" },
+  };
+  const held = vendor();
+  held.connections = [
+    {
+      id: "test.blocks",
+      cardinality: "many-to-many",
+      source_type_constraints: [testType.id],
+      target_type_constraints: [testType.id],
+    },
+  ];
+  held.read = async (context) => {
+    const a = context.forScope("A");
+    await a.upsert(testType.id, [
+      {
+        source_id: "source",
+        properties: { title: "source" },
+        connections: {
+          "test.blocks": Array.from({ length: 300 }, (_, n) => ({
+            type: testType.id,
+            id: String(n) + "x".repeat(60),
+          })),
+        },
+      },
+    ]);
+    expect(await a.state.checkpoint("A", 1)).toEqual({
+      committed: false,
+      reason: "agreement-oversized",
+    });
+    expect(await context.forScope("B").state.checkpoint("B", 1)).toEqual({
+      committed: true,
+    });
+    expect(
+      harness.server.requestsTo("POST", "/connectors/connector-1/agreements"),
+    ).toHaveLength(0);
+  };
+  expect(await harness.once(held)).toBe(1);
+  expect(harness.kept()["state"]).toEqual({ B: 1 });
+});
+
+it.each([{}, { state: { wrong: true }, updated_at: null }])(
+  "treats malformed applied state acknowledgment %j as ambiguous",
+  async (response) => {
+    const held = vendor();
+    held.read = async (context) => {
+      const a = context.forScope("A");
+      harness.server.stateAnswer = { value: response };
+      await expect(a.state.checkpoint("A", 1)).rejects.toThrow(
+        "invalid state acknowledgment",
+      );
+    };
+    expect(await harness.once(held)).toBe(1);
+    expect(harness.kept()["state"]).toEqual({ A: 1 });
+    expect(
+      harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
+    ).toHaveLength(1);
+  },
+);
+
+it("writes no state after a failed original state load", async () => {
+  const held = vendor();
+  harness.server.refuseNext(
+    "GET /connectors/connector-1/state",
+    500,
+    "internal_error",
+  );
+  held.read = async (context) => {
+    await context.forScope("A").state.checkpoint("A", 1);
+  };
+  expect(await harness.once(held)).toBe(1);
+  expect(
+    harness.server.requestsTo("PUT", "/connectors/connector-1/state"),
+  ).toHaveLength(0);
 });

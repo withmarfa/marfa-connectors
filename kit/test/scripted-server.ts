@@ -181,6 +181,8 @@ export class ScriptedServer {
   resetUploads = false;
   /** Apply the next state request, then lose its response. */
   loseStateAnswer = false;
+  /** Replace the next applied state write's acknowledgment payload. */
+  stateAnswer: { value: unknown } | undefined;
   /** The key is refused as a revoked one is: 401 at every door. */
   revoked = false;
   /** The registration is gone: every door under it answers 404 until the
@@ -1005,6 +1007,12 @@ export class ScriptedServer {
       if (method === "PUT" && this.loseStateAnswer) {
         this.loseStateAnswer = false;
         res.destroy();
+        return;
+      }
+      if (method === "PUT" && this.stateAnswer !== undefined) {
+        const payload = this.stateAnswer.value;
+        this.stateAnswer = undefined;
+        send(200, payload);
         return;
       }
       send(200, {
