@@ -63,7 +63,13 @@ import {
   withRefusal,
   type Purge,
 } from "./store.js";
-import { digest, identityKey, intentOf, fitsJournal } from "./inbound-retry.js";
+import {
+  digest,
+  identityKey,
+  intentOf,
+  fitsJournal,
+  type UpsertAttempt,
+} from "./inbound-retry.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
@@ -611,9 +617,28 @@ export async function runOnce<E extends EnvDeclaration>(
         return false;
       }
     },
+    captureUpsert: (type: string, entry: Entry): UpsertAttempt | undefined => {
+      const scope = activeScope;
+      if (scope?.retry === undefined) return undefined;
+      try {
+        const intent = intentOf(type, entry);
+        const link = lanes.get(type)?.rows.linkOf(intent.entry.properties);
+        return {
+          intent,
+          fingerprint: digest(intent),
+          context: retryContext(scope),
+          identity: {
+            type,
+            sourceId: intent.entry.source_id,
+            ...(link !== undefined && { link }),
+          },
+        };
+      } catch {
+        return undefined;
+      }
+    },
     upsertRefused: (
-      type: string,
-      entry: Entry,
+      captured: UpsertAttempt,
       error: Refusal,
       singleton: boolean,
     ): boolean => {
@@ -625,22 +650,17 @@ export async function runOnce<E extends EnvDeclaration>(
       )
         return false;
       try {
-        const intent = intentOf(type, entry);
-        const key = identityKey(type, entry.source_id);
+        const { intent, identity, fingerprint, context } = captured;
+        const key = identityKey(identity.type, identity.sourceId);
         if (!ownRetry(scope, key)) return false;
-        const link = lanes.get(type)?.rows.linkOf(intent.entry.properties);
         const reason = logger.redact(error.detail);
         const boundedReason = capBytes(reason, reasonBytes);
         const record: PendingInbound = {
-          identity: {
-            type,
-            sourceId: entry.source_id,
-            ...(link !== undefined && { link }),
-          },
+          identity,
           scope: scope.name,
           operation: "upsert",
-          fingerprint: digest(intent),
-          context: retryContext(scope),
+          fingerprint,
+          context,
           code: error.code,
           reason:
             boundedReason === reason

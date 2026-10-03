@@ -10,6 +10,7 @@ import {
   type Agreement,
   type Merged,
 } from "./agreement.js";
+import type { UpsertAttempt } from "./inbound-retry.js";
 import type { Entry, Item, Target } from "./define.js";
 import {
   causeOf,
@@ -222,9 +223,9 @@ export interface Hooks {
   narrowed(): Promise<string[]>;
   refused(sourceId: string, reason: string): void;
   inboundRefused?(): void;
+  captureUpsert?(type: string, entry: Entry): UpsertAttempt | undefined;
   upsertRefused?(
-    type: string,
-    entry: Entry,
+    attempt: UpsertAttempt,
     error: Refusal,
     singleton: boolean,
   ): boolean;
@@ -236,6 +237,7 @@ export interface Hooks {
 }
 
 export class Rows {
+  private readonly attempts = new WeakMap<Entry, UpsertAttempt>();
   readonly counts: Counts = {
     created: 0,
     updated: 0,
@@ -301,7 +303,14 @@ export class Rows {
   async upsert(entries: readonly Entry[]): Promise<void> {
     this.batch = batch();
     // The last of a repeated key wins, as the vendor's latest word on it.
-    const latest = new Map(entries.map((entry) => [entry.source_id, entry]));
+    const latest = new Map(
+      entries.map((given) => {
+        const captured = this.hooks.captureUpsert?.(this.kind.type, given);
+        const entry: Entry = captured?.intent.entry ?? given;
+        if (captured !== undefined) this.attempts.set(entry, captured);
+        return [entry.source_id, entry];
+      }),
+    );
     await this.know({
       links: [...latest.values()].flatMap((entry) => [
         ...[this.linkOf(cleaned(entry.properties))].filter(
@@ -1240,10 +1249,10 @@ export class Rows {
       }
       if (creating && error.code === "forbidden") throw error;
     }
+    const captured = entry === undefined ? undefined : this.attempts.get(entry);
     const parked =
-      entry !== undefined &&
-      this.hooks.upsertRefused?.(this.kind.type, entry, error, singleton) ===
-        true;
+      captured !== undefined &&
+      this.hooks.upsertRefused?.(captured, error, singleton) === true;
     if (!parked) this.hooks.inboundRefused?.();
     this.counts.skipped += 1;
     if (raced.has(error.code)) {

@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import type { Entry, InboundEntry, PendingInbound } from "./define.js";
 import { cleaned, instant } from "./values.js";
 
+export interface UpsertAttempt {
+  intent: ReturnType<typeof intentOf>;
+  fingerprint: string;
+  context: string;
+  identity: PendingInbound["identity"];
+}
+
 export function checkedJson(value: unknown, seen = new Set<object>()): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean")
     return value;
