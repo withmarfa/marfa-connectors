@@ -113,10 +113,49 @@ export interface CheckpointState {
   checkpoint(key: string, value: unknown): Promise<CheckpointResult>;
 }
 
+export interface InboundRetryCapability {
+  mode: "refetch" | "replay";
+  /** Full SHA-256 of caller-owned nonsecret retry context. */
+  context: string;
+}
+export type JsonValue =
+  | null
+  | string
+  | number
+  | boolean
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+export type InboundEntry = Omit<Entry, "file" | "properties"> & {
+  readonly properties: Readonly<Record<string, JsonValue>>;
+};
+
+export type PendingInbound = {
+  identity: { type: string; sourceId: string; link?: string };
+  scope: string;
+  operation: "upsert";
+  fingerprint: string;
+  context: string;
+  code: "invalid_properties" | "request_too_large";
+  reason: string;
+  attemptedAt: string;
+  dueAt: string;
+} & (
+  | { mode: "refetch" }
+  | {
+      mode: "replay";
+      intent: { operation: "upsert"; type: string; entry: InboundEntry };
+    }
+);
+
 export type ScopedRunContext<E extends EnvDeclaration> = Omit<
   RunContext<E>,
   "state" | "forScope"
-> & { readonly state: CheckpointState };
+> & {
+  readonly state: CheckpointState;
+  readonly refusals: {
+    pending(): readonly { record: PendingInbound; due: boolean }[];
+  };
+};
 
 export interface Log {
   info(message: string): void;
@@ -158,7 +197,10 @@ export interface RunContext<E extends EnvDeclaration> {
   readonly signal: AbortSignal;
   readonly state: State;
   /** Bind a serial read scope. Unfinished scopes sharing an item cannot checkpoint. */
-  readonly forScope: (scope: string) => ScopedRunContext<E>;
+  readonly forScope: (
+    scope: string,
+    options?: { retry: InboundRetryCapability },
+  ) => ScopedRunContext<E>;
   readonly log: Log;
   readonly secret: Secret;
   /**
