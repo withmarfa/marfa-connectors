@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # A draft runs only the quick checks; marking it ready for review runs the
+  # rest, and so does every push after that.
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +28,7 @@ jobs:
       code: ${{ steps.classify.outputs.code }}
       proof: ${{ steps.classify.outputs.proof }}
       image: ${{ steps.classify.outputs.image }}
+      full: ${{ steps.classify.outputs.full }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,7 +41,8 @@ jobs:
 
   # Every file is formatted and read for personal details, so a change to
   # documentation runs those two, on the root's own dependencies, which need
-  # no monorepo.
+  # no monorepo. A draft stops after the build, typecheck, lint and format
+  # check, which is what the tests are left for, and the proof and the image.
   checks:
     name: Checks
     needs: changes
@@ -64,10 +69,18 @@ jobs:
       - if: ${{ needs.changes.outputs.code != 'false' }}
         run: pnpm lint
       - run: pnpm format:check
-      - if: ${{ needs.changes.outputs.code != 'false' }}
+      - if: ${{ needs.changes.outputs.code != 'false' && needs.changes.outputs.full != 'false' }}
         run: pnpm test
       - if: ${{ needs.changes.outputs.code == 'false' }}
         run: pnpm exec vitest run scripts/test/tree.test.ts
+      # A skipped job passes its required check, and a draft skips `Proof`
+      # and `Image`, so a draft's results would let a pull request merge in
+      # the moment between marking it ready and the first run that runs them.
+      # `Checks` fails for a draft, whatever the diff, until that run replaces it.
+      - if: ${{ github.event.pull_request.draft }}
+        run: |
+          echo "::error::A draft runs only the quick checks. Mark the pull request ready for review to run the tests, the proof and the image."
+          exit 1
 
   proof:
     name: Proof

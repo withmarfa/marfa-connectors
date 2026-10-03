@@ -26,6 +26,11 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Every version is the previous one plus 0.0.1, whatever the size of the change. Numbering starts from 0: the first version is 0.0.1.
 - A version exists only as a git tag. A tag is created only when a release is called for, never on a session's own initiative, and no one writes a version into a file.
 
+## Writing
+
+- Public prose (README, docs, issues, pull requests) follows the Google developer documentation style guide, in American English, with docs organized by Diátaxis: tutorials, how-to guides, reference and explanation kept apart.
+- Code comments follow the language's own conventions and survive only if they explain a why the code cannot; when in doubt, they go.
+
 ## In force
 
 - American English in code, comments and commits. Scoped Conventional Commits (`feat(kit):`, `fix(rss):`).
@@ -33,10 +38,9 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Before closing, remove the worktrees you created once their branches are merged, with `git worktree remove`, and run `git worktree prune`; if git refuses one, report it rather than forcing it.
 - This repository is public while development continues. Public visibility is not a release milestone.
 - Every Actions workflow uses standard GitHub-hosted runners, never personal self-hosted runners or paid third-party runners. Never hold back a push or a check to ration runners; keep stacked changes in order and cancel superseded runs.
-- `scripts/ci-changes.ts` decides what a pull request runs: `Checks` always formats and scans every file, and it builds, lints and tests, `Proof` runs, and `Image` builds the template's image for the template and each connector, checks its client version, contract and runtime/type bytes against the frozen registry install and checks the LaunchAgent example, only for a change that can affect them. Markdown anywhere is documentation, and an unnamed path or a push runs everything. A skipped job passes its required check; `scripts/test/ci-changes.test.ts` pins the rules. `Checks`, `Proof` and `Image` are required, since a merge waits only on required checks; `.github/workflows/audit.yml`, the dependency audit, run weekly, by hand and on a lockfile change, is not.
-- `.github/workflows/codeql.yml` analyzes every push to `main`, once a week, and a pull request unless it changes only Markdown, the license or `.claude/`. It is not a required check, so a `paths-ignore` filter starts no run at all for documentation; `scripts/test/ci-changes.test.ts` pins it.
+- `scripts/ci-changes.ts` decides what a pull request runs: `Checks` always formats and scans every file, and it builds, lints and tests, `Proof` runs, and `Image` builds the template's image for the template and each connector, checks its client version, contract and runtime/type bytes against the frozen registry install and checks the LaunchAgent example, only for a change that can affect them. Markdown anywhere is documentation, and an unnamed path or a push runs everything. A skipped job passes its required check; `scripts/test/ci-changes.test.ts` pins the rules. A draft runs only `Checks` without its tests, and `Checks` fails for it, so skipped jobs cannot let a pull request merge in the moment between marking it ready and the first full run; marking it ready for review, and every push after, runs everything. `Checks`, `Proof` and `Image` are required, since a merge waits only on required checks; `.github/workflows/audit.yml`, the dependency audit, run weekly, by hand and on a lockfile change, is not.
+- `.github/workflows/codeql.yml` analyzes every push to `main`, once a week, and a pull request that is not a draft unless it changes only Markdown, the license or `.claude/`. It is not a required check, so a `paths-ignore` filter starts no run at all for documentation; `scripts/test/ci-changes.test.ts` pins it.
 - Every action is pinned by commit with its tag in a comment, and the Dockerfile's base image by digest; Dependabot keeps them current and `scripts/test/tree.test.ts` refuses one that is not.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
-- A comment survives only if it explains a why the code cannot; when in doubt, it goes.
 - TypeScript, strict, on Node 22 or later. The transport is `@withmarfa/client` and nothing else.

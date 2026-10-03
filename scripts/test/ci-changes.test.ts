@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { affected, classify, JOBS, RULES, type Job } from "../ci-changes.js";
+import {
+  affected,
+  classify,
+  forDraft,
+  JOBS,
+  RULES,
+  type Job,
+} from "../ci-changes.js";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -102,6 +109,19 @@ interface Workflow {
   >;
 }
 
+describe("what a draft runs", () => {
+  it("leaves the proof and the image for ready for review, and Checks to the diff", () => {
+    for (const paths of [["kit/src/main.ts"], ["README.md"], []]) {
+      const answer = classify(paths);
+      expect(forDraft(answer)).toEqual({
+        ...answer,
+        proof: false,
+        image: false,
+      });
+    }
+  });
+});
+
 describe("each job reads its answer", () => {
   const { jobs } = parse(
     readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
@@ -112,6 +132,7 @@ describe("each job reads its answer", () => {
       code: "${{ steps.classify.outputs.code }}",
       proof: "${{ steps.classify.outputs.proof }}",
       image: "${{ steps.classify.outputs.image }}",
+      full: "${{ steps.classify.outputs.full }}",
     });
     expect(jobs["proof"]?.needs).toBe("changes");
     expect(jobs["proof"]?.if).toBe(
@@ -162,16 +183,30 @@ describe("each job reads its answer", () => {
       "pnpm install --frozen-lockfile --filter .",
       "pnpm exec vitest run scripts/test/tree.test.ts",
     ]);
-    const full = (checks?.steps ?? []).filter(
+    const code = (checks?.steps ?? []).filter(
       (step) => step.if === "${{ needs.changes.outputs.code != 'false' }}",
     );
-    expect(full.map((step) => step.run)).toEqual([
+    expect(code.map((step) => step.run)).toEqual([
       "pnpm install --frozen-lockfile",
       "pnpm build",
       "pnpm typecheck",
       "pnpm lint",
-      "pnpm test",
     ]);
+  });
+
+  it("leaves the tests to a pull request that is not a draft", () => {
+    const steps = jobs["checks"]?.steps ?? [];
+    const tests = steps.filter((step) => step.run === "pnpm test");
+    expect(tests.map((step) => step.if)).toEqual([
+      "${{ needs.changes.outputs.code != 'false' && needs.changes.outputs.full != 'false' }}",
+    ]);
+  });
+
+  it("fails Checks for a draft, so skipped jobs cannot let it merge before the full run", () => {
+    const steps = jobs["checks"]?.steps ?? [];
+    const guard = steps.at(-1);
+    expect(guard?.if).toBe("${{ github.event.pull_request.draft }}");
+    expect(guard?.run).toContain("exit 1");
   });
 });
 
@@ -198,14 +233,19 @@ function filterMatches(pattern: string, path: string): boolean {
 }
 
 describe("CodeQL", () => {
-  const { on } = parse(
+  const { on, jobs } = parse(
     readFileSync(join(root, ".github", "workflows", "codeql.yml"), "utf8"),
   ) as {
     on: {
       push?: unknown;
-      pull_request?: { branches?: string[]; "paths-ignore"?: string[] };
+      pull_request?: {
+        branches?: string[];
+        types?: string[];
+        "paths-ignore"?: string[];
+      };
       schedule?: { cron: string }[];
     };
+    jobs: Record<string, { if?: string }>;
   };
   const ignored = on.pull_request?.["paths-ignore"] ?? [];
   const skips = (path: string) =>
@@ -215,10 +255,15 @@ describe("CodeQL", () => {
     expect(on.push).toEqual({ branches: ["main"] });
     expect(on.pull_request).toEqual({
       branches: ["main"],
+      types: ["opened", "synchronize", "reopened", "ready_for_review"],
       "paths-ignore": ["**/*.md", "LICENSE", ".claude/**"],
     });
     expect(on.schedule).toHaveLength(1);
     expect(on.schedule?.[0]?.cron).toMatch(/^\d{1,2} \d{1,2} \* \* [0-6]$/);
+  });
+
+  it("analyzes a draft only once it is marked ready for review", () => {
+    expect(jobs["analyze"]?.if).toBe("${{ !github.event.pull_request.draft }}");
   });
 
   it("skips what the classifier also reads as documentation, and no code in a language it analyzes", () => {
@@ -267,13 +312,18 @@ describe("the classifier as CI runs it", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  function outputs(event: string, from: string, to: string): string {
+  function outputs(
+    event: string,
+    from: string,
+    to: string,
+    draft?: boolean,
+  ): string {
     const eventPath = join(directory, "event.json");
     const output = join(directory, "output");
     writeFileSync(
       eventPath,
       JSON.stringify({
-        pull_request: { base: { sha: from }, head: { sha: to } },
+        pull_request: { base: { sha: from }, head: { sha: to }, draft },
       }),
     );
     writeFileSync(output, "");
@@ -291,19 +341,31 @@ describe("the classifier as CI runs it", () => {
 
   it("skips the code checks and the proof for documentation", () => {
     expect(outputs("pull_request", base, docs)).toBe(
-      "code=false\nproof=false\nimage=false\n",
+      "code=false\nproof=false\nimage=false\nfull=true\n",
+    );
+  });
+
+  it("runs only the quick checks for a draft, whatever the diff, and all of them once it is ready", () => {
+    expect(outputs("pull_request", base, docs, true)).toBe(
+      "code=false\nproof=false\nimage=false\nfull=false\n",
+    );
+    expect(outputs("pull_request", "invalid", docs, true)).toBe(
+      "code=true\nproof=false\nimage=false\nfull=false\n",
+    );
+    expect(outputs("pull_request", base, docs, false)).toBe(
+      "code=false\nproof=false\nimage=false\nfull=true\n",
     );
   });
 
   it("runs everything for an unreadable diff, an empty one and a push", () => {
     expect(outputs("pull_request", "invalid", docs)).toBe(
-      "code=true\nproof=true\nimage=true\n",
+      "code=true\nproof=true\nimage=true\nfull=true\n",
     );
     expect(outputs("pull_request", docs, docs)).toBe(
-      "code=true\nproof=true\nimage=true\n",
+      "code=true\nproof=true\nimage=true\nfull=true\n",
     );
     expect(outputs("push", base, docs)).toBe(
-      "code=true\nproof=true\nimage=true\n",
+      "code=true\nproof=true\nimage=true\nfull=true\n",
     );
   });
 });

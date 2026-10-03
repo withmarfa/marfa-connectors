@@ -9,6 +9,11 @@
  * leave it pending. A push to `main`, an empty diff and one that cannot be
  * read answer `true` for every job.
  *
+ * A draft pull request runs only the quick checks: `Checks` without its
+ * tests, so `Proof` and `Image` answer `false` for it. `full` says whether
+ * the rest runs, and is `false` only for a draft. Marking the pull request
+ * ready for review starts a run that does, and so does every push after.
+ *
  * A path is matched against `RULES` in order and the first match names the
  * jobs it can affect. A path no rule matches affects every job.
  * `scripts/test/ci-changes.test.ts` pins the rules.
@@ -71,12 +76,29 @@ export function classify(paths: readonly string[]): Record<Job, boolean> {
   >;
 }
 
-/** The pull request's changed paths, or `undefined` for any other event. */
-function changedPaths(): string[] | undefined {
+/** What a draft pull request still runs, whatever it changes. */
+export function forDraft(answer: Record<Job, boolean>): Record<Job, boolean> {
+  return { ...answer, proof: false, image: false };
+}
+
+interface PullRequestEvent {
+  pull_request: {
+    draft?: boolean;
+    base: { sha: string };
+    head: { sha: string };
+  };
+}
+
+/** The event of a pull request run, or `undefined` for any other event. */
+function pullRequestEvent(): PullRequestEvent | undefined {
   if (process.env["GITHUB_EVENT_NAME"] !== "pull_request") return undefined;
-  const event = JSON.parse(
+  return JSON.parse(
     readFileSync(process.env["GITHUB_EVENT_PATH"] ?? "", "utf8"),
-  ) as { pull_request: { base: { sha: string }; head: { sha: string } } };
+  ) as PullRequestEvent;
+}
+
+/** The pull request's changed paths. */
+function changedPaths(event: PullRequestEvent): string[] {
   const base = event.pull_request.base.sha;
   const head = event.pull_request.head.sha;
   if (!/^[a-f0-9]{40}$/.test(base) || !/^[a-f0-9]{40}$/.test(head)) {
@@ -95,14 +117,21 @@ function changedPaths(): string[] | undefined {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let answer = classify([]);
+  let draft = false;
   try {
-    const paths = changedPaths();
-    if (paths !== undefined) answer = classify(paths);
+    const event = pullRequestEvent();
+    if (event !== undefined) {
+      draft = event.pull_request.draft === true;
+      answer = classify(changedPaths(event));
+    }
   } catch {
     // An unreadable diff must never turn a code change into a skipped job.
     console.log("Could not classify the change; running every job.");
   }
-  const lines = JOBS.map((job) => `${job}=${String(answer[job])}\n`).join("");
+  if (draft) answer = forDraft(answer);
+  const lines =
+    JOBS.map((job) => `${job}=${String(answer[job])}\n`).join("") +
+    `full=${String(!draft)}\n`;
   appendFileSync(process.env["GITHUB_OUTPUT"] ?? "", lines);
   process.stdout.write(lines);
 }
