@@ -675,6 +675,58 @@ export async function proveCheckpoint(
           const sourceId = `old-${String(ordinal)}`;
           let blockRenewals = false;
           let batches = 0;
+          let firstBatch: {
+            item_id: string;
+            record: Record<string, unknown>;
+            waiting: boolean;
+          }[] = [];
+          const entries =
+            cut === "agreement-batch"
+              ? [
+                  row(sourceId),
+                  ...Array.from({ length: 500 }, (_, n) =>
+                    row(`${sourceId}-${String(n)}`),
+                  ),
+                ]
+              : [row(sourceId, ["missing"])];
+          const preseeded: string[] = [];
+          if (cut === "agreement-batch") {
+            for (let at = 0; at < entries.length; at += 500) {
+              const page = entries.slice(at, at + 500);
+              const made = await test.own.POST("/items/bulk", {
+                body: {
+                  atomic: false,
+                  items: page.map((entry) => ({
+                    ...entry,
+                    type: issue,
+                    source,
+                    tier: "feed" as const,
+                    version: 0,
+                  })),
+                },
+              });
+              assert.ok(made.data);
+              assert.equal(made.data.results.length, page.length);
+              for (const result of made.data.results) {
+                assert.equal(result.outcome, "created");
+                assert.ok(result.id !== undefined);
+                preseeded.push(result.id);
+              }
+            }
+            assert.equal(new Set(preseeded).size, 501);
+            const actual = await rowsOf(marfa, issue, source);
+            for (const [index, entry] of entries.entries()) {
+              const found = required(actual.get(entry.source_id));
+              assert.equal(found.id, preseeded[index]);
+              assert.deepEqual(found.properties, entry.properties);
+              assert.equal(found.tier, "feed");
+            }
+            for (let at = 0; at < preseeded.length; at += 500)
+              assert.deepEqual(
+                await test.agreements(preseeded.slice(at, at + 500)),
+                [],
+              );
+          }
           let takeover: Promise<void> | undefined;
           const from = proxy.requests.length;
           const replace = async (): Promise<void> => {
@@ -726,7 +778,37 @@ export async function proveCheckpoint(
               return 503;
             const agreements =
               request.method === "POST" && request.path.endsWith("/agreements");
-            if (agreements) batches += 1;
+            if (agreements) {
+              batches += 1;
+              if (cut === "agreement-batch") {
+                const set = request.input["set"] as typeof firstBatch;
+                assert.ok(Array.isArray(set));
+                if (batches === 1) {
+                  assert.equal(set.length, 500);
+                  assert.deepEqual(
+                    set.map((entry) => entry.item_id),
+                    preseeded.slice(0, 500),
+                  );
+                  firstBatch = structuredClone(set);
+                } else if (batches === 2) {
+                  assert.equal(set.length, 1);
+                  assert.equal(set[0]?.item_id, preseeded[500]);
+                  const durable = await test.agreements(
+                    firstBatch.map((entry) => entry.item_id),
+                  );
+                  assert.equal(durable.length, 500);
+                  const byId = new Map(
+                    durable.map((entry) => [entry.item_id, entry]),
+                  );
+                  for (const expected of firstBatch) {
+                    const actual = required(byId.get(expected.item_id));
+                    assert.deepEqual(actual.record, expected.record);
+                    assert.equal(actual.waiting, expected.waiting);
+                    assert.equal(actual.waiting, false);
+                  }
+                }
+              }
+            }
             if (
               takeover === undefined &&
               ((cut === "agreement-batch" && agreements && batches === 2) ||
@@ -742,15 +824,7 @@ export async function proveCheckpoint(
           control.actions = [
             {
               scope: sourceId,
-              entries:
-                cut === "agreement-batch"
-                  ? [
-                      row(sourceId),
-                      ...Array.from({ length: 500 }, (_, n) =>
-                        row(`${sourceId}-${String(n)}`),
-                      ),
-                    ]
-                  : [row(sourceId, ["missing"])],
+              entries,
               ...(cut === "connection-drain" && { observe: "lapse" }),
             },
             { scope: sourceId, key: sourceId, value: 1 },
@@ -761,8 +835,15 @@ export async function proveCheckpoint(
           };
           const stopped = await test.connector.once();
           assert.equal(stopped.code, 1, stopped.output);
+          if (cut === "agreement-batch")
+            assert.match(
+              stopped.output,
+              /created 0, updated 0, archived 0, unchanged 501, skipped 0/,
+            );
           if (takeover === undefined)
-            throw new Error(`the ${cut} cut was not reached`);
+            throw new Error(
+              `the ${cut} cut was not reached: ${stopped.output}`,
+            );
           await takeover;
           control.checkObservation();
           const held = required(
