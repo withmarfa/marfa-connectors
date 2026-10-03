@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
+import { deliverySettled, restorationSettled } from "./inbound-wait.js";
 import {
   ConnectorUnderProof,
   edit,
@@ -340,6 +341,8 @@ export async function proveInbound(
           );
           vendor.things.set("t3", "Third");
           vendor.asked.length = 0;
+          const deliveryReportBefore = (await lastRun(operator, key.id))
+            .reported_at;
           const sentAt = Date.now();
           await post(
             url,
@@ -348,7 +351,26 @@ export async function proveInbound(
           );
           await until(async () => {
             const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-            return rows.has("t3");
+            const report = await lastRun(operator, key.id);
+            const handled = await deliveries(own, connectorId, "handled");
+            return deliverySettled(
+              {
+                rowReady: rows.has("t3"),
+                vendorRequests: vendor.asked,
+                deliveryProcessed: handled.some(
+                  (delivery) =>
+                    delivery.headers.some(
+                      ([name, value]) =>
+                        name?.toLowerCase() === "x-github-delivery" &&
+                        value === "33333333-3333-3333-3333-333333333333",
+                    ) && delivery.outcome === "processed",
+                ),
+                reportedAt: report.reported_at,
+                summary: report.summary ?? "",
+              },
+              deliveryReportBefore,
+              "/things/t3",
+            );
           }, "t3 being written");
           const took = Date.now() - sentAt;
           if (vendor.asked.join() !== "/things/t3") {
@@ -360,11 +382,24 @@ export async function proveInbound(
             await rowsOf(marfa, "proof.thing", "proof-inbound")
           ).get("t2");
           if (second === undefined) throw new Error("t2 is not held");
+          const restorationReportBefore = (await lastRun(operator, key.id))
+            .reported_at;
           await edit(marfa, second, { title: "Edited in Marfa" });
           const editedAt = Date.now();
           await until(async () => {
             const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-            return rows.get("t2")?.properties["title"] === "Second";
+            const report = await lastRun(operator, key.id);
+            return restorationSettled(
+              {
+                rowReady: rows.get("t2")?.properties["title"] === "Second",
+                vendorRequests: vendor.asked,
+                deliveryProcessed: true,
+                reportedAt: report.reported_at,
+                summary: report.summary ?? "",
+              },
+              restorationReportBefore,
+              second.id,
+            );
           }, "t2 being put back");
           const putBack = Date.now() - editedAt;
           const summary = (await lastRun(operator, key.id)).summary ?? "";
