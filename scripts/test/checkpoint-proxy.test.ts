@@ -19,9 +19,13 @@ async function start(server: Server): Promise<string> {
     throw new Error("no address");
   return `http://127.0.0.1:${String(address.port)}`;
 }
-function send(
-  path: string,
-): Promise<{ status: number; text: string; location?: string }> {
+function send(path: string): Promise<{
+  status: number;
+  text: string;
+  location?: string;
+  contentType?: string;
+  nosniff?: string;
+}> {
   return new Promise((resolve, reject) => {
     const url = new URL(proxy.url);
     const req = request(
@@ -36,6 +40,12 @@ function send(
           resolve({
             status: res.statusCode ?? 0,
             text,
+            ...(typeof res.headers["content-type"] === "string" && {
+              contentType: res.headers["content-type"],
+            }),
+            ...(typeof res.headers["x-content-type-options"] === "string" && {
+              nosniff: res.headers["x-content-type-options"],
+            }),
             ...(res.headers.location !== undefined && {
               location: res.headers.location,
             }),
@@ -67,7 +77,13 @@ beforeEach(async () => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write("data: first\n\n");
       res.on("close", closeStream);
-    } else res.end(req.url);
+    } else {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(req.url);
+    }
   });
   proxy = new Proxy(await start(upstream));
   await proxy.start();
@@ -87,6 +103,8 @@ it("forwards intended paths and queries only to its configured upstream", async 
   expect(await send("/items?type=proof%2Eissue&label=a%2Fb")).toMatchObject({
     status: 200,
     text: "/items?type=proof%2Eissue&label=a%2Fb",
+    contentType: "text/plain; charset=utf-8",
+    nosniff: "nosniff",
   });
   expect(reached).toEqual(["/items?type=proof%2Eissue&label=a%2Fb"]);
   expect(escaped).toEqual([]);
@@ -105,6 +123,7 @@ it.each(["absolute", "network", "backslash"])(
     expect({ response, escaped, reached }).toEqual({
       response: {
         status: 400,
+        contentType: "application/json",
         text: JSON.stringify({
           error: {
             code: "validation_error",
