@@ -71,6 +71,14 @@ describe("what a change runs beyond formatting and the scan", () => {
       [".github/workflows/codeql.yml"],
       ["code"],
     ],
+    [
+      "the description check and its workflow, which a test reads",
+      [
+        "scripts/check-pr-description.ts",
+        ".github/workflows/pr-description.yml",
+      ],
+      ["code"],
+    ],
     ["the classifier", ["scripts/ci-changes.ts"], ["code", "proof", "image"]],
     ["a path no rule names", ["tools/new.ts"], ["code", "proof", "image"]],
     [
