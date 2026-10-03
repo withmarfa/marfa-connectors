@@ -1,73 +1,118 @@
-/**
- * Fails when a connector image holds a `@withmarfa/client` other than the
- * pinned one, which `pnpm deploy` could otherwise replace with the registry's
- * release. Takes image names; run it after `scripts/monorepo.sh`.
- */
+/** Compare deployed SDK identity and bytes with the frozen registry install. */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const client = resolve(import.meta.dirname, "../vendor/marfa/packages/client");
+export interface ClientIdentity {
+  version: string;
+  contract: number;
+  runtime: string;
+  types: string;
+}
 
-// Beside the kit in pnpm's store, where the kit's own dependency lives.
+interface ClientPackage {
+  version: string;
+  exports: { ".": { import: string; types: string } };
+}
+
+export async function clientIdentity(
+  directory: string,
+): Promise<ClientIdentity> {
+  const pkg = JSON.parse(
+    readFileSync(join(directory, "package.json"), "utf8"),
+  ) as ClientPackage;
+  const entry = pkg.exports["."];
+  const runtime = join(directory, entry.import);
+  const { CONTRACT_VERSION } = (await import(pathToFileURL(runtime).href)) as {
+    CONTRACT_VERSION: number;
+  };
+  const hash = (path: string) =>
+    createHash("sha256").update(readFileSync(path)).digest("hex");
+  return {
+    version: pkg.version,
+    contract: CONTRACT_VERSION,
+    runtime: hash(runtime),
+    types: hash(join(directory, entry.types)),
+  };
+}
+
+export function sameClient(a: ClientIdentity, b: ClientIdentity): boolean {
+  return (
+    a.version === b.version &&
+    a.contract === b.contract &&
+    a.runtime === b.runtime &&
+    a.types === b.types
+  );
+}
+
+export function exactDependency(specifier: string, version: string): void {
+  if (specifier !== version) {
+    throw new Error(`Client dependency ${specifier} does not pin ${version}`);
+  }
+}
+
+// pnpm deploy puts the kit's own client dependency beside the deployed kit.
 const inImage = `
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const dir = join(realpathSync("node_modules/@withmarfa/connector"), "..", "client");
 const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-const { CONTRACT_VERSION } = await import(pathToFileURL(join(dir, pkg.exports["."].import)).href);
-console.log(JSON.stringify({ version: pkg.version, contract: CONTRACT_VERSION }));
+const entry = pkg.exports["."];
+const runtime = join(dir, entry.import);
+const { CONTRACT_VERSION } = await import(pathToFileURL(runtime).href);
+const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+console.log(JSON.stringify({ version: pkg.version, contract: CONTRACT_VERSION,
+  runtime: hash(runtime), types: hash(join(dir, entry.types)) }));
 `;
 
-interface Held {
-  version: string;
-  contract: number;
-}
-
-const pinnedPackage = JSON.parse(
-  readFileSync(resolve(client, "package.json"), "utf8"),
-) as { version: string };
-const pinnedContract = /CONTRACT_VERSION = (\d+)/.exec(
-  readFileSync(resolve(client, "src/generated/contract.ts"), "utf8"),
-)?.[1];
-if (pinnedContract === undefined) {
-  throw new Error("The pinned client names no contract version");
-}
-const pinned: Held = {
-  version: pinnedPackage.version,
-  contract: Number(pinnedContract),
-};
-
-const images = process.argv.slice(2);
-if (images.length === 0) throw new Error("Name at least one image");
-
-let failed = false;
-for (const image of images) {
-  const held = JSON.parse(
-    execFileSync(
-      "docker",
-      [
-        "run",
-        "--rm",
-        "--entrypoint",
-        "node",
-        image,
-        "--input-type=module",
-        "-e",
-        inImage,
-      ],
-      { encoding: "utf8" },
+async function main(images: string[]): Promise<void> {
+  if (images.length === 0) throw new Error("Name at least one image");
+  const root = resolve(import.meta.dirname, "..");
+  const installed = dirname(
+    dirname(
+      realpathSync(fileURLToPath(import.meta.resolve("@withmarfa/client"))),
     ),
-  ) as Held;
-  const same =
-    held.version === pinned.version && held.contract === pinned.contract;
-  console.log(
-    `${same ? "ok  " : "FAIL"} ${image}: @withmarfa/client ${held.version}, contract ${String(held.contract)}` +
-      (same
-        ? ""
-        : `; the pin is ${pinned.version}, contract ${String(pinned.contract)}`),
   );
-  if (!same) failed = true;
+  const expected = await clientIdentity(installed);
+  for (const consumer of ["kit", "scripts"]) {
+    const pkg = JSON.parse(
+      readFileSync(join(root, consumer, "package.json"), "utf8"),
+    ) as { dependencies: { "@withmarfa/client": string } };
+    exactDependency(pkg.dependencies["@withmarfa/client"], expected.version);
+  }
+  for (const image of images) {
+    const held = JSON.parse(
+      execFileSync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--entrypoint",
+          "node",
+          image,
+          "--input-type=module",
+          "-e",
+          inImage,
+        ],
+        { encoding: "utf8" },
+      ),
+    ) as ClientIdentity;
+    const same = sameClient(held, expected);
+    console.log(
+      `${same ? "ok  " : "FAIL"} ${image}: ${JSON.stringify(held)}` +
+        (same ? "" : `; expected ${JSON.stringify(expected)}`),
+    );
+    if (!same) process.exitCode = 1;
+  }
 }
-if (failed) process.exitCode = 1;
+
+if (
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  await main(process.argv.slice(2));
+}

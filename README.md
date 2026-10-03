@@ -10,7 +10,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
   - [`github`](./connectors/github/README.md): repositories, issues and comments from a GitHub App, with their relations, and changes carried back to issues and comments.
   - [`todoist`](./connectors/todoist/README.md): a Todoist account's tasks, with changes carried back.
   - `rss`: the entries of the feeds it is given, read only.
-- [`scripts/`](./scripts): fetches the pinned Marfa monorepo and packs its client, holds the proof, which boots the pinned server and drives every connector against it, and holds the tests that guard the repository itself.
+- [`scripts/`](./scripts): prepares the pinned Marfa server, holds the proof, which boots the pinned server and drives every connector against it, and holds the tests that guard the repository itself.
 
 [`AGENTS.md`](./AGENTS.md) holds the rules the repository is worked under.
 
@@ -18,20 +18,19 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
 
 You need Node 22.12 or later, pnpm, Rust (for the `marfa` command), a Marfa server and a key for the connector.
 
-The server and its client are pinned in `scripts/monorepo.commit`. Fetch that commit, pack its client, and build:
+The kit and proof use the published `@withmarfa/client` version pinned in their manifests and the lockfile. Install and build without a server checkout:
 
 ```bash
-scripts/monorepo.sh
-scripts/vendor-client.sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
 ```
 
-The client is packed from the pinned server because the registry client serves contract version 3 while this server serves 0. Remove the tarball override and `scripts/vendor-client.sh` when a published client serves the same contract as the pinned server.
+The proof server is independently pinned in `scripts/monorepo.commit`. Run `scripts/monorepo.sh` before `pnpm proof`; it prepares only the server checkout, and the proof uses the installed registry client.
 
 `scripts/monorepo.sh` leaves a checkout of the Marfa monorepo in `vendor/marfa`. Build its server and boot a throwaway one, which exports the server's address as `MARFA_TEST_URL`, a working key as `MARFA_TEST_KEY`, and an operator key for connector report inspection as `MARFA_TEST_OPERATOR_KEY`, and stop it afterward:
 
 ```bash
+scripts/monorepo.sh
 (cd vendor/marfa && pnpm --filter "@withmarfa/server..." build)
 env_text="$(vendor/marfa/core/scripts/server-up.sh)" && eval "${env_text}"
 vendor/marfa/core/scripts/server-down.sh "${MARFA_SERVER_ENV}"

@@ -132,6 +132,21 @@ describe("each job reads its answer", () => {
     );
   });
 
+  it("prepares the pinned server only for Proof and installs the registry client for Image", () => {
+    const commands = (job: string) =>
+      (jobs[job]?.steps ?? []).flatMap((step) => step.run ?? []);
+    expect(commands("proof")).toContain("scripts/monorepo.sh");
+    for (const job of ["checks", "image"]) {
+      expect(commands(job)).not.toContain("scripts/monorepo.sh");
+      expect(commands(job)).toContain("pnpm install --frozen-lockfile");
+    }
+    for (const job of ["checks", "proof", "image"]) {
+      expect(
+        commands(job).some((command) => command.includes("vendor-client")),
+      ).toBe(false);
+    }
+  });
+
   it("formats and scans every change, and does the rest only for code", () => {
     const checks = jobs["checks"];
     expect(checks?.needs).toBe("changes");
@@ -151,8 +166,6 @@ describe("each job reads its answer", () => {
       (step) => step.if === "${{ needs.changes.outputs.code != 'false' }}",
     );
     expect(full.map((step) => step.run)).toEqual([
-      "scripts/monorepo.sh",
-      "scripts/vendor-client.sh",
       "pnpm install --frozen-lockfile",
       "pnpm build",
       "pnpm typecheck",
