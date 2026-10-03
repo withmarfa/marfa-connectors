@@ -292,3 +292,5 @@ export function carried(input: CarriedInput): Agreement {
     ...(changedAt !== undefined && { changedAt }),
   };
 }
+
+// Throwaway change to exercise draft gating.
