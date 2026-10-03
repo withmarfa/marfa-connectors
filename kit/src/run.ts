@@ -654,6 +654,18 @@ export async function runOnce<E extends EnvDeclaration>(
             ? { mode: "replay" as const, intent }
             : { mode: "refetch" as const }),
         };
+        if (record.code === "request_too_large" && record.mode === "refetch") {
+          const complete: PendingInbound = {
+            ...record,
+            mode: "replay",
+            intent,
+          };
+          const others = journalFor(scope).filter(
+            (saved) =>
+              identityKey(saved.identity.type, saved.identity.sourceId) !== key,
+          );
+          if (!fitsJournal([...others, complete])) return false;
+        }
         scope.journal.set(key, record);
         if (!fitsJournal(journalFor(scope))) {
           scope.blocked = "row-refused";
@@ -1005,6 +1017,15 @@ export async function runOnce<E extends EnvDeclaration>(
       throw new Error("checkpoint requires an active full vendor read");
     if (loaded === undefined)
       throw new Error("checkpoint requires acknowledged loaded state");
+    const pending = (acknowledged.inbound ?? []).filter(
+      (record) => record.scope === scope.name,
+    );
+    if (
+      pending.length > 0 &&
+      (scope.retry === undefined ||
+        pending.some((record) => record.mode !== scope.retry?.mode))
+    )
+      return { committed: false, reason: "row-refused" };
     const candidate = jsonValue(value);
     const vendorState = { ...acknowledged.state, [key]: candidate };
     const inbound = journalFor(scope);
@@ -2126,7 +2147,10 @@ export async function runOnce<E extends EnvDeclaration>(
   }
   for (const message of standing.values()) logger.warn(message);
 
-  const landed = failure === undefined && held === 0;
+  const landed =
+    failure === undefined &&
+    held === 0 &&
+    (acknowledged.inbound ?? []).length === 0;
   const marking = failure === undefined && !setup.signal.aborted;
   // A delivery is processed once its run ends without error; a write it
   // held is re-read by the next scheduled run's full read, so it need not wait.

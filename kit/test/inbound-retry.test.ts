@@ -262,7 +262,7 @@ it("blocks journal capacity without leaking speculative entries to another scope
   entries.push({ source_id: "good", properties: { title: "Good" } });
   const held = vendor();
   held.read = async (context) => {
-    const a = context.forScope("A", { retry });
+    const a = context.forScope("A", { retry: { ...retry, mode: "refetch" } });
     await a.upsert(testType.id, entries);
     expect((await a.state.checkpoint("map", { A: 1 })).committed).toBe(false);
     const b = context.forScope("B", { retry });
@@ -408,4 +408,68 @@ it("binds consistent explicit capabilities and full context digests", async () =
     return Promise.resolve();
   };
   expect(await harness.once(held)).toBe(0);
+});
+it("blocks lost capability or changed mode while acknowledged intent remains", async () => {
+  refused();
+  const held = vendor();
+  held.read = async (context) => {
+    const a = context.forScope("A", { retry });
+    await a.upsert(testType.id, [bad]);
+    expect(await a.state.checkpoint("page", 1)).toEqual({ committed: true });
+  };
+  expect(await harness.once(held)).toBe(0);
+  const saved = structuredClone(inbound());
+  for (const options of [
+    undefined,
+    { retry: { ...retry, mode: "refetch" as const } },
+  ]) {
+    held.read = async (context) => {
+      const a = context.forScope("A", options);
+      expect(await a.state.checkpoint("page", 2)).toEqual({
+        committed: false,
+        reason: "row-refused",
+      });
+    };
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.kept()["state"]).toEqual({ page: 1 });
+    expect(inbound()).toEqual(saved);
+  }
+  held.read = (context) => {
+    context.state.set("page", 2);
+    return Promise.resolve();
+  };
+  expect(await harness.once(held)).toBe(0);
+  expect(harness.kept()["state"]).toEqual({ page: 1 });
+});
+it("keeps oversized singleton 413 blocked even when a refetch digest would fit", async () => {
+  harness.server.refuseNext("POST /items/bulk", 413, "request_too_large");
+  const held = vendor();
+  held.read = async (context) => {
+    const a = context.forScope("A", { retry: { ...retry, mode: "refetch" } });
+    await a.upsert(testType.id, [
+      { ...bad, properties: { title: "x".repeat(65536) } },
+    ]);
+    expect(await a.state.checkpoint("page", 1)).toEqual({
+      committed: false,
+      reason: "row-refused",
+    });
+  };
+  expect(await harness.once(held)).toBe(0);
+  expect(inbound()).toBeUndefined();
+});
+it("allows a complete replay above 4KiB without an arbitrary per-record cap", async () => {
+  refused();
+  const held = vendor();
+  held.read = async (context) => {
+    const a = context.forScope("A", { retry });
+    await a.upsert(testType.id, [
+      { ...bad, properties: { title: "é".repeat(6000) } },
+    ]);
+    expect(await a.state.checkpoint("page", 1)).toEqual({ committed: true });
+  };
+  expect(await harness.once(held)).toBe(0);
+  const record = inbound()[0];
+  expect(record?.mode).toBe("replay");
+  if (record?.mode !== "replay") throw new Error("missing replay");
+  expect(record.intent.entry.properties["title"]).toBe("é".repeat(6000));
 });
