@@ -2587,7 +2587,7 @@ describe("a recurrence", () => {
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       { id: "r", content: "Water the plants" },
     ]);
-    expect(todoist.tasks.get("r")?.due?.is_recurring).toBe(true);
+    expect(todoist.tasks.get("r")?.due?.["is_recurring"]).toBe(true);
     expect(marfa.byId(row.id).properties).toMatchObject({
       title: "Water the plants",
       recurrence: "every day",
