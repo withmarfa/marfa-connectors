@@ -5,6 +5,7 @@ import { typeDifferences } from "../src/type-check.js";
 import { Harness, testConnector, testType, vendor } from "./harness.js";
 
 describe("the type check", () => {
+  const none = { missing: [], other: [] };
   const served = {
     id: "test.entry",
     fields: {
@@ -25,10 +26,10 @@ describe("the type check", () => {
     });
     expect(
       typeDifferences(withFormat({ type: "string", format: "url" }), served),
-    ).toEqual([]);
+    ).toEqual(none);
     expect(
       typeDifferences(withFormat({ type: "url", format: "url" }), served),
-    ).toEqual([]);
+    ).toEqual(none);
     expect(
       typeDifferences(
         withFormat({ type: "array", items_type: "string", format: "url" }),
@@ -40,9 +41,10 @@ describe("the type check", () => {
           },
         },
       ),
-    ).toEqual([]);
+    ).toEqual(none);
     expect(
-      typeDifferences(withFormat({ type: "string", format: "bcp47" }), served),
+      typeDifferences(withFormat({ type: "string", format: "bcp47" }), served)
+        .other,
     ).toEqual([
       'field "link" has type "string" here and "url" on the server',
       'field "link" has format "bcp47" here and nothing on the server',
@@ -57,17 +59,51 @@ describe("the type check", () => {
         note: { type: "string", searchable: value },
       },
     });
-    expect(typeDifferences(searchable(true), served)).toEqual([]);
-    expect(typeDifferences(searchable(false), served)).toEqual([
+    expect(typeDifferences(searchable(true), served)).toEqual(none);
+    expect(typeDifferences(searchable(false), served).other).toEqual([
       'field "note" has searchable false here and true on the server',
     ]);
   });
 
   it("compares the parent", () => {
-    expect(typeDifferences(testType, served)).toEqual([]);
+    expect(typeDifferences(testType, served)).toEqual(none);
     expect(
-      typeDifferences(testType, { ...served, parent: "test.base" }),
+      typeDifferences(testType, { ...served, parent: "test.base" }).other,
     ).toEqual(['parent is nothing here and "test.base" on the server']);
+  });
+
+  it("keeps an optional field the server holds and the connector does not declare, and refuses a required one", () => {
+    const extra = (field: object) => ({
+      ...served,
+      fields: { ...served.fields, extra: field },
+    });
+    expect(typeDifferences(testType, extra({ type: "string" }))).toEqual(none);
+    expect(
+      typeDifferences(testType, extra({ type: "string", required: true })),
+    ).toEqual({
+      missing: [],
+      other: ['field "extra" is required on the server and not here'],
+    });
+  });
+
+  it("tells an optional field the server lacks apart from every other difference", () => {
+    const { title, vendor_id } = served.fields;
+    expect(
+      typeDifferences(testType, { ...served, fields: { title, vendor_id } }),
+    ).toEqual({
+      missing: ["link", "note"],
+      other: [],
+    });
+    const { note, link } = served.fields;
+    expect(
+      typeDifferences(testType, {
+        ...served,
+        fields: { note, link, vendor_id },
+      }),
+    ).toEqual({
+      missing: [],
+      other: ['field "title" is required here and missing on the server'],
+    });
   });
 });
 

@@ -98,6 +98,10 @@ export interface Spec {
   readonly source: string;
   readonly link: string | undefined;
   readonly fields: readonly string[];
+  /** Fields the connector declares that the server's type lacks and the
+   *  key may not add: dropped from what the vendor says, so a row keeps
+   *  whatever it holds under them. */
+  readonly omitted: ReadonlySet<string>;
   readonly readOnly: ReadonlySet<string>;
   readonly derived: ReadonlySet<string>;
   readonly twoWay: boolean;
@@ -300,13 +304,27 @@ export class Rows {
     return found;
   }
 
+  private narrowed(entry: Entry): Entry {
+    if (!Object.keys(entry.properties).some((f) => this.kind.omitted.has(f))) {
+      return entry;
+    }
+    return {
+      ...entry,
+      properties: Object.fromEntries(
+        Object.entries(entry.properties).filter(
+          ([field]) => !this.kind.omitted.has(field),
+        ),
+      ),
+    };
+  }
+
   async upsert(entries: readonly Entry[]): Promise<void> {
     this.batch = batch();
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(
       entries.map((given) => {
         const captured = this.hooks.captureUpsert?.(this.kind.type, given);
-        const entry: Entry = captured?.intent.entry ?? given;
+        const entry = this.narrowed(captured?.intent.entry ?? given);
         if (captured !== undefined) this.attempts.set(entry, captured);
         return [entry.source_id, entry];
       }),
@@ -793,8 +811,11 @@ export class Rows {
    *  vendor's own answer is not to hand, such as a container no longer read. */
   async derive(
     keys: readonly string[],
-    values: Readonly<Record<string, unknown>>,
+    given: Readonly<Record<string, unknown>>,
   ): Promise<void> {
+    const values = Object.fromEntries(
+      Object.entries(given).filter(([field]) => !this.kind.omitted.has(field)),
+    );
     const fields = Object.keys(values);
     const undeclared = fields.filter((field) => !this.kind.derived.has(field));
     if (undeclared.length > 0) {
