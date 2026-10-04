@@ -53,7 +53,7 @@ import {
   type Spec,
 } from "./rows.js";
 import { instant } from "./values.js";
-import { narrowedCondition, type Narrowed } from "./own-types.js";
+import type { Narrowed } from "./own-types.js";
 import type { Clock } from "./runtime.js";
 import {
   AgreementBlocked,
@@ -464,11 +464,8 @@ export async function runOnce<E extends EnvDeclaration>(
   const specs = specsOf(connector, env, setup.narrowed);
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
-  for (const [type, fields] of setup.narrowed?.fields ?? []) {
-    raised.set(
-      `type-fields:${type}`,
-      narrowedCondition(type, fields, setup.narrowed?.key ?? ""),
-    );
+  for (const [type, condition] of setup.narrowed?.conditions ?? []) {
+    raised.set(`type-fields:${type}`, condition);
   }
   const unreachedKeys = new Set<string>();
   const unreachedBatches: { prefixes: string[]; exceptKeys: string[] }[] = [];

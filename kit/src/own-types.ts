@@ -8,10 +8,16 @@ type TypeUpdate = components["schemas"]["TypeDefinitionUpdate"];
 /** The fields the connector writes without, by type, since the server's
  *  type lacks them and the key may not add them. */
 export interface Narrowed {
-  /** The key's id, which the fix names. */
-  readonly key: string;
   readonly fields: ReadonlyMap<string, readonly string[]>;
+  /** What each type's run raises, since the way out differs by type. */
+  readonly conditions: ReadonlyMap<string, string>;
 }
+
+/** Why the key may not add the fields: it lacks the scope that replaces a
+ *  type, or the server refused the replacement as beyond that scope. */
+export type Withheld =
+  | { readonly kind: "grant"; readonly key: string; readonly command: string }
+  | { readonly kind: "refused"; readonly changes: readonly string[] };
 
 export interface TypeStep {
   readonly problem: string | undefined;
@@ -19,9 +25,8 @@ export interface TypeStep {
 }
 
 type Outcome =
-  { readonly problem: string } | { readonly omitted: readonly string[] };
-
-const replacing = "schema.write";
+  | { readonly problem: string }
+  | { readonly omitted: readonly string[]; readonly withheld?: Withheld };
 
 /** Fields no row can be written without as the connector means it. */
 const fileFields = ["blob_ref", "mime_type"];
@@ -32,21 +37,61 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function grant(key: string): string {
-  return `\`marfa keys update ${key} --permission ${replacing}\``;
+/**
+ * The command that sets one level of a key's metadata map. An update replaces
+ * a map with the entries it names, so the command names every entry the key
+ * keeps, with the one level changed.
+ */
+export function metadataCommand(
+  key: Key,
+  level: Record<string, "read" | "write">,
+): string {
+  const kept = { ...key.metadata_permissions };
+  for (const [name, value] of Object.entries(level)) kept[name] = value;
+  const entries = Object.entries(kept).map(
+    ([name, value]) => `--metadata-permission ${name}=${value}`,
+  );
+  return `marfa keys update ${key.id} ${entries.join(" ")}`;
 }
 
+function grantCommand(key: Key): string {
+  return metadataCommand(key, { types: "write" });
+}
+
+/** The fix comes first, since a condition is cut at 500 characters. */
 export function narrowedCondition(
   type: string,
   fields: readonly string[],
-  key: string,
+  withheld: Withheld,
 ): string {
   const them = fields.length === 1 ? "it" : "them";
-  return `grant the key ${key} ${replacing} with ${grant(key)}, and the connector adds ${them} on its next start or scheduled run; until then it writes the type ${type} without ${fields.join(", ")}, which this connector declares, the server's type lacks and the key may not add`;
+  const until = `until then it writes the type ${type} without ${fields.join(", ")}, which this connector declares and the server's type lacks`;
+  if (withheld.kind === "grant") {
+    return `grant the key ${withheld.key} metadata types=write with \`${withheld.command}\`, and the connector adds ${them} on its next start or scheduled run; ${until}, and the key may not add ${them}`;
+  }
+  return `an operator replaces the type with the connector's definition, \`marfa types update ${type} --file <definition>\`, and the connector then writes ${them} on its next start or scheduled run; ${until}, and the server refused the key the change to ${withheld.changes.join(", ")}, which needs schema.write`;
+}
+
+function grantWithheld(key: Key): Withheld {
+  return { kind: "grant", key: key.id, command: grantCommand(key) };
 }
 
 function operatorFix(id: string): string {
   return `an operator who means the change replaces the type with the connector's definition, \`marfa types update ${id} --file <definition>\`, and the rows it holds keep their values until their next write`;
+}
+
+/** The members the server named when it refused a replacement as beyond the
+ *  key's scope; none when it named no change, as when the key holds neither
+ *  scope. */
+function refusedChanges(error: unknown): readonly string[] | undefined {
+  if (!(error instanceof Refusal) || error.status !== 403) return undefined;
+  if (error.details["required_scope"] !== "schema.write") return undefined;
+  const changes: unknown = error.details["changes"];
+  return Array.isArray(changes) &&
+    changes.length > 0 &&
+    changes.every((change): change is string => typeof change === "string")
+    ? changes
+    : [];
 }
 
 function listed(differences: TypeDifferences): string {
@@ -164,8 +209,9 @@ export function replacement(
 
 /**
  * Registers each type the instance does not hold, and holds each it does
- * to what the connector carries. A key holding `schema.write` adds the
- * optional fields the server lacks itself; one without it runs without
+ * to what the connector carries. A key holding `metadata.types:write` adds
+ * the optional fields the server lacks itself, when the server allows that
+ * key the change; one that lacks the scope, or is refused, runs without
  * them. Every other difference stops the start, so two versions of a
  * connector never rewrite each other's type. `again` is a registration
  * made again, so a type missing now was deleted since it was registered.
@@ -178,6 +224,7 @@ export async function ensureTypes(
   say: (message: string) => void,
 ): Promise<TypeStep> {
   const fields = new Map<string, readonly string[]>();
+  const conditions = new Map<string, string>();
   for (const type of types) {
     const served = await marfa.type(type.id);
     const outcome =
@@ -187,11 +234,21 @@ export async function ensureTypes(
     if ("problem" in outcome) {
       return { problem: outcome.problem, narrowed: undefined };
     }
-    if (outcome.omitted.length > 0) fields.set(type.id, outcome.omitted);
+    if (outcome.omitted.length > 0) {
+      fields.set(type.id, outcome.omitted);
+      conditions.set(
+        type.id,
+        narrowedCondition(
+          type.id,
+          outcome.omitted,
+          outcome.withheld ?? grantWithheld(key),
+        ),
+      );
+    }
   }
   return {
     problem: undefined,
-    narrowed: fields.size === 0 ? undefined : { key: key.id, fields },
+    narrowed: fields.size === 0 ? undefined : { fields, conditions },
   };
 }
 
@@ -247,14 +304,21 @@ async function reconcile(
   }
   const { missing } = differences;
   if (missing.length === 0) return { omitted: [] };
-  if (!key.permissions.includes(replacing)) {
-    const needed = missing.filter(
-      (name) => name === type.link_field || fileFields.includes(name),
-    );
-    if (needed.length === 0) return { omitted: missing };
+  const needed = missing.filter(
+    (name) => name === type.link_field || fileFields.includes(name),
+  );
+  const withheld = (reason: Withheld): Outcome => {
+    if (needed.length === 0) return { omitted: missing, withheld: reason };
+    const fix =
+      reason.kind === "grant"
+        ? `grant it metadata types=write with \`${grantCommand(key)}\`, or ${operatorFix(type.id)}`
+        : `the server refused the key the change to ${reason.changes.join(", ")}, which needs schema.write, so ${operatorFix(type.id)}`;
     return {
-      problem: `the type ${type.id} on the server lacks ${needed.join(", ")}, without which this connector cannot write its rows, and the key ${key.id} may not add ${needed.length === 1 ? "it" : "them"}: grant it ${replacing} with ${grant(key.id)}, or ${operatorFix(type.id)}`,
+      problem: `the type ${type.id} on the server lacks ${needed.join(", ")}, without which this connector cannot write its rows, and the key ${key.id} may not add ${needed.length === 1 ? "it" : "them"}: ${fix}`,
     };
+  };
+  if (key.metadata_permissions["types"] !== "write") {
+    return withheld(grantWithheld(key));
   }
   const gone = async (): Promise<Outcome> =>
     deletable
@@ -267,6 +331,14 @@ async function reconcile(
   } catch (error) {
     if (causeOf(error) === "marfa") throw error;
     if (error instanceof Refusal && error.status === 404) return gone();
+    const changes = refusedChanges(error);
+    if (changes !== undefined) {
+      return withheld(
+        changes.length === 0
+          ? grantWithheld(key)
+          : { kind: "refused", changes },
+      );
+    }
     return {
       problem: `the type ${type.id} could not be brought up to date with ${missing.join(", ")}, which this connector declares and the server lacks: ${said(error)}`,
     };

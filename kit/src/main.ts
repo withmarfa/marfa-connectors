@@ -45,7 +45,12 @@ import {
   type Schedule,
 } from "./schedule.js";
 import { edgeTypeDifferences } from "./type-check.js";
-import { ensureTypes, type Narrowed, type TypeStep } from "./own-types.js";
+import {
+  ensureTypes,
+  metadataCommand,
+  type Narrowed,
+  type TypeStep,
+} from "./own-types.js";
 
 const heartbeatMs = 60_000;
 
@@ -106,11 +111,7 @@ function keyWiderThanTypes(
 ): string[] {
   const wider: string[] = [];
   if (key.is_operator) wider.push("it is the operator key");
-  // Replacing a type, which its type map bounds to the connector's own,
-  // keeps them current as the connector gains fields.
-  for (const permission of key.permissions) {
-    if (permission !== "schema.write") wider.push(permission);
-  }
+  wider.push(...key.permissions);
   const held = (
     family: string,
     map: Record<string, string> | undefined,
@@ -210,7 +211,7 @@ function keyProblems<E extends EnvDeclaration>(
     keySourceProblem(key, connector.source),
     wider.length === 0
       ? undefined
-      : `the key ${key.id} holds more than read and write on ${named} and schema.write, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+      : `the key ${key.id} holds more than read and write on ${named} and metadata types=write, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
     narrower.length === 0
       ? undefined
       : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
@@ -255,18 +256,16 @@ async function registerAndCheck<E extends EnvDeclaration>(
   if (step.problem !== undefined) return stopped(step.problem);
   const problem = await ensureConnections(connector.connections ?? [], marfa);
   if (problem !== undefined) return stopped(problem);
-  // Everything is registered as declared now, and registering is all write
-  // on the two is for. Read on them gates nothing, and is the narrowing the
-  // binary can name, since it cannot name one map empty.
-  const spare = ["types", "edge_types"].filter(
-    (name) => key.metadata_permissions[name] === "write",
-  );
+  // Every connection is registered as declared now, and registering is all
+  // write on edge_types is for. Types stay writable, since that is how the
+  // connector keeps its types current. Read on edge_types gates nothing, and
+  // is the narrowing the binary can name, since it cannot name one map empty.
+  const spare = key.metadata_permissions["edge_types"] === "write";
   return {
     id,
-    spare:
-      spare.length === 0
-        ? undefined
-        : `every type and connection it declares is registered, so the key no longer needs metadata ${spare.map((name) => `${name}=write`).join(" or ")}: narrow it with \`marfa keys update ${key.id} ${spare.map((name) => `--metadata-permission ${name}=read`).join(" ")}\``,
+    spare: !spare
+      ? undefined
+      : `every connection it declares is registered, so the key no longer needs metadata edge_types=write: narrow it with \`${metadataCommand(key, { edge_types: "read" })}\``,
     narrowed: step.narrowed,
     problem: undefined,
   };
@@ -810,7 +809,7 @@ async function serve<E extends EnvDeclaration>(
     const after = Math.round(random() * Math.min(afterAnswerMs, intervalMs));
     if (after > 0) await clock.sleep(after, lasting);
   };
-  // Granting the key schema.write, or an operator mending the type, lifts
+  // Granting the key metadata types=write, or an operator mending the type, lifts
   // the narrowing at the next scheduled run, without a restart.
   const narrowAgain = async (): Promise<string | undefined> => {
     const was = setup.narrowed;

@@ -41,15 +41,6 @@ async function update(
     throw new Error(`the update was refused: ${JSON.stringify(error)}`);
 }
 
-function lineOf(output: string, said: string): string {
-  return (
-    output
-      .split("\n")
-      .find((line) => line.includes(said))
-      ?.trim() ?? ""
-  );
-}
-
 export async function proveKeys(
   marfa: MarfaClient,
   url: string,
@@ -72,9 +63,7 @@ export async function proveKeys(
     // Only the operator key grants a claim on a source a caller does not
     // hold, and the boot hands the proof a working key, which grants its own
     // source and its claims. So the connector's key goes, freeing its source,
-    // and a key of that source claiming the boot key's own mints the rest. A
-    // mint passes on no permission its minter lacks, so it holds
-    // schema.write too.
+    // and a key of that source claiming the boot key's own mints the rest.
     let minter = marfa;
     let elsewhere = "";
     await check(
@@ -100,7 +89,7 @@ export async function proveKeys(
               typePermission: "proof.thing",
             }),
             sources: [elsewhere],
-            permissions: ["keys.mint", "schema.write"],
+            permissions: ["keys.mint"],
           },
         });
         if (data === undefined)
@@ -111,7 +100,7 @@ export async function proveKeys(
     );
 
     await check(
-      "keys: a key that may mint keys and does not hold schema.write cannot mint a connector's key, which does",
+      "keys: a key that may mint keys and does not hold metadata types=write cannot mint a connector's key, which does",
       async () => {
         const { data: narrow, error } = await marfa.POST("/keys", {
           body: {
@@ -120,6 +109,7 @@ export async function proveKeys(
               source: "proof-mint-narrow",
               typePermission: "proof.thing",
             }),
+            metadata_permissions: {},
             permissions: ["keys.mint"],
           },
         });
@@ -140,7 +130,10 @@ export async function proveKeys(
           params: { path: { id: narrow.id } },
         });
         const said = JSON.stringify(refused.error);
-        if (refused.response.status !== 403 || !said.includes("schema.write")) {
+        if (
+          refused.response.status !== 403 ||
+          !said.includes("does not hold metadata.types:write")
+        ) {
           throw new Error(
             `answered ${String(refused.response.status)}: ${said}`,
           );
@@ -151,25 +144,19 @@ export async function proveKeys(
 
     let second: Minted | undefined;
     await check(
-      "keys: a second account's key, of its own source and claiming the connector's, starts, and is told types=write is no longer needed",
+      "keys: a second account's key, of its own source and claiming the connector's, starts, and is told nothing to narrow, since types=write keeps its type current",
       async () => {
         second = await mint(minter, "proof-inbound-second", ["proof-inbound"]);
         const { code, output } = await runner(second).once();
-        const warned = lineOf(output, "no longer needs metadata types=write");
-        if (
-          code !== 0 ||
-          !warned.includes(
-            `marfa keys update ${second.id} --metadata-permission types=read`,
-          )
-        ) {
+        if (code !== 0 || output.includes("--metadata-permission")) {
           throw new Error(`exited ${String(code)}: ${output}`);
         }
-        return `exited 0, warning: ${warned.slice(warned.indexOf("every"))}`;
+        return "exited 0, with no warning to narrow the key";
       },
     );
 
     await check(
-      "keys: narrowed as the warning says, the server keeps the key's other reach and the connector starts without the warning",
+      "keys: narrowed in place to read on types, the server keeps the key's other reach and the connector still starts, its type being current",
       async () => {
         if (second === undefined) throw new Error("no second key");
         await update(minter, second.id, {

@@ -108,7 +108,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its three types and four connection types, in-thread among them, the metadata to register them, and schema.write to keep them current",
+      "github: its key is minted with write on its three types and four connection types, in-thread among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -121,14 +121,13 @@ export async function proveGitHub(
               connections.map((type) => [type, "write" as const]),
             ),
             metadata_permissions: { types: "write", edge_types: "write" },
-            permissions: ["schema.write"],
             default_tier: "feed",
           },
         });
         if (data === undefined)
           throw new Error(`the key was refused: ${JSON.stringify(error)}`);
         key = data;
-        return `a key for ${source} with ${types.join(", ")}, ${connections.join(", ")} and schema.write`;
+        return `a key for ${source} with ${types.join(", ")}, ${connections.join(", ")} and metadata types and edge_types`;
       },
     );
 

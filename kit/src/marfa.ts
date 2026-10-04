@@ -403,8 +403,9 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  /** Replaces the whole type, which takes `schema.write`; the server keeps
-   *  the version the body names. */
+  /** Replaces the whole type, which takes `schema.write` or, for what only adds
+   *  an optional field or changes a free member, `metadata.types:write`; the
+   *  server keeps the version the body names. */
   async replaceType(
     id: string,
     body: components["schemas"]["TypeDefinitionUpdate"],
