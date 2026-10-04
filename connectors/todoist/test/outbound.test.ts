@@ -2593,6 +2593,45 @@ describe("a recurrence", () => {
     expect(todoist.tasks.get("r")?.due).toBeNull();
   });
 
+  it("names the row when a task made with a date holds text Todoist cannot read, and links it", async () => {
+    todoist.put(todoist.task("seed"));
+    const row = personsRow({
+      title: "Stretch",
+      status: "pending",
+      recurrence: "zzqx blorp",
+      due_at: "2026-10-07T00:00:00.000Z",
+      precision: "day",
+    });
+    await landed();
+    expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
+      string: "zzqx blorp",
+      lang: "en",
+      date: "2026-10-07",
+    });
+    const made = String(marfa.byId(row.id).properties["todoist_id"]);
+    expect(todoist.tasks.get(made)?.due).toMatchObject({
+      date: "2026-10-07",
+      is_recurring: false,
+    });
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist could not read the recurrence "zzqx blorp", so task ${made} is due once`,
+    );
+  });
+
+  it("names the row and makes nothing when a task made without a date holds text Todoist cannot read", async () => {
+    todoist.put(todoist.task("seed"));
+    const row = personsRow({
+      title: "Stretch",
+      status: "pending",
+      recurrence: "zzqx blorp",
+    });
+    await landed();
+    expect(todoist.commands("item_add")).toHaveLength(1);
+    expect(marfa.byId(row.id).properties["todoist_id"]).toBeUndefined();
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused creating a task: Date is invalid`,
+    );
+  });
 });
 
 describe("the account's zone", () => {

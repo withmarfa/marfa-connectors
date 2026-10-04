@@ -887,7 +887,7 @@ describe("the connector, run as a process", () => {
               due:
                 string === undefined ? wholeDaySent : { ...fixedSent, string },
             }),
-            ...(fulls === 1 ? [task("b")] : []),
+            ...(fulls === 1 ? [task("b"), task("c")] : []),
           ],
           user,
         };
@@ -895,7 +895,16 @@ describe("the connector, run as a process", () => {
       deltas += 1;
       return {
         sync_token: `t-delta-${String(deltas)}`,
-        items: deltas === 1 ? [task("b", { is_deleted: true })] : [],
+        items:
+          deltas === 1
+            ? [
+                task("b", { is_deleted: true }),
+                task("c", {
+                  checked: true,
+                  completed_at: "2026-10-02T10:00:00.000000Z",
+                }),
+              ]
+            : [],
         user,
       };
     };
@@ -930,8 +939,13 @@ describe("the connector, run as a process", () => {
     expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
       "every weekday at 2pm",
     );
-    // The delta's deletion is kept beside the full sync, as for a moved zone.
+    // The delta's deletion and completion are kept beside the full sync, as
+    // for a moved zone.
     expect(marfa.row("2671355:b").state).toBe("archived");
+    expect(marfa.row("2671355:c").properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-10-02T10:00:00.000Z",
+    });
     expect(state()).toMatchObject({ sync_token: "t-delta-3" });
   });
 
