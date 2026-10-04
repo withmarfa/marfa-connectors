@@ -50,6 +50,8 @@ export interface TaskArgs {
   description: string;
   priority: number;
   due: Due | null;
+  // Absent where the row holds none, which `differing` reads as no labels.
+  labels?: string[];
 }
 
 interface Due {
@@ -68,7 +70,36 @@ export function argsOf(item: Item, timeZone: string): TaskArgs {
     description: typeof p["description"] === "string" ? p["description"] : "",
     priority: priorityFor(p["priority"]),
     due: dueFor(p["due_at"], p["precision"], timeZone),
+    ...(Array.isArray(p["labels"]) && {
+      labels: p["labels"].filter(
+        (label): label is string => typeof label === "string",
+      ),
+    }),
   };
+}
+
+// Fields sent only when the row changed them, by their name in `TaskArgs` and
+// their property on the row. Todoist can change these between a read and a
+// write, so a row that did not change one never sends it, and the task keeps
+// what Todoist holds.
+const whenChanged = { labels: "labels" } as const satisfies Partial<
+  Record<keyof TaskArgs, string>
+>;
+
+export function onlyChanged(
+  diff: Partial<TaskArgs>,
+  changed: ReadonlySet<string>,
+): Partial<TaskArgs> {
+  const out = { ...diff };
+  for (const [arg, field] of Object.entries(whenChanged)) {
+    if (!changed.has(field)) Reflect.deleteProperty(out, arg);
+  }
+  return out;
+}
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const held = new Set(b);
+  return new Set(a).size === held.size && a.every((item) => held.has(item));
 }
 
 export function differing(
@@ -85,7 +116,41 @@ export function differing(
   const have = dueOf(task.due, timeZone);
   const want = dueOf(wanted.due, timeZone);
   if (JSON.stringify(have) !== JSON.stringify(want)) out.due = wanted.due;
+  const labels = wanted.labels ?? [];
+  if (!sameSet(labels, task.labels ?? [])) out.labels = labels;
   return out;
+}
+
+export type Move = { section_id: string } | { project_id: string };
+
+function placeOf(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+// The one place `item_move` takes: the section when the row changed it and
+// names one, whose project the task takes; else a project, whose root the
+// task goes to, from a changed project or from a cleared section in the
+// project the task is in. A project the row does not change is the task's
+// own, so a stale one on the row never moves it back.
+export function destination(
+  item: Item,
+  task: TodoistItem,
+  changed: ReadonlySet<string>,
+): Move | undefined {
+  const section = placeOf(item.properties["section_id"]);
+  const project = placeOf(item.properties["project_id"]);
+  const sectionChanged = changed.has("section_id");
+  const projectChanged = changed.has("project_id");
+  if (sectionChanged && section !== undefined) {
+    return section === task.section_id ? undefined : { section_id: section };
+  }
+  if (!sectionChanged && !projectChanged) return undefined;
+  const root = projectChanged ? project : task.project_id;
+  if (root === undefined || root === null) return undefined;
+  const inSection = sectionChanged && task.section_id != null;
+  return root === task.project_id && !inSection
+    ? undefined
+    : { project_id: root };
 }
 
 const zones = new WeakMap<object, Promise<string>>();
@@ -134,6 +199,10 @@ function isProjectGone(answer: CommandError | undefined): boolean {
   return answer?.error_code === 21 || answer?.error_tag === "PROJECT_NOT_FOUND";
 }
 
+function isSectionGone(answer: CommandError | undefined): boolean {
+  return answer?.error_code === 58 || answer?.error_tag === "SECTION_NOT_FOUND";
+}
+
 const scope = "Todoist";
 
 // Sent again: a rate limit held past every resend, a server error, or no
@@ -151,6 +220,20 @@ function notTaken(answer: CommandError | undefined, what: string): Error {
         scope,
       })
     : new Refused(`Todoist refused ${what}: ${reason}`);
+}
+
+function notMoved(
+  answer: CommandError | undefined,
+  taskId: string,
+  move: Move,
+): Error {
+  const [gone, place] =
+    "section_id" in move
+      ? [isSectionGone(answer), `section ${move.section_id}`]
+      : [isProjectGone(answer), `project ${move.project_id}`];
+  return gone
+    ? new Refused(`Todoist has no ${place} to move task ${taskId} into`)
+    : notTaken(answer, `moving task ${taskId}`);
 }
 
 async function delivering<T>(work: () => Promise<T>): Promise<T> {
@@ -208,9 +291,13 @@ async function carried(
 
   if (kind === "archived" && change.changed.size === 0) return;
 
+  // A task just made has its labels, project and section from the create, or
+  // the Inbox where its project was gone, which a move would undo.
+  let changed = change.changed;
   if (taskId === undefined) {
     if (kind === "trashed" || kind === "purged") return;
     taskId = await add(item, timeZone, todoist, context, change.refused);
+    changed = new Set();
   }
 
   if (kind === "trashed" || kind === "purged") {
@@ -228,7 +315,7 @@ async function carried(
     return;
   }
 
-  await sync(item, kind, taskId, timeZone, todoist);
+  await sync(item, kind, changed, taskId, timeZone, todoist);
 }
 
 async function remade(
@@ -254,13 +341,14 @@ async function remade(
     change.refused,
     taskId,
   );
-  await sync(item, change.kind, made, timeZone, todoist);
+  await sync(item, change.kind, new Set(), made, timeZone, todoist);
   return true;
 }
 
 async function sync(
   item: Item,
   kind: Change["kind"],
+  changed: ReadonlySet<string>,
   taskId: string,
   timeZone: string,
   todoist: Door,
@@ -276,7 +364,10 @@ async function sync(
     throw new Refused(`Todoist deleted task ${taskId}`);
   }
 
-  const diff = differing(argsOf(item, timeZone), task, timeZone);
+  const diff = onlyChanged(
+    differing(argsOf(item, timeZone), task, timeZone),
+    changed,
+  );
   if (diff.due !== undefined && diff.due !== null) {
     diff.due = moved(diff.due.date, task.due, timeZone);
   }
@@ -287,6 +378,15 @@ async function sync(
       { id: taskId, ...diff },
     );
     if (answer !== "ok") throw notTaken(answer, `updating task ${taskId}`);
+  }
+  const move = destination(item, task, changed);
+  if (move !== undefined) {
+    const answer = await todoist.one(
+      "item_move",
+      commandId(item, "item_move"),
+      { id: taskId, ...move },
+    );
+    if (answer !== "ok") throw notMoved(answer, taskId, move);
   }
   const completed = isCompleted(item);
   if (completed === (task.checked === true)) return;
@@ -353,7 +453,6 @@ async function add(
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
   const p = item.properties;
-  const labels = Array.isArray(p["labels"]) && { labels: p["labels"] };
   const where = {
     ...(typeof p["project_id"] === "string" && {
       project_id: p["project_id"],
@@ -367,7 +466,7 @@ async function add(
       type: "item_add",
       uuid,
       temp_id: tempId,
-      args: { ...argsOf(item, timeZone), ...where, ...labels },
+      args: { ...argsOf(item, timeZone), ...where },
     },
   ]);
   let status = answer.sync_status[uuid];
@@ -382,7 +481,7 @@ async function add(
         type: "item_add",
         uuid: inboxUuid,
         temp_id: inboxTemp,
-        args: { ...argsOf(item, timeZone), ...labels },
+        args: { ...argsOf(item, timeZone) },
       },
     ]);
     status = answer.sync_status[inboxUuid];

@@ -4,7 +4,12 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer, type Row } from "../../../kit/test/scripted-server.js";
 import { TodoistStub } from "../../../scripts/proof/todoist-stub.js";
-import { argsOf, differing } from "../src/outbound.js";
+import {
+  argsOf,
+  destination,
+  differing,
+  onlyChanged,
+} from "../src/outbound.js";
 import { dueFor, priorityFor, uuidFor } from "../src/todoist.js";
 
 const run = promisify(execFile);
@@ -96,6 +101,15 @@ async function synced(id: string, content = `Task ${id}`): Promise<Row> {
   return marfa.row(`${todoist.account}:${id}`);
 }
 
+async function placed(
+  id: string,
+  overrides: Partial<ReturnType<TodoistStub["task"]>>,
+): Promise<Row> {
+  todoist.put(todoist.task(id, overrides));
+  await landed();
+  return marfa.row(`${todoist.account}:${id}`);
+}
+
 describe("the mapping back", () => {
   it("writes the core's priority as Todoist's, and none as Todoist's 1", () => {
     expect(
@@ -158,6 +172,109 @@ describe("the mapping back", () => {
       description: "Organic",
       due: { date: "2026-09-30T11:00:00Z" },
     });
+  });
+
+  it("compares labels as sets, reads a row without labels as none, and sends the whole list when it differs", () => {
+    const rowWith = (labels?: unknown): Parameters<typeof argsOf>[0] =>
+      ({
+        id: "r",
+        type: "todoist.task",
+        version: 1,
+        state: "active",
+        properties: {
+          title: "Buy milk",
+          ...(labels !== undefined && { labels }),
+        },
+      }) as unknown as Parameters<typeof argsOf>[0];
+    const held = todoist.task("t", {
+      content: "Buy milk",
+      labels: ["Home", "Errands"],
+    });
+    const diffOf = (row: Parameters<typeof argsOf>[0]): unknown =>
+      differing(argsOf(row, "UTC"), held, "UTC");
+    expect(diffOf(rowWith(["Errands", "Home"]))).toEqual({});
+    expect(diffOf(rowWith(["Home"]))).toEqual({ labels: ["Home"] });
+    expect(diffOf(rowWith(["Home", "Errands", "New"]))).toEqual({
+      labels: ["Home", "Errands", "New"],
+    });
+    expect(diffOf(rowWith())).toEqual({ labels: [] });
+    expect(
+      differing(
+        argsOf(rowWith(), "UTC"),
+        todoist.task("u", { content: "Buy milk" }),
+        "UTC",
+      ),
+    ).toEqual({});
+  });
+
+  it("leaves a field the row did not change out of what is sent, so a task keeps what Todoist holds", () => {
+    const diff = { content: "Renamed", labels: ["Home"] };
+    expect(onlyChanged(diff, new Set(["title", "labels"]))).toEqual(diff);
+    expect(onlyChanged(diff, new Set(["title"]))).toEqual({
+      content: "Renamed",
+    });
+  });
+
+  it("names one destination for a move: the section when it changed and is set, else the project, and the project's root for a cleared section", () => {
+    const row = (
+      properties: Record<string, unknown>,
+    ): Parameters<typeof argsOf>[0] =>
+      ({
+        id: "r",
+        type: "todoist.task",
+        version: 1,
+        state: "active",
+        properties: { title: "T", ...properties },
+      }) as unknown as Parameters<typeof argsOf>[0];
+    const task = todoist.task("t", {
+      project_id: "p-work",
+      section_id: "s-later",
+    });
+    const move = (
+      properties: Record<string, unknown>,
+      ...changed: string[]
+    ): unknown => destination(row(properties), task, new Set(changed));
+
+    expect(
+      move(
+        { project_id: "p-home", section_id: "s-home" },
+        "project_id",
+        "section_id",
+      ),
+    ).toEqual({ section_id: "s-home" });
+    expect(
+      move({ project_id: "p-home", section_id: "s-later" }, "project_id"),
+    ).toEqual({
+      project_id: "p-home",
+    });
+    expect(move({ project_id: "p-work" }, "section_id")).toEqual({
+      project_id: "p-work",
+    });
+    expect(move({ project_id: "p-other" }, "section_id")).toEqual({
+      project_id: "p-work",
+    });
+    expect(move({}, "section_id")).toEqual({ project_id: "p-work" });
+    // Already where the row says, or the row names no project, or nothing
+    // about the placing changed: no command.
+    expect(
+      move(
+        { project_id: "p-work", section_id: "s-later" },
+        "section_id",
+        "project_id",
+      ),
+    ).toBeUndefined();
+    expect(move({ section_id: "s-later" }, "project_id")).toBeUndefined();
+    expect(move({}, "project_id")).toBeUndefined();
+    expect(
+      move({ project_id: "p-other", section_id: "s-other" }, "title"),
+    ).toBeUndefined();
+    expect(
+      destination(
+        row({ project_id: "p-work" }),
+        todoist.task("u"),
+        new Set(["section_id"]),
+      ),
+    ).toBeUndefined();
   });
 
   it("derives one uuid from what a command does, laid out as a UUID", () => {
@@ -966,7 +1083,7 @@ describe("transitions over runs", () => {
   });
 
   it("makes the task again at its project's root when its section is gone, as Todoist does", async () => {
-    todoist.sections = new Set();
+    todoist.sections = new Map();
     todoist.put(
       todoist.task("a", { project_id: "p-work", section_id: "s-gone" }),
     );
@@ -1446,6 +1563,329 @@ describe("one change, two commands", () => {
     expect(todoist.tasks.get("made-1")?.content).toBe(
       "One, edited before the replay",
     );
+  });
+});
+
+describe("labels, project and section changed in Marfa", () => {
+  beforeEach(() => {
+    todoist.sections = new Map([
+      ["s-later", "p-work"],
+      ["s-home", "p-home"],
+    ]);
+  });
+
+  it("sets the task's labels by name, empties them when the row clears them, and sends nothing for an order alone", async () => {
+    const row = await placed("a", { labels: ["Home"] });
+    marfa.edit(row.id, { labels: ["Work", "Home"] });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "a", labels: ["Work", "Home"] },
+    ]);
+    expect(todoist.tasks.get("a")?.labels).toEqual(["Work", "Home"]);
+    expect(todoist.commands("item_move")).toEqual([]);
+
+    marfa.edit(row.id, { labels: ["Home", "Work"] });
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(1);
+
+    const { labels, ...cleared } = marfa.byId(row.id).properties;
+    expect(labels).toBeDefined();
+    marfa.rewrite(`${todoist.account}:a`, cleared);
+    await landed();
+    expect(todoist.commands("item_update").at(-1)?.args).toEqual({
+      id: "a",
+      labels: [],
+    });
+    expect(todoist.tasks.get("a")?.labels).toEqual([]);
+    expect(summary()).not.toContain("put back");
+  });
+
+  it("moves the task into the section the row names, whose project it takes", async () => {
+    const row = await placed("a", { project_id: "p-home" });
+    marfa.edit(row.id, { project_id: "p-work", section_id: "s-later" });
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args])).toEqual([
+      ["item_move", { id: "a", section_id: "s-later" }],
+    ]);
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-work",
+      section_id: "s-later",
+    });
+    await landed();
+    expect(todoist.commands()).toHaveLength(1);
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      project_id: "p-work",
+      section_id: "s-later",
+    });
+    expect(summary()).not.toContain("put back");
+  });
+
+  it("moves the task to the project the row names, outside any section", async () => {
+    const row = await placed("a", {
+      project_id: "p-work",
+      section_id: "s-later",
+    });
+    // The row keeps naming the section it held, which is not in the new
+    // project, so the task goes to the project's root.
+    marfa.edit(row.id, { project_id: "p-home" });
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args])).toEqual([
+      ["item_move", { id: "a", project_id: "p-home" }],
+    ]);
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-home",
+      section_id: null,
+    });
+    await landed();
+    expect(marfa.byId(row.id).properties["section_id"]).toBeUndefined();
+    expect(marfa.byId(row.id).properties["project_id"]).toBe("p-home");
+    expect(todoist.commands()).toHaveLength(1);
+  });
+
+  it("takes the task out of its section into its project's root when the row clears the section", async () => {
+    const row = await placed("a", {
+      project_id: "p-work",
+      section_id: "s-later",
+    });
+    const { section_id, ...cleared } = marfa.byId(row.id).properties;
+    expect(section_id).toBe("s-later");
+    marfa.rewrite(`${todoist.account}:a`, cleared);
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args])).toEqual([
+      ["item_move", { id: "a", project_id: "p-work" }],
+    ]);
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-work",
+      section_id: null,
+    });
+  });
+
+  it("sends the section, the more specific place, when a row changes its project and its section", async () => {
+    const row = await placed("a", { project_id: "p-work" });
+    marfa.edit(row.id, { project_id: "p-home", section_id: "s-home" });
+    await landed();
+    expect(todoist.commands().map((c) => [c.type, c.args])).toEqual([
+      ["item_move", { id: "a", section_id: "s-home" }],
+    ]);
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-home",
+      section_id: "s-home",
+    });
+  });
+
+  it("sends an edit and a move made in one change as two commands with their own ids, the edit first", async () => {
+    const row = await placed("a", { project_id: "p-work", labels: [] });
+    marfa.edit(row.id, {
+      title: "Task a, filed",
+      labels: ["Home"],
+      project_id: "p-home",
+    });
+    await landed();
+    const sent = todoist.commands();
+    expect(sent.map((c) => [c.type, c.args])).toEqual([
+      ["item_update", { id: "a", content: "Task a, filed", labels: ["Home"] }],
+      ["item_move", { id: "a", project_id: "p-home" }],
+    ]);
+    expect(sent[0]?.uuid).not.toBe(sent[1]?.uuid);
+  });
+
+  it("leaves the task where it is when the row names no project, and when only another field changed", async () => {
+    const row = await placed("a", {
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+    });
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    await landed();
+    expect(todoist.commands().map((c) => c.type)).toEqual(["item_update"]);
+    expect(todoist.commands("item_update")[0]?.args).toEqual({
+      id: "a",
+      content: "Task a, renamed",
+    });
+
+    const { project_id, ...unplaced } = marfa.byId(row.id).properties;
+    expect(project_id).toBe("p-work");
+    marfa.rewrite(`${todoist.account}:a`, unplaced);
+    await landed();
+    expect(todoist.commands()).toHaveLength(1);
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-work",
+      section_id: "s-later",
+    });
+  });
+
+  it("does not undo a move made in Todoist after the connector last read the task, when the row changed something else", async () => {
+    const row = await placed("a", {
+      project_id: "p-work",
+      section_id: "s-later",
+      labels: ["Home"],
+    });
+    marfa.edit(row.id, { title: "Task a, renamed" });
+    let moved = false;
+    todoist.before = (request) => {
+      if (moved || request.path !== "/api/v1/tasks/a") return;
+      moved = true;
+      todoist.edit("a", {
+        project_id: "p-home",
+        section_id: "s-home",
+        labels: ["Work"],
+      });
+    };
+    await landed();
+    expect(moved).toBe(true);
+    expect(todoist.commands().map((c) => [c.type, c.args])).toEqual([
+      ["item_update", { id: "a", content: "Task a, renamed" }],
+    ]);
+    expect(todoist.tasks.get("a")).toMatchObject({
+      content: "Task a, renamed",
+      project_id: "p-home",
+      section_id: "s-home",
+      labels: ["Work"],
+    });
+    todoist.before = undefined;
+    await landed();
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      project_id: "p-home",
+      section_id: "s-home",
+      labels: ["Work"],
+    });
+    expect(todoist.commands()).toHaveLength(1);
+  });
+
+  it("makes a moved subtask a task of its own, and the next read leaves its row holding what Todoist holds", async () => {
+    todoist.put(todoist.task("p", { project_id: "p-work" }));
+    const child = await placed("c", {
+      project_id: "p-work",
+      parent_id: "p",
+    });
+    expect(marfa.byId(child.id).properties["parent_id"]).toBe("p");
+    marfa.edit(child.id, { project_id: "p-home", section_id: "s-home" });
+    await landed();
+    expect(todoist.commands("item_move").map((c) => c.args)).toEqual([
+      { id: "c", section_id: "s-home" },
+    ]);
+    expect(todoist.tasks.get("c")?.parent_id).toBeNull();
+    await landed();
+    expect(marfa.byId(child.id).properties["parent_id"]).toBeUndefined();
+    expect(marfa.byId(child.id).properties).toMatchObject({
+      project_id: "p-home",
+      section_id: "s-home",
+    });
+    expect(summary()).not.toContain("put back");
+    expect(todoist.commands()).toHaveLength(1);
+  });
+
+  it("is decided by the later change when a project is changed on both sides, and names the field that lost", async () => {
+    const won = await placed("a", { project_id: "p-work" });
+    todoist.now = "2026-09-24T12:00:00.000000Z";
+    todoist.edit("a", { project_id: "p-other" });
+    marfa.edit(won.id, { project_id: "p-home" });
+    await landed();
+    expect(todoist.commands("item_move").map((c) => c.args)).toEqual([
+      { id: "a", project_id: "p-home" },
+    ]);
+    expect(todoist.tasks.get("a")?.project_id).toBe("p-home");
+    expect(summary()).toContain(
+      `the change made in Marfa to project_id on ${won.id} is the later one, so the vendor's is not written and Marfa's is carried back`,
+    );
+
+    const lost = await placed("b", { project_id: "p-work" });
+    todoist.now = "2026-09-26T12:00:00.000000Z";
+    todoist.edit("b", { project_id: "p-other" });
+    marfa.edit(lost.id, { project_id: "p-home" });
+    await landed();
+    expect(todoist.commands("item_move")).toHaveLength(1);
+    expect(todoist.tasks.get("b")?.project_id).toBe("p-other");
+    expect(marfa.byId(lost.id).properties["project_id"]).toBe("p-other");
+    expect(summary()).toContain(
+      `the vendor's change to project_id on ${lost.id} is the later one, so the change made in Marfa is not carried back`,
+    );
+  });
+
+  it("sends the same move again, under the same id, after a run Todoist did not answer for", async () => {
+    const row = await placed("a", { project_id: "p-work" });
+    marfa.edit(row.id, { project_id: "p-home", labels: ["Home"] });
+    todoist.answerNothing("item_move");
+    await landed();
+    expect(summary()).toContain(
+      "1 change waits: Todoist is not taking changes for now: no answer for the command",
+    );
+    expect(todoist.tasks.get("a")?.labels).toEqual(["Home"]);
+    expect(todoist.tasks.get("a")?.project_id).toBe("p-work");
+    await landed();
+    const moves = todoist.commands("item_move");
+    expect(moves).toHaveLength(2);
+    expect(moves[1]?.uuid).toBe(moves[0]?.uuid);
+    expect(todoist.commands("item_update")).toHaveLength(1);
+    expect(todoist.tasks.get("a")?.project_id).toBe("p-home");
+  });
+
+  it("names the row when Todoist has no project or section to move the task into, keeps the labels it set, and moves on the next change", async () => {
+    todoist.projects = new Set(["p-work", "p-home"]);
+    const row = await placed("a", { project_id: "p-work" });
+    marfa.edit(row.id, { project_id: "p-gone", labels: ["Home"] });
+    await landed();
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist has no project p-gone to move task a into`,
+    );
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-work",
+      labels: ["Home"],
+    });
+    // The labels are settled by now, so the change that remains is the move
+    // alone, tried once more; the refusal then stands.
+    await landed();
+    await landed();
+    expect(todoist.commands("item_move")).toHaveLength(2);
+    expect(todoist.commands("item_update")).toHaveLength(1);
+
+    marfa.edit(row.id, { project_id: "p-work", section_id: "s-gone" });
+    await landed();
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist has no section s-gone to move task a into`,
+    );
+
+    marfa.edit(row.id, { project_id: "p-home", section_id: "s-home" });
+    await landed();
+    expect(todoist.tasks.get("a")).toMatchObject({
+      project_id: "p-home",
+      section_id: "s-home",
+    });
+    expect(marfa.states.get("todoist")?.["conditions"]).toEqual({});
+  });
+
+  it("names the row when Todoist refuses a label change, and sends no move after it", async () => {
+    const row = await placed("a", { project_id: "p-work" });
+    marfa.edit(row.id, { project_id: "p-home", labels: ["Bad label"] });
+    todoist.scriptCommand("item_update", {
+      error_code: 20,
+      error: "Invalid argument value",
+      http_code: 400,
+    });
+    await landed();
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist refused updating task a: Invalid argument value (20)`,
+    );
+    expect(todoist.commands("item_move")).toEqual([]);
+    expect(todoist.tasks.get("a")?.project_id).toBe("p-work");
+  });
+
+  it("makes a row's task in the Inbox when its project is gone, and does not then try to move it", async () => {
+    todoist.projects = new Set(["inbox"]);
+    const row = personsRow({
+      title: "Filed away",
+      project_id: "p-gone",
+      section_id: "s-later",
+      labels: ["Home"],
+      status: "pending",
+    });
+    await landed();
+    expect(todoist.commands("item_move")).toEqual([]);
+    expect(todoist.commands("item_update")).toEqual([]);
+    expect(
+      todoist.tasks.get(String(marfa.byId(row.id).properties["todoist_id"])),
+    ).toMatchObject({ project_id: "inbox", labels: ["Home"] });
+    expect(summary()).not.toContain("refused");
   });
 });
 

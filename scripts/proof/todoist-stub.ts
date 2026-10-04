@@ -51,7 +51,11 @@ type CommandStatus = "ok" | Record<string, unknown>;
 // comes back on the next sync.
 export class TodoistStub {
   projects: Set<string> | undefined;
-  sections: Set<string> | undefined;
+  // Each section's project, so a move into a section lands in its project.
+  sections: Map<string, string> | undefined;
+  // Called with each request as it arrives, before it is answered, so a test
+  // can have Todoist change between the connector's reading and its writing.
+  before: ((request: ReceivedRequest) => void) | undefined;
   readonly tasks = new Map<string, StubTask>();
   readonly received: ReceivedRequest[] = [];
   account = "1001";
@@ -231,6 +235,7 @@ export class TodoistStub {
       }
     }
     this.received.push(record);
+    this.before?.(record);
     const refusing = this.refusals.findIndex(
       (refusal) => refusal.when === undefined || refusal.when(record),
     );
@@ -410,15 +415,16 @@ export class TodoistStub {
         }
         this.made += 1;
         const made = `made-${String(this.made)}`;
-        const fields = this.fields(args);
+        const fields: Partial<StubTask> = this.fields(args);
+        if (typeof project === "string") fields.project_id = project;
+        const section = args["section_id"];
         // Todoist makes a task naming a section deleted since at the root of
         // its project rather than refusing it.
-        if (
-          typeof fields.section_id === "string" &&
-          this.sections !== undefined &&
-          !this.sections.has(fields.section_id)
-        ) {
-          fields.section_id = null;
+        if (typeof section === "string") {
+          fields.section_id =
+            this.sections === undefined || this.sections.has(section)
+              ? section
+              : null;
         }
         this.tasks.set(
           made,
@@ -434,9 +440,16 @@ export class TodoistStub {
       case "item_update": {
         const task = id === undefined ? undefined : this.tasks.get(id);
         if (task === undefined || task.is_deleted) return { status: notFound };
+        // `item_update` takes no project or section: a task moves only
+        // through `item_move` (seen live in October 2026).
         Object.assign(task, this.fields(args));
         this.touch(task.id);
         return { status: "ok" };
+      }
+      case "item_move": {
+        const task = id === undefined ? undefined : this.tasks.get(id);
+        if (task === undefined || task.is_deleted) return { status: notFound };
+        return { status: this.move(task, args) };
       }
       case "item_close": {
         const task = id === undefined ? undefined : this.tasks.get(id);
@@ -486,6 +499,66 @@ export class TodoistStub {
     }
   }
 
+  // Exactly one destination, as Todoist takes. A move to a project or a
+  // section leaves the task a task of its own at the end of that place, and
+  // one to the project it is in takes it out of its section (seen live in
+  // October 2026). A project or section Todoist does not hold, or one
+  // deleted, is refused as not found; an archived project takes the task.
+  private move(task: StubTask, args: Record<string, unknown>): CommandStatus {
+    const named = ["parent_id", "section_id", "project_id"].filter(
+      (key) => typeof args[key] === "string",
+    );
+    if (named.length !== 1) {
+      return {
+        error: "Invalid argument value",
+        error_code: 20,
+        error_extra: {
+          argument: "args",
+          expected: `Value error, ${named.length === 0 ? "One" : "Only one"} of parent_id, section_id, project_id must be defined`,
+        },
+        error_tag: "INVALID_ARGUMENT_VALUE",
+        http_code: 400,
+      };
+    }
+    const project = args["project_id"];
+    const section = args["section_id"];
+    if (typeof project === "string") {
+      if (this.projects !== undefined && !this.projects.has(project)) {
+        return {
+          error: "Project not found",
+          error_code: 21,
+          error_extra: {},
+          error_tag: "PROJECT_NOT_FOUND",
+          http_code: 400,
+        };
+      }
+      this.edit(task.id, {
+        project_id: project,
+        section_id: null,
+        parent_id: null,
+      });
+    } else if (typeof section === "string") {
+      const home = this.sections?.get(section);
+      if (this.sections !== undefined && home === undefined) {
+        return {
+          error: "Section not found",
+          error_code: 58,
+          error_extra: {},
+          error_tag: "SECTION_NOT_FOUND",
+          http_code: 400,
+        };
+      }
+      this.edit(task.id, {
+        section_id: section,
+        parent_id: null,
+        ...(home !== undefined && { project_id: home }),
+      });
+    } else {
+      throw new Error("the stub does not move a task under another task");
+    }
+    return "ok";
+  }
+
   private fields(args: Record<string, unknown>): Partial<StubTask> {
     const out: Partial<StubTask> = {};
     if (typeof args["content"] === "string") out.content = args["content"];
@@ -493,12 +566,6 @@ export class TodoistStub {
       out.description = args["description"];
     }
     if (typeof args["priority"] === "number") out.priority = args["priority"];
-    if (typeof args["project_id"] === "string") {
-      out.project_id = args["project_id"];
-    }
-    if (typeof args["section_id"] === "string") {
-      out.section_id = args["section_id"];
-    }
     if (Array.isArray(args["labels"])) out.labels = args["labels"] as string[];
     if ("due" in args) {
       const due = args["due"];
