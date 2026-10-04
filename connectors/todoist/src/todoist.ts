@@ -46,7 +46,6 @@ export interface SyncAnswer {
   projects?: TodoistProject[];
   user?: {
     id?: unknown;
-    inbox_project_id?: unknown;
     tz_info?: { timezone?: unknown };
     lang?: unknown;
     features?: { dateist_lang?: unknown } | null;

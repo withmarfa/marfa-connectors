@@ -2237,6 +2237,30 @@ describe("labels, project and section changed in Marfa", () => {
       section_id: null,
       checked: true,
     });
+    expect(todoist.commands("item_move")).toEqual([]);
+    expect(summary()).not.toContain("refused");
+  });
+
+  it("moves a task made and finished on a later run when its row changes project afterwards", async () => {
+    todoist.projects = new Set(["inbox", "p-work", "p-home"]);
+    const row = personsRow({
+      title: "Filed, done",
+      project_id: "p-work",
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    todoist.answerNothing("item_close");
+    await landed();
+    await landed();
+    expect(todoist.tasks.get("made-1")).toMatchObject({
+      project_id: "p-work",
+      checked: true,
+    });
+    expect(todoist.commands("item_move")).toEqual([]);
+
+    marfa.edit(row.id, { project_id: "p-home" });
+    await landed();
+    expect(todoist.tasks.get("made-1")?.project_id).toBe("p-home");
   });
 
   it("still names a project that is gone when the task sits in another project", async () => {
