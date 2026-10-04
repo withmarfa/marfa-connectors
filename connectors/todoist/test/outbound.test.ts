@@ -1104,6 +1104,144 @@ describe("transitions over runs", () => {
     expect(summary()).not.toContain("refused");
   });
 
+  it("declines bringing back a row whose project Todoist archived, naming the project, and leaves it as the person set it", async () => {
+    todoist.put(todoist.task("a", { project_id: "p-work" }));
+    todoist.project("p-work").name = "Work";
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    todoist.archiveProject("p-work");
+    await landed();
+    expect(marfa.byId(row.id).state).toBe("archived");
+    marfa.transition(row.id, "active");
+    await landed();
+    expect(summary()).toContain(
+      "Todoist's project Work is archived, so task a stays there; unarchive the project in Todoist to bring back its tasks",
+    );
+    expect(marfa.byId(row.id).state).toBe("active");
+    await landed();
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(todoist.commands()).toEqual([]);
+  });
+
+  it("brings a row back when Todoist unarchives its project, and declines bringing back one whose project was deleted", async () => {
+    todoist.put(
+      todoist.task("a", { project_id: "p-work" }),
+      todoist.task("b", { project_id: "p-home" }),
+    );
+    await landed();
+    const a = marfa.row(`${todoist.account}:a`);
+    const b = marfa.row(`${todoist.account}:b`);
+    todoist.archiveProject("p-work");
+    todoist.deleteProject("p-home");
+    await landed();
+    expect([marfa.byId(a.id).state, marfa.byId(b.id).state]).toEqual([
+      "archived",
+      "archived",
+    ]);
+    todoist.unarchiveProject("p-work");
+    await landed();
+    expect(marfa.byId(a.id).state).toBe("active");
+    expect(
+      todoist.received
+        .filter((request) => request.syncToken !== undefined)
+        .map((request) => request.resources),
+    ).toContainEqual(["items", "projects", "user"]);
+    marfa.transition(b.id, "active");
+    await landed();
+    expect(summary()).toContain(
+      "Todoist no longer has project p-home, deleted or left by the account, so task b cannot be brought back",
+    );
+    expect(marfa.byId(b.id).state).toBe("active");
+    expect(todoist.commands()).toEqual([]);
+  });
+
+  it("keeps a person's edit made with the restore of a row whose project Todoist archived, and names the project", async () => {
+    todoist.put(todoist.task("a", { project_id: "p-work" }));
+    todoist.project("p-work").name = "Work";
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    todoist.archiveProject("p-work");
+    await landed();
+    marfa.transition(row.id, "active");
+    marfa.edit(row.id, { title: "Edited after restoring" });
+    await landed();
+    expect(summary()).toContain(
+      "Todoist's project Work is archived, so task a stays there; unarchive the project in Todoist to bring back its tasks",
+    );
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(marfa.byId(row.id).properties["title"]).toBe(
+      "Edited after restoring",
+    );
+    await landed();
+    expect(marfa.byId(row.id).properties["title"]).toBe(
+      "Edited after restoring",
+    );
+    expect(todoist.commands()).toEqual([]);
+  });
+
+  it("keeps a person's edit made with the restore of a row whose project Todoist no longer has", async () => {
+    todoist.put(todoist.task("b", { project_id: "p-home" }));
+    await landed();
+    const row = marfa.row(`${todoist.account}:b`);
+    todoist.deleteProject("p-home");
+    await landed();
+    marfa.transition(row.id, "active");
+    marfa.edit(row.id, { title: "Edited after restoring" });
+    await landed();
+    expect(summary()).toContain(
+      "Todoist no longer has project p-home, deleted or left by the account, so task b cannot be brought back",
+    );
+    expect(marfa.byId(row.id).properties["title"]).toBe(
+      "Edited after restoring",
+    );
+    expect(marfa.byId(row.id).state).toBe("active");
+    expect(todoist.commands()).toEqual([]);
+  });
+
+  it("refuses making a task again in a project Todoist archived since it was deleted, naming the project", async () => {
+    todoist.put(todoist.task("a", { project_id: "p-work" }));
+    todoist.project("p-work").name = "Work";
+    await landed();
+    const row = marfa.row(`${todoist.account}:a`);
+    todoist.delete("a");
+    todoist.archiveProject("p-work");
+    await landed();
+    expect(marfa.byId(row.id).state).toBe("archived");
+    marfa.transition(row.id, "active");
+    await landed();
+    expect(summary()).toContain(
+      "Todoist's project Work is archived, so a task cannot be created in it; unarchive the project in Todoist, or move the row to another project",
+    );
+    expect(summary()).not.toContain("creating a task");
+    expect(marfa.byId(row.id).state).toBe("active");
+  });
+
+  it("refuses making a row that names an archived project, naming the project", async () => {
+    todoist.project("p-work").name = "Work";
+    todoist.archiveProject("p-work");
+    const row = personsRow({ title: "New", project_id: "p-work" });
+    await landed();
+    expect(summary()).toContain(
+      "Todoist's project Work is archived, so a task cannot be created in it; unarchive the project in Todoist, or move the row to another project",
+    );
+    expect(summary()).not.toContain("creating a task");
+    expect(marfa.byId(row.id).properties["todoist_id"]).toBeUndefined();
+  });
+
+  it("names the project by its id when Todoist refuses a create for an archived project it does not describe", async () => {
+    todoist.scriptCommand("item_add", {
+      error_code: 588,
+      error: "Project is archived",
+      error_tag: "PROJECT_ARCHIVED",
+      http_code: 403,
+    });
+    personsRow({ title: "New", project_id: "p-lost" });
+    await landed();
+    expect(summary()).toContain(
+      "Todoist's project p-lost is archived, so a task cannot be created in it",
+    );
+  });
+
   it("makes the task again when an archived row is brought back after Todoist deleted it", async () => {
     const row = await synced("a");
     todoist.delete("a");
@@ -2431,7 +2569,7 @@ describe("a recurrence", () => {
       await landed();
       const accounts = todoist.received
         .slice(before)
-        .filter((request) => request.resources === '["user"]');
+        .filter((request) => JSON.stringify(request.resources) === '["user"]');
       expect(accounts).toHaveLength(1);
       expect(todoist.commands("item_update").at(-1)?.args["due"]).toEqual({
         string: "every week",

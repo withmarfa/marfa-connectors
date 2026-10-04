@@ -12,8 +12,10 @@ import {
   describeError,
   dueFor,
   dueOf,
+  getProject,
   getTask,
   langOf,
+  isGone,
   namedZoneOf,
   priorityFor,
   recurrenceOf,
@@ -26,6 +28,7 @@ import {
   type Command,
   type CommandAnswer,
   type CommandError,
+  type ProjectAnswer,
   type SyncAnswer,
   type TaskAnswer,
   type TodoistItem,
@@ -289,6 +292,10 @@ function isSectionGone(answer: CommandError | undefined): boolean {
   return answer?.error_code === 58 || answer?.error_tag === "SECTION_NOT_FOUND";
 }
 
+function isProjectArchived(answer: CommandError | undefined): boolean {
+  return answer?.error_code === 588 || answer?.error_tag === "PROJECT_ARCHIVED";
+}
+
 const scope = "Todoist";
 
 // Sent again: a rate limit held past every resend, a server error, or no
@@ -428,9 +435,22 @@ async function remade(
   const todoist = new Door(base, context.env.TODOIST_API_TOKEN, context.signal);
   const found = await todoist.task(taskId);
   if (found === "forbidden" || found === "unknown") {
+    // Todoist answers a task of a deleted project as one it never had.
+    if (found === "unknown") {
+      await declineShelved(
+        item.properties["project_id"],
+        taskId,
+        todoist,
+        context,
+        change,
+      );
+    }
     throw new Refused(unreached(taskId, found));
   }
-  if (found !== "deleted") return false;
+  if (found !== "deleted") {
+    await declineShelved(found.project_id, taskId, todoist, context, change);
+    return false;
+  }
   const timeZone = await timeZoneFor(context, todoist);
   const lang = langFor(context, todoist);
   const made = await add(
@@ -447,6 +467,60 @@ async function remade(
   await sync(item, change.kind, new Set(), made, task, timeZone, lang, todoist);
   await readBack(item, undefined, made, task.due, timeZone, todoist);
   return true;
+}
+
+// The run archives the rows of a project once, when it goes, so a row
+// restored in Marfa stays restored, with its reason named. A restore that
+// came with an edit is refused rather than declined, since a decline puts
+// the edit back, and Todoist takes the edit of a task in an archived project.
+async function declineShelved(
+  projectId: unknown,
+  taskId: string,
+  todoist: Door,
+  context: WatchContext<OutboundEnv>,
+  change: Change,
+): Promise<void> {
+  if (typeof projectId !== "string") return;
+  const inUse = context.state.get("projects");
+  if (Array.isArray(inUse) && inUse.includes(projectId)) return;
+  const project = await todoist.project(projectId);
+  if (project === "unknown") {
+    throw shelved(
+      change,
+      `Todoist no longer has project ${projectId}, deleted or left by the account, so task ${taskId} cannot be brought back`,
+    );
+  }
+  if (project === "forbidden" || !isGone(project)) return;
+  throw shelved(
+    change,
+    `Todoist's project ${project.name ?? projectId} is archived, so task ${taskId} stays there; unarchive the project in Todoist to bring back its tasks`,
+  );
+}
+
+function shelved(change: Change, message: string): Error {
+  return change.changed.size === 0
+    ? new Declined(message)
+    : new Refused(message);
+}
+
+// The project's name where Todoist still answers for it, else its id.
+async function archivedProject(
+  projectId: string,
+  todoist: Door,
+  signal: AbortSignal,
+): Promise<Refused> {
+  let name = projectId;
+  try {
+    const project = await todoist.project(projectId);
+    if (typeof project === "object" && project.name !== undefined) {
+      name = project.name;
+    }
+  } catch (error) {
+    if (signal.aborted) throw error;
+  }
+  return new Refused(
+    `Todoist's project ${name} is archived, so a task cannot be created in it; unarchive the project in Todoist, or move the row to another project`,
+  );
 }
 
 async function held(
@@ -685,7 +759,12 @@ async function add(
     status = answer.sync_status[inboxUuid];
     tempId = inboxTemp;
   }
-  if (status !== "ok") throw notTaken(status, "creating a task");
+  if (status !== "ok") {
+    if (isProjectArchived(status) && where.project_id !== undefined) {
+      throw await archivedProject(where.project_id, todoist, context.signal);
+    }
+    throw notTaken(status, "creating a task");
+  }
   const taskId = answer.temp_id_mapping?.[tempId];
   if (taskId === undefined) {
     throw new Refused(
@@ -718,6 +797,10 @@ class Door {
 
   task(id: string): Promise<TaskAnswer> {
     return getTask(this.base, this.token, id, this.signal);
+  }
+
+  project(id: string): Promise<ProjectAnswer> {
+    return getProject(this.base, this.token, id, this.signal);
   }
 
   user(): Promise<SyncAnswer["user"]> {

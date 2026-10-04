@@ -30,11 +30,20 @@ export interface TodoistItem {
   updated_at?: string;
 }
 
+export interface TodoistProject {
+  id: string;
+  name?: string;
+  inbox_project?: boolean;
+  is_archived?: boolean;
+  is_deleted?: boolean;
+}
+
 export interface SyncAnswer {
   sync_token: string;
   /** Todoist may answer a delta with every active task, deletions left out. */
   full_sync?: boolean;
   items: TodoistItem[];
+  projects?: TodoistProject[];
   user?: {
     id?: unknown;
     inbox_project_id?: unknown;
@@ -45,7 +54,7 @@ export interface SyncAnswer {
 }
 
 export const firstSync = "*";
-export const syncResources = ["items", "user"] as const;
+export const syncResources = ["items", "projects", "user"] as const;
 export const defaultBase = "https://api.todoist.com";
 const requestTimeoutMs = 60_000;
 const longestWaitMs = 60_000;
@@ -187,6 +196,73 @@ export async function sync(
   return (await response.json()) as SyncAnswer;
 }
 
+/** Every project the account holds, from a full sync of projects alone. */
+export async function projects(
+  base: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<TodoistProject[] | undefined> {
+  const response = await request(
+    base,
+    token,
+    "/api/v1/sync",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        sync_token: firstSync,
+        resource_types: JSON.stringify(["projects"]),
+      }),
+    },
+    signal,
+  );
+  if (!response.ok) {
+    throw new Error(`Todoist's Sync API answered ${String(response.status)}`);
+  }
+  return ((await response.json()) as SyncAnswer).projects;
+}
+
+/**
+ * The project ids a full list names as in use, or `undefined` for a list
+ * that cannot be whole: every account has its Inbox.
+ */
+export function inUse(
+  list: readonly TodoistProject[] | undefined,
+): Set<string> | undefined {
+  if (list?.some((p) => p.inbox_project === true) !== true) {
+    return undefined;
+  }
+  return new Set(list.filter((p) => !isGone(p)).map((p) => p.id));
+}
+
+export function isGone(project: TodoistProject): boolean {
+  return project.is_archived === true || project.is_deleted === true;
+}
+
+export type ProjectAnswer = TodoistProject | "unknown" | "forbidden";
+
+export async function getProject(
+  base: string,
+  token: string,
+  id: string,
+  signal: AbortSignal,
+): Promise<ProjectAnswer> {
+  const response = await request(
+    base,
+    token,
+    `/api/v1/projects/${encodeURIComponent(id)}`,
+    { method: "GET", forbiddenIsAnswer: true },
+    signal,
+  );
+  if (response.status === 404) return "unknown";
+  if (response.status === 403) return "forbidden";
+  if (!response.ok) {
+    throw new Error(
+      `Todoist answered ${String(response.status)} for project ${id}`,
+    );
+  }
+  return (await response.json()) as TodoistProject;
+}
+
 export async function user(
   base: string,
   token: string,
@@ -222,6 +298,7 @@ export async function completed(
   token: string,
   now: Date,
   signal: AbortSignal,
+  projectId?: string,
 ): Promise<TodoistItem[] | "forbidden"> {
   const instant = (at: number): string =>
     new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -229,6 +306,7 @@ export async function completed(
     since: instant(now.getTime() - completedWindowMs),
     until: instant(now.getTime()),
     limit: "200",
+    ...(projectId !== undefined && { project_id: projectId }),
   });
   const items: TodoistItem[] = [];
   for (;;) {
