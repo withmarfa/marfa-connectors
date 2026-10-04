@@ -5,6 +5,7 @@ import {
 } from "node:http";
 import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { CONTRACT_VERSION } from "@withmarfa/client";
 
 export interface Row {
@@ -114,6 +115,70 @@ function changedKeys(
   return changed;
 }
 
+/** The members of a type a key holding `metadata.types:write` and not
+ *  `schema.write` may change, as marfa's `evolutionOf`
+ *  (packages/server/src/routes/_type-evolution.ts) leaves them free. */
+const freeMembers = new Set([
+  "id",
+  "label",
+  "description",
+  "display_hints",
+  "version",
+  "fields",
+]);
+
+function plain(value: unknown): unknown {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function fieldsOf(type: Record<string, unknown>): Record<string, unknown> {
+  return (type["fields"] ?? {}) as Record<string, unknown>;
+}
+
+/** What replacing `stored` with `next` does, as `evolutionOf` sorts it: the
+ *  members and fields that need `schema.write`, and the optional fields it
+ *  adds. */
+function evolutionOf(
+  stored: Record<string, unknown>,
+  next: Record<string, unknown>,
+): { needsSchemaWrite: string[]; additions: string[] } {
+  const needsSchemaWrite: string[] = [];
+  const additions: string[] = [];
+  for (const member of new Set([
+    ...Object.keys(stored),
+    ...Object.keys(next),
+  ])) {
+    if (freeMembers.has(member)) continue;
+    if (!isDeepStrictEqual(plain(stored[member]), plain(next[member]))) {
+      needsSchemaWrite.push(member);
+    }
+  }
+  const shape = (field: unknown): unknown => {
+    const rest = { ...(field as Record<string, unknown>) };
+    Reflect.deleteProperty(rest, "description");
+    return plain(rest);
+  };
+  const before = fieldsOf(stored);
+  const after = fieldsOf(next);
+  for (const [name, field] of Object.entries(before)) {
+    if (
+      !Object.hasOwn(after, name) ||
+      !isDeepStrictEqual(shape(field), shape(after[name]))
+    ) {
+      needsSchemaWrite.push(`fields.${name}`);
+    }
+  }
+  for (const [name, field] of Object.entries(after)) {
+    if (Object.hasOwn(before, name)) continue;
+    if ((field as { required?: unknown }).required === true) {
+      needsSchemaWrite.push(`fields.${name}`);
+    } else {
+      additions.push(name);
+    }
+  }
+  return { needsSchemaWrite, additions };
+}
+
 export class ScriptedServer {
   readonly key = "marfa_k1_scripted";
   readonly source: string;
@@ -168,7 +233,16 @@ export class ScriptedServer {
   uploads = 0;
   /** Mirrors the server's cap of 50 edges per type in a lookup. */
   edgePageCap = 50;
+  /** The types as `GET /types/{id}` answers them: resolved across the
+   *  parent chain. A test may set one directly. */
   types = new Map<string, Record<string, unknown>>();
+  /** What a type holds itself, which a replacement is compared with; it
+   *  stands only while the type answered is the one it was made with, so a
+   *  test setting `types` directly is not judged against an older own. */
+  readonly owned = new Map<
+    string,
+    { served: Record<string, unknown>; own: Record<string, unknown> }
+  >();
   runs: Run[] = [];
   heartbeats = 0;
   registrations = 0;
@@ -1123,13 +1197,14 @@ export class ScriptedServer {
         refuse(409, "type_already_exists");
         return;
       }
-      this.types.set(id, input);
-      send(201, { type: input });
+      send(201, { type: this.store(input) });
       return;
     }
     if (method === "PUT" && parts[0] === "types" && parts[1] !== undefined) {
       const id = parts[1];
-      if (!(this.grants.permissions ?? []).includes("schema.write")) {
+      const schema = (this.grants.permissions ?? []).includes("schema.write");
+      const registers = this.grants.metadata_permissions?.["types"] === "write";
+      if (!schema && !registers) {
         refuse(403, "forbidden", "Missing schema.write", {
           required_scope: "schema.write",
         });
@@ -1143,13 +1218,34 @@ export class ScriptedServer {
         refuse(403, "type_not_permitted", `The key may not write ${id}`);
         return;
       }
-      if (!this.types.has(id)) {
+      const served = this.types.get(id);
+      if (served === undefined) {
         refuse(404, "type_not_found");
         return;
       }
-      const type = { ...input, id, version: input["version"] ?? 0 };
-      this.types.set(id, type);
-      send(200, { type });
+      if (!schema) {
+        const { needsSchemaWrite, additions } = evolutionOf(
+          this.ownOf(id, served),
+          input,
+        );
+        const held = this.holding(id, additions);
+        const changes = [
+          ...needsSchemaWrite,
+          ...held.map((name) => `fields.${name}`),
+        ].sort();
+        if (changes.length > 0) {
+          refuse(
+            403,
+            "forbidden",
+            `Changing ${changes.join(", ")} requires schema.write`,
+            { required_scope: "schema.write", changes },
+          );
+          return;
+        }
+      }
+      send(200, {
+        type: this.store({ ...input, id, version: input["version"] ?? 0 }),
+      });
       return;
     }
     if (method === "GET" && url.pathname === "/events") {
@@ -1667,6 +1763,76 @@ export class ScriptedServer {
           ? this.tombstonesOf(this.tombstoneKeys(type, input))
           : [],
     };
+  }
+
+  /** Stores a type by what it holds itself, as the server does, and answers
+   *  it as `GET /types/{id}` serves it: the parent's fields, roles and
+   *  policies resolved under its own. */
+  store(own: Record<string, unknown>): Record<string, unknown> {
+    const id = String(own["id"]);
+    const parent = this.types.get(String(own["parent"]));
+    let served = own;
+    if (parent !== undefined) {
+      const roles = [
+        ...new Set([
+          ...((parent["roles"] ?? []) as string[]),
+          ...((own["roles"] ?? []) as string[]),
+        ]),
+      ];
+      const versions = {
+        ...(parent["version_policy"] as object | undefined),
+        ...(own["version_policy"] as object | undefined),
+      };
+      const above = (parent["merge_policy"] ?? {}) as Record<string, unknown>;
+      const below = (own["merge_policy"] ?? {}) as Record<string, unknown>;
+      const merging =
+        Object.keys(above).length > 0 || Object.keys(below).length > 0;
+      served = {
+        ...own,
+        fields: { ...fieldsOf(parent), ...fieldsOf(own) },
+        ...(roles.length > 0 && { roles }),
+        ...(Object.keys(versions).length > 0 && { version_policy: versions }),
+        ...(merging && {
+          merge_policy: {
+            ...above,
+            ...below,
+            fields: {
+              ...(above["fields"] as object | undefined),
+              ...(below["fields"] as object | undefined),
+            },
+          },
+        }),
+      };
+    }
+    this.types.set(id, served);
+    this.owned.set(id, { served, own });
+    return served;
+  }
+
+  private ownOf(
+    id: string,
+    served: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const held = this.owned.get(id);
+    return held?.served === served ? held.own : served;
+  }
+
+  /** The names, of those given, that a row of the type or of a type
+   *  inheriting from it holds a value under, in any lifecycle state. */
+  private holding(id: string, names: readonly string[]): string[] {
+    const reaches = (type: string, seen = new Set<string>()): boolean => {
+      if (type === id) return true;
+      if (seen.has(type)) return false;
+      seen.add(type);
+      const served = this.types.get(type);
+      const parent = served && this.ownOf(type, served)["parent"];
+      return typeof parent === "string" && reaches(parent, seen);
+    };
+    return names.filter((name) =>
+      this.rows.some(
+        (row) => reaches(row.type) && Object.hasOwn(row.properties, name),
+      ),
+    );
   }
 
   /** What the key holds on a type, as marfa's `resolveTypePermission`
