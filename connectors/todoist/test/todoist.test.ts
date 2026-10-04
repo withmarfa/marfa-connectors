@@ -13,6 +13,7 @@ import {
   entryOf,
   langOf,
   readShape,
+  taskFields,
   timezoneOf,
   type SyncAnswer,
   type TodoistItem,
@@ -597,7 +598,7 @@ describe("the connector, run as a process", () => {
       timezone: "Europe/London",
       projects: ["p1"],
       sync_token: "t1",
-      read_shape: readShape(),
+      read_shape: readShape(taskFields),
     });
   });
 
@@ -648,7 +649,7 @@ describe("the connector, run as a process", () => {
       timezone: "Europe/London",
       projects: ["p1"],
       sync_token: "t2",
-      read_shape: readShape(),
+      read_shape: readShape(taskFields),
     });
   });
 
@@ -701,7 +702,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       projects: ["p1"],
       sync_token: "t1",
-      read_shape: readShape(),
+      read_shape: readShape(taskFields),
     });
   });
 
@@ -728,7 +729,7 @@ describe("the connector, run as a process", () => {
       timezone: "Europe/London",
       projects: ["p1"],
       sync_token: "t1",
-      read_shape: readShape(),
+      read_shape: readShape(taskFields),
     });
   });
 
@@ -943,7 +944,7 @@ describe("the connector, run as a process", () => {
     };
     expect((await once()).code).toBe(0);
     expect(marfa.row("2671355:a").properties["recurrence"]).toBeUndefined();
-    const shape = readShape();
+    const shape = readShape(taskFields);
     expect(state()["read_shape"]).toBe(shape);
     // As a connector that read fewer fields left it: the state names no
     // shape, or another one.
@@ -980,6 +981,73 @@ describe("the connector, run as a process", () => {
       completed_at: "2026-10-02T10:00:00.000Z",
     });
     expect(state()).toMatchObject({ sync_token: "t-delta-3" });
+  });
+
+  it("syncs in full once when a narrowing lifts, so rows held without recurrence gain it", async () => {
+    // The kit runs without a field the key may not add to the type, and
+    // writes it once the type has it: the fields the connector declares are
+    // the same throughout, but what it writes is not, and a delta brings a
+    // recurring task only when it changes in Todoist.
+    marfa.types.set("todoist.task", {
+      ...served,
+      fields: Object.fromEntries(
+        Object.entries(served.fields).filter(([name]) => name !== "recurrence"),
+      ),
+    });
+    let fulls = 0;
+    let deltas = 0;
+    answer = (syncToken) => {
+      const user = { id: "2671355", tz_info: { timezone: "Europe/London" } };
+      if (syncToken === "*") {
+        fulls += 1;
+        return {
+          sync_token: `t-full-${String(fulls)}`,
+          items: [task("a", { due: fixedSent })],
+          user,
+        };
+      }
+      deltas += 1;
+      return { sync_token: `t-delta-${String(deltas)}`, items: [], user };
+    };
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["title"]).toBe("Task a");
+    expect(marfa.row("2671355:a").properties["recurrence"]).toBeUndefined();
+    const narrowed = state()["read_shape"];
+
+    // Still narrowed: nothing about what is written has changed.
+    expect((await once()).code).toBe(0);
+    expect(state()["read_shape"]).toBe(narrowed);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full-1",
+    ]);
+
+    marfa.types.set("todoist.task", served);
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full-1",
+      "t-delta-1",
+      "*",
+    ]);
+    expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+      "every day at 2pm",
+    );
+    expect(state()["read_shape"]).not.toBe(narrowed);
+    expect(state()["read_shape"]).toBe(readShape(taskFields));
+
+    // One full sync only.
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken).slice(4)).toEqual([
+      "t-delta-2",
+    ]);
+    expect(fulls).toBe(2);
+  });
+
+  it("reads a different shape for the fields it writes, whatever it declares", () => {
+    const narrowed = taskFields.filter((field) => field !== "recurrence");
+    expect(readShape(taskFields)).toBe(readShape([...taskFields]));
+    expect(readShape(narrowed)).not.toBe(readShape(taskFields));
   });
 
   it("names an unknown zone even with one held, and reads in the one held", async () => {

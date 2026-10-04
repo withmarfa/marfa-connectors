@@ -745,12 +745,15 @@ export const taskFields = [
 ] as const;
 
 /**
- * Names what a sync reads, so a connector that reads a new field or resource
- * syncs in full once and fills the rows it already holds.
+ * Names what a sync reads and the kit writes, so a run that reads or writes a
+ * new field or resource syncs in full once and fills the rows it already
+ * holds. The fields written are those declared less any the kit leaves out
+ * while the key may not add them to the type, so lifting that narrowing
+ * changes the shape.
  */
-export function readShape(): string {
+export function readShape(written: readonly string[]): string {
   return createHash("sha256")
-    .update(JSON.stringify({ fields: taskFields, resources: syncResources }))
+    .update(JSON.stringify({ fields: written, resources: syncResources }))
     .digest("hex")
     .slice(0, 16);
 }

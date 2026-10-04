@@ -46,7 +46,17 @@ const connector = defineConnector({
   ],
   env: outboundEnv,
   carries: (env) => (readOnly(env) ? [] : [taskType]),
-  async run({ env, signal, state, log, hints, upsert, archive, held }) {
+  async run({
+    env,
+    signal,
+    state,
+    log,
+    hints,
+    upsert,
+    archive,
+    held,
+    written,
+  }) {
     const base = env.TODOIST_API_URL ?? defaultBase;
     const keptAccount = state.get("account");
     if (hints !== undefined && typeof keptAccount === "string") {
@@ -76,7 +86,7 @@ const connector = defineConnector({
       await archive(taskType, gone);
       return;
     }
-    const shape = readShape();
+    const shape = readShape(written(taskType));
     const saved = state.get("sync_token");
     const heldToken = typeof saved === "string" ? saved : firstSync;
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
