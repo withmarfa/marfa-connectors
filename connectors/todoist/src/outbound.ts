@@ -385,18 +385,20 @@ async function carried(
 
   if (kind === "archived" && change.changed.size === 0) return;
 
-  // A task has its labels, project, section and recurrence from its create,
-  // or the Inbox where its project was gone, which a move would undo. That
-  // holds for one made in this run and for one a run made, linked and then
-  // failed to finish, whose row has none of its fields agreed.
+  // A task made in this run has its labels, project, section and recurrence
+  // from the create, or the Inbox where its project was gone, which a move
+  // would undo. One a run made, linked and left unfinished comes with every
+  // field changed, so only what differs from the task is sent, and a project
+  // or section Todoist no longer has is where the create already fell back.
   let changed = change.changed;
-  let made = change.made !== undefined;
+  let made = false;
   if (taskId === undefined) {
     if (kind === "trashed" || kind === "purged") return;
     taskId = await add(item, timeZone, lang, todoist, context, change.refused);
+    changed = new Set();
     made = true;
   }
-  if (made) changed = new Set();
+  const unfinished = change.made !== undefined;
 
   if (kind === "trashed" || kind === "purged") {
     // A trash deletes: closing a recurring task would move it to its next
@@ -415,7 +417,17 @@ async function carried(
 
   const task = await held(taskId, kind, todoist);
   if (task === undefined) return;
-  await sync(item, kind, changed, taskId, task, timeZone, lang, todoist);
+  await sync(
+    item,
+    kind,
+    changed,
+    taskId,
+    task,
+    timeZone,
+    lang,
+    todoist,
+    unfinished,
+  );
   await readBack(
     item,
     made ? undefined : changed,
@@ -552,6 +564,7 @@ async function sync(
   timeZone: string,
   lang: Lang,
   todoist: Door,
+  unfinished = false,
 ): Promise<void> {
   const wanted = argsOf(item, timeZone);
   const changes = onlyChanged(differing(wanted, task, timeZone), changed);
@@ -605,6 +618,7 @@ async function sync(
     ...move,
   });
   if (answer === "ok") return;
+  if (unfinished && (isProjectGone(answer) || isSectionGone(answer))) return;
   throw notMoved(answer, taskId, move);
 }
 

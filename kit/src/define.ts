@@ -268,9 +268,11 @@ export interface Change {
   /**
    * For a row whose create made the vendor's object and linked it, but did
    * not return: when that create was first sent. Nothing was agreed for the
-   * row's fields, so `changed` holds all of them although the vendor already
-   * holds what the create sent; a connector that put fields in its create
-   * leaves those out of what it sends now. Absent once a change is carried.
+   * row's fields, so `changed` holds every one the vendor has not since sent
+   * back, although the vendor already holds what the create sent. A
+   * connector that put fields in its create sends one of them now only if it
+   * differs from the vendor's object, as a person may have changed it since.
+   * Absent once a change is carried.
    */
   readonly made?: string;
   readonly was?: "trashed" | "archived";
