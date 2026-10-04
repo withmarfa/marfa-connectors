@@ -483,10 +483,11 @@ async function sync(
     changes.due = moved(changes.due.date, task.due, timeZone);
   }
   // A recurring task always has a date: a row made holding a recurrence and
-  // no date takes the one Todoist gives it, but one whose date a person
-  // cleared is put back.
+  // no date takes the one Todoist gives it, and one whose date alone a person
+  // cleared is put back. With other edits, those are carried and the date
+  // comes back with the next read.
   if (changes.due === null && wanted.recurrence !== undefined) {
-    if (changed.has("due_at")) {
+    if (changed.has("due_at") && Object.keys(changes).length === 1) {
       throw new Declined(
         `A repeating task needs a date, so clearing the date of ${item.id} is not sent; clear its recurrence first`,
       );

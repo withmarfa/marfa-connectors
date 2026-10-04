@@ -2575,6 +2575,25 @@ describe("a recurrence", () => {
     });
   });
 
+  it("carries an edit made with clearing the date of a repeating task, and keeps the date", async () => {
+    const row = await placed("r", { due: daily });
+    const { due_at, precision, ...cleared } = marfa.byId(row.id).properties;
+    expect([due_at, precision]).toEqual(["2026-10-04T23:00:00.000Z", "day"]);
+    marfa.rewrite(`${todoist.account}:r`, {
+      ...cleared,
+      title: "Water the plants",
+    });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "r", content: "Water the plants" },
+    ]);
+    expect(todoist.tasks.get("r")?.due?.is_recurring).toBe(true);
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      title: "Water the plants",
+      recurrence: "every day",
+    });
+  });
+
   it("clears the date with the recurrence when the row clears both", async () => {
     const row = await placed("r", { due: daily });
     const { due_at, precision, recurrence, ...cleared } = marfa.byId(
