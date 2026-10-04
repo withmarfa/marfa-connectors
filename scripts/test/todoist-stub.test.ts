@@ -12,7 +12,10 @@ afterEach(async () => {
   await stub.close();
 });
 
-async function made(due: Record<string, unknown>): Promise<unknown> {
+async function sent(due: Record<string, unknown>): Promise<{
+  status: unknown;
+  due: unknown;
+}> {
   const uuid = crypto.randomUUID();
   const tempId = crypto.randomUUID();
   const response = await fetch(`${stub.url}/api/v1/sync`, {
@@ -33,9 +36,14 @@ async function made(due: Record<string, unknown>): Promise<unknown> {
     sync_status: Record<string, unknown>;
     temp_id_mapping: Record<string, string>;
   };
-  expect(answer.sync_status[uuid]).toBe("ok");
   const id = answer.temp_id_mapping[tempId] ?? "";
-  return stub.tasks.get(id)?.due;
+  return { status: answer.sync_status[uuid], due: stub.tasks.get(id)?.due };
+}
+
+async function made(due: Record<string, unknown>): Promise<unknown> {
+  const answer = await sent(due);
+  expect(answer.status).toBe("ok");
+  return answer.due;
 }
 
 function today(zone: string): string {
@@ -78,4 +86,32 @@ it("keeps a recurrence's date when one is sent, and words a date alone by the da
     lang: "en",
     is_recurring: false,
   });
+});
+
+it("takes the account's language for a due sent without one", async () => {
+  stub.lang = "de";
+  expect(await made({ string: "every day", date: "2026-10-10" })).toMatchObject(
+    { lang: "de" },
+  );
+});
+
+it("keeps text it cannot read as a recurrence on a one-off when a date is sent, and refuses it alone, as Todoist does", async () => {
+  expect(await made({ string: "zzqx blorp", date: "2026-10-10" })).toEqual({
+    date: "2026-10-10",
+    timezone: null,
+    string: "zzqx blorp",
+    lang: "en",
+    is_recurring: false,
+  });
+  expect(await sent({ string: "zzqx blorp" })).toEqual({
+    status: {
+      error: "Date is invalid",
+      error_code: 480,
+      error_extra: { explanation: 'Unable to parse "due_string" value' },
+      error_tag: "INVALID_DATE",
+      http_code: 400,
+    },
+    due: undefined,
+  });
+  expect(stub.tasks.size).toBe(1);
 });

@@ -61,6 +61,7 @@ export class TodoistStub {
   readonly received: ReceivedRequest[] = [];
   account = "1001";
   timezone: string | null = "Europe/London";
+  lang = "en";
   private userSeq = 0;
   // A day before the scripted server's clock, so a command the connector
   // sends is earlier than a person's later change in Marfa.
@@ -300,6 +301,7 @@ export class TodoistStub {
           id: this.account,
           tz_info: { timezone: this.timezone },
           inbox_project_id: "inbox",
+          lang: this.lang,
         },
       }),
     };
@@ -399,6 +401,20 @@ export class TodoistStub {
       error: "Item not found",
       http_code: 400,
     };
+    if (
+      (command.type === "item_add" || command.type === "item_update") &&
+      unreadable(args["due"])
+    ) {
+      return {
+        status: {
+          error: "Date is invalid",
+          error_code: 480,
+          error_extra: { explanation: 'Unable to parse "due_string" value' },
+          error_tag: "INVALID_DATE",
+          http_code: 400,
+        },
+      };
+    }
     switch (command.type) {
       case "item_add": {
         const project = args["project_id"];
@@ -580,7 +596,7 @@ export class TodoistStub {
       out.due =
         due === null
           ? null
-          : dueOf(due as Record<string, unknown>, this.timezone);
+          : dueOf(due as Record<string, unknown>, this.timezone, this.lang);
     }
     return out;
   }
@@ -592,15 +608,19 @@ export class TodoistStub {
  * recurrence's text sent with a date keeps the recurrence and takes the date
  * as its next occurrence, whatever day it falls on, and keeps a whole day or
  * a time as sent whatever the recurrence names; text created without a date
- * is due at its first occurrence, today for "every day"; a time fixed in UTC
- * takes the zone sent with it, or the account's, and a floating one none. The
- * stub reads a text beginning "every" or "after" as a recurrence, where
- * Todoist parses it, and dates any text sent alone today in the account's
- * zone.
+ * is due at its first occurrence, today for "every day"; text sent with a
+ * date that Todoist cannot read is kept as a one-off's text, and the same
+ * text sent alone is refused; the language is the one sent, or the
+ * account's; a time fixed in UTC takes the zone sent with it, or the
+ * account's, and a floating one none. The stub reads as a recurrence only
+ * "every" or "after" with more text after it, where Todoist parses the text,
+ * refuses any other text sent alone, and dates a recurrence sent alone today
+ * in the account's zone.
  */
 function dueOf(
   sent: Record<string, unknown>,
   zone: string | null,
+  lang: string,
 ): Record<string, unknown> {
   const text = typeof sent["string"] === "string" ? sent["string"] : undefined;
   const date =
@@ -618,9 +638,19 @@ function dueOf(
           ? zone
           : null,
     string: text ?? date,
-    lang: typeof sent["lang"] === "string" ? sent["lang"] : "en",
-    is_recurring: text !== undefined && /^(every|after)\b/i.test(text),
+    lang: typeof sent["lang"] === "string" ? sent["lang"] : lang,
+    is_recurring: text !== undefined && recurs(text),
   };
+}
+
+function recurs(text: string): boolean {
+  return /^(every!?|after)\s+\S/i.test(text);
+}
+
+function unreadable(due: unknown): boolean {
+  if (typeof due !== "object" || due === null) return false;
+  const { string: text, date } = due as Record<string, unknown>;
+  return typeof text === "string" && typeof date !== "string" && !recurs(text);
 }
 
 function today(zone: string): string {
