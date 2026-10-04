@@ -35,7 +35,11 @@ export interface SyncAnswer {
   /** Todoist may answer a delta with every active task, deletions left out. */
   full_sync?: boolean;
   items: TodoistItem[];
-  user?: { id?: unknown; tz_info?: { timezone?: unknown } };
+  user?: {
+    id?: unknown;
+    inbox_project_id?: unknown;
+    tz_info?: { timezone?: unknown };
+  };
 }
 
 export const firstSync = "*";

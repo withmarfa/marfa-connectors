@@ -53,8 +53,9 @@ export class TodoistStub {
   projects: Set<string> | undefined;
   // Each section's project, so a move into a section lands in its project.
   sections: Map<string, string> | undefined;
-  // Called with each request as it arrives, before it is answered, so a test
-  // can have Todoist change between the connector's reading and its writing.
+  // Called as each request arrives, before the stub answers it, so a test can
+  // have Todoist change between the connector's reading and its writing: what
+  // the hook changes is what the answer then shows.
   before: ((request: ReceivedRequest) => void) | undefined;
   readonly tasks = new Map<string, StubTask>();
   readonly received: ReceivedRequest[] = [];
@@ -298,6 +299,7 @@ export class TodoistStub {
         user: {
           id: this.account,
           tz_info: { timezone: this.timezone },
+          inbox_project_id: "inbox",
         },
       }),
     };

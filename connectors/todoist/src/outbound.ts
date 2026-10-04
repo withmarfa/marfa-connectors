@@ -145,7 +145,8 @@ export function destination(
     return section === task.section_id ? undefined : { section_id: section };
   }
   if (!sectionChanged && !projectChanged) return undefined;
-  const root = projectChanged ? project : task.project_id;
+  const root =
+    projectChanged && project !== undefined ? project : task.project_id;
   if (root === undefined || root === null) return undefined;
   const inSection = sectionChanged && task.section_id != null;
   return root === task.project_id && !inSection
@@ -379,27 +380,46 @@ async function sync(
     );
     if (answer !== "ok") throw notTaken(answer, `updating task ${taskId}`);
   }
-  const move = destination(item, task, changed);
-  if (move !== undefined) {
-    const answer = await todoist.one(
-      "item_move",
-      commandId(item, "item_move"),
-      { id: taskId, ...move },
-    );
-    if (answer !== "ok") throw notMoved(answer, taskId, move);
-  }
+  // The close or reopen goes first, so a move Todoist refuses never holds
+  // the completion back.
   const completed = isCompleted(item);
-  if (completed === (task.checked === true)) return;
-  const type = completed ? "item_close" : "item_uncomplete";
-  const answer = await todoist.one(type, commandId(item, type), {
-    id: taskId,
-  });
-  if (answer !== "ok") {
-    throw notTaken(
-      answer,
-      `${completed ? "closing" : "reopening"} task ${taskId}`,
-    );
+  if (completed !== (task.checked === true)) {
+    const type = completed ? "item_close" : "item_uncomplete";
+    const answer = await todoist.one(type, commandId(item, type), {
+      id: taskId,
+    });
+    if (answer !== "ok") {
+      throw notTaken(
+        answer,
+        `${completed ? "closing" : "reopening"} task ${taskId}`,
+      );
+    }
   }
+  const move = destination(item, task, changed);
+  if (move === undefined) return;
+  const answer = await todoist.one("item_move", commandId(item, "item_move"), {
+    id: taskId,
+    ...move,
+  });
+  if (answer === "ok" || (await inFallback(answer, task, todoist))) {
+    return;
+  }
+  throw notMoved(answer, taskId, move);
+}
+
+// A project or section Todoist no longer has, for a task already in the Inbox,
+// is where a create that fell back left it. A row whose create was not settled
+// (a later step of that run failed) names the project and section again with
+// every field changed, and the move would only be refused. A task anywhere
+// else was placed on purpose, and the refusal stands.
+async function inFallback(
+  answer: CommandError | undefined,
+  task: TodoistItem,
+  todoist: Door,
+): Promise<boolean> {
+  if (!isProjectGone(answer) && !isSectionGone(answer)) return false;
+  const inbox = (await todoist.user())?.inbox_project_id;
+  return typeof inbox === "string" && task.project_id === inbox;
 }
 
 function unreached(taskId: string, answer: "forbidden" | "unknown"): string {
