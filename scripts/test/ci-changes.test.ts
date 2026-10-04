@@ -1,7 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -25,6 +32,25 @@ describe("what a change runs beyond formatting and the scan", () => {
     ["a README in a subfolder", ["connectors/todoist/README.md"], []],
     ["top-level documentation and the licence", ["README.md", "LICENSE"], []],
     ["agent settings", [".claude/settings.json"], []],
+    ["Codex's settings", [".codex/config.toml"], []],
+    ["a skill's script", [".agents/skills/x/helper.py"], []],
+    ["a Git hook", [".githooks/pre-push"], []],
+    ["an issue template", [".github/ISSUE_TEMPLATE/bug.yml"], []],
+    [
+      "a fixture under agent files, which a test could read",
+      [".agents/skills/x/fixtures/input.json"],
+      ["code", "proof", "image"],
+    ],
+    [
+      "a file that only looks like an agent directory",
+      ["kit/src/.agents/helper.ts"],
+      ["code", "proof", "image"],
+    ],
+    [
+      "agent files beside a kit change",
+      [".agents/skills/x/helper.py", "kit/src/main.ts"],
+      ["code", "proof", "image"],
+    ],
     [
       "a connector's source",
       ["connectors/todoist/src/main.ts"],
@@ -51,10 +77,11 @@ describe("what a change runs beyond formatting and the scan", () => {
       ["scripts/check-image-client.ts"],
       ["code", "image"],
     ],
+    ["dependency settings", [".github/dependabot.yml"], []],
     [
-      "dependency and workflow settings",
-      [".github/dependabot.yml", ".github/workflows/audit.yml"],
-      [],
+      "a workflow no job of ci.yml reads",
+      [".github/workflows/audit.yml"],
+      ["code", "proof", "image"],
     ],
     ["the proof", ["scripts/proof/rss.ts"], ["code", "proof", "image"]],
     [
@@ -69,16 +96,14 @@ describe("what a change runs beyond formatting and the scan", () => {
     [
       "the CodeQL workflow, which a test reads",
       [".github/workflows/codeql.yml"],
-      ["code"],
+      ["code", "proof", "image"],
     ],
     [
-      "the description check and its workflow, which a test reads",
-      [
-        "scripts/check-pr-description.ts",
-        ".github/workflows/pr-description.yml",
-      ],
-      ["code"],
+      "the description check's workflow, which a test reads",
+      [".github/workflows/pr-description.yml"],
+      ["code", "proof", "image"],
     ],
+    ["the description check", ["scripts/check-pr-description.ts"], ["code"]],
     ["the classifier", ["scripts/ci-changes.ts"], ["code", "proof", "image"]],
     ["a path no rule names", ["tools/new.ts"], ["code", "proof", "image"]],
     [
@@ -112,7 +137,8 @@ interface Workflow {
       needs?: string;
       if?: string;
       outputs?: Record<string, string>;
-      steps: { run?: string; if?: string }[];
+      permissions?: Record<string, string>;
+      steps: { run?: string; if?: string; env?: Record<string, string> }[];
     }
   >;
 }
@@ -134,6 +160,17 @@ describe("each job reads its answer", () => {
   const { jobs } = parse(
     readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
   ) as Workflow;
+
+  it("lets the classifier ask which runs of this workflow succeeded", () => {
+    expect(jobs["changes"]?.permissions).toEqual({
+      contents: "read",
+      actions: "read",
+    });
+    const classify = (jobs["changes"]?.steps ?? []).find(
+      (step) => step.run === "node scripts/ci-changes.ts",
+    );
+    expect(classify?.env).toEqual({ GH_TOKEN: "${{ github.token }}" });
+  });
 
   it("runs Proof only when the classifier says so, and when it cannot tell", () => {
     expect(jobs["changes"]?.outputs).toEqual({
@@ -258,13 +295,25 @@ describe("CodeQL", () => {
   const ignored = on.pull_request?.["paths-ignore"] ?? [];
   const skips = (path: string) =>
     ignored.some((pattern) => filterMatches(pattern, path));
+  const instructions = [
+    "**/*.md",
+    "LICENSE",
+    ".claude/**",
+    ".agents/**",
+    ".codex/**",
+    ".githooks/**",
+    ".github/ISSUE_TEMPLATE/**",
+  ];
 
-  it("analyzes every push to main and once a week, and a pull request unless it changes only documentation or agent settings", () => {
-    expect(on.push).toEqual({ branches: ["main"] });
+  it("analyzes a pull request or a push to main unless it changes only documentation or agent instructions, and the whole tree once a week", () => {
+    expect(on.push).toEqual({
+      branches: ["main"],
+      "paths-ignore": instructions,
+    });
     expect(on.pull_request).toEqual({
       branches: ["main"],
       types: ["opened", "synchronize", "reopened", "ready_for_review"],
-      "paths-ignore": ["**/*.md", "LICENSE", ".claude/**"],
+      "paths-ignore": instructions,
     });
     expect(on.schedule).toHaveLength(1);
     expect(on.schedule?.[0]?.cron).toMatch(/^\d{1,2} \d{1,2} \* \* [0-6]$/);
@@ -280,6 +329,10 @@ describe("CodeQL", () => {
       "connectors/todoist/README.md",
       "LICENSE",
       ".claude/settings.json",
+      ".agents/skills/x/helper.py",
+      ".codex/config.toml",
+      ".githooks/pre-push",
+      ".github/ISSUE_TEMPLATE/bug.yml",
     ]) {
       expect(skips(path), path).toBe(true);
       expect(affected(path).size, path).toBe(0);
@@ -299,22 +352,59 @@ describe("CodeQL", () => {
 describe("the classifier as CI runs it", () => {
   const script = join(root, "scripts", "ci-changes.ts");
   const directory = mkdtempSync(join(tmpdir(), "connectors-ci-paths-"));
+  const bin = join(directory, "bin");
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  /** Writes each path (a `from=>to` pair moves one) and commits, returning the commit. */
+  const commit = (message: string, ...paths: string[]) => {
+    for (const path of paths) {
+      const [from, to] = path.split("=>");
+      if (to !== undefined && from !== undefined) {
+        mkdirSync(dirname(join(directory, to)), { recursive: true });
+        git("mv", from, to);
+      } else {
+        mkdirSync(dirname(join(directory, path)), { recursive: true });
+        appendFileSync(join(directory, path), `${message}\n`);
+        git("add", path);
+      }
+    }
+    git("commit", "-q", "--allow-empty", "-m", message);
+    return git("rev-parse", "HEAD");
+  };
   let base = "";
   let docs = "";
+  let agents = "";
+  let code = "";
+  let workflow = "";
+  let moved = "";
+  let elsewhere = "";
 
   beforeAll(() => {
     git("init", "-q");
     git("config", "user.email", "fixture@example.com");
     git("config", "user.name", "CI Fixture");
     git("config", "commit.gpgsign", "false");
-    git("commit", "-q", "--allow-empty", "-m", "base");
-    base = git("rev-parse", "HEAD");
-    writeFileSync(join(directory, "README.md"), "Words\n");
-    git("add", "README.md");
-    git("commit", "-qm", "docs");
-    docs = git("rev-parse", "HEAD");
+    base = commit("base");
+    docs = commit("docs", "README.md");
+    agents = commit(
+      "agents",
+      "AGENTS.md",
+      ".agents/skills/x/helper.py",
+      ".codex/config.toml",
+      ".githooks/pre-push",
+    );
+    code = commit("code", "kit/src/main.ts");
+    workflow = commit("workflow", ".github/workflows/audit.yml");
+    moved = commit("move", "kit/src/main.ts=>.agents/skills/x/main.ts");
+    git("checkout", "-q", "-b", "elsewhere", base);
+    elsewhere = commit("documentation on a line without the code", "NOTES.md");
+    // A stand-in for the API: FAKE_RUNS is the count of green runs it reports.
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "gh"),
+      '#!/usr/bin/env bash\necho "$*" >>"$FAKE_GH_LOG"\n[[ "$FAKE_RUNS" == error ]] && exit 1\necho "{\\"total_count\\": $FAKE_RUNS}"\n',
+      { mode: 0o755 },
+    );
   });
   afterAll(() => {
     rmSync(directory, { recursive: true, force: true });
@@ -324,56 +414,109 @@ describe("the classifier as CI runs it", () => {
     event: string,
     from: string,
     to: string,
-    draft?: boolean,
+    options: { draft?: boolean; runs?: string } = {},
   ): string {
     const eventPath = join(directory, "event.json");
     const output = join(directory, "output");
     writeFileSync(
       eventPath,
-      JSON.stringify({
-        pull_request: { base: { sha: from }, head: { sha: to }, draft },
-      }),
+      JSON.stringify(
+        event === "push"
+          ? { before: from, after: to }
+          : {
+              pull_request: {
+                base: { sha: from },
+                head: { sha: to },
+                draft: options.draft,
+              },
+            },
+      ),
     );
     writeFileSync(output, "");
+    writeFileSync(join(directory, "gh.log"), "");
     execFileSync(process.execPath, [script], {
       cwd: directory,
       env: {
         ...process.env,
+        PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+        FAKE_GH_LOG: join(directory, "gh.log"),
+        FAKE_RUNS: options.runs ?? "1",
+        GITHUB_REPOSITORY: "example/repository",
         GITHUB_EVENT_NAME: event,
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_OUTPUT: output,
       },
+      stdio: "ignore",
     });
     return readFileSync(output, "utf8");
   }
 
+  const skipped = "code=false\nproof=false\nimage=false\nfull=true\n";
+  const everything = "code=true\nproof=true\nimage=true\nfull=true\n";
+
   it("skips the code checks and the proof for documentation", () => {
-    expect(outputs("pull_request", base, docs)).toBe(
-      "code=false\nproof=false\nimage=false\nfull=true\n",
-    );
+    expect(outputs("pull_request", base, docs)).toBe(skipped);
+  });
+
+  it("skips them for agent files alone, and runs them for the code beside them", () => {
+    expect(outputs("pull_request", docs, agents)).toBe(skipped);
+    expect(outputs("pull_request", agents, code)).toBe(everything);
+    expect(outputs("pull_request", base, code)).toBe(everything);
+  });
+
+  it("runs everything for a workflow, and for a move of code into an agent directory", () => {
+    expect(outputs("pull_request", code, workflow)).toBe(everything);
+    expect(outputs("pull_request", workflow, moved)).toBe(everything);
   });
 
   it("runs only the quick checks for a draft, whatever the diff, and all of them once it is ready", () => {
-    expect(outputs("pull_request", base, docs, true)).toBe(
+    expect(outputs("pull_request", base, docs, { draft: true })).toBe(
       "code=false\nproof=false\nimage=false\nfull=false\n",
     );
-    expect(outputs("pull_request", "invalid", docs, true)).toBe(
+    expect(outputs("pull_request", "invalid", docs, { draft: true })).toBe(
       "code=true\nproof=false\nimage=false\nfull=false\n",
     );
-    expect(outputs("pull_request", base, docs, false)).toBe(
-      "code=false\nproof=false\nimage=false\nfull=true\n",
-    );
+    expect(outputs("pull_request", base, docs, { draft: false })).toBe(skipped);
   });
 
-  it("runs everything for an unreadable diff, an empty one and a push", () => {
-    expect(outputs("pull_request", "invalid", docs)).toBe(
-      "code=true\nproof=true\nimage=true\nfull=true\n",
-    );
-    expect(outputs("pull_request", docs, docs)).toBe(
-      "code=true\nproof=true\nimage=true\nfull=true\n",
-    );
-    expect(outputs("push", base, docs)).toBe(
-      "code=true\nproof=true\nimage=true\nfull=true\n",
-    );
+  it("runs everything for an unreadable diff and an empty one", () => {
+    expect(outputs("pull_request", "invalid", docs)).toBe(everything);
+    expect(outputs("pull_request", docs, docs)).toBe(everything);
+    expect(outputs("push", docs, docs)).toBe(everything);
+  });
+
+  it("classifies a push after a commit with a green run, as a pull request is", () => {
+    expect(outputs("push", base, docs)).toBe(skipped);
+    expect(outputs("push", docs, agents, { runs: "3" })).toBe(skipped);
+    expect(outputs("push", agents, code)).toBe(everything);
+    expect(outputs("push", code, workflow)).toBe(everything);
+    expect(outputs("push", workflow, moved)).toBe(everything);
+  });
+
+  it("asks which push runs of ci.yml on main succeeded for the commit before the push", () => {
+    outputs("push", base, docs);
+    const asked = readFileSync(join(directory, "gh.log"), "utf8");
+    expect(asked).toContain("actions/workflows/ci.yml/runs?");
+    expect(asked).toContain(`head_sha=${base}&`);
+    expect(asked).toContain("event=push&branch=main&status=success");
+    outputs("pull_request", base, docs);
+    expect(readFileSync(join(directory, "gh.log"), "utf8")).toBe("");
+  });
+
+  it("runs everything for a push when the commit before it has no green run, or that cannot be told", () => {
+    expect(outputs("push", base, docs, { runs: "0" })).toBe(everything);
+    expect(outputs("push", base, docs, { runs: "error" })).toBe(everything);
+    expect(outputs("push", base, docs, { runs: '"many"' })).toBe(everything);
+  });
+
+  it("runs everything for a push that is not a fast-forward, a new branch and a bad commit", () => {
+    expect(outputs("push", code, elsewhere)).toBe(everything);
+    expect(outputs("push", "0".repeat(40), docs)).toBe(everything);
+    expect(outputs("push", "invalid", docs)).toBe(everything);
+  });
+
+  it("runs everything for a schedule and a manual run", () => {
+    expect(outputs("schedule", base, docs)).toBe(everything);
+    expect(outputs("workflow_dispatch", base, docs)).toBe(everything);
   });
 });

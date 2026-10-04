@@ -17,13 +17,18 @@ permissions:
   contents: read
 
 jobs:
-  # `scripts/ci-changes.ts` says what a pull request can affect. A skipped
-  # job satisfies a required check; a workflow filtered out by `paths` would
-  # leave it pending, hence jobs and not a filter.
+  # `scripts/ci-changes.ts` says what a pull request or a push to `main` can
+  # affect. A skipped job satisfies a required check; a workflow filtered out
+  # by `paths` would leave it pending, hence jobs and not a filter. A push is
+  # classified only when the commit before it had a green run of this
+  # workflow, which the script asks the API for, hence `actions: read`.
   changes:
     name: Classify changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       code: ${{ steps.classify.outputs.code }}
       proof: ${{ steps.classify.outputs.proof }}
@@ -37,6 +42,8 @@ jobs:
         with:
           node-version: 24
       - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/ci-changes.ts
 
   # Every file is formatted and read for personal details, so a change to
