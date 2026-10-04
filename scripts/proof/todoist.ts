@@ -928,7 +928,7 @@ export async function proveTodoist(
     );
 
     await check(
-      "todoist: a key holding permissions beside its type is refused at start, before it registers the type or writes a row",
+      "todoist: a key holding permissions beside its type and schema.write is refused at start, before it registers the type or writes a row, naming every one but schema.write",
       async () => {
         const { data: wide, error } = await marfa.POST("/keys", {
           body: {
@@ -958,9 +958,11 @@ export async function proveTodoist(
         });
         const { code, output } = await refused.once();
         const changed = moved(before, await rows());
+        const named = output.slice(output.indexOf("is refused:"));
         if (
           code !== 1 ||
           !output.includes("holds more than read and write on todoist.task") ||
+          named.includes("schema.write") ||
           !output.includes("keys.mint") ||
           !output.includes("items.purge") ||
           output.includes("type todoist.task") ||
@@ -974,7 +976,7 @@ export async function proveTodoist(
         const line = output
           .split("\n")
           .find((l) => l.includes("holds more than"));
-        return `exit 1, nothing written or sent: ${String(line).slice(0, 300)}`;
+        return `exit 1, nothing written or sent, while the connector's own key, holding schema.write beside its type, runs: ${String(line).slice(0, 300)}`;
       },
     );
   } finally {
