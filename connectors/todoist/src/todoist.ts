@@ -40,6 +40,7 @@ export interface SyncAnswer {
     inbox_project_id?: unknown;
     tz_info?: { timezone?: unknown };
     lang?: unknown;
+    features?: { dateist_lang?: unknown } | null;
   };
 }
 
@@ -466,10 +467,38 @@ export function timezoneOf(user: SyncAnswer["user"]): string | undefined {
   }
 }
 
-/** The language Todoist reads the account's due dates in. */
+// A due's `lang` is worded differently from the user's `lang` and
+// `dateist_lang`: the three that carry a region lose it, and a due has no `tr`.
+const dueLangs: ReadonlyMap<string, string> = new Map([
+  ...[
+    "da",
+    "de",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "it",
+    "ja",
+    "ko",
+    "nl",
+    "pl",
+    "ru",
+    "sv",
+  ].map((lang): [string, string] => [lang, lang]),
+  ["pt_BR", "pt"],
+  ["zh_CN", "zh"],
+  ["zh_TW", "tw"],
+]);
+
+/**
+ * The `lang` to send a due's text with: the language the account sets for
+ * date recognition, else its own, worded as a due words it. None where a due
+ * has no word for it, so Todoist reads the text by the account's settings.
+ */
 export function langOf(user: SyncAnswer["user"]): string | undefined {
-  const lang = user?.lang;
-  return typeof lang === "string" && lang !== "" ? lang : undefined;
+  const set = user?.features?.dateist_lang;
+  const lang = typeof set === "string" && set !== "" ? set : user?.lang;
+  return typeof lang === "string" ? dueLangs.get(lang) : undefined;
 }
 
 /**

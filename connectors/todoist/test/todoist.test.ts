@@ -9,6 +9,7 @@ import {
   accountOf,
   dueOf,
   entryOf,
+  langOf,
   readShape,
   timezoneOf,
   type SyncAnswer,
@@ -453,6 +454,66 @@ describe("the mapping", () => {
       recurrence({ date: "2026-10-10", string: "", is_recurring: true }),
     ).toBeUndefined();
     expect(recurrence(null)).toBeUndefined();
+  });
+
+  it("reads the language a due is worded in from the account's, which Todoist names differently", () => {
+    // The user's `lang` takes `pt_BR`, `zh_CN` and `zh_TW` and `tr`; a due's
+    // `lang` takes `pt`, `zh` and `tw` and has no `tr`.
+    const due = (lang: unknown): string | undefined => langOf({ lang });
+    expect(
+      [
+        "da",
+        "de",
+        "en",
+        "es",
+        "fi",
+        "fr",
+        "it",
+        "ja",
+        "ko",
+        "nl",
+        "pl",
+        "ru",
+        "sv",
+        "pt_BR",
+        "zh_CN",
+        "zh_TW",
+      ].map(due),
+    ).toEqual([
+      "da",
+      "de",
+      "en",
+      "es",
+      "fi",
+      "fr",
+      "it",
+      "ja",
+      "ko",
+      "nl",
+      "pl",
+      "ru",
+      "sv",
+      "pt",
+      "zh",
+      "tw",
+    ]);
+    for (const none of ["tr", "xx", "", 3, null, undefined, "constructor"]) {
+      expect(due(none)).toBeUndefined();
+    }
+    expect(langOf(undefined)).toBeUndefined();
+    expect(langOf({})).toBeUndefined();
+  });
+
+  it("reads the language the account sets for date recognition instead, whatever the account's own", () => {
+    const set = (dateist_lang: unknown, lang = "en"): string | undefined =>
+      langOf({ lang, features: { dateist_lang } });
+    expect(set("fr")).toBe("fr");
+    expect(set("zh_TW", "de")).toBe("tw");
+    // No words for it: not the account's language, which it overrides.
+    expect(set("tr", "de")).toBeUndefined();
+    expect(set(null, "de")).toBe("de");
+    expect(set("", "de")).toBe("de");
+    expect(langOf({ features: { dateist_lang: "pt_BR" } })).toBe("pt");
   });
 
   it("refuses an account it could not key a task by", () => {

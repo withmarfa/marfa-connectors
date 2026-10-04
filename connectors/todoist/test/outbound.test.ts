@@ -2326,6 +2326,121 @@ describe("a recurrence", () => {
     expect(summary()).toContain('could not read the recurrence "zzqx blorp"');
     expect(marfa.byId(row.id).properties["recurrence"]).toBe("zzqx blorp");
   });
+
+  describe("in the language Todoist reads dates in", () => {
+    // Todoist words the account's language and a due's language differently:
+    // `pt_BR` is `pt` there, and a language it has no words for is left out.
+    async function setIn(
+      lang: string | null,
+      dateistLang: string | null = null,
+    ): Promise<unknown> {
+      todoist.speak(lang, dateistLang);
+      const row = await placed("r", {
+        due: { ...daily, string: "Oct 5", is_recurring: false },
+      });
+      marfa.edit(row.id, { recurrence: "every week" });
+      await landed();
+      return todoist.commands("item_update").at(-1)?.args["due"];
+    }
+
+    it.each([
+      ["en", "en"],
+      ["de", "de"],
+      ["pt_BR", "pt"],
+      ["zh_CN", "zh"],
+      ["zh_TW", "tw"],
+    ])("sends %s as %s", async (lang, sent) => {
+      expect(await setIn(lang)).toEqual({
+        string: "every week",
+        lang: sent,
+        date: "2026-10-05",
+      });
+    });
+
+    it("sends none for a language Todoist reads no dates in", async () => {
+      expect(await setIn("tr")).toEqual({
+        string: "every week",
+        date: "2026-10-05",
+      });
+    });
+
+    it("sends none for an account that names none", async () => {
+      expect(await setIn(null)).toEqual({
+        string: "every week",
+        date: "2026-10-05",
+      });
+    });
+
+    it("prefers the language the account sets for date recognition", async () => {
+      expect(await setIn("en", "fr")).toMatchObject({ lang: "fr" });
+    });
+
+    it("sends the due language for a recognition language that Todoist words differently", async () => {
+      expect(await setIn("en", "pt_BR")).toMatchObject({ lang: "pt" });
+    });
+
+    it("sends none where the language set for recognition has no words, not the account's", async () => {
+      expect(await setIn("de", "tr")).toEqual({
+        string: "every week",
+        date: "2026-10-05",
+      });
+    });
+
+    it("follows the account when it changes its language, and sends none after one with no words", async () => {
+      todoist.speak("de");
+      const row = await placed("r", {
+        due: { ...daily, string: "Oct 5", is_recurring: false },
+      });
+      todoist.speak("tr");
+      marfa.edit(row.id, { recurrence: "every week" });
+      await landed();
+      expect(todoist.commands("item_update").at(-1)?.args["due"]).toEqual({
+        string: "every week",
+        date: "2026-10-05",
+      });
+    });
+
+    it("is made with a row in the account's language", async () => {
+      todoist.speak("pt_BR");
+      todoist.put(todoist.task("seed"));
+      personsRow({
+        title: "Stretch",
+        status: "pending",
+        recurrence: "every day",
+      });
+      await landed();
+      expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
+        string: "every day",
+        lang: "pt",
+      });
+    });
+
+    it("asks Todoist once for the language and the zone when the state holds neither", async () => {
+      todoist.speak("de");
+      const row = await placed("r", {
+        due: { ...daily, string: "Oct 5", is_recurring: false },
+      });
+      // As a state kept before the connector held them.
+      const stored = structuredClone(marfa.states.get("todoist") ?? {});
+      const kept = stored["state"] as Record<string, unknown>;
+      delete kept["lang"];
+      delete kept["timezone"];
+      marfa.states.set("todoist", stored);
+      marfa.edit(row.id, { recurrence: "every week" });
+      const before = todoist.received.length;
+      await landed();
+      const accounts = todoist.received
+        .slice(before)
+        .filter((request) => request.resources === '["user"]');
+      expect(accounts).toHaveLength(1);
+      expect(todoist.commands("item_update").at(-1)?.args["due"]).toEqual({
+        string: "every week",
+        lang: "de",
+        date: "2026-10-05",
+      });
+    });
+  });
+
 });
 
 describe("the account's zone", () => {

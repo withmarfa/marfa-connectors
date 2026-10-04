@@ -31,6 +31,9 @@ export interface ReceivedRequest {
   path: string;
   at: number;
   syncToken?: string;
+  // The resources a sync asked for, such as `["user"]` alone to read the
+  // account.
+  resources?: string;
   commands?: ReceivedCommand[];
 }
 
@@ -61,7 +64,10 @@ export class TodoistStub {
   readonly received: ReceivedRequest[] = [];
   account = "1001";
   timezone: string | null = "Europe/London";
-  lang = "en";
+  // The account's language, none where the user answers none, and the
+  // language it sets for date recognition instead, as Todoist words them.
+  lang: string | null = "en";
+  dateistLang: string | null = null;
   private userSeq = 0;
   // A day before the scripted server's clock, so a command the connector
   // sends is earlier than a person's later change in Marfa.
@@ -171,6 +177,14 @@ export class TodoistStub {
     this.userSeq = this.seq;
   }
 
+  /** The account changes the language it words dates in. */
+  speak(lang: string | null, dateistLang: string | null = null): void {
+    this.lang = lang;
+    this.dateistLang = dateistLang;
+    this.seq += 1;
+    this.userSeq = this.seq;
+  }
+
   refuseNext(
     status: number,
     options: {
@@ -234,6 +248,8 @@ export class TodoistStub {
         record.commands = JSON.parse(commands) as ReceivedCommand[];
       } else {
         record.syncToken = form.get("sync_token") ?? "*";
+        const resources = form.get("resource_types");
+        if (resources !== null) record.resources = resources;
       }
     }
     this.received.push(record);
@@ -301,7 +317,8 @@ export class TodoistStub {
           id: this.account,
           tz_info: { timezone: this.timezone },
           inbox_project_id: "inbox",
-          lang: this.lang,
+          ...(this.lang !== null && { lang: this.lang }),
+          features: { dateist_lang: this.dateistLang },
         },
       }),
     };
@@ -596,7 +613,11 @@ export class TodoistStub {
       out.due =
         due === null
           ? null
-          : dueOf(due as Record<string, unknown>, this.timezone, this.lang);
+          : dueOf(
+              due as Record<string, unknown>,
+              this.timezone,
+              this.dateistLang ?? this.lang ?? "en",
+            );
     }
     return out;
   }

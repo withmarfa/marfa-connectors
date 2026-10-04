@@ -95,6 +95,14 @@ it("takes the account's language for a due sent without one", async () => {
   );
 });
 
+it("takes the language set for date recognition over the account's for a due sent without one", async () => {
+  stub.lang = "de";
+  stub.dateistLang = "fr";
+  expect(await made({ string: "every day", date: "2026-10-10" })).toMatchObject(
+    { lang: "fr" },
+  );
+});
+
 it("keeps text it cannot read as a recurrence on a one-off when a date is sent, and refuses it alone, as Todoist does", async () => {
   expect(await made({ string: "zzqx blorp", date: "2026-10-10" })).toEqual({
     date: "2026-10-10",
