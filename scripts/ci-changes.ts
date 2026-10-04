@@ -1,13 +1,18 @@
 /**
- * Which CI jobs a pull request's changes can affect.
+ * Which CI jobs a change can affect.
  *
  * `Checks` always formats every file and reads it for personal details, so
  * it runs for any change; `code` says whether it also builds, typechecks, lints and runs every test. `Proof` runs only
  * when `proof` is true, and `Image`, which builds the template's image and
  * checks the launchd example, only when `image` is true. A skipped job
  * satisfies a required check where a workflow filtered out by `paths` would
- * leave it pending. A push to `main`, an empty diff and one that cannot be
- * read answer `true` for every job.
+ * leave it pending. A pull request is classified by its diff against its
+ * base, and a push to `main` by its diff against the commit it follows, but
+ * only when that commit had a green push run of `ci.yml`: otherwise a commit
+ * that touches nothing a job reads would show green on top of a commit that
+ * was never checked or was red. An empty diff, one that cannot be read, a push
+ * that does not descend from the commit before it, a schedule and a manual run
+ * answer `true` for every job.
  *
  * A draft pull request runs only the quick checks: `Checks` without its
  * tests, so `Proof` and `Image` answer `false` for it. `full` says whether
@@ -30,20 +35,22 @@ const ALL: readonly Job[] = JOBS;
 
 /** First match wins. */
 export const RULES: readonly (readonly [RegExp, readonly Job[]])[] = [
-  // What decides what runs is proven on everything it decides.
+  // What decides what runs is proven on everything it decides, and a change
+  // to any workflow runs everything.
   [/^scripts\/ci-changes\.ts$/, ALL],
-  [/^\.github\/workflows\/ci\.yml$/, ALL],
-  // A test pins when CodeQL runs, and one pins what the description check
-  // reads and when it runs.
-  [/^\.github\/workflows\/(codeql|pr-description)\.yml$/, ["code"]],
+  [/^\.github\/workflows\//, ALL],
   [/^\.github\//, []],
 
   // A fixture is test input, and the proof reads the RSS connector's.
   [/(^|\/)(fixtures|__fixtures__|testdata)\//, ALL],
-  // Markdown, the licence and settings are read only by Prettier and the
-  // personal-detail scan, which `Checks` runs for every change.
+  // Markdown, the licence, settings and the instructions for agents are read
+  // only by Prettier and the personal-detail scan, which `Checks` runs for
+  // every change.
   [/\.md$/i, []],
-  [/^(LICENSE|\.claude\/.*|\.gitignore|\.prettierignore)$/, []],
+  [
+    /^(LICENSE|\.(claude|agents|codex|githooks)\/.*|\.gitignore|\.prettierignore)$/,
+    [],
+  ],
 
   // The proof runs every connector from what `pnpm build` makes, and the
   // build leaves tests out.
@@ -85,6 +92,15 @@ export function forDraft(answer: Record<Job, boolean>): Record<Job, boolean> {
   return { ...answer, proof: false, image: false };
 }
 
+/** What one event changed, and what it takes to trust the diff. */
+interface Change {
+  base: string;
+  head: string;
+  draft: boolean;
+  /** A push is classified only after a commit with a green run. */
+  push: boolean;
+}
+
 interface PullRequestEvent {
   pull_request: {
     draft?: boolean;
@@ -93,21 +109,58 @@ interface PullRequestEvent {
   };
 }
 
-/** The event of a pull request run, or `undefined` for any other event. */
-function pullRequestEvent(): PullRequestEvent | undefined {
-  if (process.env["GITHUB_EVENT_NAME"] !== "pull_request") return undefined;
-  return JSON.parse(
-    readFileSync(process.env["GITHUB_EVENT_PATH"] ?? "", "utf8"),
-  ) as PullRequestEvent;
+interface PushEvent {
+  before: string;
+  after: string;
 }
 
-/** The pull request's changed paths. */
-function changedPaths(event: PullRequestEvent): string[] {
-  const base = event.pull_request.base.sha;
-  const head = event.pull_request.head.sha;
+/** The change a pull request or push run is for, or `undefined` for any other event. */
+function readChange(): Change | undefined {
+  const name = process.env["GITHUB_EVENT_NAME"];
+  if (name !== "pull_request" && name !== "push") return undefined;
+  const event = JSON.parse(
+    readFileSync(process.env["GITHUB_EVENT_PATH"] ?? "", "utf8"),
+  ) as PullRequestEvent & PushEvent;
+  if (name === "push") {
+    return { base: event.before, head: event.after, draft: false, push: true };
+  }
+  return {
+    base: event.pull_request.base.sha,
+    head: event.pull_request.head.sha,
+    draft: event.pull_request.draft === true,
+    push: false,
+  };
+}
+
+/**
+ * Throws unless the push fast-forwards from a commit that had a green push run
+ * of this workflow on `main`, so that the skip of a job never lets a commit
+ * look green on top of one that was red, cancelled or never run.
+ */
+function assertPreviousGreen(base: string, head: string): void {
+  execFileSync("git", ["merge-base", "--is-ancestor", base, head], {
+    stdio: "ignore",
+  });
+  const runs = execFileSync(
+    "gh",
+    [
+      "api",
+      `repos/${process.env["GITHUB_REPOSITORY"] ?? ""}/actions/workflows/ci.yml/runs?head_sha=${base}&event=push&branch=main&status=success&per_page=1`,
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const count = (JSON.parse(runs) as { total_count?: unknown }).total_count;
+  if (typeof count !== "number" || count < 1) {
+    throw new Error("The commit before the push has no green run");
+  }
+}
+
+/** The changed paths. */
+function changedPaths({ base, head, push }: Change): string[] {
   if (!/^[a-f0-9]{40}$/.test(base) || !/^[a-f0-9]{40}$/.test(head)) {
     throw new Error("Missing commit IDs");
   }
+  if (push) assertPreviousGreen(base, head);
   // No rename detection, so moving code into a documentation path still
   // counts the deletion of its original path. NULs keep unusual names whole.
   return execFileSync(
@@ -123,10 +176,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let answer = classify([]);
   let draft = false;
   try {
-    const event = pullRequestEvent();
-    if (event !== undefined) {
-      draft = event.pull_request.draft === true;
-      answer = classify(changedPaths(event));
+    const change = readChange();
+    if (change !== undefined) {
+      draft = change.draft;
+      answer = classify(changedPaths(change));
     }
   } catch {
     // An unreadable diff must never turn a code change into a skipped job.
