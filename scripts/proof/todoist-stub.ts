@@ -375,10 +375,12 @@ export class TodoistStub {
         mapped = [command.temp_id, made];
         temp_id_mapping[command.temp_id] = made;
       }
-      this.answered.set(command.uuid, {
-        status,
-        ...(mapped !== undefined && { mapped }),
-      });
+      if (status === "ok") {
+        this.answered.set(command.uuid, {
+          status,
+          ...(mapped !== undefined && { mapped }),
+        });
+      }
       sync_status[command.uuid] = status;
     }
     return { sync_status, temp_id_mapping };
@@ -566,7 +568,11 @@ export class TodoistStub {
       out.description = args["description"];
     }
     if (typeof args["priority"] === "number") out.priority = args["priority"];
-    if (Array.isArray(args["labels"])) out.labels = args["labels"] as string[];
+    // Todoist keeps a task's labels in code unit order, whatever order they
+    // were sent in (seen live in October 2026).
+    if (Array.isArray(args["labels"])) {
+      out.labels = [...(args["labels"] as string[])].sort();
+    }
     if ("due" in args) {
       const due = args["due"];
       out.due =

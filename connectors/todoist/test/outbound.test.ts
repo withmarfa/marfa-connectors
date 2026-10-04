@@ -1581,10 +1581,13 @@ describe("labels, project and section changed in Marfa", () => {
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       { id: "a", labels: ["Work", "Home"] },
     ]);
-    expect(todoist.tasks.get("a")?.labels).toEqual(["Work", "Home"]);
+    expect(todoist.tasks.get("a")?.labels).toEqual(["Home", "Work"]);
     expect(todoist.commands("item_move")).toEqual([]);
 
-    marfa.edit(row.id, { labels: ["Home", "Work"] });
+    // Todoist keeps its labels in order, so the row now holds them so.
+    await landed();
+    expect(marfa.byId(row.id).properties["labels"]).toEqual(["Home", "Work"]);
+    marfa.edit(row.id, { labels: ["Work", "Home"] });
     await landed();
     expect(todoist.commands("item_update")).toHaveLength(1);
 

@@ -930,10 +930,10 @@ export async function proveTodoist(
             ]) ||
           task?.project_id !== "p-home" ||
           task.section_id !== "s-home" ||
-          task.labels.join() !== "Home,Errands" ||
+          task.labels.join() !== "Errands,Home" ||
           after.properties["project_id"] !== "p-home" ||
           after.properties["section_id"] !== "s-home" ||
-          JSON.stringify(after.properties["labels"]) !== '["Home","Errands"]'
+          JSON.stringify(after.properties["labels"]) !== '["Errands","Home"]'
         ) {
           throw new Error(
             `commands ${JSON.stringify(commands)}; Todoist holds ${JSON.stringify(task)}; the row holds ${JSON.stringify(after.properties)}`,
