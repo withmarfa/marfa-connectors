@@ -2533,6 +2533,31 @@ describe("a recurrence", () => {
     expect(todoist.commands("item_update")).toHaveLength(1);
   });
 
+  it("sends a date Todoist holds with fractions of a second without them", async () => {
+    const row = await placed("r", {
+      due: {
+        date: "2026-10-05T13:00:00.000000Z",
+        timezone: "Europe/London",
+        string: "Oct 5 at 2pm",
+        lang: "en",
+        is_recurring: false,
+      },
+    });
+    marfa.edit(row.id, { recurrence: "every day at 2pm" });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      {
+        id: "r",
+        due: {
+          string: "every day at 2pm",
+          lang: "en",
+          date: "2026-10-05T13:00:00Z",
+          timezone: "Europe/London",
+        },
+      },
+    ]);
+  });
+
   it("is put back, and sends nothing, when the row clears only the date of a repeating task", async () => {
     const row = await placed("r", { due: daily });
     const { due_at, precision, ...cleared } = marfa.byId(row.id).properties;

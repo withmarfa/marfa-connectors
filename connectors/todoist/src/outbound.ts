@@ -136,10 +136,12 @@ export function differing(
   return out;
 }
 
+// A date Todoist holds, as `dueFor` words one: Todoist answers a time with
+// fractions of a second, which a date sent never carries.
 function heldDue(due: TodoistItem["due"]): Due | null {
   if (typeof due?.date !== "string") return null;
   return {
-    date: due.date,
+    date: due.date.replace(/\.\d+(?=Z?$)/, ""),
     ...(typeof due.timezone === "string" && { timezone: due.timezone }),
   };
 }
