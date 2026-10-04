@@ -1458,7 +1458,12 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     const attempted = unlinked ? agreement.attempted : undefined;
-    const made = unlinked ? undefined : agreement.made;
+    // A run that died after the link landed on the row, before the agreement
+    // kept it, left the first send's time as `attempted` alone.
+    const made = unlinked
+      ? undefined
+      : (agreement.made ??
+        (agreement.link === undefined ? agreement.attempted : undefined));
     const change: Change = {
       kind: changeKind,
       item: current,
@@ -1569,7 +1574,11 @@ export async function runOnce<E extends EnvDeclaration>(
       answered,
     });
     // Until the row is linked, the vendor may still hold what a create made.
-    if (base?.attempted !== undefined && next.link === undefined) {
+    if (
+      base?.attempted !== undefined &&
+      next.link === undefined &&
+      lane(kind.type).rows.linkOf(item.properties) === undefined
+    ) {
       next.attempted = base.attempted;
     }
     if (base?.stateBy !== undefined && next.state === base.state) {

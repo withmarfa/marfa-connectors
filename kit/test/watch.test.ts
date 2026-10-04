@@ -1147,6 +1147,34 @@ describe("a create made and linked whose run then failed", () => {
     );
   });
 
+  it("is said when the process died before the link was kept, as the first send's time", async () => {
+    const { held, row } = await unfinished();
+    const kept = harness.server.agreements.get(row.id);
+    expect(kept?.record["made"]).toEqual(expect.any(String));
+    // What the instance holds when the run's end never flushed the link:
+    // the create's record from before it was sent.
+    const first = kept?.record["made"];
+    if (kept !== undefined) {
+      kept.record = {
+        vendor: {},
+        marfa: {},
+        state: "active",
+        attempted: first,
+        waiting: kept.record["waiting"],
+      };
+    }
+    await quietRun(held);
+    expect(held.changes.map((change) => [change.kind, change.made])).toEqual([
+      ["updated", first],
+    ]);
+    expect(held.changes[0]?.attempted).toBeUndefined();
+    harness.server.edit(row.id, { note: "second" });
+    await quietRun(held);
+    expect(held.changes.map((change) => [change.kind, change.made])).toEqual([
+      ["updated", undefined],
+    ]);
+  });
+
   it("is said no more once a change is carried", async () => {
     const { held, row } = await unfinished();
     await quietRun(held);
