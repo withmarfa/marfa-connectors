@@ -39,6 +39,7 @@ export interface SyncAnswer {
     id?: unknown;
     inbox_project_id?: unknown;
     tz_info?: { timezone?: unknown };
+    lang?: unknown;
   };
 }
 
@@ -465,6 +466,24 @@ export function timezoneOf(user: SyncAnswer["user"]): string | undefined {
   }
 }
 
+/** The language Todoist reads the account's due dates in. */
+export function langOf(user: SyncAnswer["user"]): string | undefined {
+  const lang = user?.lang;
+  return typeof lang === "string" && lang !== "" ? lang : undefined;
+}
+
+/**
+ * A recurring due's own words. Todoist words a one-off's date too, and keeps
+ * text it could not read as a recurrence on a one-off.
+ */
+export function recurrenceOf(due: TodoistItem["due"]): string | undefined {
+  return due?.is_recurring === true &&
+    typeof due.string === "string" &&
+    due.string !== ""
+    ? due.string
+    : undefined;
+}
+
 export function sourceId(account: string, taskId: string): string {
   return `${account}:${taskId}`;
 }
@@ -658,14 +677,7 @@ export function entryOf(
           ? item.labels
           : undefined,
       child_order: item.child_order,
-      // Todoist words a one-off's date too, and keeps text it could not read
-      // as a recurrence on a one-off.
-      recurrence:
-        item.due?.is_recurring === true &&
-        typeof item.due.string === "string" &&
-        item.due.string !== ""
-          ? item.due.string
-          : undefined,
+      recurrence: recurrenceOf(item.due),
     },
     occurred_at: item.added_at,
     changed_at: instantOf(item.updated_at),

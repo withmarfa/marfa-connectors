@@ -13,6 +13,7 @@ import {
   entryOf,
   firstSync,
   getTask,
+  langOf,
   namedZoneOf,
   readShape,
   sourceId,
@@ -154,6 +155,8 @@ const connector = defineConnector({
     );
     state.set("account", account);
     if (named !== undefined) state.set("timezone", named);
+    const lang = langOf(answer.user);
+    if (lang !== undefined) state.set("lang", lang);
     // A run a change started, with the state lost, archives only what it was
     // handed: the next scheduled run syncs in full again.
     if (hints !== undefined) return;

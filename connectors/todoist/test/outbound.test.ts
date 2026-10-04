@@ -209,11 +209,62 @@ describe("the mapping back", () => {
   });
 
   it("leaves a field the row did not change out of what is sent, so a task keeps what Todoist holds", () => {
-    const diff = { content: "Renamed", labels: ["Home"] };
-    expect(onlyChanged(diff, new Set(["title", "labels"]))).toEqual(diff);
+    const diff = { content: "Renamed", labels: ["Home"], recurrence: null };
+    expect(
+      onlyChanged(diff, new Set(["title", "labels", "recurrence"])),
+    ).toEqual(diff);
     expect(onlyChanged(diff, new Set(["title"]))).toEqual({
       content: "Renamed",
     });
+  });
+
+  it("compares a recurrence with Todoist's own words for a recurring due, and reads a row without one as none", () => {
+    const rowWith = (recurrence?: unknown): Parameters<typeof argsOf>[0] =>
+      ({
+        id: "r",
+        type: "todoist.task",
+        version: 1,
+        state: "active",
+        properties: {
+          title: "Water the plants",
+          due_at: "2026-10-05T00:00:00.000Z",
+          precision: "day",
+          ...(recurrence !== undefined && { recurrence }),
+        },
+      }) as unknown as Parameters<typeof argsOf>[0];
+    const repeating = todoist.task("t", {
+      content: "Water the plants",
+      due: {
+        date: "2026-10-05",
+        string: "every day",
+        lang: "en",
+        is_recurring: true,
+      },
+    });
+    const once = todoist.task("u", {
+      content: "Water the plants",
+      due: {
+        date: "2026-10-05",
+        string: "every day",
+        lang: "en",
+        is_recurring: false,
+      },
+    });
+    const diffOf = (
+      row: Parameters<typeof argsOf>[0],
+      task: ReturnType<TodoistStub["task"]>,
+    ): unknown => differing(argsOf(row, "UTC"), task, "UTC");
+    expect(argsOf(rowWith("every day"), "UTC").recurrence).toBe("every day");
+    expect(argsOf(rowWith(""), "UTC")).not.toHaveProperty("recurrence");
+    expect(diffOf(rowWith("every day"), repeating)).toEqual({});
+    expect(diffOf(rowWith("every week"), repeating)).toEqual({
+      recurrence: "every week",
+    });
+    expect(diffOf(rowWith(), repeating)).toEqual({ recurrence: null });
+    expect(diffOf(rowWith("every day"), once)).toEqual({
+      recurrence: "every day",
+    });
+    expect(diffOf(rowWith(), once)).toEqual({});
   });
 
   it("names one destination for a move: the section when it changed and is set, else the project, and the project's root for a cleared section", () => {
@@ -2090,6 +2141,190 @@ describe("labels, project and section changed in Marfa", () => {
       todoist.tasks.get(String(marfa.byId(row.id).properties["todoist_id"])),
     ).toMatchObject({ project_id: "inbox", labels: ["Home"] });
     expect(summary()).not.toContain("refused");
+  });
+});
+
+describe("a recurrence", () => {
+  const daily = {
+    date: "2026-10-05",
+    timezone: null,
+    string: "every day",
+    lang: "en",
+    is_recurring: true,
+  };
+
+  it("is read onto the row as Todoist words it, and cleared when the task stops repeating", async () => {
+    const row = await placed("r", { due: daily });
+    expect(marfa.byId(row.id).properties["recurrence"]).toBe("every day");
+    todoist.edit("r", {
+      due: { ...daily, string: "2026-10-05", is_recurring: false },
+    });
+    await landed();
+    expect(marfa.byId(row.id).properties).not.toHaveProperty("recurrence");
+    expect(todoist.commands()).toEqual([]);
+  });
+
+  it("comes back on a task made again after a trash and a restore, due on the row's date", async () => {
+    const row = await placed("r", { content: "Water the plants", due: daily });
+    marfa.trash(row.id);
+    await landed();
+    marfa.restore(row.id);
+    await landed();
+    expect(todoist.commands("item_add")[0]?.args["due"]).toEqual({
+      string: "every day",
+      lang: "en",
+      date: "2026-10-05",
+    });
+    const made = todoist.tasks.get(
+      String(marfa.byId(row.id).properties["todoist_id"]),
+    );
+    expect(made?.due).toMatchObject({
+      date: "2026-10-05",
+      string: "every day",
+      is_recurring: true,
+    });
+    await landed();
+    expect(marfa.byId(row.id).properties["recurrence"]).toBe("every day");
+    expect(summary()).toMatch(/conflicts 0/);
+  });
+
+  it("is made with a row made in Marfa, dated by Todoist where the row names no date", async () => {
+    todoist.put(todoist.task("seed"));
+    await landed();
+    const row = personsRow({
+      title: "Stretch",
+      status: "pending",
+      recurrence: "every day",
+    });
+    await landed();
+    expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
+      string: "every day",
+      lang: "en",
+    });
+    const made = todoist.tasks.get(
+      String(marfa.byId(row.id).properties["todoist_id"]),
+    );
+    expect(made?.due).toMatchObject({
+      string: "every day",
+      is_recurring: true,
+    });
+    expect(made?.due?.["date"]).toEqual(expect.any(String));
+  });
+
+  it("is set by the row in the account's language, on the date the task holds", async () => {
+    todoist.lang = "de";
+    const row = await placed("r", {
+      due: { ...daily, string: "Oct 5", is_recurring: false },
+    });
+    marfa.edit(row.id, { recurrence: "every week" });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      {
+        id: "r",
+        due: { string: "every week", lang: "de", date: "2026-10-05" },
+      },
+    ]);
+    expect(todoist.tasks.get("r")?.due).toMatchObject({
+      date: "2026-10-05",
+      string: "every week",
+      is_recurring: true,
+    });
+  });
+
+  it("is changed with the date when the row changes both, keeping a floating time", async () => {
+    const row = await placed("r", {
+      due: { ...daily, date: "2026-10-05T10:00:00", string: "every day at 10" },
+    });
+    marfa.edit(row.id, {
+      recurrence: "every weekday at 10",
+      due_at: "2026-10-07T09:00:00.000Z",
+      precision: "time",
+    });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      {
+        id: "r",
+        due: {
+          string: "every weekday at 10",
+          lang: "en",
+          date: "2026-10-07T10:00:00",
+        },
+      },
+    ]);
+  });
+
+  it("ends when the row clears it, leaving a task due once on its current date", async () => {
+    const row = await placed("r", { due: daily });
+    const { recurrence, ...cleared } = marfa.byId(row.id).properties;
+    expect(recurrence).toBe("every day");
+    marfa.rewrite(`${todoist.account}:r`, cleared);
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "r", due: { date: "2026-10-05" } },
+    ]);
+    expect(todoist.tasks.get("r")?.due).toMatchObject({
+      date: "2026-10-05",
+      is_recurring: false,
+    });
+    await landed();
+    expect(marfa.byId(row.id).properties).not.toHaveProperty("recurrence");
+    expect(todoist.commands("item_update")).toHaveLength(1);
+  });
+
+  it("is kept on a row that does not hold it yet when another field changes", async () => {
+    // As a row read before the field existed: Todoist's task repeats, the row
+    // has never held it, and only its title changes.
+    const row = await placed("r", {
+      due: { ...daily, string: "Oct 5", is_recurring: false },
+    });
+    const task = todoist.tasks.get("r");
+    if (task !== undefined) task.due = { ...daily };
+    marfa.edit(row.id, { title: "Water the ferns" });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "r", content: "Water the ferns" },
+    ]);
+    expect(todoist.tasks.get("r")?.due).toMatchObject({
+      string: "every day",
+      is_recurring: true,
+    });
+  });
+
+  it("names the row when Todoist cannot read it, and still carries the other fields", async () => {
+    const row = await placed("r", {
+      due: { ...daily, string: "Oct 5", is_recurring: false },
+    });
+    marfa.edit(row.id, { title: "Water the ferns", recurrence: "zzqx blorp" });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      {
+        id: "r",
+        content: "Water the ferns",
+        due: { string: "zzqx blorp", lang: "en", date: "2026-10-05" },
+      },
+    ]);
+    expect(todoist.tasks.get("r")).toMatchObject({
+      content: "Water the ferns",
+      due: { date: "2026-10-05", is_recurring: false },
+    });
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist could not read the recurrence "zzqx blorp", so task r is due once`,
+    );
+    // The next read brings the title it carried, which sends what still
+    // differs once more under the same command id, which Todoist runs once.
+    await landed();
+    await landed();
+    const updates = todoist.commands("item_update");
+    expect(updates.map((c) => c.args)).toEqual([
+      expect.objectContaining({ content: "Water the ferns" }),
+      {
+        id: "r",
+        due: { string: "zzqx blorp", lang: "en", date: "2026-10-05" },
+      },
+    ]);
+    expect(updates[1]?.uuid).toBe(updates[0]?.uuid);
+    expect(summary()).toContain('could not read the recurrence "zzqx blorp"');
+    expect(marfa.byId(row.id).properties["recurrence"]).toBe("zzqx blorp");
   });
 });
 
