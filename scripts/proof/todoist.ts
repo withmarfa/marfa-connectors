@@ -412,7 +412,6 @@ export async function proveTodoist(
         }
         await runOnce();
         const adds = todoist.commands("item_add");
-        filed = created.id;
         const linked = await item(marfa, created.id);
         const taskId = linked.properties["todoist_id"];
         const task =
@@ -878,6 +877,7 @@ export async function proveTodoist(
           labels: ["Home"],
           status: "pending",
         });
+        filed = created.id;
         await runOnce();
         await runOnce();
         const linked = await item(marfa, created.id);
