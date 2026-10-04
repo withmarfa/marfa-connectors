@@ -31,6 +31,9 @@ export interface ReceivedRequest {
   path: string;
   at: number;
   syncToken?: string;
+  // The resources a sync asked for, such as `["user"]` alone to read the
+  // account.
+  resources?: string;
   commands?: ReceivedCommand[];
 }
 
@@ -61,6 +64,10 @@ export class TodoistStub {
   readonly received: ReceivedRequest[] = [];
   account = "1001";
   timezone: string | null = "Europe/London";
+  // The account's language, none where the user answers none, and the
+  // language it sets for date recognition instead, as Todoist words them.
+  lang: string | null = "en";
+  dateistLang: string | null = null;
   private userSeq = 0;
   // A day before the scripted server's clock, so a command the connector
   // sends is earlier than a person's later change in Marfa.
@@ -170,6 +177,14 @@ export class TodoistStub {
     this.userSeq = this.seq;
   }
 
+  /** The account changes the language it words dates in. */
+  speak(lang: string | null, dateistLang: string | null = null): void {
+    this.lang = lang;
+    this.dateistLang = dateistLang;
+    this.seq += 1;
+    this.userSeq = this.seq;
+  }
+
   refuseNext(
     status: number,
     options: {
@@ -233,6 +248,8 @@ export class TodoistStub {
         record.commands = JSON.parse(commands) as ReceivedCommand[];
       } else {
         record.syncToken = form.get("sync_token") ?? "*";
+        const resources = form.get("resource_types");
+        if (resources !== null) record.resources = resources;
       }
     }
     this.received.push(record);
@@ -300,6 +317,8 @@ export class TodoistStub {
           id: this.account,
           tz_info: { timezone: this.timezone },
           inbox_project_id: "inbox",
+          ...(this.lang !== null && { lang: this.lang }),
+          features: { dateist_lang: this.dateistLang },
         },
       }),
     };
@@ -399,6 +418,20 @@ export class TodoistStub {
       error: "Item not found",
       http_code: 400,
     };
+    if (
+      (command.type === "item_add" || command.type === "item_update") &&
+      unreadable(args["due"])
+    ) {
+      return {
+        status: {
+          error: "Date is invalid",
+          error_code: 480,
+          error_extra: { explanation: 'Unable to parse "due_string" value' },
+          error_tag: "INVALID_DATE",
+          http_code: 400,
+        },
+      };
+    }
     switch (command.type) {
       case "item_add": {
         const project = args["project_id"];
@@ -580,7 +613,11 @@ export class TodoistStub {
       out.due =
         due === null
           ? null
-          : dueOf(due as Record<string, unknown>, this.timezone);
+          : dueOf(
+              due as Record<string, unknown>,
+              this.timezone,
+              this.dateistLang ?? this.lang ?? "en",
+            );
     }
     return out;
   }
@@ -591,16 +628,28 @@ export class TodoistStub {
  * task due once, a recurring one included, with the date as its text; a
  * recurrence's text sent with a date keeps the recurrence and takes the date
  * as its next occurrence, whatever day it falls on, and keeps a whole day or
- * a time as sent whatever the recurrence names; a time fixed in UTC takes the
- * zone sent with it, or the account's, and a floating one none. The stub reads a text beginning "every" or "after"
- * as a recurrence, where Todoist parses it.
+ * a time as sent whatever the recurrence names; text created without a date
+ * is due at its first occurrence, today for "every day"; text sent with a
+ * date that Todoist cannot read is kept as a one-off's text, and the same
+ * text sent alone is refused; the language is the one sent, or the
+ * account's; a time fixed in UTC takes the zone sent with it, or the
+ * account's, and a floating one none. The stub reads as a recurrence only
+ * "every" or "after" with more text after it, where Todoist parses the text,
+ * refuses any other text sent alone, and dates a recurrence sent alone today
+ * in the account's zone.
  */
 function dueOf(
   sent: Record<string, unknown>,
   zone: string | null,
+  lang: string,
 ): Record<string, unknown> {
-  const date = typeof sent["date"] === "string" ? sent["date"] : null;
-  const text = typeof sent["string"] === "string" ? sent["string"] : date;
+  const text = typeof sent["string"] === "string" ? sent["string"] : undefined;
+  const date =
+    typeof sent["date"] === "string"
+      ? sent["date"]
+      : text === undefined
+        ? null
+        : today(zone ?? "UTC");
   return {
     date,
     timezone:
@@ -609,12 +658,29 @@ function dueOf(
         : date?.endsWith("Z") === true
           ? zone
           : null,
-    string: text,
-    lang: typeof sent["lang"] === "string" ? sent["lang"] : "en",
-    is_recurring:
-      typeof sent["string"] === "string" &&
-      /^(every|after)\b/i.test(sent["string"]),
+    string: text ?? date,
+    lang: typeof sent["lang"] === "string" ? sent["lang"] : lang,
+    is_recurring: text !== undefined && recurs(text),
   };
+}
+
+function recurs(text: string): boolean {
+  return /^(every!?|after)\s+\S/i.test(text);
+}
+
+function unreadable(due: unknown): boolean {
+  if (typeof due !== "object" || due === null) return false;
+  const { string: text, date } = due as Record<string, unknown>;
+  return typeof text === "string" && typeof date !== "string" && !recurs(text);
+}
+
+function today(zone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 }
 
 function nextOccurrence(due: Record<string, unknown>): Record<string, unknown> {

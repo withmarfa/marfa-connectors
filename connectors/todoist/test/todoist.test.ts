@@ -9,6 +9,8 @@ import {
   accountOf,
   dueOf,
   entryOf,
+  langOf,
+  readShape,
   timezoneOf,
   type SyncAnswer,
   type TodoistItem,
@@ -30,6 +32,7 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
+    recurrence: { type: "string" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };
@@ -422,6 +425,97 @@ describe("the mapping", () => {
     expect(properties["completed_at"]).toBeUndefined();
   });
 
+  it("keeps a recurring task's recurrence as Todoist words it, and none for a one-off", () => {
+    const recurrence = (due: NonNullable<TodoistItem["due"]> | null): unknown =>
+      entryOf("1", "UTC", task("a", { due })).properties["recurrence"];
+    expect(recurrence(fixedSent)).toBe("every day at 2pm");
+    expect(
+      recurrence({
+        date: "2026-10-04",
+        string: "jeden Tag",
+        lang: "de",
+        is_recurring: true,
+      }),
+    ).toBe("jeden Tag");
+    // Todoist words a one-off's date too, and keeps text it could not read
+    // as a recurrence on a one-off (seen live in October 2026).
+    expect(recurrence(wholeDaySent)).toBeUndefined();
+    expect(
+      recurrence({
+        date: "2026-10-10",
+        string: "every flibbertigibbet",
+        is_recurring: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      recurrence({ date: "2026-10-10", is_recurring: true }),
+    ).toBeUndefined();
+    expect(
+      recurrence({ date: "2026-10-10", string: "", is_recurring: true }),
+    ).toBeUndefined();
+    expect(recurrence(null)).toBeUndefined();
+  });
+
+  it("reads the language a due is worded in from the account's, which Todoist names differently", () => {
+    // The user's `lang` takes `pt_BR`, `zh_CN` and `zh_TW` and `tr`; a due's
+    // `lang` takes `pt`, `zh` and `tw` and has no `tr`.
+    const due = (lang: unknown): string | undefined => langOf({ lang });
+    expect(
+      [
+        "da",
+        "de",
+        "en",
+        "es",
+        "fi",
+        "fr",
+        "it",
+        "ja",
+        "ko",
+        "nl",
+        "pl",
+        "ru",
+        "sv",
+        "pt_BR",
+        "zh_CN",
+        "zh_TW",
+      ].map(due),
+    ).toEqual([
+      "da",
+      "de",
+      "en",
+      "es",
+      "fi",
+      "fr",
+      "it",
+      "ja",
+      "ko",
+      "nl",
+      "pl",
+      "ru",
+      "sv",
+      "pt",
+      "zh",
+      "tw",
+    ]);
+    for (const none of ["tr", "xx", "", 3, null, undefined, "constructor"]) {
+      expect(due(none)).toBeUndefined();
+    }
+    expect(langOf(undefined)).toBeUndefined();
+    expect(langOf({})).toBeUndefined();
+  });
+
+  it("reads the language the account sets for date recognition instead, whatever the account's own", () => {
+    const set = (dateist_lang: unknown, lang = "en"): string | undefined =>
+      langOf({ lang, features: { dateist_lang } });
+    expect(set("fr")).toBe("fr");
+    expect(set("zh_TW", "de")).toBe("tw");
+    // No words for it: not the account's language, which it overrides.
+    expect(set("tr", "de")).toBeUndefined();
+    expect(set(null, "de")).toBe("de");
+    expect(set("", "de")).toBe("de");
+    expect(langOf({ features: { dateist_lang: "pt_BR" } })).toBe("pt");
+  });
+
   it("refuses an account it could not key a task by", () => {
     expect(accountOf({ id: "2671355" })).toBe("2671355");
     expect(accountOf({ id: " 2671355 " })).toBe("2671355");
@@ -474,6 +568,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t1",
+      read_shape: readShape(),
     });
   });
 
@@ -522,6 +617,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t2",
+      read_shape: readShape(),
     });
   });
 
@@ -570,7 +666,11 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toMatch(
       /^created 0, .*named no timezone/,
     );
-    expect(state()).toEqual({ account: "2671355", sync_token: "t1" });
+    expect(state()).toEqual({
+      account: "2671355",
+      sync_token: "t1",
+      read_shape: readShape(),
+    });
   });
 
   it("holds the token when a write did not land, and asks for the same delta again", async () => {
@@ -595,6 +695,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t1",
+      read_shape: readShape(),
     });
   });
 
@@ -766,6 +867,86 @@ describe("the connector, run as a process", () => {
       "t-delta-1",
     ]);
     expect(marfa.row("2671355:a").properties["status"]).toBe("completed");
+  });
+
+  it("syncs in full once when it reads tasks in a new shape, so rows held from before gain the new fields", async () => {
+    // Each full sync words the recurrence anew, which no delta brings: only a
+    // full sync puts it on the row.
+    const worded = [undefined, "every day at 2pm", "every weekday at 2pm"];
+    let fulls = 0;
+    let deltas = 0;
+    answer = (syncToken) => {
+      const user = { id: "2671355", tz_info: { timezone: "Europe/London" } };
+      if (syncToken === "*") {
+        fulls += 1;
+        const string = worded[fulls - 1];
+        return {
+          sync_token: `t-full-${String(fulls)}`,
+          items: [
+            task("a", {
+              due:
+                string === undefined ? wholeDaySent : { ...fixedSent, string },
+            }),
+            ...(fulls === 1 ? [task("b"), task("c")] : []),
+          ],
+          user,
+        };
+      }
+      deltas += 1;
+      return {
+        sync_token: `t-delta-${String(deltas)}`,
+        items:
+          deltas === 1
+            ? [
+                task("b", { is_deleted: true }),
+                task("c", {
+                  checked: true,
+                  completed_at: "2026-10-02T10:00:00.000000Z",
+                }),
+              ]
+            : [],
+        user,
+      };
+    };
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["recurrence"]).toBeUndefined();
+    const shape = readShape();
+    expect(state()["read_shape"]).toBe(shape);
+    // As a connector that read fewer fields left it: the state names no
+    // shape, or another one.
+    for (const held of [undefined, "an older shape"]) {
+      const stored = structuredClone(marfa.states.get("todoist") ?? {});
+      const kept = stored["state"] as Record<string, unknown>;
+      if (held === undefined) delete kept["read_shape"];
+      else kept["read_shape"] = held;
+      marfa.states.set("todoist", stored);
+      expect((await once()).code).toBe(0);
+      expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+        worded[fulls - 1],
+      );
+      expect(state()["read_shape"]).toBe(shape);
+    }
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full-1",
+      "*",
+      "t-delta-1",
+      "*",
+      "t-delta-2",
+    ]);
+    expect(fulls).toBe(3);
+    expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+      "every weekday at 2pm",
+    );
+    // The delta's deletion and completion are kept beside the full sync, as
+    // for a moved zone.
+    expect(marfa.row("2671355:b").state).toBe("archived");
+    expect(marfa.row("2671355:c").properties).toMatchObject({
+      status: "completed",
+      completed_at: "2026-10-02T10:00:00.000Z",
+    });
+    expect(state()).toMatchObject({ sync_token: "t-delta-3" });
   });
 
   it("names an unknown zone even with one held, and reads in the one held", async () => {

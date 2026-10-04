@@ -1,4 +1,5 @@
 import {
+  Declined,
   LinkTaken,
   Refused,
   Unreachable,
@@ -12,8 +13,10 @@ import {
   dueFor,
   dueOf,
   getTask,
+  langOf,
   namedZoneOf,
   priorityFor,
+  recurrenceOf,
   send,
   timezoneOf,
   Unanswered,
@@ -52,6 +55,9 @@ export interface TaskArgs {
   due: Due | null;
   // Absent where the row holds none, which `differing` reads as no labels.
   labels?: string[];
+  // Absent where the row holds none; null in a diff where the row ended it.
+  // Todoist takes it as the due's text, never as a field of its own.
+  recurrence?: string | null;
 }
 
 interface Due {
@@ -60,6 +66,9 @@ interface Due {
   lang?: string;
   timezone?: string;
 }
+
+/** A due as sent: a recurrence sent alone is dated by Todoist. */
+type SentDue = Omit<Due, "date"> & { date?: string };
 
 export function argsOf(item: Item, timeZone: string): TaskArgs {
   const p = item.properties;
@@ -75,6 +84,8 @@ export function argsOf(item: Item, timeZone: string): TaskArgs {
         (label): label is string => typeof label === "string",
       ),
     }),
+    ...(typeof p["recurrence"] === "string" &&
+      p["recurrence"] !== "" && { recurrence: p["recurrence"] }),
   };
 }
 
@@ -82,9 +93,10 @@ export function argsOf(item: Item, timeZone: string): TaskArgs {
 // their property on the row. Todoist can change these between a read and a
 // write, so a row that did not change one never sends it, and the task keeps
 // what Todoist holds.
-const whenChanged = { labels: "labels" } as const satisfies Partial<
-  Record<keyof TaskArgs, string>
->;
+const whenChanged = {
+  labels: "labels",
+  recurrence: "recurrence",
+} as const satisfies Partial<Record<keyof TaskArgs, string>>;
 
 export function onlyChanged(
   diff: Partial<TaskArgs>,
@@ -118,7 +130,56 @@ export function differing(
   if (JSON.stringify(have) !== JSON.stringify(want)) out.due = wanted.due;
   const labels = wanted.labels ?? [];
   if (!sameSet(labels, task.labels ?? [])) out.labels = labels;
+  if (wanted.recurrence !== recurrenceOf(task.due)) {
+    out.recurrence = wanted.recurrence ?? null;
+  }
   return out;
+}
+
+// A date Todoist holds, as `dueFor` words one: Todoist answers a time with
+// fractions of a second, which a date sent never carries.
+function heldDue(due: TodoistItem["due"]): Due | null {
+  if (typeof due?.date !== "string") return null;
+  return {
+    date: due.date.replace(/\.\d+(?=Z?$)/, ""),
+    ...(typeof due.timezone === "string" && { timezone: due.timezone }),
+  };
+}
+
+// Todoist reads a recurrence's text on the date sent with it as its next
+// occurrence, and a date alone as a task due once (seen live in October
+// 2026), so an ended recurrence leaves the task due once on its date.
+function recurring(
+  due: SentDue | null,
+  recurrence: string | null,
+  lang: string | undefined,
+): SentDue | null | undefined {
+  const when: SentDue = {
+    ...(due?.date !== undefined && { date: due.date }),
+    ...(due?.timezone !== undefined && { timezone: due.timezone }),
+  };
+  if (recurrence === null) return due === null ? undefined : when;
+  return {
+    string: recurrence,
+    ...(lang !== undefined && { lang }),
+    ...when,
+  };
+}
+
+// What `item_add` and `item_update` take: the recurrence goes as the due's
+// text.
+function sendable(
+  { recurrence, ...args }: Partial<TaskArgs>,
+  lang: string | undefined,
+  held: Due | null,
+): Omit<Partial<TaskArgs>, "due" | "recurrence"> & { due?: SentDue | null } {
+  if (recurrence === undefined) return args;
+  const due = recurring(
+    args.due === undefined ? held : args.due,
+    recurrence,
+    lang,
+  );
+  return { ...args, ...(due !== undefined && { due }) };
 }
 
 export type Move = { section_id: string } | { project_id: string };
@@ -155,6 +216,30 @@ export function destination(
 }
 
 const zones = new WeakMap<object, Promise<string>>();
+const users = new WeakMap<object, Promise<SyncAnswer["user"]>>();
+
+function userFor(
+  context: WatchContext<OutboundEnv>,
+  todoist: Door,
+): Promise<SyncAnswer["user"]> {
+  let asked = users.get(context);
+  if (asked === undefined) {
+    asked = todoist.user();
+    users.set(context, asked);
+  }
+  return asked;
+}
+
+/** Asked only for a recurrence the row sets, from the sync where it can be. */
+type Lang = () => Promise<string | undefined>;
+
+function langFor(context: WatchContext<OutboundEnv>, todoist: Door): Lang {
+  return async () => {
+    const held = context.state.get("lang");
+    if (typeof held === "string") return held;
+    return langOf(await userFor(context, todoist));
+  };
+}
 
 function timeZoneFor(
   context: WatchContext<OutboundEnv>,
@@ -165,7 +250,7 @@ function timeZoneFor(
   let asked = zones.get(context);
   if (asked === undefined) {
     asked = (async (): Promise<string> => {
-      const account = await todoist.user();
+      const account = await userFor(context, todoist);
       const zone = timezoneOf(account);
       if (zone !== undefined) return zone;
       const unknown = namedZoneOf(account);
@@ -288,6 +373,7 @@ async function carried(
   const { env, signal } = context;
   const todoist = new Door(base, env.TODOIST_API_TOKEN, signal);
   const timeZone = await timeZoneFor(context, todoist);
+  const lang = langFor(context, todoist);
   let taskId = linkOf(item);
 
   if (kind === "archived" && change.changed.size === 0) return;
@@ -295,10 +381,12 @@ async function carried(
   // A task just made has its labels, project and section from the create, or
   // the Inbox where its project was gone, which a move would undo.
   let changed = change.changed;
+  let made = false;
   if (taskId === undefined) {
     if (kind === "trashed" || kind === "purged") return;
-    taskId = await add(item, timeZone, todoist, context, change.refused);
+    taskId = await add(item, timeZone, lang, todoist, context, change.refused);
     changed = new Set();
+    made = true;
   }
 
   if (kind === "trashed" || kind === "purged") {
@@ -316,7 +404,17 @@ async function carried(
     return;
   }
 
-  await sync(item, kind, changed, taskId, timeZone, todoist);
+  const task = await held(taskId, kind, todoist);
+  if (task === undefined) return;
+  await sync(item, kind, changed, taskId, task, timeZone, lang, todoist);
+  await readBack(
+    item,
+    made ? undefined : changed,
+    taskId,
+    task.due,
+    timeZone,
+    todoist,
+  );
 }
 
 async function remade(
@@ -334,26 +432,28 @@ async function remade(
   }
   if (found !== "deleted") return false;
   const timeZone = await timeZoneFor(context, todoist);
+  const lang = langFor(context, todoist);
   const made = await add(
     item,
     timeZone,
+    lang,
     todoist,
     context,
     change.refused,
     taskId,
   );
-  await sync(item, change.kind, new Set(), made, timeZone, todoist);
+  const task = await held(made, change.kind, todoist);
+  if (task === undefined) return true;
+  await sync(item, change.kind, new Set(), made, task, timeZone, lang, todoist);
+  await readBack(item, undefined, made, task.due, timeZone, todoist);
   return true;
 }
 
-async function sync(
-  item: Item,
-  kind: Change["kind"],
-  changed: ReadonlySet<string>,
+async function held(
   taskId: string,
-  timeZone: string,
+  kind: Change["kind"],
   todoist: Door,
-): Promise<void> {
+): Promise<TodoistItem | undefined> {
   const task = await todoist.task(taskId);
   if (task === "forbidden" || task === "unknown") {
     throw new Refused(unreached(taskId, task));
@@ -361,17 +461,44 @@ async function sync(
   if (task === "deleted") {
     // An archive owes a deleted task nothing; the sync that brings the
     // deletion archives the row of any other change.
-    if (kind === "archived") return;
+    if (kind === "archived") return undefined;
     throw new Refused(`Todoist deleted task ${taskId}`);
   }
+  return task;
+}
 
-  const diff = onlyChanged(
-    differing(argsOf(item, timeZone), task, timeZone),
-    changed,
-  );
-  if (diff.due !== undefined && diff.due !== null) {
-    diff.due = moved(diff.due.date, task.due, timeZone);
+async function sync(
+  item: Item,
+  kind: Change["kind"],
+  changed: ReadonlySet<string>,
+  taskId: string,
+  task: TodoistItem,
+  timeZone: string,
+  lang: Lang,
+  todoist: Door,
+): Promise<void> {
+  const wanted = argsOf(item, timeZone);
+  const changes = onlyChanged(differing(wanted, task, timeZone), changed);
+  if (changes.due !== undefined && changes.due !== null) {
+    changes.due = moved(changes.due.date, task.due, timeZone);
   }
+  // A recurring task always has a date: a row made holding a recurrence and
+  // no date takes the one Todoist gives it, and one whose date alone a person
+  // cleared is put back. With other edits, those are carried and the date
+  // comes back with the next read.
+  if (changes.due === null && wanted.recurrence !== undefined) {
+    if (changed.has("due_at") && Object.keys(changes).length === 1) {
+      throw new Declined(
+        `A repeating task needs a date, so clearing the date of ${item.id} is not sent; clear its recurrence first`,
+      );
+    }
+    delete changes.due;
+  }
+  const diff = sendable(
+    changes,
+    typeof changes.recurrence === "string" ? await lang() : undefined,
+    heldDue(task.due),
+  );
   if (Object.keys(diff).length > 0) {
     const answer = await todoist.one(
       "item_update",
@@ -422,6 +549,50 @@ async function inFallback(
   return typeof inbox === "string" && task.project_id === inbox;
 }
 
+// Todoist keeps text it cannot read as a recurrence, sent with a date, as a
+// task due once rather than refusing it (seen live in October 2026), so a
+// task made with the row's recurrence, or sent one the row changed, is read
+// back once the other fields have landed. A task that repeated before is
+// given its recurrence again, on the date it holds now.
+async function readBack(
+  item: Item,
+  changed: ReadonlySet<string> | undefined,
+  taskId: string,
+  before: TodoistItem["due"],
+  timeZone: string,
+  todoist: Door,
+): Promise<void> {
+  const recurrence = argsOf(item, timeZone).recurrence;
+  if (typeof recurrence !== "string") return;
+  if (changed !== undefined && !changed.has("recurrence")) return;
+  const task = await todoist.task(taskId);
+  if (typeof task !== "object" || task.due?.is_recurring === true) return;
+  const kept = recurrenceOf(before);
+  if (kept === undefined) {
+    throw new Refused(
+      `Todoist could not read the recurrence "${recurrence}", so task ${taskId} is due once`,
+    );
+  }
+  const answer = await todoist.one(
+    "item_update",
+    commandId(item, "item_update:recurrence"),
+    {
+      id: taskId,
+      due: recurring(
+        heldDue(task.due),
+        kept,
+        typeof before?.lang === "string" ? before.lang : undefined,
+      ),
+    },
+  );
+  if (answer !== "ok") {
+    throw notTaken(answer, `putting back the recurrence of task ${taskId}`);
+  }
+  throw new Refused(
+    `Todoist could not read the recurrence "${recurrence}", so task ${taskId} keeps repeating "${kept}"`,
+  );
+}
+
 function unreached(taskId: string, answer: "forbidden" | "unknown"): string {
   return answer === "forbidden"
     ? `Todoist refuses access to task ${taskId}`
@@ -458,6 +629,7 @@ function moved(date: string, have: TodoistItem["due"], timeZone: string): Due {
 async function add(
   item: Item,
   timeZone: string,
+  lang: Lang,
   todoist: Door,
   context: WatchContext<OutboundEnv>,
   refused: string | undefined,
@@ -473,6 +645,12 @@ async function add(
   const uuid = uuidFor(item.id, "item_add", ...again);
   let tempId = uuidFor(item.id, "temp_id", ...again);
   const p = item.properties;
+  const wanted = argsOf(item, timeZone);
+  const args = sendable(
+    wanted,
+    wanted.recurrence === undefined ? undefined : await lang(),
+    null,
+  );
   const where = {
     ...(typeof p["project_id"] === "string" && {
       project_id: p["project_id"],
@@ -486,7 +664,7 @@ async function add(
       type: "item_add",
       uuid,
       temp_id: tempId,
-      args: { ...argsOf(item, timeZone), ...where },
+      args: { ...args, ...where },
     },
   ]);
   let status = answer.sync_status[uuid];
@@ -501,7 +679,7 @@ async function add(
         type: "item_add",
         uuid: inboxUuid,
         temp_id: inboxTemp,
-        args: { ...argsOf(item, timeZone) },
+        args,
       },
     ]);
     status = answer.sync_status[inboxUuid];

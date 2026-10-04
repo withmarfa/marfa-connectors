@@ -39,10 +39,13 @@ export interface SyncAnswer {
     id?: unknown;
     inbox_project_id?: unknown;
     tz_info?: { timezone?: unknown };
+    lang?: unknown;
+    features?: { dateist_lang?: unknown } | null;
   };
 }
 
 export const firstSync = "*";
+export const syncResources = ["items", "user"] as const;
 export const defaultBase = "https://api.todoist.com";
 const requestTimeoutMs = 60_000;
 const longestWaitMs = 60_000;
@@ -173,7 +176,7 @@ export async function sync(
       method: "POST",
       body: new URLSearchParams({
         sync_token: syncToken,
-        resource_types: JSON.stringify(["items", "user"]),
+        resource_types: JSON.stringify(syncResources),
       }),
     },
     signal,
@@ -464,6 +467,52 @@ export function timezoneOf(user: SyncAnswer["user"]): string | undefined {
   }
 }
 
+// A due's `lang` is worded differently from the user's `lang` and
+// `dateist_lang`: the three that carry a region lose it, and a due has no `tr`.
+const dueLangs: ReadonlyMap<string, string> = new Map([
+  ...[
+    "da",
+    "de",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "it",
+    "ja",
+    "ko",
+    "nl",
+    "pl",
+    "ru",
+    "sv",
+  ].map((lang): [string, string] => [lang, lang]),
+  ["pt_BR", "pt"],
+  ["zh_CN", "zh"],
+  ["zh_TW", "tw"],
+]);
+
+/**
+ * The `lang` to send a due's text with: the language the account sets for
+ * date recognition, else its own, worded as a due words it. None where a due
+ * has no word for it, so Todoist reads the text by the account's settings.
+ */
+export function langOf(user: SyncAnswer["user"]): string | undefined {
+  const set = user?.features?.dateist_lang;
+  const lang = typeof set === "string" && set !== "" ? set : user?.lang;
+  return typeof lang === "string" ? dueLangs.get(lang) : undefined;
+}
+
+/**
+ * A recurring due's own words. Todoist words a one-off's date too, and keeps
+ * text it could not read as a recurrence on a one-off.
+ */
+export function recurrenceOf(due: TodoistItem["due"]): string | undefined {
+  return due?.is_recurring === true &&
+    typeof due.string === "string" &&
+    due.string !== ""
+    ? due.string
+    : undefined;
+}
+
 export function sourceId(account: string, taskId: string): string {
   return `${account}:${taskId}`;
 }
@@ -615,7 +664,19 @@ export const taskFields = [
   "parent_id",
   "labels",
   "child_order",
+  "recurrence",
 ] as const;
+
+/**
+ * Names what a sync reads, so a connector that reads a new field or resource
+ * syncs in full once and fills the rows it already holds.
+ */
+export function readShape(): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ fields: taskFields, resources: syncResources }))
+    .digest("hex")
+    .slice(0, 16);
+}
 
 export function entryOf(
   account: string,
@@ -645,6 +706,7 @@ export function entryOf(
           ? item.labels
           : undefined,
       child_order: item.child_order,
+      recurrence: recurrenceOf(item.due),
     },
     occurred_at: item.added_at,
     changed_at: instantOf(item.updated_at),
