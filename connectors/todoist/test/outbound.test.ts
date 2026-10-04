@@ -2190,7 +2190,7 @@ describe("labels, project and section changed in Marfa", () => {
     expect(summary()).toContain("Todoist has no project p-gone to move task a");
   });
 
-  it("closes a task made in the Inbox on the run after a close nobody answered, without asking for the project that is gone", async () => {
+  it("closes a task made in the Inbox on the run after a close nobody answered, without raising the project that is gone", async () => {
     todoist.projects = new Set(["inbox"]);
     const row = personsRow({
       title: "Filed away, done",
@@ -2220,7 +2220,7 @@ describe("labels, project and section changed in Marfa", () => {
     expect(marfa.byId(row.id).properties["status"]).toBe("completed");
   });
 
-  it("closes a task made at its project's root on the run after a close nobody answered, whose section is gone", async () => {
+  it("closes a task made at its project's root on the run after a close nobody answered, without raising the section that is gone", async () => {
     todoist.projects = new Set(["inbox", "p-work"]);
     personsRow({
       title: "Sectioned, done",
