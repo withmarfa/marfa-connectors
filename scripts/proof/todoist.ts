@@ -866,6 +866,7 @@ export async function proveTodoist(
       },
     );
 
+    let filed: string | undefined;
     await check(
       "todoist: a todoist.task created in Marfa naming a project, section and labels is made there in Todoist and keeps them",
       async () => {
@@ -876,6 +877,7 @@ export async function proveTodoist(
           labels: ["Home"],
           status: "pending",
         });
+        filed = created.id;
         await runOnce();
         await runOnce();
         const linked = await item(marfa, created.id);
@@ -895,6 +897,49 @@ export async function proveTodoist(
           );
         }
         return `Todoist made ${String(taskId)} in p-work, section s-later, labelled Home, and the row keeps them after the next run`;
+      },
+    );
+
+    await check(
+      "todoist: a todoist.task edited in Marfa to change its labels, project and section is moved and relabelled in Todoist, and the row keeps the change",
+      async () => {
+        if (filed === undefined) throw new Error("no row was filed");
+        const before = await item(marfa, filed);
+        const taskId = before.properties["todoist_id"];
+        if (typeof taskId !== "string") throw new Error("the row has no task");
+        todoist.sections = new Map([["s-home", "p-home"]]);
+        const sent = todoist.commands().length;
+        await edit(marfa, before, {
+          project_id: "p-home",
+          section_id: "s-home",
+          labels: ["Home", "Errands"],
+        });
+        await runOnce();
+        await runOnce();
+        const task = todoist.tasks.get(taskId);
+        const commands = todoist
+          .commands()
+          .slice(sent)
+          .map((command) => [command.type, command.args]);
+        const after = await item(marfa, filed);
+        if (
+          JSON.stringify(commands) !==
+            JSON.stringify([
+              ["item_update", { id: taskId, labels: ["Home", "Errands"] }],
+              ["item_move", { id: taskId, section_id: "s-home" }],
+            ]) ||
+          task?.project_id !== "p-home" ||
+          task.section_id !== "s-home" ||
+          task.labels.join() !== "Errands,Home" ||
+          after.properties["project_id"] !== "p-home" ||
+          after.properties["section_id"] !== "s-home" ||
+          JSON.stringify(after.properties["labels"]) !== '["Errands","Home"]'
+        ) {
+          throw new Error(
+            `commands ${JSON.stringify(commands)}; Todoist holds ${JSON.stringify(task)}; the row holds ${JSON.stringify(after.properties)}`,
+          );
+        }
+        return `item_update set the labels and item_move put ${taskId} in section s-home of p-home; the row keeps project, section and labels after the next run`;
       },
     );
 
