@@ -265,6 +265,14 @@ export interface Change {
    * refuses.
    */
   readonly attempted?: string;
+  /**
+   * For a row whose create made the vendor's object and linked it, but did
+   * not return: when that create was first sent. Nothing was agreed for the
+   * row's fields, so `changed` holds all of them although the vendor already
+   * holds what the create sent; a connector that put fields in its create
+   * leaves those out of what it sends now. Absent once a change is carried.
+   */
+  readonly made?: string;
   readonly was?: "trashed" | "archived";
   /**
    * The connections made or removed in Marfa since the vendor last had them,

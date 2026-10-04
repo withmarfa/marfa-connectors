@@ -1057,6 +1057,107 @@ describe("a create", () => {
   });
 });
 
+describe("a create made and linked whose run then failed", () => {
+  const unfinished = async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const row = harness.server.insert(
+      undefined,
+      { title: "Theirs", note: "first" },
+      "test.entry",
+      "person",
+    );
+    held.vendorIdFor = () => "v9";
+    held.failAfterLink = { id: row.id, error: new Error("no answer") };
+    expect(await quietRun(held)).toBe(1);
+    expect(held.changes[0]?.kind).toBe("created");
+    expect(held.changes[0]?.made).toBeUndefined();
+    held.vendorIdFor = undefined;
+    return { held, row };
+  };
+
+  it("says so on the next change, when the create was first sent", async () => {
+    const { held, row } = await unfinished();
+    expect(harness.server.byId(row.id).properties["vendor_id"]).toBe("v9");
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["updated"]);
+    const [change] = held.changes;
+    expect(change?.made).toEqual(expect.any(String));
+    expect(change?.attempted).toBeUndefined();
+    expect(change?.changed).toEqual(new Set(["title", "note"]));
+  });
+
+  it("carries a person's edit made meanwhile, with the row as it is now", async () => {
+    const { held, row } = await unfinished();
+    harness.server.edit(row.id, { title: "Edited meanwhile" });
+    await quietRun(held);
+    const [change] = held.changes;
+    expect(change?.made).toEqual(expect.any(String));
+    expect(change?.item.properties["title"]).toBe("Edited meanwhile");
+    expect(change?.changed.has("title")).toBe(true);
+  });
+
+  it("is said no more once a change is carried", async () => {
+    const { held, row } = await unfinished();
+    await quietRun(held);
+    expect(held.changes).toHaveLength(1);
+    expect(harness.server.agreements.get(row.id)?.record["made"]).toBe(
+      undefined,
+    );
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes).toHaveLength(0);
+    harness.server.edit(row.id, { note: "second" });
+    await quietRun(held);
+    expect(held.changes.map((change) => [change.kind, change.made])).toEqual([
+      ["updated", undefined],
+    ]);
+    expect(held.changes[0]?.changed).toEqual(new Set(["note"]));
+  });
+
+  it("is not said of a create that settled", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const row = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.vendorIdFor = () => "v9";
+    await quietRun(held);
+    expect(harness.server.agreements.get(row.id)?.record["made"]).toBe(
+      undefined,
+    );
+    held.vendorIdFor = undefined;
+    harness.server.edit(row.id, { title: "Later" });
+    await quietRun(held);
+    expect(held.changes.map((change) => change.made)).toEqual([undefined]);
+  });
+
+  it("keeps the first send's time over a try that failed again", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const row = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: row.id, error: new Error("lost the answer") };
+    expect(await quietRun(held)).toBe(1);
+    harness.clock.advance(60_000);
+    held.vendorIdFor = () => "v9";
+    held.failAfterLink = { id: row.id, error: new Error("no answer") };
+    expect(await quietRun(held)).toBe(1);
+    const first = held.changes[0]?.attempted;
+    expect(first).toEqual(expect.any(String));
+    held.vendorIdFor = undefined;
+    harness.clock.advance(60_000);
+    await quietRun(held);
+    expect(held.changes[0]?.made).toBe(first);
+  });
+});
+
 describe("a create sent more than once", () => {
   it("says when it was first sent, however many tries failed since", async () => {
     const held = vendor([]);

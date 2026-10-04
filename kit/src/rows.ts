@@ -1131,6 +1131,11 @@ export class Rows {
       link: value,
     };
     Reflect.deleteProperty(next, "attempted");
+    // A create's link says the vendor made the row, not that the fields it
+    // took were agreed, which the carry settles once the connector returns.
+    if (agreement?.attempted !== undefined && agreement.link === undefined) {
+      next.made = agreement.attempted;
+    }
     this.store.set(item.id, next);
   }
 

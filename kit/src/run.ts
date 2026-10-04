@@ -1451,11 +1451,13 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     const attempted = unlinked ? agreement.attempted : undefined;
+    const made = unlinked ? undefined : agreement.made;
     const change: Change = {
       kind: changeKind,
       item: current,
       changed: new Set(changed),
       ...(attempted !== undefined && { attempted }),
+      ...(made !== undefined && { made }),
       ...(changeKind === "restored" &&
         (agreement.state === "trashed" || agreement.state === "archived") && {
           was: agreement.state,
