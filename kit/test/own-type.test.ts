@@ -732,6 +732,33 @@ describe("a key without metadata types=write", () => {
     expect(await exit).toBe(0);
   });
 
+  it("tells the connector the fields it writes, which change when the narrowing lifts", async () => {
+    harness.server.types.set("test.entry", older());
+    const seen: string[][] = [];
+    const held = vendor([entry]);
+    held.read = (context) => {
+      seen.push([...context.written("test.entry")]);
+      expect(() => context.written("test.other")).toThrow(
+        "the connector declares no type test.other",
+      );
+      expect([...context.forScope("s").written("test.entry")]).toEqual(
+        seen.at(-1),
+      );
+      return Promise.resolve();
+    };
+    const exit = start(
+      testConnector(held),
+      harness.runtime(["--every", "15m"]),
+    );
+    await harness.clock.sleeping(15 * minute);
+    harness.server.grants = fixer;
+    await harness.clock.wake(15 * minute);
+    await harness.clock.sleeping(15 * minute);
+    harness.stop();
+    expect(await exit).toBe(0);
+    expect(seen).toEqual([["title", "vendor_id", "toString"], testFields]);
+  });
+
   it("lifts the narrowing under --every once an operator fixes the type", async () => {
     harness.server.types.set("test.entry", older());
     const held = vendor([entry]);

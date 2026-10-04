@@ -244,6 +244,15 @@ export interface RunContext<E extends EnvDeclaration> {
    * leaves out what it no longer holds can ask about each row it left out.
    */
   readonly held: (type: string) => Promise<Item[]>;
+  /**
+   * The fields of the type the kit writes now: the `fields` the connector declares for it, less any
+   * the key may not add to the server's type, which the kit leaves out until
+   * a later scheduled run finds them added. It can change between runs of one
+   * process. A connector that reads by delta, such as with a sync token,
+   * brings a row's new field only when the vendor changes the row, so it
+   * includes these in whatever marker makes it read in full.
+   */
+  readonly written: (type: string) => readonly string[];
 }
 
 export type ChangeKind =

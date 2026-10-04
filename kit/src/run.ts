@@ -829,6 +829,9 @@ export async function runOnce<E extends EnvDeclaration>(
   const secret = (value: string): void => {
     keepSecret(logger, value);
   };
+  const written: RunContext<E>["written"] = (type) => [
+    ...lane(type).spec.fields,
+  ];
   const context: RunContext<E> = {
     env,
     signal: setup.signal,
@@ -896,6 +899,7 @@ export async function runOnce<E extends EnvDeclaration>(
           serial(scope, () => lane(type).rows.derive(keys, values)),
         linked: (...args) => serial(scope, () => linked(...args)),
         held: (type) => serial(scope, () => heldRows(type)),
+        written,
       };
       return scoped;
     },
@@ -905,6 +909,7 @@ export async function runOnce<E extends EnvDeclaration>(
       unscoped(() => lane(type).rows.derive(keys, values)),
     linked: (...args) => unscoped(() => linked(...args)),
     held: (type) => unscoped(() => heldRows(type)),
+    written,
   };
   const linked: RunContext<E>["linked"] = async (type, connection, target) => {
     const { rows } = lane(type);
