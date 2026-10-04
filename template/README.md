@@ -143,10 +143,10 @@ Naming the maps, the key holds no permission: it cannot mint keys, purge, delete
 The key keeps `types=write` for as long as the connector runs, since it is how the connector keeps its types current and registers one that is deleted from the instance. Once every connection the connector declares is registered, it has no use for `edge_types=write`, and the kit warns on each start while the key still holds it. Narrow the key in place with the operator key:
 
 ```bash
-marfa keys update <key-id> --metadata-permission edge_types=read
+marfa keys update <key-id> --metadata-permission types=write --metadata-permission edge_types=read
 ```
 
-Read on `edge_types` registers nothing, and the binary names a map only with its entries, so read is how it narrows one; the rest of the key stays as it was. A later version of the connector that declares a new connection type needs `edge_types=write` again until its first start has registered it.
+Read on `edge_types` registers nothing, and the binary names a map only with its entries, so read is how it narrows one. An update replaces a whole map with the entries it names, so the command names `types=write` again: without it the key would lose the write that keeps its types current. The rest of the key stays as it was. A later version of the connector that declares a new connection type needs `edge_types=write` again until its first start has registered it.
 
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among live keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 
