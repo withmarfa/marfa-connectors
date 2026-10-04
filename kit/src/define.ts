@@ -245,7 +245,7 @@ export interface RunContext<E extends EnvDeclaration> {
    */
   readonly held: (type: string) => Promise<Item[]>;
   /**
-   * The fields of the type the kit writes now: its kind's `fields`, less any
+   * The fields of the type the kit writes now: the `fields` the connector declares for it, less any
    * the key may not add to the server's type, which the kit leaves out until
    * a later scheduled run finds them added. It can change between runs of one
    * process. A connector that reads by delta, such as with a sync token,
