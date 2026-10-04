@@ -2533,6 +2533,41 @@ describe("a recurrence", () => {
     expect(todoist.commands("item_update")).toHaveLength(1);
   });
 
+  it("is put back, and sends nothing, when the row clears only the date of a repeating task", async () => {
+    const row = await placed("r", { due: daily });
+    const { due_at, precision, ...cleared } = marfa.byId(row.id).properties;
+    expect(due_at).toBe("2026-10-04T23:00:00.000Z");
+    expect(precision).toBe("day");
+    marfa.rewrite(`${todoist.account}:r`, cleared);
+    await landed();
+    expect(todoist.commands()).toEqual([]);
+    expect(summary()).toContain(
+      `A repeating task needs a date, so clearing the date of ${row.id} is not sent; clear its recurrence first`,
+    );
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      due_at: "2026-10-04T23:00:00.000Z",
+      recurrence: "every day",
+    });
+  });
+
+  it("clears the date with the recurrence when the row clears both", async () => {
+    const row = await placed("r", { due: daily });
+    const { due_at, precision, recurrence, ...cleared } = marfa.byId(
+      row.id,
+    ).properties;
+    expect([due_at, precision, recurrence]).toEqual([
+      "2026-10-04T23:00:00.000Z",
+      "day",
+      "every day",
+    ]);
+    marfa.rewrite(`${todoist.account}:r`, cleared);
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      { id: "r", due: null },
+    ]);
+    expect(todoist.tasks.get("r")?.due).toBeNull();
+  });
+
 });
 
 describe("the account's zone", () => {

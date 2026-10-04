@@ -1,4 +1,5 @@
 import {
+  Declined,
   LinkTaken,
   Refused,
   Unreachable,
@@ -479,9 +480,15 @@ async function sync(
   if (changes.due !== undefined && changes.due !== null) {
     changes.due = moved(changes.due.date, task.due, timeZone);
   }
-  // A recurring task always has a date: a row holding a recurrence and no
-  // date takes the one Todoist gave it.
+  // A recurring task always has a date: a row made holding a recurrence and
+  // no date takes the one Todoist gives it, but one whose date a person
+  // cleared is put back.
   if (changes.due === null && wanted.recurrence !== undefined) {
+    if (changed.has("due_at")) {
+      throw new Declined(
+        `A repeating task needs a date, so clearing the date of ${item.id} is not sent; clear its recurrence first`,
+      );
+    }
     delete changes.due;
   }
   const diff = sendable(
