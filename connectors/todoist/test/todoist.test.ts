@@ -9,6 +9,7 @@ import {
   accountOf,
   dueOf,
   entryOf,
+  readShape,
   timezoneOf,
   type SyncAnswer,
   type TodoistItem,
@@ -506,6 +507,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t1",
+      read_shape: readShape(),
     });
   });
 
@@ -554,6 +556,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t2",
+      read_shape: readShape(),
     });
   });
 
@@ -602,7 +605,11 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toMatch(
       /^created 0, .*named no timezone/,
     );
-    expect(state()).toEqual({ account: "2671355", sync_token: "t1" });
+    expect(state()).toEqual({
+      account: "2671355",
+      sync_token: "t1",
+      read_shape: readShape(),
+    });
   });
 
   it("holds the token when a write did not land, and asks for the same delta again", async () => {
@@ -627,6 +634,7 @@ describe("the connector, run as a process", () => {
       account: "2671355",
       timezone: "Europe/London",
       sync_token: "t1",
+      read_shape: readShape(),
     });
   });
 
@@ -798,6 +806,72 @@ describe("the connector, run as a process", () => {
       "t-delta-1",
     ]);
     expect(marfa.row("2671355:a").properties["status"]).toBe("completed");
+  });
+
+  it("syncs in full once when it reads tasks in a new shape, so rows held from before gain the new fields", async () => {
+    // Each full sync words the recurrence anew, which no delta brings: only a
+    // full sync puts it on the row.
+    const worded = [undefined, "every day at 2pm", "every weekday at 2pm"];
+    let fulls = 0;
+    let deltas = 0;
+    answer = (syncToken) => {
+      const user = { id: "2671355", tz_info: { timezone: "Europe/London" } };
+      if (syncToken === "*") {
+        fulls += 1;
+        const string = worded[fulls - 1];
+        return {
+          sync_token: `t-full-${String(fulls)}`,
+          items: [
+            task("a", {
+              due:
+                string === undefined ? wholeDaySent : { ...fixedSent, string },
+            }),
+            ...(fulls === 1 ? [task("b")] : []),
+          ],
+          user,
+        };
+      }
+      deltas += 1;
+      return {
+        sync_token: `t-delta-${String(deltas)}`,
+        items: deltas === 1 ? [task("b", { is_deleted: true })] : [],
+        user,
+      };
+    };
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").properties["recurrence"]).toBeUndefined();
+    const shape = readShape();
+    expect(state()["read_shape"]).toBe(shape);
+    // As a connector that read fewer fields left it: the state names no
+    // shape, or another one.
+    for (const held of [undefined, "an older shape"]) {
+      const stored = structuredClone(marfa.states.get("todoist") ?? {});
+      const kept = stored["state"] as Record<string, unknown>;
+      if (held === undefined) delete kept["read_shape"];
+      else kept["read_shape"] = held;
+      marfa.states.set("todoist", stored);
+      expect((await once()).code).toBe(0);
+      expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+        worded[fulls - 1],
+      );
+      expect(state()["read_shape"]).toBe(shape);
+    }
+    expect((await once()).code).toBe(0);
+    expect(received.map((request) => request.syncToken)).toEqual([
+      "*",
+      "t-full-1",
+      "*",
+      "t-delta-1",
+      "*",
+      "t-delta-2",
+    ]);
+    expect(fulls).toBe(3);
+    expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+      "every weekday at 2pm",
+    );
+    // The delta's deletion is kept beside the full sync, as for a moved zone.
+    expect(marfa.row("2671355:b").state).toBe("archived");
+    expect(state()).toMatchObject({ sync_token: "t-delta-3" });
   });
 
   it("names an unknown zone even with one held, and reads in the one held", async () => {

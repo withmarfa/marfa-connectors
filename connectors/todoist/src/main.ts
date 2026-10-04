@@ -14,6 +14,7 @@ import {
   firstSync,
   getTask,
   namedZoneOf,
+  readShape,
   sourceId,
   sync,
   taskFields,
@@ -65,6 +66,7 @@ const connector = defineConnector({
       await archive(taskType, gone);
       return;
     }
+    const shape = readShape();
     const saved = state.get("sync_token");
     const heldToken = typeof saved === "string" ? saved : firstSync;
     let answer = await sync(base, env.TODOIST_API_TOKEN, heldToken, signal);
@@ -72,10 +74,15 @@ const connector = defineConnector({
     const kept = typeof knownZone === "string" ? knownZone : undefined;
     const newZone = timezoneOf(answer.user);
     let fullSync = heldToken === firstSync || answer.full_sync === true;
-    // A moved zone reads every whole-day and floating due date differently, so
-    // the run asks for all tasks. A full sync lists only active tasks, so the
-    // delta's deletions and completions are kept beside it.
-    if (heldToken !== firstSync && newZone !== undefined && newZone !== kept) {
+    // A moved zone reads every whole-day and floating due date differently,
+    // and a new shape reads fields a delta would bring only for tasks that
+    // change, so the run asks for all tasks. A full sync lists only active
+    // tasks, so the delta's deletions and completions are kept beside it.
+    if (
+      heldToken !== firstSync &&
+      ((newZone !== undefined && newZone !== kept) ||
+        state.get("read_shape") !== shape)
+    ) {
       fullSync = true;
       const full = await sync(base, env.TODOIST_API_TOKEN, firstSync, signal);
       const byId = new Map(answer.items.map((item) => [item.id, item]));
@@ -214,6 +221,7 @@ const connector = defineConnector({
       stillWaiting.length > 0 ? stillWaiting.slice(0, heldAtMost) : undefined,
     );
     state.set("sync_token", answer.sync_token);
+    state.set("read_shape", shape);
   },
   onChange(change, context) {
     return carry(change, context, context.env.TODOIST_API_URL ?? defaultBase);

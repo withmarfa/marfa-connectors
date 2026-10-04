@@ -43,6 +43,7 @@ export interface SyncAnswer {
 }
 
 export const firstSync = "*";
+export const syncResources = ["items", "user"] as const;
 export const defaultBase = "https://api.todoist.com";
 const requestTimeoutMs = 60_000;
 const longestWaitMs = 60_000;
@@ -173,7 +174,7 @@ export async function sync(
       method: "POST",
       body: new URLSearchParams({
         sync_token: syncToken,
-        resource_types: JSON.stringify(["items", "user"]),
+        resource_types: JSON.stringify(syncResources),
       }),
     },
     signal,
@@ -617,6 +618,17 @@ export const taskFields = [
   "child_order",
   "recurrence",
 ] as const;
+
+/**
+ * Names what a sync reads, so a connector that reads a new field or resource
+ * syncs in full once and fills the rows it already holds.
+ */
+export function readShape(): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ fields: taskFields, resources: syncResources }))
+    .digest("hex")
+    .slice(0, 16);
+}
 
 export function entryOf(
   account: string,
