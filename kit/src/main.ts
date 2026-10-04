@@ -194,6 +194,30 @@ async function ensureConnections(
   return undefined;
 }
 
+/** Every way the key is wrong at once, so one new key mends them all. */
+function keyProblems<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  key: Key,
+): string | undefined {
+  const types = new Set(connector.types.map((kind) => kind.type.id));
+  const connections = new Set(
+    (connector.connections ?? []).map((kind) => kind.id),
+  );
+  const named = [...types, ...connections].join(", ");
+  const wider = keyWiderThanTypes(key, types, connections);
+  const narrower = keyNarrowerThanTypes(key, types, connections);
+  const problems = [
+    keySourceProblem(key, connector.source),
+    wider.length === 0
+      ? undefined
+      : `the key ${key.id} holds more than read and write on ${named} and schema.write, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+    narrower.length === 0
+      ? undefined
+      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
+  ].filter((problem) => problem !== undefined);
+  return problems.length === 0 ? undefined : problems.join(" ");
+}
+
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
@@ -211,32 +235,14 @@ async function registerAndCheck<E extends EnvDeclaration>(
         "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
     };
   }
-  const types = connector.types.map((kind) => kind.type.id);
-  const connections = (connector.connections ?? []).map((kind) => kind.id);
-  const named = [...types, ...connections].join(", ");
-  const wider = keyWiderThanTypes(key, new Set(types), new Set(connections));
-  const narrower = keyNarrowerThanTypes(
-    key,
-    new Set(types),
-    new Set(connections),
-  );
-  // Every way the key is wrong at once, so one new key mends them all.
-  const problems = [
-    keySourceProblem(key, connector.source),
-    wider.length === 0
-      ? undefined
-      : `the key ${key.id} holds more than read and write on ${named} and schema.write, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
-    narrower.length === 0
-      ? undefined
-      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
-  ].filter((problem) => problem !== undefined);
+  const problems = keyProblems(connector, key);
   const stopped = (problem: string): Started => ({
     id,
     spare: undefined,
     narrowed: undefined,
     problem,
   });
-  if (problems.length > 0) return stopped(problems.join(" "));
+  if (problems !== undefined) return stopped(problems);
   const step = await ensureTypes(
     connector.types.map((kind) => kind.type),
     marfa,
@@ -274,8 +280,9 @@ interface Started {
   readonly problem: string | undefined;
 }
 
-/** The type step again, for a connector running without fields its key
- *  may not add, since the key or the type may have changed since. */
+/** The key check and the type step again, for a connector running without
+ *  fields its key may not add, since the key or the type may have changed
+ *  since. */
 async function checkTypesAgain<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
@@ -283,6 +290,8 @@ async function checkTypesAgain<E extends EnvDeclaration>(
 ): Promise<TypeStep | undefined> {
   const key = await marfa.currentKey();
   if (key === undefined) return undefined;
+  const problem = keyProblems(connector, key);
+  if (problem !== undefined) return { problem, narrowed: undefined };
   return ensureTypes(
     connector.types.map((kind) => kind.type),
     marfa,

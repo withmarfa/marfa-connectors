@@ -42,7 +42,7 @@ export function narrowedCondition(
   key: string,
 ): string {
   const them = fields.length === 1 ? "it" : "them";
-  return `the type ${type} on the server lacks ${fields.join(", ")}, which this connector declares, and the key ${key} may not add ${them}, so the connector writes without ${them}: grant it ${replacing} with ${grant(key)}, and the connector adds ${them} on its next start or scheduled run`;
+  return `grant the key ${key} ${replacing} with ${grant(key)}, and the connector adds ${them} on its next start or scheduled run; until then it writes the type ${type} without ${fields.join(", ")}, which this connector declares, the server's type lacks and the key may not add`;
 }
 
 function operatorFix(id: string): string {
@@ -85,12 +85,38 @@ function ownPolicy(
   return Object.keys(own).length === 0 ? undefined : own;
 }
 
+/** The parent's version policy, resolved, which a served type's answer
+ *  merges with its own entries key by key. */
+function ownVersionPolicy(
+  served: unknown,
+  parent: unknown,
+): Record<string, unknown> | undefined {
+  const policy = record(served);
+  const above = record(parent);
+  const own = Object.fromEntries(
+    Object.entries(policy).filter(
+      ([name, value]) => JSON.stringify(above[name]) !== JSON.stringify(value),
+    ),
+  );
+  return Object.keys(own).length === 0 ? undefined : own;
+}
+
+/** The roles a served type carries beyond its ancestors', since its answer
+ *  holds the union across the parent chain. */
+function ownRoles(served: unknown, parent: unknown): string[] | undefined {
+  const above = new Set(Array.isArray(parent) ? parent : []);
+  const own = (Array.isArray(served) ? served : []).filter(
+    (role): role is string => typeof role === "string" && !above.has(role),
+  );
+  return own.length === 0 ? undefined : own;
+}
+
 /**
  * The connector's own definition, with what the server holds that is not
  * the connector's to change: the fields neither it nor the parent
- * declares, the version, the version policy, the roles and the type's own
- * merge policy. The served answer resolves the parent, so it is never sent
- * back whole.
+ * declares, the version, and the type's own version policy, roles and merge
+ * policy. The served answer resolves the parent, so it is never sent back
+ * whole.
  */
 export function replacement(
   type: TypeDefinition,
@@ -115,20 +141,21 @@ export function replacement(
     Reflect.deleteProperty(definition, name);
   }
   const policy = ownPolicy(served["merge_policy"], parent?.["merge_policy"]);
+  const versions = ownVersionPolicy(
+    served["version_policy"],
+    parent?.["version_policy"],
+  );
+  const roles = ownRoles(served["roles"], parent?.["roles"]);
   return {
     ...definition,
     fields: { ...type.fields, ...kept } as TypeUpdate["fields"],
     ...(typeof served["version"] === "number" && {
       version: served["version"],
     }),
-    ...(served["version_policy"] !== undefined && {
-      version_policy: served["version_policy"] as NonNullable<
-        TypeUpdate["version_policy"]
-      >,
+    ...(versions !== undefined && {
+      version_policy: versions,
     }),
-    ...(served["roles"] !== undefined && {
-      roles: served["roles"] as string[],
-    }),
+    ...(roles !== undefined && { roles }),
     ...(policy !== undefined && {
       merge_policy: policy,
     }),

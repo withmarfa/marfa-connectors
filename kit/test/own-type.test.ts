@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
+import { narrowedCondition } from "../src/own-types.js";
 import {
   Harness,
   linkedType,
@@ -162,6 +163,91 @@ describe("a key with schema.write", () => {
       fields: { title: "last_writer_wins" },
     });
     expect(body["parent"]).toBe("test.base");
+  });
+
+  it("sends only the roles and version policy the type holds itself, not those it inherits", async () => {
+    harness.server.grants = fixer;
+    harness.server.types.set("test.base", {
+      id: "test.base",
+      fields: { origin: { type: "string" } },
+      roles: ["container"],
+      version_policy: { max_versions: 10, min_interval_seconds: 60 },
+    });
+    harness.server.types.set(
+      "test.entry",
+      older({
+        parent: "test.base",
+        fields: {
+          title: { type: "string", required: true },
+          vendor_id: { type: "string" },
+          origin: { type: "string" },
+        },
+        roles: ["container", "task"],
+        version_policy: {
+          max_versions: 10,
+          min_interval_seconds: 5,
+          retention_days: 30,
+        },
+      }),
+    );
+    const connector = testConnector(vendor([entry]));
+    const child = {
+      ...connector,
+      types: [
+        {
+          ...connector.types[0],
+          fields: ["title", "note", "link", "vendor_id"],
+          type: { ...testType, parent: "test.base" },
+        },
+      ],
+    };
+    expect(await start(child, harness.runtime(["--once"]))).toBe(0);
+    const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
+      ?.body as Record<string, unknown>;
+    expect(body["roles"]).toEqual(["task"]);
+    expect(body["version_policy"]).toEqual({
+      min_interval_seconds: 5,
+      retention_days: 30,
+    });
+  });
+
+  it("sends no roles or version policy where the type adds nothing to its parent's", async () => {
+    harness.server.grants = fixer;
+    harness.server.types.set("test.base", {
+      id: "test.base",
+      fields: { origin: { type: "string" } },
+      roles: ["container"],
+      version_policy: { max_versions: 10 },
+    });
+    harness.server.types.set(
+      "test.entry",
+      older({
+        parent: "test.base",
+        fields: {
+          title: { type: "string", required: true },
+          vendor_id: { type: "string" },
+          origin: { type: "string" },
+        },
+        roles: ["container"],
+        version_policy: { max_versions: 10 },
+      }),
+    );
+    const connector = testConnector(vendor([entry]));
+    const child = {
+      ...connector,
+      types: [
+        {
+          ...connector.types[0],
+          fields: ["title", "note", "link", "vendor_id"],
+          type: { ...testType, parent: "test.base" },
+        },
+      ],
+    };
+    expect(await start(child, harness.runtime(["--once"]))).toBe(0);
+    const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
+      ?.body as Record<string, unknown>;
+    expect(body).not.toHaveProperty("roles");
+    expect(body).not.toHaveProperty("version_policy");
   });
 
   it("reads the type back, and stops without trying again where it still differs", async () => {
@@ -484,6 +570,25 @@ describe("a key without schema.write", () => {
     expect(await exit).toBe(0);
   });
 
+  it("stops under --every when the key was widened since the run before", async () => {
+    harness.server.types.set("test.entry", older());
+    const held = vendor([entry]);
+    const exit = start(
+      testConnector(held),
+      harness.runtime(["--every", "15m"]),
+    );
+    await harness.clock.sleeping(15 * minute);
+    harness.server.grants = {
+      ...fixer,
+      permissions: ["schema.write", "items.purge"],
+    };
+    await harness.clock.wake(15 * minute);
+    expect(await exit).toBe(1);
+    expect(held.runs).toBe(1);
+    expect(harness.lastRun().error).toContain("items.purge");
+    expect(puts()).toBe(0);
+  });
+
   it("goes on without the fields when the check before a scheduled run gets no answer", async () => {
     harness.server.types.set("test.entry", older());
     const held = vendor([entry]);
@@ -520,6 +625,63 @@ describe("a key without schema.write", () => {
     expect(harness.lastRun().error).toContain("link_field");
     expect(harness.lastRun().error).toContain(
       "marfa types update test.entry --file",
+    );
+  });
+});
+
+describe("a refused entry while a type is narrowed", () => {
+  const bad = {
+    source_id: "bad",
+    properties: { title: "Bad", note: "From the vendor" },
+  };
+  const retry = { mode: "replay" as const, context: "a".repeat(64) };
+
+  async function runTwice(): Promise<number[]> {
+    harness.server.entryRefusals.set("bad", {
+      status: 400,
+      code: "invalid_properties",
+      message: "Bad title",
+    });
+    const held = vendor();
+    held.read = async (context) => {
+      const scope = context.forScope("A", { retry });
+      await scope.upsert("test.entry", [bad]);
+      await scope.state.checkpoint("page", 1);
+    };
+    const posts = (): number =>
+      harness.server.requestsTo("POST", "/items/bulk").length;
+    const counts: number[] = [];
+    for (let run = 0; run < 2; run += 1) {
+      expect(await harness.once(held)).toBe(0);
+      counts.push(posts());
+    }
+    return counts;
+  }
+
+  it("is held for the day against a current type", async () => {
+    const [first = 0, second = 0] = await runTwice();
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBe(first);
+  });
+
+  it("is held for the day while the type lacks a field the connector omits", async () => {
+    harness.server.types.set("test.entry", older());
+    const [first = 0, second = 0] = await runTwice();
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBe(first);
+  });
+});
+
+describe("the grant in a narrowed type's condition", () => {
+  it("comes before the fields, so the cap on a condition never cuts it", () => {
+    const fields = Array.from(
+      { length: 80 },
+      (_, index) => `field_${String(index)}`,
+    );
+    const text = narrowedCondition("test.entry", fields, "key-1");
+    expect(text.length).toBeGreaterThan(500);
+    expect(text.slice(0, 500)).toContain(
+      "marfa keys update key-1 --permission schema.write",
     );
   });
 });

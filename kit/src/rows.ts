@@ -323,8 +323,11 @@ export class Rows {
     // The last of a repeated key wins, as the vendor's latest word on it.
     const latest = new Map(
       entries.map((given) => {
-        const captured = this.hooks.captureUpsert?.(this.kind.type, given);
-        const entry = this.narrowed(captured?.intent.entry ?? given);
+        // Narrowed first, so the fingerprint, the saved retry intent and
+        // the suppression check all describe the entry as it is written.
+        const without = this.narrowed(given);
+        const captured = this.hooks.captureUpsert?.(this.kind.type, without);
+        const entry: Entry = captured?.intent.entry ?? without;
         if (captured !== undefined) this.attempts.set(entry, captured);
         return [entry.source_id, entry];
       }),
