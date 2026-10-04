@@ -4,7 +4,9 @@ import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Log } from "@withmarfa/connector";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
+import { followProjects, knowing, placedIn } from "../src/projects.js";
 import {
   accountOf,
   dueOf,
@@ -14,6 +16,7 @@ import {
   timezoneOf,
   type SyncAnswer,
   type TodoistItem,
+  type TodoistProject,
 } from "../src/todoist.js";
 
 const run = promisify(execFile);
@@ -71,16 +74,19 @@ function task(id: string, overrides: Partial<TodoistItem> = {}): TodoistItem {
   };
 }
 
+const inbox: TodoistProject = { id: "p1", name: "Inbox", inbox_project: true };
+
 let marfa: ScriptedServer;
 let todoist: Server;
 let todoistUrl: string;
-let answer: (syncToken: string) => SyncAnswer | number;
+let answer: (syncToken: string, resources: string) => SyncAnswer | number;
 let received: { syncToken: string; resources: string; authorized: boolean }[];
 let completedAnswer: (
   query: URLSearchParams,
 ) => { items: TodoistItem[]; next_cursor: string | null } | number;
 let completedAsked: URLSearchParams[];
 let taskAnswer: (id: string) => TodoistItem | number;
+let projectAnswer: (id: string) => TodoistProject | number;
 let tasksAsked: string[];
 
 beforeEach(async () => {
@@ -92,6 +98,7 @@ beforeEach(async () => {
   completedAsked = [];
   completedAnswer = () => ({ items: [], next_cursor: null });
   taskAnswer = () => 404;
+  projectAnswer = () => 404;
   tasksAsked = [];
   answer = () => ({
     sync_token: "t1",
@@ -129,19 +136,40 @@ beforeEach(async () => {
         res.end(JSON.stringify(found));
         return;
       }
+      const project = /^\/api\/v1\/projects\/([^/]+)$/.exec(asked.pathname);
+      if (req.method === "GET" && project !== null) {
+        const found = authorized
+          ? projectAnswer(decodeURIComponent(project[1] ?? ""))
+          : 401;
+        if (typeof found === "number") {
+          res.writeHead(found).end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(found));
+        return;
+      }
       const syncToken = form.get("sync_token") ?? "";
-      received.push({
-        syncToken,
-        resources: form.get("resource_types") ?? "",
-        authorized,
-      });
-      const body = authorized ? answer(syncToken) : 401;
+      const resources = form.get("resource_types") ?? "";
+      received.push({ syncToken, resources, authorized });
+      const body = authorized ? answer(syncToken, resources) : 401;
       if (typeof body === "number") {
         res.writeHead(body).end();
         return;
       }
+      // A full sync lists the Inbox, where every task here is, unless an
+      // answer names its own projects; a delta names none that changed.
+      const whole = syncToken === "*" || body.full_sync === true;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      res.end(
+        JSON.stringify({
+          ...body,
+          ...(resources.includes("projects") &&
+            body.projects === undefined && {
+              projects: whole ? [inbox] : [],
+            }),
+        }),
+      );
     });
   });
   await new Promise<void>((done) => todoist.listen(0, "127.0.0.1", done));
@@ -546,7 +574,7 @@ describe("the connector, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(received[0]).toEqual({
       syncToken: "*",
-      resources: '["items","user"]',
+      resources: '["items","projects","user"]',
       authorized: true,
     });
     expect(
@@ -567,6 +595,7 @@ describe("the connector, run as a process", () => {
     expect(state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
+      projects: ["p1"],
       sync_token: "t1",
       read_shape: readShape(),
     });
@@ -580,6 +609,7 @@ describe("the connector, run as a process", () => {
     answer = () => ({
       sync_token: "t1",
       items: [shared],
+      projects: [inbox, { id: "shared-project", name: "Shared" }],
       user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     expect((await once()).code).toBe(0);
@@ -616,6 +646,7 @@ describe("the connector, run as a process", () => {
     expect(state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
+      projects: ["p1"],
       sync_token: "t2",
       read_shape: readShape(),
     });
@@ -668,6 +699,7 @@ describe("the connector, run as a process", () => {
     );
     expect(state()).toEqual({
       account: "2671355",
+      projects: ["p1"],
       sync_token: "t1",
       read_shape: readShape(),
     });
@@ -694,6 +726,7 @@ describe("the connector, run as a process", () => {
     expect(state()).toEqual({
       account: "2671355",
       timezone: "Europe/London",
+      projects: ["p1"],
       sync_token: "t1",
       read_shape: readShape(),
     });
@@ -1198,5 +1231,383 @@ describe("the connector, run as a process", () => {
     marfa.types.delete("todoist.task");
     expect((await once()).code).toBe(0);
     expect(marfa.requestsTo("POST", "/types")).toHaveLength(1);
+  });
+});
+
+describe("a project that goes", () => {
+  const work: TodoistProject = { id: "pw", name: "Work" };
+  const home: TodoistProject = { id: "ph", name: "Home" };
+  const user = { id: "2671355", tz_info: { timezone: "Europe/London" } };
+  const a = task("a", { project_id: "pw" });
+  const b = task("b", { project_id: "pw", parent_id: "a" });
+  const c = task("c", {
+    project_id: "pw",
+    checked: true,
+    completed_at: "2026-09-28T10:00:00.000000Z",
+  });
+  const h = task("h", { project_id: "ph" });
+
+  function states(): Record<string, string> {
+    return Object.fromEntries(
+      ["a", "b", "c", "h"].map((id) => [id, marfa.row(`2671355:${id}`).state]),
+    );
+  }
+
+  async function followed(): Promise<void> {
+    answer = () => ({
+      sync_token: "t1",
+      items: [a, b, h],
+      projects: [inbox, work, home],
+      user,
+    });
+    completedAnswer = (query) => ({
+      items: query.get("project_id") === null ? [c] : [],
+      next_cursor: null,
+    });
+    expect((await once()).code).toBe(0);
+    expect(states()).toEqual({
+      a: "active",
+      b: "active",
+      c: "active",
+      h: "active",
+    });
+  }
+
+  function delta(
+    projects: TodoistProject[],
+    items: TodoistItem[] = [],
+    listed: TodoistProject[] = [inbox, work, home],
+  ): void {
+    answer = (syncToken) =>
+      syncToken === "*"
+        ? { sync_token: "t-full", items: [], projects: listed, user }
+        : { sync_token: "t2", items, projects };
+  }
+
+  it("archives the rows of an archived project's tasks, subtasks and completed ones included, and leaves another project's alone", async () => {
+    await followed();
+    delta([{ ...work, is_archived: true }]);
+    expect((await once()).code).toBe(0);
+    expect(states()).toEqual({
+      a: "archived",
+      b: "archived",
+      c: "archived",
+      h: "active",
+    });
+    expect(marfa.row("2671355:h").version).toBe(1);
+    expect(state()["projects"]).toEqual(["p1", "ph"]);
+    expect(state()["sync_token"]).toBe("t2");
+    delta([]);
+    expect((await once()).code).toBe(0);
+    expect(states()).toMatchObject({ a: "archived", c: "archived" });
+    expect(tasksAsked).toEqual([]);
+  });
+
+  it("archives the rows of a deleted project's tasks, which Todoist does not send", async () => {
+    await followed();
+    delta([{ ...work, is_deleted: true }]);
+    expect((await once()).code).toBe(0);
+    expect(states()).toEqual({
+      a: "archived",
+      b: "archived",
+      c: "archived",
+      h: "active",
+    });
+  });
+
+  it("brings an archived project's tasks back as they were when it is unarchived, asking Todoist for the completed ones it does not send again", async () => {
+    await followed();
+    delta([{ ...work, is_archived: true }]);
+    expect((await once()).code).toBe(0);
+    delta([{ ...work, is_archived: false }], [a, b]);
+    completedAnswer = (query) => ({
+      items: query.get("project_id") === "pw" ? [c] : [],
+      next_cursor: null,
+    });
+    const asked = completedAsked.length;
+    expect((await once()).code).toBe(0);
+    expect(completedAsked.slice(asked).map((q) => q.get("project_id"))).toEqual(
+      ["pw"],
+    );
+    expect(states()).toEqual({
+      a: "active",
+      b: "active",
+      c: "active",
+      h: "active",
+    });
+    expect(marfa.row("2671355:b").properties["parent_id"]).toBe("a");
+    expect(marfa.row("2671355:c").properties["status"]).toBe("completed");
+    expect([...(state()["projects"] as string[])].sort()).toEqual([
+      "p1",
+      "ph",
+      "pw",
+    ]);
+  });
+
+  it("never writes back a task of a gone project that a later delta, full sync or the completed tasks list names", async () => {
+    await followed();
+    delta([{ ...work, is_archived: true }]);
+    expect((await once()).code).toBe(0);
+    // Todoist sends a task edited in an archived project in the next delta
+    // (seen live in October 2026).
+    delta(
+      [],
+      [{ ...a, content: "Edited while archived" }],
+      [inbox, { ...work, is_archived: true }, home],
+    );
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").state).toBe("archived");
+    expect(marfa.row("2671355:a").properties["title"]).not.toBe(
+      "Edited while archived",
+    );
+    answer = () => ({
+      sync_token: "t3",
+      full_sync: true,
+      items: [h, a],
+      projects: [inbox, { ...work, is_archived: true }, home],
+      user,
+    });
+    completedAnswer = () => ({ items: [c], next_cursor: null });
+    expect((await once()).code).toBe(0);
+    expect(states()).toEqual({
+      a: "archived",
+      b: "archived",
+      c: "archived",
+      h: "active",
+    });
+  });
+
+  it("archives the rows of a project a whole list leaves out, whatever a delta left unsaid", async () => {
+    await followed();
+    answer = () => ({
+      sync_token: "t3",
+      full_sync: true,
+      items: [h],
+      projects: [inbox, home],
+      user,
+    });
+    expect((await once()).code).toBe(0);
+    expect(states()).toEqual({
+      a: "archived",
+      b: "archived",
+      c: "archived",
+      h: "active",
+    });
+  });
+
+  it("lists every project first with a token held from before projects were followed, and archives the rows of a project it leaves out", async () => {
+    await followed();
+    Reflect.deleteProperty(state(), "projects");
+    answer = (syncToken, resources) =>
+      syncToken === "*"
+        ? {
+            sync_token: "t-projects",
+            items: [],
+            projects: resources === '["projects"]' ? [inbox, home] : [],
+          }
+        : { sync_token: "t2", items: [], projects: [], user };
+    expect((await once()).code).toBe(0);
+    expect(received.slice(1)).toEqual([
+      {
+        syncToken: "t1",
+        resources: '["items","projects","user"]',
+        authorized: true,
+      },
+      { syncToken: "*", resources: '["projects"]', authorized: true },
+    ]);
+    expect(states()).toEqual({
+      a: "archived",
+      b: "archived",
+      c: "archived",
+      h: "active",
+    });
+    expect(state()).toMatchObject({ projects: ["p1", "ph"], sync_token: "t2" });
+  });
+
+  it("holds the token and archives nothing when the list of projects cannot be read", async () => {
+    await followed();
+    Reflect.deleteProperty(state(), "projects");
+    answer = (syncToken, resources) =>
+      resources === '["projects"]'
+        ? 400
+        : { sync_token: "t2", items: [], projects: [], user };
+    const { code } = await once();
+    expect(code).toBe(1);
+    expect(states()).toMatchObject({ a: "active", c: "active" });
+    expect(state()["sync_token"]).toBe("t1");
+  });
+
+  it("takes a list of projects that names no Inbox as not whole, archives nothing for it, and says so", async () => {
+    answer = () => ({
+      sync_token: "t1",
+      items: [a, h],
+      projects: [home],
+      user,
+    });
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").state).toBe("active");
+    expect(marfa.runs.at(-1)?.summary).toContain("named no Inbox");
+    expect(state()).not.toHaveProperty("projects");
+  });
+
+  it("reads the whole list of projects when a delta sends a task of a project it neither named nor held, and writes that task", async () => {
+    await followed();
+    const fresh: TodoistProject = { id: "pn", name: "New" };
+    answer = (syncToken) =>
+      syncToken === "*"
+        ? {
+            sync_token: "t-full",
+            items: [],
+            projects: [inbox, work, home, fresh],
+            user,
+          }
+        : {
+            sync_token: "t2",
+            items: [task("n", { project_id: "pn" })],
+            projects: [],
+            user,
+          };
+    expect((await once()).code).toBe(0);
+    expect(received.slice(1).map((r) => r.resources)).toEqual([
+      '["items","projects","user"]',
+      '["projects"]',
+    ]);
+    expect(marfa.row("2671355:n").state).toBe("active");
+    expect([...(state()["projects"] as string[])].sort()).toEqual([
+      "p1",
+      "ph",
+      "pn",
+      "pw",
+    ]);
+    expect(states()).toEqual({
+      a: "active",
+      b: "active",
+      c: "active",
+      h: "active",
+    });
+  });
+
+  it("does not archive a row a person restored when Todoist sends its archived project again", async () => {
+    await followed();
+    delta([{ ...work, is_archived: true }]);
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").state).toBe("archived");
+    projectAnswer = (id) => ({ ...work, id, is_archived: true });
+    marfa.transition(marfa.row("2671355:a").id, "active");
+    delta([]);
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").state).toBe("active");
+    expect(marfa.runs.at(-1)?.summary).toContain("is archived");
+    // A rename of an archived project sends its record again.
+    delta([{ ...work, name: "Work, renamed", is_archived: true }]);
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("2671355:a").state).toBe("active");
+  });
+
+  it("does not ask about a restored row whose project is gone, nor name it as unanswered", async () => {
+    await followed();
+    delta([{ ...work, is_deleted: true }]);
+    expect((await once()).code).toBe(0);
+    marfa.transition(marfa.row("2671355:a").id, "active");
+    delta([]);
+    expect((await once()).code).toBe(0);
+    answer = () => ({
+      sync_token: "t3",
+      full_sync: true,
+      items: [h],
+      projects: [inbox, home],
+      user,
+    });
+    tasksAsked.length = 0;
+    const { code, output } = await once();
+    expect(code).toBe(0);
+    expect(tasksAsked).not.toContain("a");
+    expect(output).not.toContain("so its row is left as it is");
+    expect(marfa.row("2671355:a").state).toBe("active");
+  });
+
+  it("leaves a row as it is when a task Todoist answers for has moved to a project that is gone", async () => {
+    await followed();
+    answer = () => ({
+      sync_token: "t3",
+      full_sync: true,
+      items: [a, b],
+      projects: [
+        inbox,
+        work,
+        home,
+        { id: "px", name: "Old", is_archived: true },
+      ],
+      user,
+    });
+    taskAnswer = (id) =>
+      id === "h" ? task("h", { content: "Moved", project_id: "px" }) : 404;
+    completedAnswer = () => ({ items: [c], next_cursor: null });
+    expect((await once()).code).toBe(0);
+    expect(tasksAsked).toContain("h");
+    expect(marfa.row("2671355:h").properties["title"]).toBe("Task h");
+    expect(marfa.row("2671355:h").properties["project_id"]).toBe("ph");
+  });
+});
+
+describe("following projects", () => {
+  const log = { condition: () => undefined } as unknown as Log;
+  const user = { id: "2671355" };
+  const work: TodoistProject = { id: "pw", name: "Work" };
+
+  it("places a task where its project is in use, where it names none, or where none is known", () => {
+    const placed = placedIn(new Set(["pw"]));
+    expect(placed(task("a", { project_id: "pw" }))).toBe(true);
+    expect(placed(task("a", { project_id: "px" }))).toBe(false);
+    expect(placed(task("a", { project_id: null as unknown as string }))).toBe(
+      true,
+    );
+    expect(placedIn(undefined)(task("a", { project_id: "px" }))).toBe(true);
+  });
+
+  it("reads the whole list only for a task whose project is not held", async () => {
+    const reads: string[] = [];
+    const list = (): Promise<TodoistProject[]> => {
+      reads.push("list");
+      return Promise.resolve([inbox, work, { id: "pn", name: "New" }]);
+    };
+    const kept = new Set(["p1", "pw"]);
+    const held = await knowing([task("a", { project_id: "pw" })], kept, list);
+    expect(held).toBe(kept);
+    expect(reads).toEqual([]);
+    const fresh = await knowing([task("n", { project_id: "pn" })], kept, list);
+    expect([...(fresh ?? [])].sort()).toEqual(["p1", "pn", "pw"]);
+    expect(reads).toEqual(["list"]);
+    expect(await knowing([task("n")], undefined, list)).toBeUndefined();
+    expect(reads).toEqual(["list"]);
+  });
+
+  it("keeps what is held when the list read for a task of an unheld project names no Inbox", async () => {
+    const kept = new Set(["p1"]);
+    const held = await knowing([task("n", { project_id: "pn" })], kept, () =>
+      Promise.resolve([work]),
+    );
+    expect(held).toBe(kept);
+  });
+
+  it("takes a project as gone only when it was held", async () => {
+    const answer = {
+      sync_token: "t",
+      items: [],
+      projects: [
+        { id: "pw", name: "Work", is_archived: true },
+        { id: "pz", name: "Never held", is_archived: true },
+      ],
+      user,
+    };
+    const followed = await followProjects(
+      answer,
+      false,
+      new Set(["p1", "pw"]),
+      () => Promise.reject(new Error("no list is needed")),
+      log,
+    );
+    expect([...followed.gone]).toEqual(["pw"]);
+    expect([...(followed.inUse ?? [])]).toEqual(["p1"]);
   });
 });

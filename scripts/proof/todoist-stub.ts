@@ -19,6 +19,14 @@ export interface StubTask {
   updated_at: string;
 }
 
+export interface StubProject {
+  id: string;
+  name: string;
+  inbox_project: boolean;
+  is_archived: boolean;
+  is_deleted: boolean;
+}
+
 export interface ReceivedCommand {
   type: string;
   uuid: string;
@@ -31,9 +39,7 @@ export interface ReceivedRequest {
   path: string;
   at: number;
   syncToken?: string;
-  // The resources a sync asked for, such as `["user"]` alone to read the
-  // account.
-  resources?: string;
+  resources?: string[];
   commands?: ReceivedCommand[];
 }
 
@@ -85,9 +91,12 @@ export class TodoistStub {
     { status: CommandStatus | "nothing"; times: number }
   >();
   private made = 0;
+  private readonly held = new Map<string, StubProject>();
+  private readonly projectChanged = new Map<string, number>();
   private readonly http: Server;
 
   constructor(private readonly token: string) {
+    this.project("inbox");
     this.http = createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -171,6 +180,59 @@ export class TodoistStub {
     return this.edit(id, { is_deleted: true });
   }
 
+  /** The project, made on first naming, as a task naming it makes it. */
+  project(id: string): StubProject {
+    let found = this.held.get(id);
+    if (found === undefined) {
+      found = {
+        id,
+        name: id === "inbox" ? "Inbox" : id,
+        inbox_project: id === "inbox",
+        is_archived: false,
+        is_deleted: false,
+      };
+      this.held.set(id, found);
+      this.projectChanged.set(id, this.seq);
+    }
+    return found;
+  }
+
+  archiveProject(id: string): void {
+    this.shelve(id, { is_archived: true });
+  }
+
+  // Todoist sends the open tasks again in the next delta, its completed ones
+  // not (seen live in October 2026).
+  unarchiveProject(id: string): void {
+    this.shelve(id, { is_archived: false });
+    for (const task of this.tasks.values()) {
+      if (task.project_id === id && !task.checked && !task.is_deleted) {
+        this.touch(task.id, false);
+      }
+    }
+  }
+
+  // Todoist sends none of the tasks of a deleted project, and answers each as
+  // one it never had (seen live in October 2026).
+  deleteProject(id: string): void {
+    this.shelve(id, { is_deleted: true });
+  }
+
+  private shelve(id: string, patch: Partial<StubProject>): void {
+    Object.assign(this.project(id), patch);
+    this.seq += 1;
+    this.projectChanged.set(id, this.seq);
+  }
+
+  private inUse(id: string): boolean {
+    const found = this.held.get(id);
+    return found !== undefined && !found.is_archived && !found.is_deleted;
+  }
+
+  private deletedProject(id: string): boolean {
+    return this.held.get(id)?.is_deleted === true;
+  }
+
   renameZone(zone: string | null): void {
     this.timezone = zone;
     this.seq += 1;
@@ -222,6 +284,7 @@ export class TodoistStub {
   }
 
   private touch(id: string, stamp = true): void {
+    this.project(this.get(id).project_id);
     this.seq += 1;
     this.changed.set(id, this.seq);
     if (stamp) this.get(id).updated_at = this.now;
@@ -248,8 +311,9 @@ export class TodoistStub {
         record.commands = JSON.parse(commands) as ReceivedCommand[];
       } else {
         record.syncToken = form.get("sync_token") ?? "*";
-        const resources = form.get("resource_types");
-        if (resources !== null) record.resources = resources;
+        record.resources = JSON.parse(
+          form.get("resource_types") ?? "[]",
+        ) as string[];
       }
     }
     this.received.push(record);
@@ -274,13 +338,23 @@ export class TodoistStub {
       reply(status, page);
       return;
     }
+    const project = /^\/api\/v1\/projects\/([^/]+)$/.exec(path);
+    if (method === "GET" && project !== null) {
+      const found = this.held.get(decodeURIComponent(project[1] ?? ""));
+      if (found === undefined || found.is_deleted) {
+        reply(404, { error: "Project not found" });
+        return;
+      }
+      reply(200, found);
+      return;
+    }
     const task = /^\/api\/v1\/tasks\/([^/]+)$/.exec(path);
     if (method === "GET" && task !== null) {
       // Todoist answers a completed or deleted task with 200, flagged, though
       // its reference calls the door active-only (seen live in October 2026);
       // only one never made is a 404.
       const found = this.tasks.get(decodeURIComponent(task[1] ?? ""));
-      if (found === undefined) {
+      if (found === undefined || this.deletedProject(found.project_id)) {
         reply(404, { error: "Task not found" });
         return;
       }
@@ -292,35 +366,46 @@ export class TodoistStub {
       return;
     }
     if (record.syncToken !== undefined) {
-      reply(200, this.delta(record.syncToken));
+      reply(200, this.delta(record.syncToken, record.resources ?? []));
       return;
     }
     reply(404, { error: "no such door" });
   }
 
   // Todoist's full sync lists active tasks only; a delta lists every change
-  // since the token, completions and deletions included.
-  private delta(syncToken: string): unknown {
+  // since the token, completions and deletions included. A full sync lists
+  // the projects in use and the tasks in them; a delta lists a project
+  // archived, unarchived or deleted with its flags, and a task changed in an
+  // archived project (seen live in October 2026).
+  private delta(syncToken: string, resources: readonly string[]): unknown {
     const since =
       syncToken === "*" ? 0 : Number(syncToken.replace("token-", ""));
     const items = [...this.tasks.values()].filter((task) =>
       syncToken === "*"
-        ? !task.is_deleted && !task.checked
-        : (this.changed.get(task.id) ?? 0) > since,
+        ? !task.is_deleted && !task.checked && this.inUse(task.project_id)
+        : (this.changed.get(task.id) ?? 0) > since &&
+          !this.deletedProject(task.project_id),
+    );
+    const projects = [...this.held.values()].filter((project) =>
+      syncToken === "*"
+        ? this.inUse(project.id)
+        : (this.projectChanged.get(project.id) ?? 0) > since,
     );
     return {
       sync_token: `token-${String(this.seq)}`,
       full_sync: syncToken === "*",
-      items,
-      ...((syncToken === "*" || this.userSeq > since) && {
-        user: {
-          id: this.account,
-          tz_info: { timezone: this.timezone },
-          inbox_project_id: "inbox",
-          ...(this.lang !== null && { lang: this.lang }),
-          features: { dateist_lang: this.dateistLang },
-        },
-      }),
+      ...(resources.includes("items") && { items }),
+      ...(resources.includes("projects") && { projects }),
+      ...(resources.includes("user") &&
+        (syncToken === "*" || this.userSeq > since) && {
+          user: {
+            id: this.account,
+            tz_info: { timezone: this.timezone },
+            inbox_project_id: "inbox",
+            ...(this.lang !== null && { lang: this.lang }),
+            features: { dateist_lang: this.dateistLang },
+          },
+        }),
     };
   }
 
@@ -349,10 +434,22 @@ export class TodoistStub {
     ) {
       return [400, { error: "Invalid argument value" }];
     }
+    // Todoist lists an archived project's completed tasks only when asked
+    // for that project (seen live in October 2026).
+    const projectId = query.get("project_id");
     const done = [...this.tasks.values()]
       .filter((task) => {
         const at = Date.parse(task.completed_at ?? "");
-        return task.checked && !task.is_deleted && at >= since && at <= until;
+        return (
+          task.checked &&
+          !task.is_deleted &&
+          !this.deletedProject(task.project_id) &&
+          (projectId === null
+            ? this.inUse(task.project_id)
+            : task.project_id === projectId) &&
+          at >= since &&
+          at <= until
+        );
       })
       .sort(
         (a, b) =>
@@ -437,8 +534,22 @@ export class TodoistStub {
         const project = args["project_id"];
         if (
           typeof project === "string" &&
-          this.projects !== undefined &&
-          !this.projects.has(project)
+          this.held.get(project)?.is_archived === true
+        ) {
+          return {
+            status: {
+              error: "Project is archived",
+              error_code: 588,
+              error_extra: {},
+              error_tag: "PROJECT_ARCHIVED",
+              http_code: 403,
+            },
+          };
+        }
+        if (
+          typeof project === "string" &&
+          ((this.projects !== undefined && !this.projects.has(project)) ||
+            this.deletedProject(project))
         ) {
           return {
             status: {

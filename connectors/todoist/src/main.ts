@@ -6,6 +6,7 @@ import {
   type TypeDefinition,
 } from "@withmarfa/connector";
 import { carry, readOnly, remake, outboundEnv } from "./outbound.js";
+import { followProjects, knowing, placedIn } from "./projects.js";
 import {
   accountOf,
   completed,
@@ -15,12 +16,14 @@ import {
   getTask,
   langOf,
   namedZoneOf,
+  projects,
   readShape,
   sourceId,
   sync,
   taskFields,
   timezoneOf,
   Unanswered,
+  type TodoistItem,
 } from "./todoist.js";
 import todoistTask from "./todoist.task.json" with { type: "json" };
 
@@ -50,19 +53,25 @@ const connector = defineConnector({
       // A run for named tasks does not save the sync token: the rest was not
       // read.
       const zone = state.get("timezone");
-      const found: Entry[] = [];
+      const named: TodoistItem[] = [];
       const gone: string[] = [];
       for (const id of hints.get(taskType) ?? []) {
         const task = await getTask(base, env.TODOIST_API_TOKEN, id, signal);
         if (task === "deleted") gone.push(id);
         else if (task === "forbidden" || task === "unknown") {
           unanswered(log, id, task);
-        } else {
-          found.push(
-            entryOf(keptAccount, typeof zone === "string" ? zone : "UTC", task),
-          );
-        }
+        } else named.push(task);
       }
+      const placed = placedIn(
+        await knowing(named, projectsOf(state.get("projects")), () =>
+          projects(base, env.TODOIST_API_TOKEN, signal),
+        ),
+      );
+      const found = named
+        .filter(placed)
+        .map((task) =>
+          entryOf(keptAccount, typeof zone === "string" ? zone : "UTC", task),
+        );
       await upsert(taskType, found);
       await archive(taskType, gone);
       return;
@@ -108,10 +117,7 @@ const connector = defineConnector({
         signal,
       );
       if (done === "forbidden") {
-        log.condition(
-          "completed-forbidden",
-          "Todoist refused to list the account's completed tasks, so a task completed while the connector was not following is read as open until Todoist next sends it",
-        );
+        completedForbidden(log);
       } else {
         const byId = new Map(done.map((item) => [item.id, item]));
         for (const item of answer.items) byId.set(item.id, item);
@@ -141,11 +147,39 @@ const connector = defineConnector({
       );
     }
 
+    const view = await followProjects(
+      answer,
+      fullSync,
+      projectsOf(state.get("projects")),
+      () => projects(base, env.TODOIST_API_TOKEN, signal),
+      log,
+    );
+    // A delta sends again the open tasks of a project brought back, but not
+    // its completed ones.
+    if (view.back.length > 0) {
+      const byId = new Map(answer.items.map((item) => [item.id, item]));
+      for (const id of view.back) {
+        const done = await completed(
+          base,
+          env.TODOIST_API_TOKEN,
+          new Date(),
+          signal,
+          id,
+        );
+        if (done === "forbidden") completedForbidden(log);
+        else
+          for (const item of done)
+            if (!byId.has(item.id)) byId.set(item.id, item);
+      }
+      answer = { ...answer, items: [...byId.values()] };
+    }
+    const placed = placedIn(view.inUse);
+    const upserting = answer.items.filter(
+      (item) => item.is_deleted !== true && placed(item),
+    );
     await upsert(
       taskType,
-      answer.items
-        .filter((item) => item.is_deleted !== true)
-        .map((item) => entryOf(account, timeZone, item)),
+      upserting.map((item) => entryOf(account, timeZone, item)),
     );
     await archive(
       taskType,
@@ -160,6 +194,30 @@ const connector = defineConnector({
     // A run a change started, with the state lost, archives only what it was
     // handed: the next scheduled run syncs in full again.
     if (hints !== undefined) return;
+    const inUseNow = view.inUse;
+    if (inUseNow !== undefined && (view.gone.size > 0 || view.firstList)) {
+      const upserted = new Set(upserting.map((item) => item.id));
+      await archive(
+        taskType,
+        (await held(taskType)).flatMap((row) => {
+          const id = row.properties["todoist_id"];
+          const project = row.properties["project_id"];
+          if (
+            typeof id !== "string" ||
+            typeof project !== "string" ||
+            upserted.has(id) ||
+            (row.source === source && row.source_id !== sourceId(account, id))
+          ) {
+            return [];
+          }
+          return (
+            view.firstList ? !inUseNow.has(project) : view.gone.has(project)
+          )
+            ? [id]
+            : [];
+        }),
+      );
+    }
     // A full sync leaves out a task deleted since the last token, and the
     // completed tasks only reach back twelve weeks: an open row it left out
     // is asked about by id, a share each run.
@@ -173,10 +231,17 @@ const connector = defineConnector({
         ? new Set(
             (await held(taskType)).flatMap((row) => {
               const id = row.properties["todoist_id"];
+              const project = row.properties["project_id"];
+              // A row whose project is gone is not asked about: Todoist
+              // answers a task of a deleted project as one it never had, and
+              // the project already says why the row is left as it is.
               return typeof id !== "string" ||
                 row.properties["status"] === "completed" ||
                 (row.source === source &&
-                  row.source_id !== sourceId(account, id))
+                  row.source_id !== sourceId(account, id)) ||
+                (typeof project === "string" &&
+                  inUseNow !== undefined &&
+                  !inUseNow.has(project))
                 ? []
                 : [id];
             }),
@@ -194,6 +259,7 @@ const connector = defineConnector({
       timeZone,
       signal,
       log,
+      placed,
       upsert,
       archive,
     });
@@ -223,6 +289,7 @@ const connector = defineConnector({
       "unanswered",
       stillWaiting.length > 0 ? stillWaiting.slice(0, heldAtMost) : undefined,
     );
+    if (view.inUse !== undefined) state.set("projects", [...view.inUse]);
     state.set("sync_token", answer.sync_token);
     state.set("read_shape", shape);
   },
@@ -233,6 +300,17 @@ const connector = defineConnector({
     return remake(change, context, context.env.TODOIST_API_URL ?? defaultBase);
   },
 });
+
+function completedForbidden(log: Log): void {
+  log.condition(
+    "completed-forbidden",
+    "Todoist refused to list the account's completed tasks, so a task completed while the connector was not following is read as open until Todoist next sends it",
+  );
+}
+
+function projectsOf(value: unknown): Set<string> | undefined {
+  return Array.isArray(value) ? new Set(idsOf(value)) : undefined;
+}
 
 function unanswered(
   log: Log,
@@ -287,6 +365,7 @@ async function askAbout(
     timeZone: string;
     signal: AbortSignal;
     log: Log;
+    placed: (item: TodoistItem) => boolean;
     upsert: (type: string, entries: readonly Entry[]) => Promise<void>;
     archive: (type: string, keys: readonly string[]) => Promise<void>;
   },
@@ -312,7 +391,9 @@ async function askAbout(
       if (task === "deleted") gone.push(id);
       else if (task === "forbidden" || task === "unknown") {
         unknown.push({ id, answer: task });
-      } else found.push(entryOf(context.account, context.timeZone, task));
+      } else if (context.placed(task)) {
+        found.push(entryOf(context.account, context.timeZone, task));
+      }
       if (found.length + gone.length >= writtenEvery) await write();
     }
   } catch (error) {
