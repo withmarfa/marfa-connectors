@@ -33,7 +33,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 
 ## In force
 
-- American English in code, comments and commits. Scoped Conventional Commits (`feat(kit):`, `fix(rss):`).
+- American English in code, comments, and commits. Scoped Conventional Commits (`feat(kit):`, `fix(rss):`).
 - Feature branches and pull requests; never push `main`. A session merges its own pull request once every required check is green and the review its risk calls for is done, with that depth stated on the pull request: squash, branch deleted.
 - Before closing, remove the worktrees you created once their branches are merged, with `git worktree remove`, and run `git worktree prune`; if git refuses one, report it rather than forcing it. Once the work is merged, bring the local `main` up to date (`git pull --ff-only` on `main`) so the next piece of work starts from it.
 - This repository is public while development continues. Public visibility is not a release milestone.
