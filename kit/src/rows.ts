@@ -736,6 +736,8 @@ export class Rows {
       ...(file !== undefined && { file }),
       ...(was?.refused !== undefined &&
         carriable(agreement.waiting) && { refused: was.refused }),
+      ...(was?.made !== undefined &&
+        carriable(agreement.waiting) && { made: was.made }),
     });
     if (carriable(agreement.waiting)) this.marked.add(id);
     if (entry.connections !== undefined) {

@@ -312,7 +312,10 @@ export function observe(
   if (stateBy !== undefined) next.stateBy = stateBy;
   if (stateBy !== undefined && stateAt !== undefined) next.stateAt = stateAt;
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
-  if (!carriable(next.waiting)) Reflect.deleteProperty(next, "refused");
+  if (!carriable(next.waiting)) {
+    Reflect.deleteProperty(next, "refused");
+    Reflect.deleteProperty(next, "made");
+  }
   return { next, own };
 }
 
@@ -1276,7 +1279,10 @@ export async function runOnce<E extends EnvDeclaration>(
       Reflect.deleteProperty(waiting, field);
     }
     const now = withoutWaiting(store.get(id) ?? agreement);
-    if (!carriable(waiting)) Reflect.deleteProperty(now, "refused");
+    if (!carriable(waiting)) {
+      Reflect.deleteProperty(now, "refused");
+      Reflect.deleteProperty(now, "made");
+    }
     store.set(id, {
       ...now,
       ...(Object.keys(waiting).length > 0 && { waiting }),
@@ -1438,6 +1444,7 @@ export async function runOnce<E extends EnvDeclaration>(
       );
       const next = withoutWaiting(agreement);
       Reflect.deleteProperty(next, "refused");
+      Reflect.deleteProperty(next, "made");
       if (Object.keys(left).length > 0) next.waiting = left;
       store.set(current.id, settledConnections(next, moved));
       return;

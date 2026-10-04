@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Entry } from "../src/define.js";
+import { Unreachable } from "../src/rows.js";
 import { Harness, linkedType, vendor, type Vendor } from "./harness.js";
 
 let harness: Harness;
@@ -1058,7 +1060,10 @@ describe("a create", () => {
 });
 
 describe("a create made and linked whose run then failed", () => {
-  const unfinished = async () => {
+  const unfinished = async (
+    sent: Entry[] = [],
+    error: Error = new Error("no answer"),
+  ) => {
     const held = vendor([]);
     await harness.twoWay(held);
     const row = harness.server.insert(
@@ -1068,9 +1073,11 @@ describe("a create made and linked whose run then failed", () => {
       "person",
     );
     held.vendorIdFor = () => "v9";
-    held.failAfterLink = { id: row.id, error: new Error("no answer") };
-    expect(await quietRun(held)).toBe(1);
-    expect(held.changes[0]?.kind).toBe("created");
+    held.failAfterLink = { id: row.id, error };
+    // The vendor's read follows a create that was only unreachable.
+    held.entries = sent;
+    await quietRun(held);
+    expect(held.changes.map((change) => change.kind)).toEqual(["created"]);
     expect(held.changes[0]?.made).toBeUndefined();
     held.vendorIdFor = undefined;
     return { held, row };
@@ -1095,6 +1102,49 @@ describe("a create made and linked whose run then failed", () => {
     expect(change?.made).toEqual(expect.any(String));
     expect(change?.item.properties["title"]).toBe("Edited meanwhile");
     expect(change?.changed.has("title")).toBe(true);
+  });
+
+  it("is still said after the vendor sends the row in the same run, for the fields it left to carry", async () => {
+    const { held, row } = await unfinished(
+      [
+        {
+          source_id: "a:9",
+          properties: {
+            title: "Theirs",
+            note: "the vendor's",
+            vendor_id: "v9",
+          },
+        },
+      ],
+      new Unreachable("the vendor is down"),
+    );
+    expect(harness.server.agreements.get(row.id)?.record["made"]).toEqual(
+      expect.any(String),
+    );
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes.map((change) => [change.kind, change.made])).toEqual([
+      ["updated", expect.any(String)],
+    ]);
+    expect(held.changes[0]?.changed).toEqual(new Set(["note"]));
+  });
+
+  it("is dropped when the vendor sends the row as it was made, leaving nothing to carry", async () => {
+    const { held, row } = await unfinished(
+      [
+        {
+          source_id: "a:9",
+          properties: { title: "Theirs", note: "first", vendor_id: "v9" },
+        },
+      ],
+      new Unreachable("the vendor is down"),
+    );
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes).toHaveLength(0);
+    expect(harness.server.agreements.get(row.id)?.record["made"]).toBe(
+      undefined,
+    );
   });
 
   it("is said no more once a change is carried", async () => {
