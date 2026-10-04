@@ -591,16 +591,24 @@ export class TodoistStub {
  * task due once, a recurring one included, with the date as its text; a
  * recurrence's text sent with a date keeps the recurrence and takes the date
  * as its next occurrence, whatever day it falls on, and keeps a whole day or
- * a time as sent whatever the recurrence names; a time fixed in UTC takes the
- * zone sent with it, or the account's, and a floating one none. The stub reads a text beginning "every" or "after"
- * as a recurrence, where Todoist parses it.
+ * a time as sent whatever the recurrence names; text created without a date
+ * is due at its first occurrence, today for "every day"; a time fixed in UTC
+ * takes the zone sent with it, or the account's, and a floating one none. The
+ * stub reads a text beginning "every" or "after" as a recurrence, where
+ * Todoist parses it, and dates any text sent alone today in the account's
+ * zone.
  */
 function dueOf(
   sent: Record<string, unknown>,
   zone: string | null,
 ): Record<string, unknown> {
-  const date = typeof sent["date"] === "string" ? sent["date"] : null;
-  const text = typeof sent["string"] === "string" ? sent["string"] : date;
+  const text = typeof sent["string"] === "string" ? sent["string"] : undefined;
+  const date =
+    typeof sent["date"] === "string"
+      ? sent["date"]
+      : text === undefined
+        ? null
+        : today(zone ?? "UTC");
   return {
     date,
     timezone:
@@ -609,12 +617,19 @@ function dueOf(
         : date?.endsWith("Z") === true
           ? zone
           : null,
-    string: text,
+    string: text ?? date,
     lang: typeof sent["lang"] === "string" ? sent["lang"] : "en",
-    is_recurring:
-      typeof sent["string"] === "string" &&
-      /^(every|after)\b/i.test(sent["string"]),
+    is_recurring: text !== undefined && /^(every|after)\b/i.test(text),
   };
+}
+
+function today(zone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 }
 
 function nextOccurrence(due: Record<string, unknown>): Record<string, unknown> {
