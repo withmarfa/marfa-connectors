@@ -21,7 +21,6 @@ export function keyBody(flags: KeyFlags) {
     source: flags.source,
     type_permissions: { [flags.typePermission]: "write" as const },
     metadata_permissions: { types: "write" as const },
-    permissions: ["schema.write" as const],
     default_tier: "feed" as const,
   };
 }
@@ -125,7 +124,7 @@ export async function mintWithTheReadmeKeyFlags(
         key.default_tier !== "feed" ||
         types !== JSON.stringify({ [flags.typePermission]: "write" }) ||
         metadata !== JSON.stringify({ types: "write" }) ||
-        permissions !== '["schema.write"]' ||
+        permissions !== "[]" ||
         rest !== "[{},{},{}]"
       ) {
         throw new Error(
