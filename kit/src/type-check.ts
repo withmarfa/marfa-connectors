@@ -54,42 +54,35 @@ function show(value: unknown): string {
   return value === undefined ? "nothing" : JSON.stringify(value);
 }
 
-const missing = (name: string): string =>
-  `field "${name}" is missing on the server`;
-
-/** Whether the connector only gained fields, the difference an operator may
- *  put right by replacing the type, which leaves its rows as they are. */
-export function onlyFieldsAdded(
-  differences: readonly string[],
-  carried: TypeDefinition,
-): boolean {
-  const added = Object.keys(record(carried.fields)).map(missing);
-  return (
-    differences.length > 0 &&
-    differences.every((difference) => added.includes(difference))
-  );
+export interface TypeDifferences {
+  /** Optional fields the connector declares and the server lacks, the one
+   *  difference a connector puts right itself: a type gaining a field
+   *  leaves the rows it holds as they are. */
+  readonly missing: readonly string[];
+  /** Every other difference, which only an operator may put right. */
+  readonly other: readonly string[];
 }
 
+/** Fields the server holds and the connector does not declare are no
+ *  difference, unless the server requires them: another version of the
+ *  connector, or an operator, added them, and they are kept. */
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,
   inherited: readonly string[] = [],
-): string[] {
-  const differences: string[] = [];
+): TypeDifferences {
+  const missing: string[] = [];
+  const other: string[] = [];
   const mine = record(carried.fields);
   const theirs = record(served["fields"]);
+  const required = requiredSet(carried);
 
   for (const name of Object.keys(mine)
     .filter((n) => !(n in theirs))
     .sort()) {
-    differences.push(missing(name));
-  }
-  for (const name of Object.keys(theirs)
-    .filter((n) => !(n in mine) && !inherited.includes(n))
-    .sort()) {
-    differences.push(
-      `field "${name}" is on the server and not in this connector`,
-    );
+    if (required.includes(name)) {
+      other.push(`field "${name}" is required here and missing on the server`);
+    } else missing.push(name);
   }
   for (const name of Object.keys(mine)
     .filter((n) => n in theirs)
@@ -100,43 +93,44 @@ export function typeDifferences(
       const a = here[attribute] ?? defaults[attribute];
       const b = there[attribute] ?? defaults[attribute];
       if (JSON.stringify(a) !== JSON.stringify(b)) {
-        differences.push(
+        other.push(
           `field "${name}" has ${attribute} ${show(a)} here and ${show(b)} on the server`,
         );
       }
     }
   }
 
-  const required = requiredSet(carried);
   const requiredThere = requiredSet(served).filter(
     (n) => n in mine || !inherited.includes(n),
   );
-  for (const name of required.filter((n) => !requiredThere.includes(n))) {
-    differences.push(`field "${name}" is required here and not on the server`);
+  for (const name of required.filter(
+    (n) => n in theirs && !requiredThere.includes(n),
+  )) {
+    other.push(`field "${name}" is required here and not on the server`);
   }
   for (const name of requiredThere.filter((n) => !required.includes(n))) {
-    differences.push(`field "${name}" is required on the server and not here`);
+    other.push(`field "${name}" is required on the server and not here`);
   }
 
   if (carried.parent !== served["parent"]) {
-    differences.push(
+    other.push(
       `parent is ${show(carried.parent)} here and ${show(served["parent"])} on the server`,
     );
   }
   const compatible = names(carried.compatible_with);
   const compatibleThere = names(served["compatible_with"]);
   if (JSON.stringify(compatible) !== JSON.stringify(compatibleThere)) {
-    differences.push(
+    other.push(
       `compatible_with is ${show(compatible)} here and ${show(compatibleThere)} on the server`,
     );
   }
   const linkThere = served["link_field"] ?? undefined;
   if (carried.link_field !== linkThere) {
-    differences.push(
+    other.push(
       `link_field is ${show(carried.link_field)} here and ${show(linkThere)} on the server`,
     );
   }
-  return differences;
+  return { missing, other };
 }
 
 export function edgeTypeDifferences(

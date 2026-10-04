@@ -72,7 +72,9 @@ export async function proveKeys(
     // Only the operator key grants a claim on a source a caller does not
     // hold, and the boot hands the proof a working key, which grants its own
     // source and its claims. So the connector's key goes, freeing its source,
-    // and a key of that source claiming the boot key's own mints the rest.
+    // and a key of that source claiming the boot key's own mints the rest. A
+    // mint passes on no permission its minter lacks, so it holds
+    // schema.write too.
     let minter = marfa;
     let elsewhere = "";
     await check(
@@ -98,13 +100,52 @@ export async function proveKeys(
               typePermission: "proof.thing",
             }),
             sources: [elsewhere],
-            permissions: ["keys.mint"],
+            permissions: ["keys.mint", "schema.write"],
           },
         });
         if (data === undefined)
           throw new Error(`the minter was refused: ${JSON.stringify(error)}`);
         minter = createClient({ baseUrl: url, credential: data.key });
         return `revoked ${inbound.id}; ${data.id} holds proof-inbound and claims ${elsewhere}`;
+      },
+    );
+
+    await check(
+      "keys: a key that may mint keys and does not hold schema.write cannot mint a connector's key, which does",
+      async () => {
+        const { data: narrow, error } = await marfa.POST("/keys", {
+          body: {
+            ...keyBody({
+              label: "proof-mint-narrow",
+              source: "proof-mint-narrow",
+              typePermission: "proof.thing",
+            }),
+            permissions: ["keys.mint"],
+          },
+        });
+        if (narrow === undefined)
+          throw new Error(`the minter was refused: ${JSON.stringify(error)}`);
+        const narrowMinter = createClient({
+          baseUrl: url,
+          credential: narrow.key,
+        });
+        const refused = await narrowMinter.POST("/keys", {
+          body: keyBody({
+            label: "proof-mint-narrow-child",
+            source: "proof-mint-narrow-child",
+            typePermission: "proof.thing",
+          }),
+        });
+        await marfa.DELETE("/keys/{id}", {
+          params: { path: { id: narrow.id } },
+        });
+        const said = JSON.stringify(refused.error);
+        if (refused.response.status !== 403 || !said.includes("schema.write")) {
+          throw new Error(
+            `answered ${String(refused.response.status)}: ${said}`,
+          );
+        }
+        return `403: ${said}`;
       },
     );
 

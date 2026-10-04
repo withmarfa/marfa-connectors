@@ -108,7 +108,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its three types and four connection types, in-thread among them, and the metadata to register them",
+      "github: its key is minted with write on its three types and four connection types, in-thread among them, the metadata to register them, and schema.write to keep them current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -121,13 +121,14 @@ export async function proveGitHub(
               connections.map((type) => [type, "write" as const]),
             ),
             metadata_permissions: { types: "write", edge_types: "write" },
+            permissions: ["schema.write"],
             default_tier: "feed",
           },
         });
         if (data === undefined)
           throw new Error(`the key was refused: ${JSON.stringify(error)}`);
         key = data;
-        return `a key for ${source} with ${types.join(", ")} and ${connections.join(", ")}`;
+        return `a key for ${source} with ${types.join(", ")}, ${connections.join(", ")} and schema.write`;
       },
     );
 
@@ -150,36 +151,12 @@ export async function proveGitHub(
     );
 
     await check(
-      "github: a connector carrying a field its registered type lacks stops at start naming it and the operator's replacement, and starts once the operator has replaced the types",
+      "github: the first run adds private to the types an earlier connector registered, registers the rest as kinds of the core's, writes the repository, the issues and the comment, and connects them, the comment in its issue's thread through the instance's in-thread",
       async () => {
-        const runner = new ConnectorUnderProof(source, url, key.key, env);
-        const { code, output } = await runner.once();
-        if (
-          code === 0 ||
-          !output.includes('field "private" is missing on the server') ||
-          !output.includes("marfa types update github.issue --file")
-        ) {
-          throw new Error(`exit ${String(code)}: ${output}`);
-        }
-        if ((await rows()).size > 0) throw new Error("it wrote rows");
-        for (const type of ["github.issue", "github.comment"]) {
-          const { error, response } = await marfa.PUT("/types/{id}", {
-            params: { path: { id: type } },
-            body: JSON.parse(
-              await readFile(join(folder, `${type}.json`), "utf8"),
-            ) as never,
-          });
-          if (!response.ok)
-            throw new Error(`${type} was refused: ${JSON.stringify(error)}`);
-        }
-        return "the start named private and the command, wrote nothing, and went on once the operator key replaced both types";
-      },
-    );
-
-    await check(
-      "github: the first run registers its types as kinds of the core's, writes the repository, the issues and the comment, and connects them, the comment in its issue's thread through the instance's in-thread",
-      async () => {
-        await runOnce();
+        const output = await runOnce();
+        const added = ["github.issue", "github.comment"].filter((type) =>
+          output.includes(`added private to the type ${type}`),
+        );
         const summary = String((await lastRun(operator, key.id)).summary);
         const grown = await Promise.all(
           ["github.issue", "github.comment"].map(async (type) => {
@@ -223,14 +200,15 @@ export async function proveGitHub(
           top.properties["private"] !== true ||
           said.properties["private"] !== true ||
           grown.includes(false) ||
+          added.length !== 2 ||
           !summary.includes("created 5, updated 0, archived 0, unchanged 0") ||
           JSON.stringify(top.properties["labels"]) !== '["bug"]'
         ) {
           throw new Error(
-            `${summary}; private on the types ${grown.join()}; ${parents.join(", ")}; in repository ${inRepo.join()}, sub-issue of ${subOf.join()}, blocked by ${blockedBy.join()}, in thread ${thread.join()}; ${JSON.stringify(top.properties)}`,
+            `${summary}; private on the types ${grown.join()}, added by the connector to ${added.join()}; ${parents.join(", ")}; in repository ${inRepo.join()}, sub-issue of ${subOf.join()}, blocked by ${blockedBy.join()}, in thread ${thread.join()}; ${JSON.stringify(top.properties)}`,
           );
         }
-        return `${parents.join(", ")}; every row marked private, each of the five counted once; ${registered.join(", ")}, and in-thread the instance's own; the child under its parent and blocked by the blocker, the comment in the parent's thread`;
+        return `private added to ${added.join(" and ")} by the connector; ${parents.join(", ")}; every row marked private, each of the five counted once; ${registered.join(", ")}, and in-thread the instance's own; the child under its parent and blocked by the blocker, the comment in the parent's thread`;
       },
     );
 

@@ -430,7 +430,7 @@ describe("the type check on start", () => {
     expect(harness.server.rows).toHaveLength(1);
   });
 
-  it("stops with the difference named when the server's type differs, and never rewrites it", async () => {
+  it("stops with the difference named when the server's type differs, and never rewrites it, whatever the key holds", async () => {
     const served = {
       id: "test.entry",
       fields: {
@@ -441,6 +441,10 @@ describe("the type check on start", () => {
       compatible_with: ["core.note"],
     };
     harness.server.types.set("test.entry", served);
+    harness.server.grants = {
+      permissions: ["schema.write"],
+      type_permissions: { "test.entry": "write" },
+    };
     expect(await harness.once(vendor([entry]))).toBe(1);
 
     const run = harness.lastRun();
@@ -448,12 +452,13 @@ describe("the type check on start", () => {
     for (const difference of [
       '"note"',
       '"link"',
-      '"extra"',
       '"title"',
       "compatible_with",
+      "marfa types update test.entry --file",
     ]) {
       expect(run.error).toContain(difference);
     }
+    expect(run.error).not.toContain('"extra"');
     expect(harness.server.rows).toEqual([]);
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
     expect(
@@ -462,23 +467,19 @@ describe("the type check on start", () => {
     expect(harness.server.types.get("test.entry")).toBe(served);
   });
 
-  it("names the operator's replacement where the carried type only adds fields, and not where it differs otherwise", async () => {
-    harness.server.types.set("test.entry", {
+  it("starts on a type that only lacks optional fields, and leaves it as it is without schema.write", async () => {
+    const served = {
       ...testType,
       fields: { title: { type: "string", required: true } },
-    });
-    expect(await harness.once(vendor([entry]))).toBe(1);
-    expect(harness.lastRun().error).toContain('field "note" is missing');
-    expect(harness.lastRun().error).toContain(
-      "marfa types update test.entry --file",
+    };
+    harness.server.types.set("test.entry", served);
+    expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      "marfa keys update key-1 --permission schema.write",
     );
-    harness.server.types.set("test.entry", {
-      ...testType,
-      fields: { title: { type: "integer" } },
-    });
-    expect(await harness.once(vendor([entry]))).toBe(1);
-    expect(harness.lastRun().error).not.toContain("marfa types update");
     expect(harness.server.requestsTo("PUT", "/types/test.entry")).toEqual([]);
+    expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
+    expect(harness.server.types.get("test.entry")).toBe(served);
   });
 
   it("stops when the key may not register the type, saying what it lacks", async () => {

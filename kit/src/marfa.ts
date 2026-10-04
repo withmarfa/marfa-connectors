@@ -403,6 +403,19 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
+  /** Replaces the whole type, which takes `schema.write`; the server keeps
+   *  the version the body names. */
+  async replaceType(
+    id: string,
+    body: components["schemas"]["TypeDefinitionUpdate"],
+  ): Promise<void> {
+    const { data, error, response } = await this.client.PUT("/types/{id}", {
+      params: { path: { id } },
+      body,
+    });
+    if (data === undefined) throw refusal(response, error);
+  }
+
   /** Every edge type the instance holds, which the door answers in one page. */
   async edgeTypes(): Promise<EdgeType[]> {
     const { data, error, response } = await this.client.GET("/edge-types");

@@ -53,6 +53,7 @@ import {
   type Spec,
 } from "./rows.js";
 import { instant } from "./values.js";
+import { narrowedCondition, type Narrowed } from "./own-types.js";
 import type { Clock } from "./runtime.js";
 import {
   AgreementBlocked,
@@ -84,6 +85,9 @@ export interface RunSetup<E extends EnvDeclaration> {
   fenced?: () => boolean;
   /** Whether the process was told to stop, which leaves a run unreported. */
   stopping?: () => boolean;
+  /** The fields the server's types lack and the key may not add, which
+   *  every run writes without. */
+  narrowed?: Narrowed | undefined;
 }
 
 export type Trigger = "schedule" | "look";
@@ -206,6 +210,7 @@ const purgeAgainMs = 24 * 3_600_000;
 export function specsOf<E extends EnvDeclaration>(
   connector: Connector<E>,
   env: EnvValues<E>,
+  narrowed: Narrowed | undefined,
 ): Map<string, Spec> {
   const carried = new Set(
     connector.onChange === undefined
@@ -216,7 +221,11 @@ export function specsOf<E extends EnvDeclaration>(
   return new Map(
     connector.types.map((kind) => {
       const twoWay = carried.has(kind.type.id);
-      const readOnly = new Set(twoWay ? (kind.readOnly ?? []) : kind.fields);
+      const omitted = new Set(narrowed?.fields.get(kind.type.id) ?? []);
+      const kept = (names: readonly string[]): string[] =>
+        names.filter((name) => !omitted.has(name));
+      const fields = kept(kind.fields);
+      const readOnly = new Set(twoWay ? kept(kind.readOnly ?? []) : fields);
       const link = kind.type.link_field;
       if (link !== undefined) readOnly.add(link);
       return [
@@ -225,9 +234,10 @@ export function specsOf<E extends EnvDeclaration>(
           type: kind.type.id,
           source: connector.source,
           link,
-          fields: kind.fields,
+          fields,
+          omitted,
           readOnly,
-          derived: new Set(kind.derived ?? []),
+          derived: new Set(kept(kind.derived ?? [])),
           twoWay,
           revive: kind.revive === true,
           connections: new Set(
@@ -451,9 +461,15 @@ export async function runOnce<E extends EnvDeclaration>(
     rootTail = next.catch(() => undefined);
     return next;
   };
-  const specs = specsOf(connector, env);
+  const specs = specsOf(connector, env, setup.narrowed);
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
+  for (const [type, fields] of setup.narrowed?.fields ?? []) {
+    raised.set(
+      `type-fields:${type}`,
+      narrowedCondition(type, fields, setup.narrowed?.key ?? ""),
+    );
+  }
   const unreachedKeys = new Set<string>();
   const unreachedBatches: { prefixes: string[]; exceptKeys: string[] }[] = [];
   const waiting = new Map<string, { message: string; ids: Set<string> }>();
@@ -545,6 +561,10 @@ export async function runOnce<E extends EnvDeclaration>(
       connections: JSON.parse(
         JSON.stringify(connector.connections ?? []),
       ) as unknown,
+      // A write the narrowing changed is a different write.
+      ...(setup.narrowed !== undefined && {
+        narrowed: Object.fromEntries(setup.narrowed.fields),
+      }),
     });
   const journalFor = (scope?: Scope): PendingInbound[] => {
     const entries = new Map(
@@ -2289,6 +2309,7 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   const specs = specsOf(
     setup.connector,
     setup.environment.values as EnvValues<E>,
+    setup.narrowed,
   );
   const read = await new Watch(
     setup.marfa,

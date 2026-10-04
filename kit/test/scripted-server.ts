@@ -1127,6 +1127,31 @@ export class ScriptedServer {
       send(201, { type: input });
       return;
     }
+    if (method === "PUT" && parts[0] === "types" && parts[1] !== undefined) {
+      const id = parts[1];
+      if (!(this.grants.permissions ?? []).includes("schema.write")) {
+        refuse(403, "forbidden", "Missing schema.write", {
+          required_scope: "schema.write",
+        });
+        return;
+      }
+      const map = {
+        ...this.minted.type_permissions,
+        ...this.grants.type_permissions,
+      };
+      if (map[id] !== "write") {
+        refuse(403, "type_not_permitted", `The key may not write ${id}`);
+        return;
+      }
+      if (!this.types.has(id)) {
+        refuse(404, "type_not_found");
+        return;
+      }
+      const type = { ...input, id, version: input["version"] ?? 0 };
+      this.types.set(id, type);
+      send(200, { type });
+      return;
+    }
     if (method === "GET" && url.pathname === "/events") {
       this.stream(url.searchParams, headers["last-event-id"], res);
       return;

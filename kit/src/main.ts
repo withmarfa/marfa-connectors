@@ -6,7 +6,6 @@ import type {
   Connector,
   EnvDeclaration,
   EnvValues,
-  TypeDefinition,
 } from "./define.js";
 import {
   checkDefinition,
@@ -45,11 +44,8 @@ import {
   usage,
   type Schedule,
 } from "./schedule.js";
-import {
-  edgeTypeDifferences,
-  onlyFieldsAdded,
-  typeDifferences,
-} from "./type-check.js";
+import { edgeTypeDifferences } from "./type-check.js";
+import { ensureTypes, type Narrowed, type TypeStep } from "./own-types.js";
 
 const heartbeatMs = 60_000;
 
@@ -77,24 +73,6 @@ const probeMs = 15_000;
 
 function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
-}
-
-async function checkType(
-  type: TypeDefinition,
-  marfa: Marfa,
-  served: Record<string, unknown>,
-): Promise<string | undefined> {
-  const parent = type.parent;
-  const inherited =
-    parent === undefined
-      ? []
-      : Object.keys((await marfa.type(parent))?.["fields"] ?? {});
-  const differences = typeDifferences(type, served, inherited);
-  if (differences.length === 0) return undefined;
-  const grown = onlyFieldsAdded(differences, type)
-    ? `. The connector only adds fields, which a connector's key may not put right (replacing a type takes schema.write): an operator replaces the type with the connector's definition, \`marfa types update ${type.id} --file <definition>\`, and the rows it holds keep their values until their next write`
-    : "";
-  return `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}${grown}`;
 }
 
 /** Shipped connection types a connector may write between its own rows,
@@ -128,7 +106,11 @@ function keyWiderThanTypes(
 ): string[] {
   const wider: string[] = [];
   if (key.is_operator) wider.push("it is the operator key");
-  for (const permission of key.permissions) wider.push(permission);
+  // Replacing a type, which its type map bounds to the connector's own,
+  // keeps them current as the connector gains fields.
+  for (const permission of key.permissions) {
+    if (permission !== "schema.write") wider.push(permission);
+  }
   const held = (
     family: string,
     map: Record<string, string> | undefined,
@@ -212,38 +194,35 @@ async function ensureConnections(
   return undefined;
 }
 
-/** `again` is a registration made again, so a type missing now was deleted
- *  from the instance since the connector registered it. */
-async function ensureType(
-  type: TypeDefinition,
-  marfa: Marfa,
+/** Every way the key is wrong at once, so one new key mends them all. */
+function keyProblems<E extends EnvDeclaration>(
+  connector: Connector<E>,
   key: Key,
-  again: boolean,
-): Promise<string | undefined> {
-  const served = await marfa.type(type.id);
-  if (served !== undefined) return checkType(type, marfa, served);
-  if (again && key.metadata_permissions["types"] !== "write") {
-    return `the type ${type.id} was deleted from the instance and this key may not register it again; stop the connector or mint a key with types=write`;
-  }
-  try {
-    await marfa.registerType(type);
-    return undefined;
-  } catch (error) {
-    if (causeOf(error) === "marfa") throw error;
-    // Another process holding the key registered it first, which is as good
-    // as registering it, if it is the same type.
-    if (error instanceof Refusal && error.status === 409) {
-      const now = await marfa.type(type.id);
-      if (now !== undefined) return checkType(type, marfa, now);
-    }
-    return `the type ${type.id} could not be registered: ${describe(error)}`;
-  }
+): string | undefined {
+  const types = new Set(connector.types.map((kind) => kind.type.id));
+  const connections = new Set(
+    (connector.connections ?? []).map((kind) => kind.id),
+  );
+  const named = [...types, ...connections].join(", ");
+  const wider = keyWiderThanTypes(key, types, connections);
+  const narrower = keyNarrowerThanTypes(key, types, connections);
+  const problems = [
+    keySourceProblem(key, connector.source),
+    wider.length === 0
+      ? undefined
+      : `the key ${key.id} holds more than read and write on ${named} and schema.write, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+    narrower.length === 0
+      ? undefined
+      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
+  ].filter((problem) => problem !== undefined);
+  return problems.length === 0 ? undefined : problems.join(" ");
 }
 
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
   again: boolean,
+  logger: Logger,
 ): Promise<Started> {
   const id = await marfa.register(connector.name, connector.description);
   const key = await marfa.currentKey();
@@ -251,38 +230,31 @@ async function registerAndCheck<E extends EnvDeclaration>(
     return {
       id,
       spare: undefined,
+      narrowed: undefined,
       problem:
         "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
     };
   }
-  const types = connector.types.map((kind) => kind.type.id);
-  const connections = (connector.connections ?? []).map((kind) => kind.id);
-  const named = [...types, ...connections].join(", ");
-  const wider = keyWiderThanTypes(key, new Set(types), new Set(connections));
-  const narrower = keyNarrowerThanTypes(
+  const problems = keyProblems(connector, key);
+  const stopped = (problem: string): Started => ({
+    id,
+    spare: undefined,
+    narrowed: undefined,
+    problem,
+  });
+  if (problems !== undefined) return stopped(problems);
+  const step = await ensureTypes(
+    connector.types.map((kind) => kind.type),
+    marfa,
     key,
-    new Set(types),
-    new Set(connections),
+    again,
+    (message) => {
+      logger.info(message);
+    },
   );
-  // Every way the key is wrong at once, so one new key mends them all.
-  const problems = [
-    keySourceProblem(key, connector.source),
-    wider.length === 0
-      ? undefined
-      : `the key ${key.id} holds more than read and write on ${named}, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
-    narrower.length === 0
-      ? undefined
-      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
-  ].filter((problem) => problem !== undefined);
-  if (problems.length > 0) {
-    return { id, spare: undefined, problem: problems.join(" ") };
-  }
-  for (const kind of connector.types) {
-    const problem = await ensureType(kind.type, marfa, key, again);
-    if (problem !== undefined) return { id, spare: undefined, problem };
-  }
+  if (step.problem !== undefined) return stopped(step.problem);
   const problem = await ensureConnections(connector.connections ?? [], marfa);
-  if (problem !== undefined) return { id, spare: undefined, problem };
+  if (problem !== undefined) return stopped(problem);
   // Everything is registered as declared now, and registering is all write
   // on the two is for. Read on them gates nothing, and is the narrowing the
   // binary can name, since it cannot name one map empty.
@@ -295,6 +267,7 @@ async function registerAndCheck<E extends EnvDeclaration>(
       spare.length === 0
         ? undefined
         : `every type and connection it declares is registered, so the key no longer needs metadata ${spare.map((name) => `${name}=write`).join(" or ")}: narrow it with \`marfa keys update ${key.id} ${spare.map((name) => `--metadata-permission ${name}=read`).join(" ")}\``,
+    narrowed: step.narrowed,
     problem: undefined,
   };
 }
@@ -303,7 +276,31 @@ interface Started {
   readonly id: string;
   /** Says the key holds a registering lever it no longer uses. */
   readonly spare: string | undefined;
+  readonly narrowed: Narrowed | undefined;
   readonly problem: string | undefined;
+}
+
+/** The key check and the type step again, for a connector running without
+ *  fields its key may not add, since the key or the type may have changed
+ *  since. */
+async function checkTypesAgain<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  marfa: Marfa,
+  logger: Logger,
+): Promise<TypeStep | undefined> {
+  const key = await marfa.currentKey();
+  if (key === undefined) return undefined;
+  const problem = keyProblems(connector, key);
+  if (problem !== undefined) return { problem, narrowed: undefined };
+  return ensureTypes(
+    connector.types.map((kind) => kind.type),
+    marfa,
+    key,
+    true,
+    (message) => {
+      logger.info(message);
+    },
+  );
 }
 
 function carriesBack<E extends EnvDeclaration>(
@@ -311,7 +308,11 @@ function carriesBack<E extends EnvDeclaration>(
   environment: Environment,
 ): boolean {
   return [
-    ...specsOf(connector, environment.values as EnvValues<E>).values(),
+    ...specsOf(
+      connector,
+      environment.values as EnvValues<E>,
+      undefined,
+    ).values(),
   ].some((spec) => spec.twoWay);
 }
 
@@ -467,7 +468,11 @@ export async function start<E extends EnvDeclaration>(
     // Without a link, a row made in Marfa cannot be told to the vendor,
     // nor a purge found there.
     const unlinked = [
-      ...specsOf(connector, environment.values as EnvValues<E>).values(),
+      ...specsOf(
+        connector,
+        environment.values as EnvValues<E>,
+        undefined,
+      ).values(),
     ].filter((spec) => spec.twoWay && spec.link === undefined);
     if (unlinked.length > 0) {
       throw new ConfigurationError(
@@ -563,7 +568,7 @@ async function serve<E extends EnvDeclaration>(
   let started: Started | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
-      started = await registerAndCheck(connector, marfa, again);
+      started = await registerAndCheck(connector, marfa, again, logger);
     } catch (error) {
       if (causeOf(error) === "address" || faultOf(error) !== undefined) {
         logger.error(addressProblem(error, environment.url));
@@ -588,19 +593,23 @@ async function serve<E extends EnvDeclaration>(
   logger.info(`registered as ${connectorId}`);
   if (started.spare !== undefined) logger.warn(started.spare);
 
-  if (started.problem !== undefined) {
+  // A start that cannot go on is the registration's failed run.
+  const refuseStart = async (problem: string): Promise<void> => {
     const at = clock.now().toISOString();
-    logger.error(started.problem);
+    logger.error(problem);
     try {
       await marfa.report(connectorId, {
         outcome: "failed",
         started_at: at,
         finished_at: at,
-        error: cap(logger.redact(started.problem)),
+        error: cap(logger.redact(problem)),
       });
     } catch (error) {
       logger.warn(`the failure could not be reported: ${describe(error)}`);
     }
+  };
+  if (started.problem !== undefined) {
+    await refuseStart(started.problem);
     return 1;
   }
   if (stopped()) return 0;
@@ -706,6 +715,7 @@ async function serve<E extends EnvDeclaration>(
     clock,
     signal: lasting,
     stopping: stopped,
+    narrowed: started.narrowed,
   };
   let heldUntil: string | undefined;
   const held = async (trigger: Trigger): Promise<RunResult | undefined> => {
@@ -800,6 +810,37 @@ async function serve<E extends EnvDeclaration>(
     const after = Math.round(random() * Math.min(afterAnswerMs, intervalMs));
     if (after > 0) await clock.sleep(after, lasting);
   };
+  // Granting the key schema.write, or an operator mending the type, lifts
+  // the narrowing at the next scheduled run, without a restart.
+  const narrowAgain = async (): Promise<string | undefined> => {
+    const was = setup.narrowed;
+    let step: TypeStep | undefined;
+    try {
+      step = await checkTypesAgain(connector, marfa, logger);
+    } catch (error) {
+      if (over()) return undefined;
+      const cause = causeOf(error);
+      if (ends(cause)) {
+        end(cause, error);
+        return undefined;
+      }
+      logger.warn(
+        `the connector's types could not be checked again, so it goes on without the fields it lacked: ${describe(error)}`,
+      );
+      return undefined;
+    }
+    if (step === undefined) return undefined;
+    if (step.problem !== undefined) return step.problem;
+    for (const type of was?.fields.keys() ?? []) {
+      if (step.narrowed?.fields.has(type) !== true) {
+        logger.info(
+          `the type ${type} now holds every field this connector declares, so it writes them all`,
+        );
+      }
+    }
+    setup.narrowed = step.narrowed;
+    return undefined;
+  };
   let code = 0;
   let succeeded = false;
   try {
@@ -813,7 +854,18 @@ async function serve<E extends EnvDeclaration>(
       // Marfa that answers but keeps failing runs is given no more load than
       // the backoff gives.
       let hurried = false;
+      let first = true;
       while (!over()) {
+        if (!first && setup.narrowed !== undefined) {
+          const problem = await narrowAgain();
+          if (over()) break;
+          if (problem !== undefined) {
+            await refuseStart(problem);
+            code = 1;
+            break;
+          }
+        }
+        first = false;
         const run = await held("schedule");
         if (over()) break;
         if (run === undefined) {

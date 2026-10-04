@@ -14,14 +14,6 @@ A trash in Marfa deletes the task in Todoist; closing it would not do, since Tod
 
 One Todoist account per instance for two-way sync. A second account's connector would create in its own account any row of the type without a link, and could not tell that account's task from one gone.
 
-## Replacing an older type
-
-`todoist.task` no longer names `comment_count`, which Todoist does not keep current. An instance that registered the type while it did refuses this connector's start, naming the difference, until the type is replaced, from this repository's root with a key holding `schema.write` and write on `todoist.task`:
-
-```sh
-marfa types update todoist.task --file connectors/todoist/src/todoist.task.json
-```
-
 ## Environment
 
 - `TODOIST_API_TOKEN`: the account's API token, a secret.
