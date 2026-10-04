@@ -736,6 +736,8 @@ export class Rows {
       ...(file !== undefined && { file }),
       ...(was?.refused !== undefined &&
         carriable(agreement.waiting) && { refused: was.refused }),
+      ...(was?.made !== undefined &&
+        carriable(agreement.waiting) && { made: was.made }),
     });
     if (carriable(agreement.waiting)) this.marked.add(id);
     if (entry.connections !== undefined) {
@@ -1131,6 +1133,11 @@ export class Rows {
       link: value,
     };
     Reflect.deleteProperty(next, "attempted");
+    // A create's link says the vendor made the row, not that the fields it
+    // took were agreed, which the carry settles once the connector returns.
+    if (agreement?.attempted !== undefined && agreement.link === undefined) {
+      next.made = agreement.attempted;
+    }
     this.store.set(item.id, next);
   }
 

@@ -2190,7 +2190,7 @@ describe("labels, project and section changed in Marfa", () => {
     expect(summary()).toContain("Todoist has no project p-gone to move task a");
   });
 
-  it("closes a task made in the Inbox on the run after a close nobody answered, without asking for the project that is gone", async () => {
+  it("closes a task made in the Inbox on the run after a close nobody answered, without raising the project that is gone", async () => {
     todoist.projects = new Set(["inbox"]);
     const row = personsRow({
       title: "Filed away, done",
@@ -2220,7 +2220,7 @@ describe("labels, project and section changed in Marfa", () => {
     expect(marfa.byId(row.id).properties["status"]).toBe("completed");
   });
 
-  it("closes a task made at its project's root on the run after a close nobody answered, whose section is gone", async () => {
+  it("closes a task made at its project's root on the run after a close nobody answered, without raising the section that is gone", async () => {
     todoist.projects = new Set(["inbox", "p-work"]);
     personsRow({
       title: "Sectioned, done",
@@ -2236,6 +2236,80 @@ describe("labels, project and section changed in Marfa", () => {
       project_id: "p-work",
       section_id: null,
       checked: true,
+    });
+    expect(todoist.commands("item_move")).toHaveLength(1);
+    expect(summary()).not.toContain("refused");
+  });
+
+  it("moves a task made and finished on a later run when its row changes project afterwards", async () => {
+    todoist.projects = new Set(["inbox", "p-work", "p-home"]);
+    const row = personsRow({
+      title: "Filed, done",
+      project_id: "p-work",
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    todoist.answerNothing("item_close");
+    await landed();
+    await landed();
+    expect(todoist.tasks.get("made-1")).toMatchObject({
+      project_id: "p-work",
+      checked: true,
+    });
+    expect(todoist.commands("item_move")).toEqual([]);
+
+    marfa.edit(row.id, { project_id: "p-home" });
+    await landed();
+    expect(todoist.tasks.get("made-1")?.project_id).toBe("p-home");
+  });
+
+  it("sends the labels and the project a person changed between a create that did not finish and its retry", async () => {
+    todoist.projects = new Set(["inbox", "p-work", "p-home"]);
+    const row = personsRow({
+      title: "Filed, done",
+      project_id: "p-work",
+      labels: ["Home"],
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    todoist.answerNothing("item_close");
+    await landed();
+    expect(todoist.tasks.get("made-1")).toMatchObject({
+      project_id: "p-work",
+      labels: ["Home"],
+      checked: false,
+    });
+
+    marfa.edit(row.id, { project_id: "p-home", labels: ["Work"] });
+    await landed();
+    expect(todoist.tasks.get("made-1")).toMatchObject({
+      project_id: "p-home",
+      labels: ["Work"],
+      checked: true,
+    });
+    expect(marfa.byId(row.id).properties).toMatchObject({
+      project_id: "p-home",
+      labels: ["Work"],
+    });
+  });
+
+  it("sends the recurrence a person changed between a create that did not finish and its retry", async () => {
+    const row = personsRow({
+      title: "Water the plants, done",
+      due_at: "2026-10-05",
+      precision: "date",
+      recurrence: "every day",
+      status: "completed",
+      completed_at: "2026-09-25T10:00:00.000Z",
+    });
+    todoist.answerNothing("item_close");
+    await landed();
+
+    marfa.edit(row.id, { recurrence: "every week" });
+    await landed();
+    expect(todoist.tasks.get("made-1")?.due).toMatchObject({
+      string: "every week",
+      is_recurring: true,
     });
   });
 

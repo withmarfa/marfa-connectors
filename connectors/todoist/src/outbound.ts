@@ -385,8 +385,11 @@ async function carried(
 
   if (kind === "archived" && change.changed.size === 0) return;
 
-  // A task just made has its labels, project and section from the create, or
-  // the Inbox where its project was gone, which a move would undo.
+  // A task made in this run has its labels, project, section and recurrence
+  // from the create, or the Inbox where its project was gone, which a move
+  // would undo. One a run made, linked and left unfinished comes with every
+  // field changed, so only what differs from the task is sent, and a project
+  // or section Todoist no longer has is where the create already fell back.
   let changed = change.changed;
   let made = false;
   if (taskId === undefined) {
@@ -395,6 +398,7 @@ async function carried(
     changed = new Set();
     made = true;
   }
+  const unfinished = change.made !== undefined;
 
   if (kind === "trashed" || kind === "purged") {
     // A trash deletes: closing a recurring task would move it to its next
@@ -413,7 +417,17 @@ async function carried(
 
   const task = await held(taskId, kind, todoist);
   if (task === undefined) return;
-  await sync(item, kind, changed, taskId, task, timeZone, lang, todoist);
+  await sync(
+    item,
+    kind,
+    changed,
+    taskId,
+    task,
+    timeZone,
+    lang,
+    todoist,
+    unfinished,
+  );
   await readBack(
     item,
     made ? undefined : changed,
@@ -550,6 +564,7 @@ async function sync(
   timeZone: string,
   lang: Lang,
   todoist: Door,
+  unfinished = false,
 ): Promise<void> {
   const wanted = argsOf(item, timeZone);
   const changes = onlyChanged(differing(wanted, task, timeZone), changed);
@@ -602,25 +617,9 @@ async function sync(
     id: taskId,
     ...move,
   });
-  if (answer === "ok" || (await inFallback(answer, task, todoist))) {
-    return;
-  }
+  if (answer === "ok") return;
+  if (unfinished && (isProjectGone(answer) || isSectionGone(answer))) return;
   throw notMoved(answer, taskId, move);
-}
-
-// A project or section Todoist no longer has, for a task already in the Inbox,
-// is where a create that fell back left it. A row whose create was not settled
-// (a later step of that run failed) names the project and section again with
-// every field changed, and the move would only be refused. A task anywhere
-// else was placed on purpose, and the refusal stands.
-async function inFallback(
-  answer: CommandError | undefined,
-  task: TodoistItem,
-  todoist: Door,
-): Promise<boolean> {
-  if (!isProjectGone(answer) && !isSectionGone(answer)) return false;
-  const inbox = (await todoist.user())?.inbox_project_id;
-  return typeof inbox === "string" && task.project_id === inbox;
 }
 
 // Todoist keeps text it cannot read as a recurrence, sent with a date, as a

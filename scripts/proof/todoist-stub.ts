@@ -401,7 +401,6 @@ export class TodoistStub {
           user: {
             id: this.account,
             tz_info: { timezone: this.timezone },
-            inbox_project_id: "inbox",
             ...(this.lang !== null && { lang: this.lang }),
             features: { dateist_lang: this.dateistLang },
           },

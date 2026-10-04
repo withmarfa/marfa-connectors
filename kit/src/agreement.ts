@@ -19,6 +19,9 @@ export interface Agreement {
   changedAt?: string;
   waiting?: Record<string, string>;
   attempted?: string;
+  /** When the create that made and linked the row was first sent, until a
+   *  change is carried: its fields were never agreed. */
+  made?: string;
   connections?: Record<string, string[]>;
   pending?: Record<string, string[]>;
   file?: { key: string; ref: string; mime: string };

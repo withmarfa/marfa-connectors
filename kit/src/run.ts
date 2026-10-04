@@ -312,7 +312,10 @@ export function observe(
   if (stateBy !== undefined) next.stateBy = stateBy;
   if (stateBy !== undefined && stateAt !== undefined) next.stateAt = stateAt;
   if (Object.keys(waiting).length > 0) next.waiting = waiting;
-  if (!carriable(next.waiting)) Reflect.deleteProperty(next, "refused");
+  if (!carriable(next.waiting)) {
+    Reflect.deleteProperty(next, "refused");
+    Reflect.deleteProperty(next, "made");
+  }
   return { next, own };
 }
 
@@ -1276,7 +1279,10 @@ export async function runOnce<E extends EnvDeclaration>(
       Reflect.deleteProperty(waiting, field);
     }
     const now = withoutWaiting(store.get(id) ?? agreement);
-    if (!carriable(waiting)) Reflect.deleteProperty(now, "refused");
+    if (!carriable(waiting)) {
+      Reflect.deleteProperty(now, "refused");
+      Reflect.deleteProperty(now, "made");
+    }
     store.set(id, {
       ...now,
       ...(Object.keys(waiting).length > 0 && { waiting }),
@@ -1438,6 +1444,7 @@ export async function runOnce<E extends EnvDeclaration>(
       );
       const next = withoutWaiting(agreement);
       Reflect.deleteProperty(next, "refused");
+      Reflect.deleteProperty(next, "made");
       if (Object.keys(left).length > 0) next.waiting = left;
       store.set(current.id, settledConnections(next, moved));
       return;
@@ -1451,11 +1458,18 @@ export async function runOnce<E extends EnvDeclaration>(
       return;
     }
     const attempted = unlinked ? agreement.attempted : undefined;
+    // A run that died after the link landed on the row, before the agreement
+    // kept it, left the first send's time as `attempted` alone.
+    const made = unlinked
+      ? undefined
+      : (agreement.made ??
+        (agreement.link === undefined ? agreement.attempted : undefined));
     const change: Change = {
       kind: changeKind,
       item: current,
       changed: new Set(changed),
       ...(attempted !== undefined && { attempted }),
+      ...(made !== undefined && { made }),
       ...(changeKind === "restored" &&
         (agreement.state === "trashed" || agreement.state === "archived") && {
           was: agreement.state,
@@ -1560,7 +1574,11 @@ export async function runOnce<E extends EnvDeclaration>(
       answered,
     });
     // Until the row is linked, the vendor may still hold what a create made.
-    if (base?.attempted !== undefined && next.link === undefined) {
+    if (
+      base?.attempted !== undefined &&
+      next.link === undefined &&
+      lane(kind.type).rows.linkOf(item.properties) === undefined
+    ) {
       next.attempted = base.attempted;
     }
     if (base?.stateBy !== undefined && next.state === base.state) {

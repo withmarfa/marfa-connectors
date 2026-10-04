@@ -121,6 +121,8 @@ export interface Vendor {
   duringRemake?: (() => void) | undefined;
   failAfter?: Error | undefined;
   pushFail?: { id: string; error: Error } | undefined;
+  /** Thrown once the row is linked, as a step after the create fails. */
+  failAfterLink?: { id: string; error: Error } | undefined;
   remakeFail?: { id: string; error: Error } | undefined;
   unreachable?: Set<string> | undefined;
   refused?: Map<string, string> | undefined;
@@ -248,6 +250,11 @@ function twoWayConnector(held: Vendor) {
       }
       const id = held.vendorIdFor?.(change);
       if (id !== undefined) await context.setLink(change.item, id);
+      if (held.failAfterLink?.id === change.item.id) {
+        const { error } = held.failAfterLink;
+        held.failAfterLink = undefined;
+        throw error;
+      }
       return held.answer?.(change);
     },
     async remake(change, context) {
