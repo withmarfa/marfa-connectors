@@ -30,6 +30,7 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
+    recurrence: { type: "string" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };
@@ -420,6 +421,37 @@ describe("the mapping", () => {
     }
     expect(properties["status"]).toBe("pending");
     expect(properties["completed_at"]).toBeUndefined();
+  });
+
+  it("keeps a recurring task's recurrence as Todoist words it, and none for a one-off", () => {
+    const recurrence = (due: NonNullable<TodoistItem["due"]> | null): unknown =>
+      entryOf("1", "UTC", task("a", { due })).properties["recurrence"];
+    expect(recurrence(fixedSent)).toBe("every day at 2pm");
+    expect(
+      recurrence({
+        date: "2026-10-04",
+        string: "jeden Tag",
+        lang: "de",
+        is_recurring: true,
+      }),
+    ).toBe("jeden Tag");
+    // Todoist words a one-off's date too, and keeps text it could not read
+    // as a recurrence on a one-off (seen live in October 2026).
+    expect(recurrence(wholeDaySent)).toBeUndefined();
+    expect(
+      recurrence({
+        date: "2026-10-10",
+        string: "every flibbertigibbet",
+        is_recurring: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      recurrence({ date: "2026-10-10", is_recurring: true }),
+    ).toBeUndefined();
+    expect(
+      recurrence({ date: "2026-10-10", string: "", is_recurring: true }),
+    ).toBeUndefined();
+    expect(recurrence(null)).toBeUndefined();
   });
 
   it("refuses an account it could not key a task by", () => {

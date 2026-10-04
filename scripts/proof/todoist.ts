@@ -107,7 +107,7 @@ export async function proveTodoist(
           written.values(),
         );
         const expected =
-          "child_order,labels,parent_id,project_id,section_id,todoist_id";
+          "child_order,labels,parent_id,project_id,recurrence,section_id,todoist_id";
         if (own.join() !== expected) {
           throw new Error(`own fields ${own.join(", ")}`);
         }

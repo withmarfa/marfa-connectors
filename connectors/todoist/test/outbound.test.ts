@@ -30,6 +30,7 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
+    recurrence: { type: "string" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };

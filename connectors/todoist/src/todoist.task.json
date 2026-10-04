@@ -29,6 +29,10 @@
     "child_order": {
       "type": "integer",
       "description": "Where the task sits among its siblings in Todoist."
+    },
+    "recurrence": {
+      "type": "string",
+      "description": "How the task repeats, in Todoist's own words, such as \"every day at 2pm\": set while Todoist reads the due date as recurring, and absent for a task that does not repeat."
     }
   },
   "display_hints": {

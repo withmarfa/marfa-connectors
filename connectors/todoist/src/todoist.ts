@@ -615,6 +615,7 @@ export const taskFields = [
   "parent_id",
   "labels",
   "child_order",
+  "recurrence",
 ] as const;
 
 export function entryOf(
@@ -645,6 +646,14 @@ export function entryOf(
           ? item.labels
           : undefined,
       child_order: item.child_order,
+      // Todoist words a one-off's date too, and keeps text it could not read
+      // as a recurrence on a one-off.
+      recurrence:
+        item.due?.is_recurring === true &&
+        typeof item.due.string === "string" &&
+        item.due.string !== ""
+          ? item.due.string
+          : undefined,
     },
     occurred_at: item.added_at,
     changed_at: instantOf(item.updated_at),
