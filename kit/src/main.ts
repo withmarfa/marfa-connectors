@@ -45,7 +45,12 @@ import {
   type Schedule,
 } from "./schedule.js";
 import { edgeTypeDifferences } from "./type-check.js";
-import { ensureTypes, type Narrowed, type TypeStep } from "./own-types.js";
+import {
+  ensureTypes,
+  metadataCommand,
+  type Narrowed,
+  type TypeStep,
+} from "./own-types.js";
 
 const heartbeatMs = 60_000;
 
@@ -260,7 +265,7 @@ async function registerAndCheck<E extends EnvDeclaration>(
     id,
     spare: !spare
       ? undefined
-      : `every connection it declares is registered, so the key no longer needs metadata edge_types=write: narrow it with \`marfa keys update ${key.id} --metadata-permission edge_types=read\``,
+      : `every connection it declares is registered, so the key no longer needs metadata edge_types=write: narrow it with \`${metadataCommand(key, { edge_types: "read" })}\``,
     narrowed: step.narrowed,
     problem: undefined,
   };

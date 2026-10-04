@@ -130,7 +130,10 @@ export async function proveKeys(
           params: { path: { id: narrow.id } },
         });
         const said = JSON.stringify(refused.error);
-        if (refused.response.status !== 403 || !said.includes("types")) {
+        if (
+          refused.response.status !== 403 ||
+          !said.includes("does not hold metadata.types:write")
+        ) {
           throw new Error(
             `answered ${String(refused.response.status)}: ${said}`,
           );

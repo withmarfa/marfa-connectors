@@ -81,6 +81,7 @@ interface Refusal {
   code: string;
   message: string;
   retryAfter?: string;
+  details?: Record<string, unknown>;
 }
 
 /**
@@ -352,6 +353,7 @@ export class ScriptedServer {
     code: string,
     message = code,
     retryAfter?: string,
+    details?: Record<string, unknown>,
   ): void {
     const queue = this.refusals.get(route) ?? [];
     queue.push({
@@ -359,6 +361,7 @@ export class ScriptedServer {
       code,
       message,
       ...(retryAfter !== undefined && { retryAfter }),
+      ...(details !== undefined && { details }),
     });
     this.refusals.set(route, queue);
   }
@@ -813,7 +816,12 @@ export class ScriptedServer {
       if (scripted.retryAfter !== undefined) {
         res.setHeader("Retry-After", scripted.retryAfter);
       }
-      refuse(scripted.status, scripted.code, scripted.message);
+      refuse(
+        scripted.status,
+        scripted.code,
+        scripted.message,
+        scripted.details,
+      );
       return;
     }
 
@@ -1210,11 +1218,7 @@ export class ScriptedServer {
         });
         return;
       }
-      const map = {
-        ...this.minted.type_permissions,
-        ...this.grants.type_permissions,
-      };
-      if (map[id] !== "write") {
+      if (this.permission(id) !== "write") {
         refuse(403, "type_not_permitted", `The key may not write ${id}`);
         return;
       }

@@ -16,7 +16,7 @@ export interface Narrowed {
 /** Why the key may not add the fields: it lacks the scope that replaces a
  *  type, or the server refused the replacement as beyond that scope. */
 export type Withheld =
-  | { readonly kind: "grant"; readonly key: string }
+  | { readonly kind: "grant"; readonly key: string; readonly command: string }
   | { readonly kind: "refused"; readonly changes: readonly string[] };
 
 export interface TypeStep {
@@ -37,8 +37,25 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function grant(key: string): string {
-  return `\`marfa keys update ${key} --metadata-permission types=write\``;
+/**
+ * The command that sets one level of a key's metadata map. An update replaces
+ * a map with the entries it names, so the command names every entry the key
+ * keeps, with the one level changed.
+ */
+export function metadataCommand(
+  key: Key,
+  level: Record<string, "read" | "write">,
+): string {
+  const kept = { ...key.metadata_permissions };
+  for (const [name, value] of Object.entries(level)) kept[name] = value;
+  const entries = Object.entries(kept).map(
+    ([name, value]) => `--metadata-permission ${name}=${value}`,
+  );
+  return `marfa keys update ${key.id} ${entries.join(" ")}`;
+}
+
+function grantCommand(key: Key): string {
+  return metadataCommand(key, { types: "write" });
 }
 
 /** The fix comes first, since a condition is cut at 500 characters. */
@@ -50,9 +67,13 @@ export function narrowedCondition(
   const them = fields.length === 1 ? "it" : "them";
   const until = `until then it writes the type ${type} without ${fields.join(", ")}, which this connector declares and the server's type lacks`;
   if (withheld.kind === "grant") {
-    return `grant the key ${withheld.key} metadata types=write with ${grant(withheld.key)}, and the connector adds ${them} on its next start or scheduled run; ${until}, and the key may not add ${them}`;
+    return `grant the key ${withheld.key} metadata types=write with \`${withheld.command}\`, and the connector adds ${them} on its next start or scheduled run; ${until}, and the key may not add ${them}`;
   }
   return `an operator replaces the type with the connector's definition, \`marfa types update ${type} --file <definition>\`, and the connector then writes ${them} on its next start or scheduled run; ${until}, and the server refused the key the change to ${withheld.changes.join(", ")}, which needs schema.write`;
+}
+
+function grantWithheld(key: Key): Withheld {
+  return { kind: "grant", key: key.id, command: grantCommand(key) };
 }
 
 function operatorFix(id: string): string {
@@ -64,7 +85,7 @@ function operatorFix(id: string): string {
  *  scope. */
 function refusedChanges(error: unknown): readonly string[] | undefined {
   if (!(error instanceof Refusal) || error.status !== 403) return undefined;
-  if (typeof error.details["required_scope"] !== "string") return undefined;
+  if (error.details["required_scope"] !== "schema.write") return undefined;
   const changes: unknown = error.details["changes"];
   return Array.isArray(changes) &&
     changes.length > 0 &&
@@ -220,7 +241,7 @@ export async function ensureTypes(
         narrowedCondition(
           type.id,
           outcome.omitted,
-          outcome.withheld ?? { kind: "grant", key: key.id },
+          outcome.withheld ?? grantWithheld(key),
         ),
       );
     }
@@ -290,14 +311,14 @@ async function reconcile(
     if (needed.length === 0) return { omitted: missing, withheld: reason };
     const fix =
       reason.kind === "grant"
-        ? `grant it metadata types=write with ${grant(key.id)}, or ${operatorFix(type.id)}`
+        ? `grant it metadata types=write with \`${grantCommand(key)}\`, or ${operatorFix(type.id)}`
         : `the server refused the key the change to ${reason.changes.join(", ")}, which needs schema.write, so ${operatorFix(type.id)}`;
     return {
       problem: `the type ${type.id} on the server lacks ${needed.join(", ")}, without which this connector cannot write its rows, and the key ${key.id} may not add ${needed.length === 1 ? "it" : "them"}: ${fix}`,
     };
   };
   if (key.metadata_permissions["types"] !== "write") {
-    return withheld({ kind: "grant", key: key.id });
+    return withheld(grantWithheld(key));
   }
   const gone = async (): Promise<Outcome> =>
     deletable
@@ -314,7 +335,7 @@ async function reconcile(
     if (changes !== undefined) {
       return withheld(
         changes.length === 0
-          ? { kind: "grant", key: key.id }
+          ? grantWithheld(key)
           : { kind: "refused", changes },
       );
     }

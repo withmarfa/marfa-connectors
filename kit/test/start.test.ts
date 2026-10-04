@@ -383,7 +383,7 @@ describe("the key check on start", () => {
       const said = harness.lines.join("\n");
       expect(said).toContain("every connection it declares is registered");
       expect(said).toContain(
-        "marfa keys update key-1 --metadata-permission edge_types=read",
+        "marfa keys update key-1 --metadata-permission types=write --metadata-permission edge_types=read",
       );
       expect(said).not.toContain("--metadata-permission types=read");
     }

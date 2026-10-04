@@ -464,6 +464,24 @@ describe("a key with metadata types=write", () => {
       expect(error).not.toContain("--metadata-permission");
     });
 
+    it("stops where the server refuses for a scope other than schema.write", async () => {
+      harness.server.grants = fixer;
+      harness.server.types.set("test.entry", older());
+      harness.server.refuseNext(
+        "PUT /types/test.entry",
+        403,
+        "forbidden",
+        "Missing items.purge",
+        undefined,
+        { required_scope: "items.purge", changes: ["fields.note"] },
+      );
+      expect(await harness.once(vendor([entry]))).toBe(1);
+      const error = harness.lastRun().error ?? "";
+      expect(error).toContain("could not be brought up to date");
+      expect(error).toContain("Missing items.purge");
+      expect(harness.server.rows).toEqual([]);
+    });
+
     it("starts without the fields where the server refuses with a scope and names no change", async () => {
       harness.server.grants = fixer;
       harness.server.types.set("test.entry", older());
@@ -585,6 +603,28 @@ describe("a key with metadata types=write", () => {
 });
 
 describe("a key without metadata types=write", () => {
+  it("names every metadata entry the key keeps in the command that grants it, since an update replaces the map", async () => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+      metadata_permissions: { edge_types: "write" },
+    };
+    harness.server.types.set("test.entry", older());
+    const held = vendor([entry]);
+    held.connections = [
+      {
+        id: "test.blocks",
+        cardinality: "many-to-many",
+        source_type_constraints: ["test.entry"],
+        target_type_constraints: ["test.entry"],
+      },
+    ];
+    expect(await harness.once(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain(
+      "marfa keys update key-1 --metadata-permission edge_types=write --metadata-permission types=write`",
+    );
+  });
+
   it("starts without the fields the server lacks, keeps what rows hold, and names the fix", async () => {
     expect(await harness.once(vendor([entry]))).toBe(0);
     expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
@@ -824,10 +864,12 @@ describe("the fix in a narrowed type's condition", () => {
     const text = narrowedCondition("test.entry", fields, {
       kind: "grant",
       key: "key-1",
+      command:
+        "marfa keys update key-1 --metadata-permission edge_types=write --metadata-permission types=write",
     });
     expect(text.length).toBeGreaterThan(500);
     expect(text.slice(0, 500)).toContain(
-      "marfa keys update key-1 --metadata-permission types=write",
+      "marfa keys update key-1 --metadata-permission edge_types=write --metadata-permission types=write",
     );
   });
 
