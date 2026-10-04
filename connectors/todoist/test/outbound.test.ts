@@ -2441,6 +2441,98 @@ describe("a recurrence", () => {
     });
   });
 
+  it("goes back to what the task held when Todoist cannot read the row's recurrence", async () => {
+    const row = await placed("r", { due: daily });
+    marfa.edit(row.id, { recurrence: "zzqx blorp" });
+    await landed();
+    const updates = todoist.commands("item_update");
+    expect(updates.map((c) => c.args)).toEqual([
+      {
+        id: "r",
+        due: { string: "zzqx blorp", lang: "en", date: "2026-10-05" },
+      },
+      {
+        id: "r",
+        due: { string: "every day", lang: "en", date: "2026-10-05" },
+      },
+    ]);
+    expect(updates[1]?.uuid).not.toBe(updates[0]?.uuid);
+    expect(todoist.tasks.get("r")?.due).toMatchObject({
+      date: "2026-10-05",
+      string: "every day",
+      is_recurring: true,
+    });
+    expect(summary()).toContain(
+      `the change to ${row.id} was refused, so it waits until the row changes in Marfa: Todoist could not read the recurrence "zzqx blorp", so task r keeps repeating "every day"`,
+    );
+    // The row keeps the words the person gave, named by the condition, and the
+    // next reads send nothing more.
+    await landed();
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(2);
+    expect(marfa.byId(row.id).properties["recurrence"]).toBe("zzqx blorp");
+    expect(summary()).toContain('could not read the recurrence "zzqx blorp"');
+  });
+
+  it("goes back to a timed recurrence in its zone", async () => {
+    const timed = {
+      ...daily,
+      date: "2026-10-05T13:00:00Z",
+      timezone: "Europe/London",
+      string: "every day at 2pm",
+    };
+    const row = await placed("r", { due: timed });
+    marfa.edit(row.id, { recurrence: "zzqx blorp" });
+    await landed();
+    expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
+      {
+        id: "r",
+        due: {
+          string: "zzqx blorp",
+          lang: "en",
+          date: "2026-10-05T13:00:00Z",
+          timezone: "Europe/London",
+        },
+      },
+      {
+        id: "r",
+        due: {
+          string: "every day at 2pm",
+          lang: "en",
+          date: "2026-10-05T13:00:00Z",
+          timezone: "Europe/London",
+        },
+      },
+    ]);
+    expect(todoist.tasks.get("r")?.due).toMatchObject({
+      string: "every day at 2pm",
+      is_recurring: true,
+    });
+  });
+
+  it("goes back to the recurrence on the date the row moved the task to", async () => {
+    const row = await placed("r", { due: daily });
+    marfa.edit(row.id, {
+      recurrence: "zzqx blorp",
+      due_at: "2026-10-09T00:00:00.000Z",
+      precision: "day",
+    });
+    await landed();
+    expect(todoist.commands("item_update").at(-1)?.args).toEqual({
+      id: "r",
+      due: { string: "every day", lang: "en", date: "2026-10-09" },
+    });
+  });
+
+  it("writes nothing back for a task that was not repeating", async () => {
+    const row = await placed("r", {
+      due: { ...daily, string: "Oct 5", is_recurring: false },
+    });
+    marfa.edit(row.id, { recurrence: "zzqx blorp" });
+    await landed();
+    expect(todoist.commands("item_update")).toHaveLength(1);
+  });
+
 });
 
 describe("the account's zone", () => {

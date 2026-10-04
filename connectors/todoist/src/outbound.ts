@@ -401,8 +401,17 @@ async function carried(
     return;
   }
 
-  await sync(item, kind, changed, taskId, timeZone, lang, todoist);
-  await readBack(item, made ? undefined : changed, taskId, timeZone, todoist);
+  const task = await held(taskId, kind, todoist);
+  if (task === undefined) return;
+  await sync(item, kind, changed, taskId, task, timeZone, lang, todoist);
+  await readBack(
+    item,
+    made ? undefined : changed,
+    taskId,
+    task.due,
+    timeZone,
+    todoist,
+  );
 }
 
 async function remade(
@@ -430,20 +439,18 @@ async function remade(
     change.refused,
     taskId,
   );
-  await sync(item, change.kind, new Set(), made, timeZone, lang, todoist);
-  await readBack(item, undefined, made, timeZone, todoist);
+  const task = await held(made, change.kind, todoist);
+  if (task === undefined) return true;
+  await sync(item, change.kind, new Set(), made, task, timeZone, lang, todoist);
+  await readBack(item, undefined, made, task.due, timeZone, todoist);
   return true;
 }
 
-async function sync(
-  item: Item,
-  kind: Change["kind"],
-  changed: ReadonlySet<string>,
+async function held(
   taskId: string,
-  timeZone: string,
-  lang: Lang,
+  kind: Change["kind"],
   todoist: Door,
-): Promise<void> {
+): Promise<TodoistItem | undefined> {
   const task = await todoist.task(taskId);
   if (task === "forbidden" || task === "unknown") {
     throw new Refused(unreached(taskId, task));
@@ -451,10 +458,22 @@ async function sync(
   if (task === "deleted") {
     // An archive owes a deleted task nothing; the sync that brings the
     // deletion archives the row of any other change.
-    if (kind === "archived") return;
+    if (kind === "archived") return undefined;
     throw new Refused(`Todoist deleted task ${taskId}`);
   }
+  return task;
+}
 
+async function sync(
+  item: Item,
+  kind: Change["kind"],
+  changed: ReadonlySet<string>,
+  taskId: string,
+  task: TodoistItem,
+  timeZone: string,
+  lang: Lang,
+  todoist: Door,
+): Promise<void> {
   const wanted = argsOf(item, timeZone);
   const changes = onlyChanged(differing(wanted, task, timeZone), changed);
   if (changes.due !== undefined && changes.due !== null) {
@@ -523,11 +542,13 @@ async function inFallback(
 // Todoist keeps text it cannot read as a recurrence, sent with a date, as a
 // task due once rather than refusing it (seen live in October 2026), so a
 // task made with the row's recurrence, or sent one the row changed, is read
-// back once the other fields have landed.
+// back once the other fields have landed. A task that repeated before is
+// given its recurrence again, on the date it holds now.
 async function readBack(
   item: Item,
   changed: ReadonlySet<string> | undefined,
   taskId: string,
+  before: TodoistItem["due"],
   timeZone: string,
   todoist: Door,
 ): Promise<void> {
@@ -536,8 +557,29 @@ async function readBack(
   if (changed !== undefined && !changed.has("recurrence")) return;
   const task = await todoist.task(taskId);
   if (typeof task !== "object" || task.due?.is_recurring === true) return;
+  const kept = recurrenceOf(before);
+  if (kept === undefined) {
+    throw new Refused(
+      `Todoist could not read the recurrence "${recurrence}", so task ${taskId} is due once`,
+    );
+  }
+  const answer = await todoist.one(
+    "item_update",
+    commandId(item, "item_update:recurrence"),
+    {
+      id: taskId,
+      due: recurring(
+        heldDue(task.due),
+        kept,
+        typeof before?.lang === "string" ? before.lang : undefined,
+      ),
+    },
+  );
+  if (answer !== "ok") {
+    throw notTaken(answer, `putting back the recurrence of task ${taskId}`);
+  }
   throw new Refused(
-    `Todoist could not read the recurrence "${recurrence}", so task ${taskId} is due once`,
+    `Todoist could not read the recurrence "${recurrence}", so task ${taskId} keeps repeating "${kept}"`,
   );
 }
 
