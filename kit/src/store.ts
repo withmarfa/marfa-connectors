@@ -165,7 +165,7 @@ export class Store {
     const wanted = [...new Set(ids)].filter((id) => !this.read.has(id));
     for (let at = 0; at < wanted.length; at += perRequest) {
       const page = wanted.slice(at, at + perRequest);
-      const found = await this.marfa.findAgreements(this.connectorId, page);
+      const found = await this.marfa.lookupAgreements(this.connectorId, page);
       for (const id of page) this.read.set(id, null);
       for (const row of found) {
         this.read.set(row.item_id, agreementOf(row.record) ?? null);

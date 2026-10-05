@@ -175,7 +175,7 @@ class Fixture {
     return rowsOf(this.own, type, this.source);
   }
   async held(ids: string[]): Promise<Written[]> {
-    const answer = await this.own.POST("/connectors/{id}/agreements/find", {
+    const answer = await this.own.POST("/connectors/{id}/agreements/lookup", {
       params: { path: { id: await this.id() } },
       body: { item_ids: ids },
     });

@@ -174,7 +174,7 @@ class Fixture {
     );
     const answers = await Promise.all(
       pages.map((page) =>
-        this.own.POST("/connectors/{id}/agreements/find", {
+        this.own.POST("/connectors/{id}/agreements/lookup", {
           params: { path: { id: this.id } },
           body: { item_ids: page.map((row) => row.id) },
         }),

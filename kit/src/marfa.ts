@@ -942,12 +942,12 @@ export class Marfa {
     }
   }
 
-  async findAgreements(
+  async lookupAgreements(
     id: string,
     itemIds: readonly string[],
   ): Promise<{ item_id: string; record: unknown }[]> {
     const { data, error, response } = await this.client.POST(
-      "/connectors/{id}/agreements/find",
+      "/connectors/{id}/agreements/lookup",
       { params: { path: { id } }, body: { item_ids: [...itemIds] } },
     );
     if (data === undefined) throw refusal(response, error);
