@@ -354,11 +354,16 @@ async function awaitChanges<E extends EnvDeclaration>(
       unreachable = false;
     } catch (error) {
       if (stopped()) return;
-      if (!unreachable) {
-        logger.warn(`the look between runs failed: ${describe(error)}`);
+      // A type or registration the server lost is mended by a run, which
+      // ends the process for it to be registered again.
+      if (causeOf(error) === "registration") waiting = true;
+      else {
+        if (!unreachable) {
+          logger.warn(`the look between runs failed: ${describe(error)}`);
+        }
+        unreachable = true;
+        continue;
       }
-      unreachable = true;
-      continue;
     }
     if (!waiting || stopped()) continue;
     const run = await held("look");
