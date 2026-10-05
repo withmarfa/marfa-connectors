@@ -105,7 +105,10 @@ export class Watch {
             live = typeof cursor === "string" ? cursor : undefined;
             break;
           }
-          if (frame.event === "catchup_too_old") {
+          if (
+            frame.event === "catchup_too_old" ||
+            frame.event === "cursor_ahead"
+          ) {
             resync = true;
             break;
           }

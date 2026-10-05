@@ -268,6 +268,8 @@ export class ScriptedServer {
   ttlAnswer: { value: unknown } | undefined;
   bodyCap: number | undefined;
   tooOld = false;
+  /** The cursor asked for is past the head, as after a restore. */
+  cursorAhead = false;
   incompleteAfter: number | undefined;
   withholdLive = false;
   stallAfter: number | undefined;
@@ -1558,6 +1560,15 @@ export class ScriptedServer {
         event_type: "catchup_too_old",
         min_retained_id: String(this.head + 1),
         requested: String(cursor),
+      });
+      res.end();
+      return;
+    }
+    if (cursor !== undefined && this.cursorAhead) {
+      frame("cursor_ahead", {
+        event_type: "cursor_ahead",
+        requested: String(cursor),
+        head: String(this.head),
       });
       res.end();
       return;
