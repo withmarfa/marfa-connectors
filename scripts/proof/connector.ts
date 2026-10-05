@@ -337,7 +337,7 @@ export async function restore(marfa: MarfaClient, id: string): Promise<void> {
 }
 
 export async function purge(marfa: MarfaClient, id: string): Promise<void> {
-  const { error, response } = await marfa.DELETE("/items/{id}/purge", {
+  const { error, response } = await marfa.POST("/items/{id}/purge", {
     params: { path: { id } },
   });
   if (!response.ok)
