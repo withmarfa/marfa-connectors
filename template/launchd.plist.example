@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The secrets tool puts MARFA_KEY and the vendor's token into the environment, so neither is written here. -->
+<!-- The secrets tool puts MARFA_API_KEY and the vendor's token into the environment, so neither is written here. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
@@ -18,7 +18,7 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <key>MARFA_URL</key>
+    <key>MARFA_API_URL</key>
     <string>https://marfa.example.com</string>
     <key>EXAMPLE_URL</key>
     <string>https://vendor.example.com/</string>
