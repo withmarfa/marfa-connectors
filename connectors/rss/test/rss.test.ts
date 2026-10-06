@@ -642,6 +642,177 @@ describe("reading a feed", () => {
   });
 });
 
+describe("an entry's content and image", () => {
+  const rss = (items: string, channel = ""): string =>
+    `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>T</title><link>https://example.org/</link>${channel}${items}</channel></rss>`;
+  const atom = (entries: string, feed = ""): string =>
+    `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"${feed}><title>T</title><id>tag:example.com,2026:feed</id>${entries}</feed>`;
+  const only = (document: string) =>
+    readFeed(at("https://example.org/rss.xml"), document).entries[0]
+      ?.properties;
+
+  it("keeps the markup of a summary that is a feed's only content as the body, and its plain text as the description", () => {
+    const description = `&lt;p&gt;Fish &amp;amp; &lt;a href="/c"&gt;chips&lt;/a&gt;&lt;/p&gt;&lt;p&gt;Peas.&lt;/p&gt;`;
+    expect(
+      only(
+        rss(
+          `<item><guid>a</guid><description>${description}</description></item>`,
+        ),
+      ),
+    ).toMatchObject({
+      body: `<p>Fish &amp; <a href="/c">chips</a></p><p>Peas.</p>`,
+      description: "Fish & chips Peas.",
+    });
+    const summary = readFeed(
+      at("https://example.com/atom.xml"),
+      atom(
+        `<entry><id>a</id><title>A</title><summary type="html">&lt;p&gt;One &lt;b&gt;bold&lt;/b&gt;.&lt;/p&gt;</summary></entry>
+         <entry><id>b</id><title>B</title><summary type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Two <i>italic</i>.</p></div></summary></entry>`,
+      ),
+    ).entries;
+    expect(summary.map((entry) => entry.properties["body"])).toEqual([
+      "<p>One <b>bold</b>.</p>",
+      "<p>Two <i>italic</i>.</p>",
+    ]);
+    expect(summary.map((entry) => entry.properties["description"])).toEqual([
+      "One bold.",
+      "Two italic.",
+    ]);
+  });
+
+  it("keeps the content as the body and the summary as the description where a feed has both, and no body for a summary without markup", () => {
+    expect(
+      only(
+        rss(
+          `<item><guid>a</guid><description>&lt;p&gt;Short.&lt;/p&gt;</description><content:encoded><![CDATA[<p>Long.</p>]]></content:encoded></item>`,
+        ),
+      ),
+    ).toMatchObject({ body: "<p>Long.</p>", description: "Short." });
+    const plain = readFeed(
+      at("https://example.org/rss.xml"),
+      rss(
+        `<item><guid>a</guid><description>Fish &amp;amp; chips &amp;lt;3</description></item>`,
+      ),
+    ).entries[0]?.properties;
+    expect(plain).toMatchObject({ description: "Fish & chips <3" });
+    expect(plain).not.toHaveProperty("body", expect.anything());
+    const text = readFeed(
+      at("https://example.com/atom.xml"),
+      atom(
+        `<entry><id>a</id><title>A</title><summary>Less &lt;than&gt; plain</summary></entry>`,
+      ),
+    ).entries[0]?.properties;
+    expect(text).toMatchObject({ description: "Less <than> plain" });
+    expect(text?.["body"]).toBeUndefined();
+  });
+
+  it("keeps a picture-only entry's picture, its caption as the description and its markup as the body", () => {
+    const entry = only(
+      rss(
+        `<item><title>Compiling</title><link>https://example.org/303/</link><guid>https://example.org/303/</guid>
+          <description>&lt;img src="https://imgs.example.org/comics/compiling.png" title="Hover caption &amp;amp; joke" alt="Compiling" /&gt;</description></item>`,
+      ),
+    );
+    expect(entry).toMatchObject({
+      body: `<img src="https://imgs.example.org/comics/compiling.png" title="Hover caption &amp; joke" alt="Compiling" />`,
+      description: "Hover caption & joke",
+      image_url: "https://imgs.example.org/comics/compiling.png",
+    });
+  });
+
+  it("captions a picture-only entry by its alt text where the picture has no title", () => {
+    expect(
+      only(
+        rss(
+          `<item><guid>a</guid><description>&lt;img src="https://example.org/a.png" alt="  A  diagram "/&gt;</description></item>`,
+        ),
+      ),
+    ).toMatchObject({ description: "A diagram" });
+  });
+
+  it("takes the first picture that counts, passing over pixels, data URIs and other schemes", () => {
+    const html = [
+      `<img src="https://example.org/track.gif" width="1" height="1">`,
+      `<img src="https://example.org/zero.gif" height="0">`,
+      `<img src="https://example.org/px.gif" width="1px">`,
+      `<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">`,
+      `<img src="ftp://example.org/old.png">`,
+      `<img>`,
+      `<img src="https://example.org/real.png" width="640" height="480">`,
+      `<img src="https://example.org/later.png">`,
+    ].join("");
+    const entry = only(
+      rss(
+        `<item><guid>a</guid><description><![CDATA[<p>Text.</p>${html}]]></description></item>`,
+      ),
+    );
+    expect(entry?.["image_url"]).toBe("https://example.org/real.png");
+  });
+
+  it("resolves a relative picture against the entry's base, and writes none relative to the feed's path", () => {
+    const based = readFeed(
+      at("https://example.org/feeds/secret-path/feed.xml?token=secret"),
+      atom(
+        `<entry xml:base="https://cdn.example.net/posts/"><id>a</id><title>A</title>
+          <content type="html">&lt;img src="a/one.png"&gt;</content></entry>
+        <entry><id>b</id><title>B</title>
+          <content type="html">&lt;img src="//cdn.example.net/two.png"&gt;</content></entry>
+        <entry><id>c</id><title>C</title>
+          <content type="html">&lt;img src="sub/three.png"&gt;</content></entry>`,
+      ),
+    ).entries;
+    expect(based.map((entry) => entry.properties["image_url"])).toEqual([
+      "https://cdn.example.net/posts/a/one.png",
+      "https://cdn.example.net/two.png",
+      undefined,
+    ]);
+    expect(JSON.stringify(based)).not.toContain("secret");
+  });
+
+  it("takes an enclosure before a picture in the text, and a picture in the content before one in the summary", () => {
+    const enclosed = readFeed(
+      at("https://example.org/rss.xml"),
+      rss(
+        `<item><guid>a</guid><description>&lt;img src="https://example.org/summary.png"&gt;</description>
+          <enclosure url="https://example.org/cover.jpg" type="image/jpeg" length="1"/></item>
+         <item><guid>b</guid><description>&lt;img src="https://example.org/summary.png"&gt;</description>
+          <content:encoded><![CDATA[<p><img src="https://example.org/content.png"></p>]]></content:encoded></item>
+         <item><guid>c</guid><description>&lt;img src="https://example.org/summary.png"&gt;</description>
+          <content:encoded><![CDATA[<p>No picture.</p>]]></content:encoded></item>
+         <item><guid>d</guid>
+          <content:encoded><![CDATA[<p><img src="https://example.org/body-only.png"></p>]]></content:encoded></item>`,
+      ),
+    ).entries;
+    expect(enclosed.map((entry) => entry.properties["image_url"])).toEqual([
+      "https://example.org/cover.jpg",
+      "https://example.org/content.png",
+      "https://example.org/summary.png",
+      "https://example.org/body-only.png",
+    ]);
+  });
+
+  it("writes nothing for a summary that holds only a tracking pixel", () => {
+    const entry = only(
+      rss(
+        `<item><guid>a</guid><title>A</title><description>&lt;img src="https://example.org/t.gif" width="1" height="1" alt="pixel"&gt;</description></item>`,
+      ),
+    );
+    expect(entry?.["title"]).toBe("A");
+    for (const field of ["body", "description", "image_url"]) {
+      expect(entry?.[field]).toBeUndefined();
+    }
+  });
+
+  it("gives an entry with no date no date of its own, leaving the server to date it when it is first stored", () => {
+    const { entries } = readFeed(
+      at("https://example.org/rss.xml"),
+      rss(`<item><guid>a</guid><title>Undated</title></item>`),
+    );
+    expect(entries[0]?.occurred_at).toBeUndefined();
+    expect(entries[0]?.properties["published_at"]).toBeUndefined();
+  });
+});
+
 describe("fetching a feed", () => {
   let server: Server;
   let base: string;
@@ -1804,5 +1975,26 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toContain(
       `2 values in feed 1 in RSS_FEEDS (${base}) are longer than 100000 characters, and are left out`,
     );
+  });
+
+  it("dates an entry with no date by when it was first stored, and moves that date for no later read", async () => {
+    served["/undated.xml"] = {
+      body: `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+        <item><guid>u</guid><title>Undated</title><description>Plain.</description></item></channel></rss>`,
+      etag: '"u-1"',
+    };
+    expect((await once(["/undated.xml"])).code).toBe(0);
+    const first = row("u");
+    expect(first.occurred_at).toBe(first.created_at);
+    const undated = served["/undated.xml"];
+    if (typeof undated.body !== "string") throw new Error("no feed");
+    undated.body = undated.body.replace("Undated", "Undated, revised");
+    undated.etag = '"u-2"';
+    await new Promise((later) => setTimeout(later, 20));
+    expect((await once(["/undated.xml"])).code).toBe(0);
+    const second = row("u");
+    expect(second.properties["title"]).toBe("Undated, revised");
+    expect(second.version).toBe(2);
+    expect(second.occurred_at).toBe(first.occurred_at);
   });
 });
