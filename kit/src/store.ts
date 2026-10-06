@@ -14,7 +14,7 @@ export type Purge = Item & {
 export const purgeRefusalLimit = 7;
 
 /** The most the pending purges may take of the saved state, which the
- *  instance caps at 512 KiB, so the rest of it is always kept. */
+ *  instance caps at 512 KiB, so they leave room for the rest of it. */
 export const purgeBytes = 128 * 1024;
 
 /** What carrying a purge needs: the row's own fields and its link, never the

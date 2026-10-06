@@ -994,7 +994,7 @@ export async function runOnce<E extends EnvDeclaration>(
   const refusals = (purge: Purge): number =>
     purge.refused === undefined ? 0 : (purge.refused.count ?? 1);
   // Past what the state may hold, the ones the vendor has refused most go
-  // first, so the rest of the state is always kept.
+  // first, so they leave room for the rest of the state.
   const keepPurges = (): Purge[] => {
     const ranked = [...purged.values()].sort(
       (a, b) => refusals(a) - refusals(b),
