@@ -1997,4 +1997,23 @@ describe("the connector, run as a process", () => {
     expect(second.version).toBe(2);
     expect(second.occurred_at).toBe(first.occurred_at);
   });
+
+  it("sends the owner of a key that is too wide to the connector's own README, which exists", async () => {
+    marfa.grants = {
+      permissions: ["keys.mint"],
+      type_permissions: { "rss.entry": "write" },
+      metadata_permissions: { types: "write" },
+    };
+    const { code } = await once();
+    expect(code).toBe(1);
+    const error = marfa.runs.at(-1)?.error ?? "";
+    expect(error).toContain("as connectors/rss/README.md says");
+    expect(error).not.toContain("template's README");
+    expect(
+      readFileSync(
+        resolve(import.meta.dirname, "../../..", "connectors/rss/README.md"),
+        "utf8",
+      ),
+    ).toContain("marfa keys create");
+  });
 });

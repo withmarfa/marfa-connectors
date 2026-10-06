@@ -85,18 +85,27 @@ function startBackoff(intervalMs: number, attempts: number): number {
  *  message in its thread. */
 const shippedConnections = new Set(["attached-to", "in-thread"]);
 
+/** Where an owner is told to mint the connector's key. */
+function keyGuide(connector: Pick<Connector, "readme">): string {
+  return connector.readme ?? "the template's README";
+}
+
 /** The connector's rows carry its source, so a key writes under it as its
  *  own or as a claim, a second account's key the latter; any other claim
  *  reaches rows that are not the connector's, and an app's key is the
  *  app's. */
-function keySourceProblem(key: Key, source: string): string | undefined {
+function keySourceProblem(
+  key: Key,
+  source: string,
+  guide: string,
+): string | undefined {
   if (key.oauth_client_id !== undefined) {
-    return `the key ${key.id} is refused: an app made it, and it stays that app's. Mint the connector a key of its own as the template's README says.`;
+    return `the key ${key.id} is refused: an app made it, and it stays that app's. Mint the connector a key of its own as ${guide} says.`;
   }
   const own = key.source === source;
   const others = key.sources.filter((claim) => claim !== source);
   if (!own && !key.sources.includes(source)) {
-    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it with \`marfa keys update ${key.id} --claim ${source}\` from the operator key, or mint a key as the template's README says.`;
+    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it with \`marfa keys update ${key.id} --claim ${source}\` from the operator key, or mint a key as ${guide} says.`;
   }
   if (others.length > 0) {
     return `the key ${key.id} claims sources besides the connector's, ${source}, and is refused: ${others.join(", ")}. Narrow it with \`marfa keys update ${key.id} ${own ? "--no-claims" : `--claim ${source}`}\`.`;
@@ -208,13 +217,13 @@ function keyProblems<E extends EnvDeclaration>(
   const wider = keyWiderThanTypes(key, types, connections);
   const narrower = keyNarrowerThanTypes(key, types, connections);
   const problems = [
-    keySourceProblem(key, connector.source),
+    keySourceProblem(key, connector.source, keyGuide(connector)),
     wider.length === 0
       ? undefined
-      : `the key ${key.id} holds more than read and write on ${named} and metadata types=write, and is refused: ${wider.join(", ")}. Revoke it and mint another as the template's README says.`,
+      : `the key ${key.id} holds more than read and write on ${named} and metadata types=write, and is refused: ${wider.join(", ")}. Revoke it and mint another as ${keyGuide(connector)} says.`,
     narrower.length === 0
       ? undefined
-      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as the template's README says.`,
+      : `the key ${key.id} may not write ${narrower.join(", ")}, which the connector writes, and is refused. Revoke it and mint another as ${keyGuide(connector)} says.`,
   ].filter((problem) => problem !== undefined);
   return problems.length === 0 ? undefined : problems.join(" ");
 }
@@ -383,7 +392,7 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
     `${connector.name}: ${usage}`,
     "It reads its settings from the environment:",
     "  MARFA_URL (the address of the Marfa server)",
-    "  MARFA_KEY (a key minted for this connector, as the template's README says)",
+    `  MARFA_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
   ];
 }
@@ -404,10 +413,10 @@ function faultWarning(error: unknown): string | undefined {
     : `MARFA_URL cannot be used for now, since ${fault} (${describe(error)}); the connector waits for it to mend, and stops only when told to`;
 }
 
-function startProblem(error: unknown, server: string): string {
+function startProblem(error: unknown, server: string, guide: string): string {
   const cause = causeOf(error);
   if (cause === "key") {
-    return `could not start: the server at MARFA_URL (${server}) refused MARFA_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_KEY to a key minted for this connector, as the template's README says.`;
+    return `could not start: the server at MARFA_URL (${server}) refused MARFA_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_KEY to a key minted for this connector, as ${guide} says.`;
   }
   if (cause === "marfa") {
     return `could not start: the server at MARFA_URL (${server}) did not answer (${describe(error)}). Check MARFA_URL and that the server is up, then start the connector again.`;
@@ -579,7 +588,7 @@ async function serve<E extends EnvDeclaration>(
         return 2;
       }
       if (schedule.mode !== "every" || causeOf(error) !== "marfa") {
-        logger.error(startProblem(error, environment.url));
+        logger.error(startProblem(error, environment.url, keyGuide(connector)));
         return 1;
       }
       const wait = Math.max(
@@ -912,7 +921,7 @@ async function serve<E extends EnvDeclaration>(
   if (halted === undefined || (succeeded && code === 0)) return code;
   if (halted === "key") {
     logger.error(
-      "the server refused MARFA_KEY, or the key no longer reaches the connector's types, so the connector stops: the key is wrong, revoked or narrowed. Mint another as the template's README says, set MARFA_KEY, and start the connector again.",
+      `the server refused MARFA_KEY, or the key no longer reaches the connector's types, so the connector stops: the key is wrong, revoked or narrowed. Mint another as ${keyGuide(connector)} says, set MARFA_KEY, and start the connector again.`,
     );
     return 1;
   }
