@@ -306,4 +306,87 @@ describe("a purge the vendor refuses", () => {
     expect(harness.kept()["purges"]).toBeUndefined();
     expect(conditions()).toEqual({});
   });
+
+  it("keeps only what carrying it needs, not the whole row", async () => {
+    const note = "x".repeat(2_000);
+    const held = vendor([{ ...one, properties: { ...one.properties, note } }]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.purge("a:1");
+    held.refused = new Map([[row.id, "the account may not delete"]]);
+    await harness.twoWay(held);
+    const purges = harness.kept()["purges"] as Record<string, unknown>[];
+    expect(purges).toHaveLength(1);
+    expect(purges[0]).toMatchObject({
+      id: row.id,
+      type: "test.entry",
+      source_id: "a:1",
+      properties: { vendor_id: "v1" },
+    });
+    expect(JSON.stringify(purges)).not.toContain(note);
+  });
+
+  it("is given up after the vendor has refused it seven times, with a condition saying so", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    harness.server.purge("a:1");
+    held.refused = new Map([[row.id, "access to the item was removed"]]);
+    for (let refusal = 1; refusal < 7; refusal += 1) {
+      held.changes.length = 0;
+      expect(await harness.twoWay(held)).toBe(0);
+      expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
+      expect(harness.kept()["purges"]).toHaveLength(1);
+      harness.clock.advance(24 * 3_600_000);
+    }
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes.map((change) => change.kind)).toEqual(["purged"]);
+    expect(harness.kept()["purges"]).toBeUndefined();
+    expect(conditions()[`purge-given-up:${row.id}`]).toBe(
+      `the purge of ${row.id} was refused 7 times, so it is given up and the vendor may still hold the row: access to the item was removed`,
+    );
+
+    held.changes.length = 0;
+    harness.clock.advance(24 * 3_600_000);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("is never so many that the rest of the state cannot be kept", async () => {
+    // Long links, so a few purges fill the budget and each condition fits.
+    const entries = Array.from({ length: 150 }, (_, at) => ({
+      source_id: `a:${String(at)}`,
+      properties: {
+        title: `Row ${String(at)}`,
+        vendor_id: `v${String(at)}-${"l".repeat(2_000)}`,
+      },
+    }));
+    const held = vendor(entries);
+    await harness.twoWay(held);
+    const rows = entries.map((entry) => harness.server.row(entry.source_id));
+    for (const row of rows) harness.server.trash(row.id);
+    held.entries = [];
+    await harness.twoWay(held);
+    for (const entry of entries) harness.server.purge(entry.source_id);
+    held.refused = new Map(rows.map((row) => [row.id, "refused for good"]));
+    expect(await harness.twoWay(held)).toBe(0);
+
+    const kept = harness.kept();
+    const purges = kept["purges"] as unknown[];
+    expect(purges.length).toBeGreaterThan(0);
+    expect(purges.length).toBeLessThan(entries.length);
+    expect(Buffer.byteLength(JSON.stringify(kept))).toBeLessThan(512 * 1024);
+    expect(kept["cursor"]).toBeDefined();
+    expect(conditions()["purges-given-up"]).toMatch(
+      /^\d+ purges were given up, since the state keeps at most 128 KiB of them/,
+    );
+    expect(harness.lastRun().outcome).toBe("succeeded");
+  });
 });

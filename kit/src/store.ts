@@ -3,8 +3,28 @@ import { readJournal } from "./inbound-retry.js";
 import type { PendingInbound, Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
-/** A purge still to carry, with when and why the vendor last refused it. */
-export type Purge = Item & { refused?: { at: string; reason?: string } };
+/** A purge still to carry, with when and why the vendor last refused it, and
+ *  how many times it has. */
+export type Purge = Item & {
+  refused?: { at: string; reason?: string; count?: number };
+};
+
+/** How many times the vendor may refuse a purge before it is given up. A
+ *  refused purge is asked again a day later, so this is about a week. */
+export const purgeRefusalLimit = 7;
+
+/** The most the pending purges may take of the saved state, which the
+ *  instance caps at 512 KiB, so the rest of it is always kept. */
+export const purgeBytes = 128 * 1024;
+
+/** What carrying a purge needs: the row's own fields and its link, never the
+ *  rest of its properties, edges or extensions. */
+export function purgeOf(item: Item, linkField: string, link: string): Purge {
+  const kept: Purge = { ...item, properties: { [linkField]: link } };
+  Reflect.deleteProperty(kept, "edges");
+  Reflect.deleteProperty(kept, "extensions");
+  return kept;
+}
 
 export interface Relinked {
   rows: Record<string, { link: string; type: string }>;
