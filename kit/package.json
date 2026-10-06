@@ -12,6 +12,6 @@
     }
   },
   "dependencies": {
-    "@withmarfa/client": "0.0.3"
+    "@withmarfa/client": "0.0.4"
   }
 }

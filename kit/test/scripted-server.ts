@@ -268,6 +268,8 @@ export class ScriptedServer {
   ttlAnswer: { value: unknown } | undefined;
   bodyCap: number | undefined;
   tooOld = false;
+  /** The cursor asked for is past the head, as after a restore. */
+  cursorAhead = false;
   incompleteAfter: number | undefined;
   withholdLive = false;
   stallAfter: number | undefined;
@@ -1107,7 +1109,7 @@ export class ScriptedServer {
       method === "POST" &&
       parts[0] === "connectors" &&
       parts[2] === "agreements" &&
-      parts[3] === "find"
+      parts[3] === "lookup"
     ) {
       const ids = input["item_ids"] as string[];
       if (ids.length > 500) {
@@ -1253,6 +1255,16 @@ export class ScriptedServer {
       return;
     }
     if (method === "GET" && url.pathname === "/events") {
+      const unknown = url.searchParams
+        .get("type")
+        ?.split(",")
+        .find((type) => !this.types.has(type));
+      if (unknown !== undefined) {
+        refuse(400, "unknown_type", `Unknown type: ${unknown}`, {
+          type: unknown,
+        });
+        return;
+      }
       this.stream(url.searchParams, headers["last-event-id"], res);
       return;
     }
@@ -1544,21 +1556,25 @@ export class ScriptedServer {
     res.write(": connected\n\n");
     const cursor = lastEventId === undefined ? undefined : Number(lastEventId);
     if (cursor !== undefined && this.tooOld) {
-      // Carries the oldest retained id as its own, as the real frame does.
-      frame(
-        "catchup_too_old",
-        {
-          type: "catchup_too_old",
-          min_retained_id: String(this.head + 1),
-          requested: String(cursor),
-        },
-        this.head + 1,
-      );
+      frame("catchup_too_old", {
+        event_type: "catchup_too_old",
+        min_retained_id: String(this.head + 1),
+        requested: String(cursor),
+      });
+      res.end();
+      return;
+    }
+    if (cursor !== undefined && this.cursorAhead) {
+      frame("cursor_ahead", {
+        event_type: "cursor_ahead",
+        requested: String(cursor),
+        head: String(this.head),
+      });
       res.end();
       return;
     }
     frame("stream_cursor", {
-      type: "stream_cursor",
+      event_type: "stream_cursor",
       cursor: String(this.head),
     });
     // Up to ten types, comma-separated, as the real stream takes them.
@@ -1576,7 +1592,7 @@ export class ScriptedServer {
       if (this.stallAfter !== undefined && sent === this.stallAfter) return;
       if (this.incompleteAfter !== undefined && sent === this.incompleteAfter) {
         frame("stream_incomplete", {
-          type: "stream_incomplete",
+          event_type: "stream_incomplete",
           reason: "replay_failed",
           cursor: lastSent === undefined ? null : String(lastSent),
         });
@@ -1587,13 +1603,13 @@ export class ScriptedServer {
         event.event,
         "edge" in event
           ? {
-              type: event.event,
+              event_type: event.event,
               edge: event.edge,
               ...(event.purged_with !== undefined && {
                 purged_with: event.purged_with,
               }),
             }
-          : { type: event.event, item: this.wire(event.item) },
+          : { event_type: event.event, item: this.wire(event.item) },
         event.id,
       );
       sent += 1;
@@ -1605,7 +1621,7 @@ export class ScriptedServer {
     // ended short.
     if (this.withholdLive) return;
     frame("stream_live", {
-      type: "stream_live",
+      event_type: "stream_live",
       cursor: this.liveCursorNull
         ? null
         : (this.liveCursor ?? String(this.head)),

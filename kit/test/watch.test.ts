@@ -228,6 +228,29 @@ describe("what is carried back", () => {
     await quietRun(held);
     expect(held.changes).toHaveLength(0);
   });
+
+  it("compares every row, and keeps the head as its cursor, when the cursor is past the log's head", async () => {
+    const held = vendor([one, two]);
+    await harness.twoWay(held);
+    await quietRun(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "One, by a person" });
+
+    harness.server.cursorAhead = true;
+    held.entries = [];
+    await quietRun(held);
+    expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
+      [["updated", row.id]],
+    );
+    expect(harness.lastRun().summary).toContain(
+      "every row of the connector's types was compared with what was last agreed",
+    );
+    expect(watchState().cursor).toBe(String(harness.server.head));
+
+    harness.server.cursorAhead = false;
+    await quietRun(held);
+    expect(held.changes).toHaveLength(0);
+  });
 });
 
 describe("a read that ends early", () => {

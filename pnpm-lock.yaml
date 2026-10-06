@@ -84,14 +84,14 @@ importers:
   kit:
     dependencies:
       '@withmarfa/client':
-        specifier: 0.0.3
-        version: 0.0.3
+        specifier: 0.0.4
+        version: 0.0.4
 
   scripts:
     dependencies:
       '@withmarfa/client':
-        specifier: 0.0.3
-        version: 0.0.3
+        specifier: 0.0.4
+        version: 0.0.4
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../kit
@@ -462,8 +462,8 @@ packages:
   '@vitest/spy@5.0.1':
     resolution: {integrity: sha512-rbto/mF/SGERxEgYOek7Xm6B9b+y+mVoo+f4b2LymYO8zM1b7uB5nHuhVMTP2hxdzgxvGiZYGxGIaMvL5y180Q==}
 
-  '@withmarfa/client@0.0.3':
-    resolution: {integrity: sha512-ogf4j+WvUhDLATNzNBOsu3v2CEfJsBH/uY44F5FQAunhO3DKNqlimvxEblJ7pZBg19ssnBVFpG7fK7Rey+SbyQ==}
+  '@withmarfa/client@0.0.4':
+    resolution: {integrity: sha512-+w4SDYThYuA2Eq433S3AHhUEMWGC9liahwlnxEXvOyEsZNMkALSOp3UfAYRxfkNjY1piWf7PkXdWNHRGzwTlgg==}
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
@@ -1429,7 +1429,7 @@ snapshots:
 
   '@vitest/spy@5.0.1': {}
 
-  '@withmarfa/client@0.0.3':
+  '@withmarfa/client@0.0.4':
     dependencies:
       openapi-fetch: 0.17.0
 

@@ -257,7 +257,7 @@ async function setup(
     return data.state;
   };
   const agreements = async (ids: string[]) => {
-    const { data } = await own.POST("/connectors/{id}/agreements/find", {
+    const { data } = await own.POST("/connectors/{id}/agreements/lookup", {
       params: { path: { id: (await registered()).id } },
       body: { item_ids: ids },
     });

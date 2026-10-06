@@ -38,6 +38,21 @@ describe("the look between runs, for a connector that carries changes back", () 
     expect(await exit).toBe(0);
   });
 
+  it("takes a run when the look finds a type of the connector's gone, so the run registers it again", async () => {
+    harness.server.grants = { metadata_permissions: { types: "write" } };
+    const held = vendor([one]);
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    harness.server.types.delete("test.entry");
+    await harness.clock.wake(10_000);
+    await until(() => harness.server.requestsTo("POST", "/types").length === 2);
+    await until(() => held.runs >= 2);
+    await until(() => harness.lastRun().outcome === "succeeded");
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("starts no run for the connector's own writes", async () => {
     const held = vendor([one]);
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);
