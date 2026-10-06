@@ -226,16 +226,29 @@ const connector = defineConnector({
       .filter((item) => item.deleted === true)
       .map((item) => item.id);
     const listed = new Set(items.map((item) => item.id));
+    // A lookup the vendor fails stops the asking, but what is certain is
+    // archived first, so one bad answer does not hold back the rest.
+    let failed: Error | undefined;
     for (const row of await held(exampleItem.id)) {
       const id = row.properties["example_id"];
       if (typeof id !== "string" || listed.has(id)) continue;
-      const found = await itemOf(env, signal, id);
-      if (found === undefined || found.deleted === true) gone.push(id);
+      try {
+        const found = await itemOf(env, signal, id);
+        if (found === undefined || found.deleted === true) gone.push(id);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        failed =
+          error instanceof Error
+            ? error
+            : new Error("a lookup failed", { cause: error });
+        break;
+      }
     }
     // Archive matches the link value when the type has a `link_field`, else
     // the source id: a read-only copy that drops `link_field` must archive by
     // `key(item)`.
     await archive(exampleItem.id, gone);
+    if (failed !== undefined) throw failed;
   },
   async onChange(
     { kind, item, changed, attempted, refused },

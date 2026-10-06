@@ -44,6 +44,7 @@ let refuseNextWrite: number | undefined;
 let refuseNextPut: number | undefined;
 let hangNext: string | undefined;
 let unlisted: Set<string>;
+let failLookup: Set<string>;
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("example", {
@@ -55,6 +56,7 @@ beforeEach(async () => {
   refuseNextPut = undefined;
   hangNext = undefined;
   unlisted = new Set();
+  failLookup = new Set();
   let made = 0;
   const madeByKey = new Map<string, string>();
   // A day behind the scripted server's clock, so a change in Marfa is later
@@ -83,6 +85,10 @@ beforeEach(async () => {
       const method = req.method ?? "GET";
       const one = /^\/items\/(.+)$/.exec(path);
       if (method === "GET" && one !== null) {
+        if (failLookup.has(decodeURIComponent(one[1] ?? ""))) {
+          res.writeHead(500).end();
+          return;
+        }
         const found = items.find(
           (item) => item.id === decodeURIComponent(one[1] ?? ""),
         );
@@ -697,6 +703,23 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(marfa.row("acct:2").state).toBe("active");
     expect(marfa.runs.at(-1)?.summary).toMatch(/archived 0, /);
+  });
+
+  it("archives what it is sure of before a failed lookup fails the run", async () => {
+    items = [
+      { id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" },
+      { id: "2", title: "Two", created: "2026-09-02T10:00:00.000Z" },
+      { id: "3", title: "Three", created: "2026-09-03T10:00:00.000Z" },
+    ];
+    expect((await once()).code).toBe(0);
+    items = items.slice(0, 1);
+    failLookup.add("3");
+    expect((await once()).code).toBe(1);
+    expect(marfa.row("acct:2").state).toBe("archived");
+    expect(marfa.row("acct:3").state).toBe("active");
+    failLookup.clear();
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("acct:3").state).toBe("archived");
   });
 
   it("fails the run, to be tried again, when the vendor does not answer a read in time", async () => {
