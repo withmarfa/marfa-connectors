@@ -9,7 +9,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
 - [`connectors/`](./connectors): the connectors, one folder each, run and never published.
   - [`github`](./connectors/github/README.md): repositories, issues and comments from a GitHub App, with their relations, and changes carried back to issues and comments.
   - [`todoist`](./connectors/todoist/README.md): a Todoist account's tasks, with changes carried back.
-  - `rss`: the entries of the feeds it is given, read only.
+  - [`rss`](./connectors/rss/README.md): the entries of the feeds it is given, read only.
 - [`scripts/`](./scripts): prepares the pinned Marfa server, holds the proof, which boots the pinned server and drives every connector against it, and holds the tests that guard the repository itself.
 
 [`AGENTS.md`](./AGENTS.md) holds the rules the repository is worked under.

@@ -118,6 +118,8 @@ Where a feed gives an entry content (an Atom `content`, an RSS `content:encoded`
 
 Where the summary or description is the feed's only content, `body` holds its markup and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing, such as a lone tracking pixel, gives no `body`.
 
+The connector does not clean the markup it keeps in `body`. Treat it as untrusted wherever it is shown.
+
 A summary that is only a picture, as in a comic's feed, gives a `body` that is the picture's markup, a `description` from the picture's `title` text, else its `alt` text, and an `image_url`.
 
 ### Which images count
@@ -156,7 +158,7 @@ A feed is skipped, and named in the run, when it:
 
 - is larger than 24 MiB, on the wire or after decompression;
 - carries more than 5,000 entries or 300,000 elements;
-- needs more memory to read than the connector allows, or takes more than 30 seconds to read;
+- needs more memory to read than the connector allows, reads to more than 33,554,432 characters of entries, or takes more than 30 seconds to read;
 - is not Atom or RSS 2.0;
 - redirects more than five times, or to this machine or a private network that `RSS_PRIVATE_HOSTS` does not allow; or
 - does not answer, or answers with a status other than 200 or 304.
