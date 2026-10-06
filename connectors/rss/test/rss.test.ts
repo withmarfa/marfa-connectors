@@ -1588,6 +1588,103 @@ describe("the connector, run as a process", () => {
     expect(marfa.rows).toHaveLength(2);
   });
 
+  const progress = (
+    marfa: ScriptedServer,
+  ): Record<string, { validators?: object; key?: string }> =>
+    (marfa.connectorState?.["state"] as { feeds: never }).feeds;
+
+  it("keeps the other feed's reading progress when one feed has an entry Marfa refuses, and asks the refused feed again", async () => {
+    const entryKey =
+      readFeed(at(`${base}/atom.xml`), fixture("atom.xml")).entries[0]
+        ?.source_id ?? "";
+    marfa.entryRefusals.set(entryKey, {
+      status: 400,
+      code: "invalid_properties",
+      message: "too long",
+    });
+    expect((await once()).code).toBe(0);
+    expect(progress(marfa)[feedKey(`${base}/rss.xml`)]?.validators).toEqual({
+      last_modified: "Wed, 16 Sep 2026 09:00:00 GMT",
+    });
+    expect(progress(marfa)[feedKey(`${base}/atom.xml`)]).toBeUndefined();
+    expect((await once()).code).toBe(0);
+    expect(
+      asked.slice(2).map((request) => [request.path, request.answered]),
+    ).toEqual([
+      ["/atom.xml", 200],
+      ["/rss.xml", 304],
+    ]);
+    expect(asked[2]?.headers["if-none-match"]).toBeUndefined();
+    expect(marfa.rows).toHaveLength(3);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) is read again next run, since its reading progress was not saved (row-refused)`,
+    );
+    marfa.entryRefusals.delete(entryKey);
+    expect((await once()).code).toBe(0);
+    expect(marfa.rows).toHaveLength(4);
+    expect((await once()).code).toBe(0);
+    expect(
+      asked.slice(6).map((request) => [request.path, request.answered]),
+    ).toEqual([
+      ["/atom.xml", 304],
+      ["/rss.xml", 304],
+    ]);
+  });
+
+  it("keeps a refused feed's earlier validators while the other feed's move on, so it is asked again until its entry lands", async () => {
+    expect((await once()).code).toBe(0);
+    const atom = served["/atom.xml"];
+    const rss = served["/rss.xml"];
+    if (typeof atom?.body !== "string" || typeof rss?.body !== "string") {
+      throw new Error("no fixtures");
+    }
+    atom.body = atom.body.replace(
+      "<title>First entry</title>",
+      "<title>First entry, revised</title>",
+    );
+    atom.etag = '"atom-2"';
+    rss.body = rss.body.replace(
+      "<title>Alpha</title>",
+      "<title>Alpha, changed</title>",
+    );
+    rss.lastModified = "Thu, 17 Sep 2026 09:00:00 GMT";
+    for (let refused = 0; refused < 2; refused += 1) {
+      marfa.refuseNext(
+        `PATCH /items/${row("tag:example.com,2026:entry:1").id}`,
+        400,
+        "invalid_properties",
+        "too long",
+      );
+    }
+    expect((await once()).code).toBe(0);
+    expect(progress(marfa)[feedKey(`${base}/atom.xml`)]?.validators).toEqual({
+      etag: '"atom-1"',
+    });
+    expect(progress(marfa)[feedKey(`${base}/rss.xml`)]?.validators).toEqual({
+      last_modified: "Thu, 17 Sep 2026 09:00:00 GMT",
+    });
+    expect((await once()).code).toBe(0);
+    expect(
+      asked.slice(4).map((request) => [request.path, request.answered]),
+    ).toEqual([
+      ["/atom.xml", 200],
+      ["/rss.xml", 304],
+    ]);
+    expect(asked[4]?.headers["if-none-match"]).toBe('"atom-1"');
+    expect(row("tag:example.com,2026:entry:1").properties["title"]).toBe(
+      "First entry",
+    );
+    expect((await once()).code).toBe(0);
+    expect(row("tag:example.com,2026:entry:1").properties["title"]).toBe(
+      "First entry, revised",
+    );
+    expect((await once()).code).toBe(0);
+    expect(asked.slice(8).map((request) => request.answered)).toEqual([
+      304, 304,
+    ]);
+    expect(asked[8]?.headers["if-none-match"]).toBe('"atom-2"');
+  });
+
   it("skips a feed past the size cap, plain or compressed, naming it, and reads the others", async () => {
     served["/bomb.xml"] = {
       body: await gzipBomb(64 * 1024 * 1024),
@@ -1781,6 +1878,38 @@ describe("the connector, run as a process", () => {
       0,
     );
     expect(asked.at(-1)?.answered).toBe(304);
+  });
+
+  it("saves a feed's move to its name even when a later feed in the run has an entry Marfa refuses", async () => {
+    expect((await once()).code).toBe(0);
+    const ids = marfa.rows.map((candidate) => candidate.id);
+    const rss = served["/rss.xml"];
+    if (typeof rss?.body !== "string") throw new Error("no rss fixture");
+    rss.body = rss.body.replace(
+      "<title>Alpha</title>",
+      "<title>Alpha, changed</title>",
+    );
+    rss.lastModified = "Thu, 17 Sep 2026 09:00:00 GMT";
+    marfa.refuseNext(
+      `PATCH /items/${row("1").id}`,
+      400,
+      "invalid_properties",
+      "too long",
+    );
+    const listed = `blog=${base}/atom.xml\n${base}/rss.xml`;
+    expect((await once([], ["--once"], listed)).code).toBe(0);
+    expect(Object.keys(progress(marfa)).sort()).toEqual(
+      [feedKey(`${base}/atom.xml`, "blog"), feedKey(`${base}/rss.xml`)].sort(),
+    );
+    expect((await once([], ["--once"], listed)).code).toBe(0);
+    expect(marfa.rows.map((candidate) => candidate.id)).toEqual(ids);
+    expect(row("1").properties["title"]).toBe("Alpha, changed");
+    expect(marfa.runs.at(-1)?.summary).not.toContain("share their key");
+    expect(
+      Object.values(progress(marfa)).every(
+        (feed) => (feed as { shared?: string[] }).shared === undefined,
+      ),
+    ).toBe(true);
   });
 
   it("moves rows an Atom feed's declared id keyed to its listed address's key", async () => {

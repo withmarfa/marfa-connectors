@@ -112,7 +112,7 @@ const connector = defineConnector({
     feedList(env.RSS_FEEDS);
     privateHosts(env.RSS_PRIVATE_HOSTS);
   },
-  async run({ env, signal, state, log, upsert }) {
+  async run({ env, signal, state, log, forScope }) {
     const feeds = feedList(env.RSS_FEEDS);
     const allowed = privateHosts(env.RSS_PRIVATE_HOSTS);
     const known = (state.get("feeds") ?? {}) as Record<string, FeedState>;
@@ -308,7 +308,11 @@ const connector = defineConnector({
       kept[feed.key] = now;
       raise(feed, now);
       signal.throwIfAborted();
-      await upsert(
+      // Each feed is a scope of its own, so its reading progress is saved
+      // once its entries are acknowledged and a refused entry in one feed
+      // holds back that feed alone.
+      const scope = forScope(feed.key);
+      await scope.upsert(
         rssEntry.id,
         was.length === 0
           ? parsed.entries
@@ -317,6 +321,23 @@ const connector = defineConnector({
               return { ...entry, movedFrom: was.map((key) => `${key}${id}`) };
             }),
       );
+      // A checkpoint replaces the whole value, so the candidate is the last
+      // acknowledged one with this feed's entry alone changed.
+      const saved = {
+        ...((scope.state.get("feeds") ?? {}) as Record<string, FeedState>),
+      };
+      if (id !== undefined && id !== feed.key) {
+        Reflect.deleteProperty(saved, id);
+      }
+      saved[feed.key] = now;
+      const progress = await scope.state.checkpoint("feeds", saved);
+      if (!progress.committed) {
+        kept[feed.key] = carried;
+        log.condition(
+          `progress:${feed.key}`,
+          `${name} is read again next run, since its reading progress was not saved (${progress.reason})`,
+        );
+      }
     }
     if (feeds.length > 0 && read === 0) {
       throw new Error(
