@@ -94,6 +94,7 @@ const connector = defineConnector({
   name: "rss",
   description: "Entries from Atom and RSS 2.0 feeds.",
   source: "rss",
+  readme: "connectors/rss/README.md",
   types: [
     {
       // Imported JSON widens every string, so its field types read as

@@ -458,6 +458,13 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly name: string;
   readonly description?: string;
   readonly source: string;
+  /**
+   * The connector's own README, as a path from the repository root such as
+   * `connectors/rss/README.md`, where its owner learns to mint its key. The
+   * messages that send an owner to mint one name it; without it they name
+   * the template's README.
+   */
+  readonly readme?: string;
   /** At most ten. */
   readonly types: readonly Kind[];
   readonly connections?: readonly ConnectionDefinition[];

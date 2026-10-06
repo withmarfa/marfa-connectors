@@ -391,25 +391,69 @@ const blockElements = new Set([
 
 type Markup = ReturnType<typeof parseDocument>["children"];
 
+// Walked with a stack of its own, so nesting as deep as a feed can write it
+// cannot overflow the call stack.
 function readText(nodes: Markup): string {
   let text = "";
-  for (const node of nodes) {
-    if (node.type === ElementType.Text) {
-      text += node.data;
-    } else if (node.type === ElementType.CDATA) {
-      text += DomUtils.textContent(node);
-    } else if (node.type === ElementType.Tag) {
-      const inner = readText(node.children);
-      text += blockElements.has(node.name) ? ` ${inner} ` : inner;
+  const work: (Markup[number] | string)[] = [...nodes].reverse();
+  for (let next = work.pop(); next !== undefined; next = work.pop()) {
+    if (typeof next === "string") {
+      text += next;
+    } else if (next.type === ElementType.Text) {
+      text += next.data;
+    } else if (next.type === ElementType.CDATA) {
+      text += DomUtils.textContent(next);
+    } else if (next.type === ElementType.Tag) {
+      if (blockElements.has(next.name)) {
+        text += " ";
+        work.push(" ");
+      }
+      for (let at = next.children.length - 1; at >= 0; at -= 1) {
+        const child = next.children[at];
+        if (child !== undefined) work.push(child);
+      }
     }
   }
   return text;
 }
 
-function plainOf(markup: string | undefined): string | undefined {
+type Picture = ReturnType<typeof DomUtils.getElementsByTagName>[number];
+
+interface Reading {
+  plain: string | undefined;
+  /** Whether it holds an element, so is HTML and not text. */
+  marked: boolean;
+  /** Whether it shows nothing: no text, and no element but tracking pixels
+   *  and wrappers that hold nothing. */
+  empty: boolean;
+  pictures: Picture[];
+}
+
+// Elements that show nothing of their own.
+const wrappers = new Set(["br", "div", "p", "span", "wbr"]);
+
+function readingOf(markup: string | undefined): Reading | undefined {
   if (markup === undefined) return undefined;
-  const document = parseDocument(markup, { recognizeCDATA: true });
-  return textOf(readText(document.children).replace(/\s+/g, " "));
+  const { children } = parseDocument(markup, { recognizeCDATA: true });
+  const plain = textOf(readText(children).replace(/\s+/g, " "));
+  const pictures = DomUtils.getElementsByTagName("img", children);
+  return {
+    plain,
+    marked: DomUtils.findOne(() => true, children) !== null,
+    empty:
+      plain === undefined &&
+      DomUtils.findAll(
+        (element) =>
+          !wrappers.has(element.name) &&
+          !(element.name === "img" && isTiny(element)),
+        children,
+      ).length === 0,
+    pictures,
+  };
+}
+
+function plainOf(markup: string | undefined): string | undefined {
+  return readingOf(markup)?.plain;
 }
 
 function atomTextOf(
@@ -418,6 +462,86 @@ function atomTextOf(
   return text?.type === "html" || text?.type === "xhtml"
     ? plainOf(text.value)
     : textOf(text?.value);
+}
+
+// A width or height of 0 or 1 pixel is a tracking pixel, not a picture.
+function isTiny(picture: Picture): boolean {
+  return (["width", "height"] as const).some((name) => {
+    const size = /^\s*(\d+)\s*(?:px)?\s*$/i.exec(picture.attribs[name] ?? "");
+    return size?.[1] !== undefined && Number(size[1]) <= 1;
+  });
+}
+
+interface Counted {
+  url: string;
+  /** What the picture says of itself: its title, else its alt. */
+  caption: string | undefined;
+}
+
+// The first picture whose address is an http or https link once resolved
+// against the entry's base, so a data: URI or a link relative to the fetch
+// path is passed over, and which does not declare itself a pixel.
+function countedPicture(
+  reading: Reading | undefined,
+  base: Base,
+): Counted | undefined {
+  for (const picture of reading?.pictures ?? []) {
+    if (isTiny(picture)) continue;
+    const url = linkOf(picture.attribs["src"], base);
+    if (url === undefined) continue;
+    const said = (name: string): string | undefined =>
+      textOf(picture.attribs[name]?.replace(/\s+/g, " "));
+    return { url, caption: said("title") ?? said("alt") };
+  }
+  return undefined;
+}
+
+interface Summary {
+  /** What the feed's summary or description says, in HTML or plain text. */
+  value: string | undefined;
+  /** Whether the value may hold markup: an Atom summary of type `text` may
+   *  not, and an RSS description may. */
+  html: boolean;
+}
+
+interface Written {
+  description: string | undefined;
+  body: string | undefined;
+  image_url: string | undefined;
+}
+
+/**
+ * A feed's content is its content element where it has one, else its
+ * summary where that holds markup. The description is the summary as plain
+ * text, or for a summary that is only a picture, that picture's caption.
+ */
+function contentOf(
+  summary: Summary,
+  content: string | undefined,
+  enclosure: string | undefined,
+  base: Base,
+  contentIsHtml = true,
+): Written {
+  const reading = summary.html ? readingOf(summary.value) : undefined;
+  const picture = countedPicture(reading, base);
+  const body = textOf(content);
+  const enclosed = linkOf(enclosure, base);
+  const found =
+    enclosed === undefined
+      ? ((contentIsHtml ? countedPicture(readingOf(body), base) : undefined) ??
+        picture)
+      : undefined;
+  return {
+    description: summary.html
+      ? (reading?.plain ?? picture?.caption)
+      : textOf(summary.value),
+    body:
+      body ??
+      (reading?.marked === true && !reading.empty
+        ? textOf(summary.value)
+        : undefined),
+    image_url: enclosed ?? found?.url,
+  };
 }
 
 /** Marfa's default cap on a string property: a longer one is refused, and
@@ -521,16 +645,25 @@ export function readFeed(
           link.rel === "enclosure" && link.type?.startsWith("image/") === true,
       )?.href;
       const published = isoOf(entry.published);
+      const written = contentOf(
+        {
+          value: entry.summary?.value,
+          html:
+            entry.summary?.type === "html" || entry.summary?.type === "xhtml",
+        },
+        entry.content?.value,
+        image,
+        entryBase,
+        entry.content?.type === "html" || entry.content?.type === "xhtml",
+      );
       keep(
         entry.id ?? url,
         {
           url,
           title: atomTextOf(entry.title),
-          description: atomTextOf(entry.summary),
-          body: textOf(entry.content?.value),
+          ...written,
           author: textOf(entry.authors?.[0]?.name ?? atom.authors?.[0]?.name),
           published_at: published,
-          image_url: linkOf(image, entryBase),
           language,
           source_url: siteUrl,
           source_title: atomTextOf(atom.title),
@@ -563,18 +696,21 @@ export function readFeed(
         (enclosure) => enclosure.type?.startsWith("image/") === true,
       )?.url;
       const published = isoOf(item.pubDate);
+      // RSS 2.0 lets a description carry entity-encoded HTML, and feeds do.
+      const written = contentOf(
+        { value: item.description, html: true },
+        item.content?.encoded,
+        image,
+        itemBase,
+      );
       keep(
         item.guid?.value ?? url,
         {
           url,
           title: textOf(item.title),
-          // RSS 2.0 lets a description carry entity-encoded HTML, and
-          // feeds do.
-          description: plainOf(item.description),
-          body: textOf(item.content?.encoded),
+          ...written,
           author: textOf(item.authors?.[0]?.name ?? item.dc?.creators?.[0]),
           published_at: published,
-          image_url: linkOf(image, itemBase),
           language,
           source_url: siteUrl,
           source_title: textOf(rss.title),

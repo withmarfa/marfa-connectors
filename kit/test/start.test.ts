@@ -110,6 +110,15 @@ describe("configuration", () => {
     expect(help).toContain("--every");
     expect(help).toContain("MARFA_API_URL");
     expect(help).toContain("TEST_TOKEN");
+    expect(help).toContain("as the template's README says");
+    harness.lines.length = 0;
+    await start(
+      { ...testConnector(vendor()), readme: "connectors/test/README.md" },
+      harness.runtime(["--help"]),
+    );
+    expect(harness.lines.join("\n")).toContain(
+      "as connectors/test/README.md says",
+    );
     expect(harness.server.requests).toEqual([]);
   });
 
@@ -251,6 +260,29 @@ describe("the key check on start", () => {
     expect(error).not.toContain("type test.entry");
     expect(harness.server.rows).toEqual([]);
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
+  });
+
+  it("sends an owner whose key is too wide to the connector's own README where it names one, and to the template's otherwise", async () => {
+    harness.server.grants = {
+      permissions: ["keys.mint"],
+      type_permissions: { "test.entry": "write" },
+      metadata_permissions: { types: "write" },
+    };
+    expect(await harness.once(vendor([entry]))).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      "Revoke it and mint another as the template's README says.",
+    );
+    const own = "connectors/test/README.md";
+    expect(
+      await start(
+        { ...testConnector(vendor([entry])), readme: own },
+        harness.runtime(["--once"]),
+      ),
+    ).toBe(1);
+    const error = harness.lastRun().error ?? "";
+    expect(error).toContain(`Revoke it and mint another as ${own} says.`);
+    expect(error).not.toContain("template's README");
+    expect(harness.server.rows).toEqual([]);
   });
 
   it("refuses schema.write, which a connector's key no longer holds, naming it, before it registers the type or writes a row", async () => {
