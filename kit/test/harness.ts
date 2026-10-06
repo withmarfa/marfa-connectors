@@ -401,8 +401,8 @@ export class Harness {
     return {
       argv,
       env: {
-        MARFA_URL: this.server.url,
-        MARFA_KEY: this.server.key,
+        MARFA_API_URL: this.server.url,
+        MARFA_API_KEY: this.server.key,
         TEST_TOKEN: secretToken,
         ...env,
       },

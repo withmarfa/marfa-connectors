@@ -183,8 +183,8 @@ async function once(
       timeout: 30_000,
       env: {
         PATH: process.env["PATH"],
-        MARFA_URL: marfa.url,
-        MARFA_KEY: marfa.key,
+        MARFA_API_URL: marfa.url,
+        MARFA_API_KEY: marfa.key,
         EXAMPLE_URL: vendorUrl,
         EXAMPLE_TOKEN: token,
         ...env,

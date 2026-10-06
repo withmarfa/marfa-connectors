@@ -46,8 +46,8 @@ export class ConnectorUnderProof {
     const child = spawn("node", [this.entry, ...args], {
       env: {
         PATH: process.env["PATH"],
-        MARFA_URL: this.url,
-        MARFA_KEY: this.key,
+        MARFA_API_URL: this.url,
+        MARFA_API_KEY: this.key,
         ...this.env,
       },
       stdio: ["ignore", "ignore", "pipe"],
@@ -75,8 +75,8 @@ export class ConnectorUnderProof {
       const { stderr } = await run("node", [this.entry, ...args], {
         env: {
           PATH: process.env["PATH"],
-          MARFA_URL: this.url,
-          MARFA_KEY: this.key,
+          MARFA_API_URL: this.url,
+          MARFA_API_KEY: this.key,
           ...this.env,
           ...env,
         },
