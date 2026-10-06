@@ -994,25 +994,25 @@ export async function runOnce<E extends EnvDeclaration>(
   const refusals = (purge: Purge): number =>
     purge.refused === undefined ? 0 : (purge.refused.count ?? 1);
   // Past what the state may hold, the ones the vendor has refused most go
-  // first, so they leave room for the rest of the state.
-  const keepPurges = (): Purge[] => {
+  // first, so they leave room for the rest of the state. Only the last save
+  // gives them up, once the run has asked the vendor for every one; a save
+  // before that keeps the same list and leaves them to be carried.
+  const keepPurges = (final = false): Purge[] => {
     const ranked = [...purged.values()].sort(
       (a, b) => refusals(a) - refusals(b),
     );
     let bytes = 0;
-    let dropped = 0;
     const kept: Purge[] = [];
+    const dropped: Purge[] = [];
     for (const purge of ranked) {
       bytes += Buffer.byteLength(JSON.stringify(purge)) + 1;
-      if (bytes > purgeBytes) {
-        purged.delete(purge.id);
-        dropped += 1;
-      } else kept.push(purge);
+      (bytes > purgeBytes ? dropped : kept).push(purge);
     }
-    if (dropped > 0) {
+    if (final && dropped.length > 0) {
+      for (const purge of dropped) purged.delete(purge.id);
       raised.set(
         "purges-given-up",
-        `${String(dropped)} ${dropped === 1 ? "purge was" : "purges were"} given up, since the state keeps at most ${String(purgeBytes / 1024)} KiB of them and more waited: the vendor may still hold ${dropped === 1 ? "that row" : "those rows"}`,
+        `${String(dropped.length)} ${dropped.length === 1 ? "purge was" : "purges were"} given up, since the state keeps at most ${String(purgeBytes / 1024)} KiB of them and more waited: the vendor may still hold ${dropped.length === 1 ? "that row" : "those rows"}`,
       );
     }
     return kept;
@@ -1028,7 +1028,6 @@ export async function runOnce<E extends EnvDeclaration>(
     vendorState: Record<string, unknown>,
     inbound = acknowledged.inbound ?? [],
   ): Kept => ({
-    // First, since the purges it gives up are among the conditions below.
     ...(purged.size > 0 && { purges: keepPurges() }),
     ...(inbound.length > 0 && { inbound }),
     state: vendorState,
@@ -1785,7 +1784,11 @@ export async function runOnce<E extends EnvDeclaration>(
               `the purge of ${id} is not carried, since its link may have been changed in Marfa since the vendor last had it`,
             );
           } else {
-            purged.set(id, purgeOf(last, kind.link, link));
+            const refused = purged.get(id)?.refused;
+            purged.set(id, {
+              ...purgeOf(last, kind.link, link),
+              ...(refused !== undefined && { refused }),
+            });
           }
         }
         continue;
@@ -2103,7 +2106,10 @@ export async function runOnce<E extends EnvDeclaration>(
             purged.delete(item.id);
           } else if (error instanceof Unreachable) {
             unreached(item.id, error);
-            purged.set(item.id, item);
+            purged.set(item.id, {
+              ...item,
+              ...(refused !== undefined && { refused }),
+            });
           } else if (error instanceof Refused) {
             const said = logger.redact(error.message);
             const count =
@@ -2205,7 +2211,7 @@ export async function runOnce<E extends EnvDeclaration>(
       `the server refused ${record.identity.type} ${record.identity.sourceId}: ${record.code}, ${record.reason}; durable retry intent waits`,
     );
   }
-  const keptPurges = keepPurges();
+  const keptPurges = keepPurges(true);
   // Kept redacted, key and message, since the conditions are kept on the
   // instance as they stand.
   const redacted = new Map(

@@ -389,4 +389,32 @@ describe("a purge the vendor refuses", () => {
     );
     expect(harness.lastRun().outcome).toBe("succeeded");
   });
+
+  it("is not given up by a checkpoint taken before the vendor is asked", async () => {
+    const entries = Array.from({ length: 150 }, (_, at) => ({
+      source_id: `a:${String(at)}`,
+      properties: {
+        title: `Row ${String(at)}`,
+        vendor_id: `v${String(at)}-${"l".repeat(2_000)}`,
+      },
+    }));
+    const held = vendor(entries);
+    await harness.twoWay(held);
+    for (const entry of entries) {
+      harness.server.trash(harness.server.row(entry.source_id).id);
+    }
+    held.entries = [];
+    await harness.twoWay(held);
+    for (const entry of entries) harness.server.purge(entry.source_id);
+    held.read = async (context) => {
+      expect(
+        await context.forScope("A").state.checkpoint("A", { cursor: 1 }),
+      ).toEqual({ committed: true });
+    };
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toHaveLength(entries.length);
+    expect(harness.kept()["purges"]).toBeUndefined();
+    expect(conditions()["purges-given-up"]).toBeUndefined();
+  });
 });
