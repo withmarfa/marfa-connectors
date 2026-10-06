@@ -1525,6 +1525,21 @@ describe("the connector, run as a process", () => {
     );
   });
 
+  it("identifies itself to every feed, and to each hop of a redirect, with a product token and the repository's address and no version", async () => {
+    served["/moved.xml"] = { body: "", redirect: "/rss.xml" };
+    expect((await once(["/moved.xml", "/atom.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.path)).toEqual([
+      "/moved.xml",
+      "/rss.xml",
+      "/atom.xml",
+    ]);
+    for (const request of asked) {
+      expect(request.headers["user-agent"]).toBe(
+        "MarfaRSS (+https://github.com/withmarfa/marfa-connectors)",
+      );
+    }
+  });
+
   it("asks again with the validators each feed gave, and writes nothing on a 304", async () => {
     expect((await once()).code).toBe(0);
     expect((await once()).code).toBe(0);

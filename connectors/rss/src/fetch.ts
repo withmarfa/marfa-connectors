@@ -15,6 +15,11 @@ export const maxFeedBytes = 24 * 1024 * 1024;
 
 export const maxRedirects = 5;
 
+/** A product token and where to read about it, as sites ask of a crawler.
+ *  It carries no version: a version exists only as a git tag. */
+export const userAgent =
+  "MarfaRSS (+https://github.com/withmarfa/marfa-connectors)";
+
 export class TooLarge extends Error {
   override name = "TooLarge";
 }
@@ -321,6 +326,7 @@ export async function getFeed(
         {
           ...headers,
           "Accept-Encoding": "gzip, deflate, br",
+          "User-Agent": userAgent,
           ...(credentials !== undefined &&
             url.origin === start.origin && { Authorization: credentials }),
         },
