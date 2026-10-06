@@ -273,6 +273,26 @@ describe("reading a feed", () => {
     expect(entries[0]?.properties["source_title"]).toBe("Site & Co");
   });
 
+  it("reads an RSS 2.0 title, and the channel's, as plain text: entities decoded, markup removed, whitespace collapsed", () => {
+    const { entries } = readFeed(
+      at("https://example.org/rss.xml"),
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>Site &lt;i&gt;News&lt;/i&gt; &amp;amp; Co</title><link>https://example.org/</link>
+        <item><title>Undated &lt;b&gt;bold&lt;/b&gt;</title><guid>a</guid></item>
+        <item><title><![CDATA[Fish &amp; <i>chips</i>]]></title><guid>b</guid></item>
+        <item><title>Don&amp;#8217;t   split
+          this</title><guid>c</guid></item>
+        <item><title>   </title><guid>d</guid></item>
+      </channel></rss>`,
+    );
+    expect(entries.map((entry) => entry.properties["title"])).toEqual([
+      "Undated bold",
+      "Fish & chips",
+      "Don\u2019t split this",
+      undefined,
+    ]);
+    expect(entries[0]?.properties["source_title"]).toBe("Site News & Co");
+  });
+
   it("reads an RSS 2.0 description's entity-encoded HTML as plain text", () => {
     const { entries } = readFeed(
       at("https://example.org/rss.xml"),

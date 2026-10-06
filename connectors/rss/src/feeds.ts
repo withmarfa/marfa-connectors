@@ -707,13 +707,13 @@ export function readFeed(
         item.guid?.value ?? url,
         {
           url,
-          title: textOf(item.title),
+          title: plainOf(item.title),
           ...written,
           author: textOf(item.authors?.[0]?.name ?? item.dc?.creators?.[0]),
           published_at: published,
           language,
           source_url: siteUrl,
-          source_title: textOf(rss.title),
+          source_title: plainOf(rss.title),
         },
         published ?? isoOf(item.dc?.dates?.[0]),
       );

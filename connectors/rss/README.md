@@ -96,14 +96,14 @@ Each entry is an `rss.entry` row, a kind of `core.bookmark`, written at the feed
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `entry_id`     | The entry's id in its feed: its Atom `id` or RSS `guid`, else its link. An entry with none of these has nothing to be known by, and is left out.             |
 | `url`          | The entry's link: an Atom entry's `alternate` link, or an RSS item's `link`.                                                                                 |
-| `title`        | The entry's title, as plain text.                                                                                                                            |
+| `title`        | The entry's title as plain text: entities decoded, markup removed and whitespace collapsed, whatever the feed's format.                                      |
 | `description`  | The entry's summary as plain text. Where the summary is only a picture, the picture's `title` text, else its `alt` text.                                     |
 | `body`         | The entry's content with its markup, as the feed gave it. Where the feed gives no content, its summary with its markup, if the summary holds any. See below. |
 | `author`       | The first author the entry names, else, for Atom, the feed's first author.                                                                                   |
 | `published_at` | When the feed says the entry was published, in UTC.                                                                                                          |
 | `image_url`    | The entry's image enclosure, else the first picture in its content or summary. See below.                                                                    |
 | `source_url`   | The address of the feed's site.                                                                                                                              |
-| `source_title` | The feed's title.                                                                                                                                            |
+| `source_title` | The feed's title, as plain text in the same way.                                                                                                             |
 | `language`     | The feed's language, as a BCP 47 tag, where it gives one that is well formed.                                                                                |
 | `feed_origin`  | The scheme, host and port of the feed's address, with no path or query, where a private feed carries its token.                                              |
 | `feed_hash`    | The hash that identifies the feed, the same for every entry of one feed.                                                                                     |
