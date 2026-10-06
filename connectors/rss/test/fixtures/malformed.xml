@@ -1,0 +1,24 @@
+﻿<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel>
+<title>Messy Example Feed &copy; 2026</title>
+<link>https://messy.example.org/</link>
+<description>A feed written by hand, badly.</description>
+<item>
+<title>Café &amp; crème &nbsp;&hellip; AT&T &#8217;s &unknown; &#xZZ;</title>
+<link>https://messy.example.org/cafe</link>
+<guid>messy-1</guid>
+<pubDate>Sat, 03 Oct 2026 07:30:00 GMT</pubDate>
+<description>Line one<br>Line two<p>unclosed paragraph &amp; an <b>unclosed bold</description>
+</item>
+<item>
+<title>Second — with a <![CDATA[CDATA ]]> section</title>
+<link>https://messy.example.org/second</link>
+<guid>messy-2</guid>
+<description>Plain &lt;b&gt;encoded&lt;/b&gt; text &amp;amp; more</description>
+</item>
+<item>
+<title>Third, whose item never closes</title>
+<link>https://messy.example.org/third</link>
+<guid>messy-3</guid>
+</channel>
+</rss>

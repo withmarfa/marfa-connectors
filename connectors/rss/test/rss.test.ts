@@ -38,6 +38,8 @@ const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const fixture = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "fixtures", name), "utf8");
+const fixtureBytes = (name: string): Buffer =>
+  readFileSync(resolve(import.meta.dirname, "fixtures", name));
 const at = (url: string, name?: string) => ({ url, key: feedKey(url, name) });
 
 /** Zeros, gzipped: a few hundred KiB on the wire for every 256 MiB inside. */
@@ -291,6 +293,25 @@ describe("reading a feed", () => {
       undefined,
     ]);
     expect(entries[0]?.properties["source_title"]).toBe("Site News & Co");
+  });
+
+  it("collapses the whitespace in an Atom title that is text, as in the others", () => {
+    const { entries } = readFeed(
+      at("https://example.com/atom.xml"),
+      `<?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>A
+          wrapped   feed title</title>
+        <id>tag:example.com,2026:feed</id>
+        <entry>
+          <title>A wrapped
+            entry   title</title>
+          <id>tag:example.com,2026:entry:1</id>
+        </entry>
+      </feed>`,
+    );
+    expect(entries[0]?.properties["title"]).toBe("A wrapped entry title");
+    expect(entries[0]?.properties["source_title"]).toBe("A wrapped feed title");
   });
 
   it("reads an RSS 2.0 description's entity-encoded HTML as plain text", () => {
@@ -1127,6 +1148,235 @@ describe("media:thumbnail", () => {
   });
 });
 
+describe("feeds as they are found in the wild", () => {
+  const read = (name: string, url = "https://example.org/feed") =>
+    readFeed(at(url), decodeFeed(fixtureBytes(name), null));
+  const property = (entry: unknown, name: string): unknown =>
+    (entry as { properties: Record<string, unknown> }).properties[name];
+
+  it("reads an Atom comic feed whose entries are only a picture", () => {
+    const { entries, unkeyed } = read("xkcd-style-atom.xml");
+    expect(unkeyed).toBe(0);
+    expect(entries.map((entry) => property(entry, "title"))).toEqual([
+      "Spectrum Allocation",
+      "Accelerator Energies",
+      "Pixel Counter",
+    ]);
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      "https://imgs.example.org/comics/spectrum_allocation.png",
+      "https://imgs.example.org/comics/accelerator_energies.png",
+      "https://imgs.example.org/comics/pixel_counter.png",
+    ]);
+    // The picture's title text, else its alt text, and none where it has neither.
+    expect(entries.map((entry) => property(entry, "description"))).toEqual([
+      `Rumor has it that they're finally auctioning off the airship bands, but everyone is worried about the "scary" captains.`,
+      "Fans get extra excited.",
+      undefined,
+    ]);
+    expect(property(entries[0], "body")).toMatch(
+      /^<img src="https:\/\/imgs\.example\.org\/comics\/spectrum_allocation\.png" title="/,
+    );
+    expect(entries.map((entry) => entry.occurred_at)).toEqual([
+      "2026-10-05T00:00:00.000Z",
+      "2026-10-02T00:00:00.000Z",
+      "2026-09-30T00:00:00.000Z",
+    ]);
+    for (const entry of entries) {
+      expect(property(entry, "published_at")).toBeUndefined();
+      expect(property(entry, "source_title")).toBe("Example Comic");
+      expect(property(entry, "language")).toBe("en");
+    }
+  });
+
+  it("reads an Atom blog with html titles, relative links, and xml:base on its content", () => {
+    const { entries } = read("blog-atom.xml");
+    expect(entries.map((entry) => property(entry, "title"))).toEqual([
+      "Why nobody reads the manual & what to do “instead”",
+      "A plain title with odd spacing",
+      "Only a summary",
+    ]);
+    expect(entries[0]).toMatchObject({
+      occurred_at: "2026-09-28T07:00:00.000Z",
+      properties: {
+        url: "https://blog.example.org/2026/09/manual",
+        description: "Manuals are long. Skimming wins.",
+        author: "Sam Example",
+        language: "en-GB",
+        image_url: "https://blog.example.org/media/manual.jpg",
+        source_title: "The Example Blog – Notes & Essays",
+        source_url: "https://blog.example.org/",
+      },
+    });
+    expect(property(entries[0], "body")).toContain("<figure>");
+    // A tracking pixel is not the entry's image, and an xhtml content is kept as the body.
+    expect(property(entries[1], "image_url")).toBeUndefined();
+    expect(property(entries[1], "body")).toContain("<em>xhtml</em>");
+    expect(property(entries[1], "author")).toBe("Guest Writer");
+    expect(property(entries[2], "description")).toBe(
+      "Just text, with <angle brackets> kept as text.",
+    );
+    expect(property(entries[2], "body")).toBeUndefined();
+  });
+
+  it("reads a podcast feed: enclosures that are audio give no image, the notes become the body", () => {
+    const { entries } = read("podcast-rss.xml");
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "example-podcast-ep-12",
+      "https://podcast.example.org/episodes/11",
+      "example-podcast-bonus",
+    ]);
+    expect(property(entries[0], "title")).toBe(
+      "Episode 12: Fixtures & Friends",
+    );
+    expect(property(entries[0], "body")).toBe(
+      "<h2>Show notes</h2><ul><li>Fixtures</li><li>Friends</li></ul>",
+    );
+    expect(property(entries[0], "description")).toBe(
+      "Pat and Sam talk about fixtures. Show notes: notes",
+    );
+    expect(property(entries[0], "author")).toBe("Pat Host");
+    expect(property(entries[1], "description")).toBe(
+      "A short trailer, no markup at all.",
+    );
+    expect(property(entries[1], "body")).toBeUndefined();
+    // The witness for the two audio enclosures: an image enclosure in the same feed.
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      undefined,
+      undefined,
+      "https://media.example.org/cover-full.jpg",
+    ]);
+    expect(entries.map((entry) => entry.occurred_at)).toEqual([
+      "2026-09-21T05:00:00.000Z",
+      "2026-09-14T05:00:00.000Z",
+      "2026-09-11T05:00:00.000Z",
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("token=abc");
+  });
+
+  it("reads a news feed with CDATA and media:thumbnail, resolving each entry's image in order", () => {
+    const { entries } = read("news-rss.xml");
+    expect(entries.map((entry) => property(entry, "title"))).toEqual([
+      "Watch: Students protest on the streets",
+      `Arrest made after "incident" at the airfield`,
+      "Live: Markets update",
+    ]);
+    expect(property(entries[0], "url")).toBe(
+      "https://news.example.org/videos/abc123?at_medium=RSS&at_campaign=rss",
+    );
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      // The thumbnail, where nothing else gives a picture.
+      "https://img.example.org/standard/240/abc123.jpg",
+      // The content picture, before the thumbnail.
+      "https://img.example.org/inline/def456.jpg",
+      // The first thumbnail is a pixel, so the second.
+      "https://img.example.org/standard/240/ghi789.jpg",
+    ]);
+    expect(property(entries[1], "author")).toBe("Staff Reporter");
+    expect(entries[2]?.occurred_at).toBe("2026-10-06T13:00:00.000Z");
+    expect(property(entries[2], "language")).toBe("en-gb");
+  });
+
+  it("reads an RSS 1.0 feed, naming each entry by its rdf:about", () => {
+    const { entries, unkeyed } = read("rdf-rss1.xml");
+    expect(unkeyed).toBe(0);
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "https://rdf.example.org/story/1?utm_source=rss1.0&utm_medium=feed",
+      "https://rdf.example.org/story/2?utm_source=rss1.0&utm_medium=feed",
+    ]);
+    expect(entries[0]).toMatchObject({
+      occurred_at: "2026-10-06T13:20:00.000Z",
+      properties: {
+        title: "Watermarking is coming to the chat tool",
+        description:
+          "A company said it is adding text watermarking. Readers wonder how well it will hold up.",
+        author: "exampleuser",
+        language: "en-us",
+        source_title: "Example Stories",
+      },
+    });
+    expect(property(entries[1], "title")).toBe("Old hearts & young bodies");
+    expect(property(entries[1], "body")).toBe(
+      "<p>A study found <em>something</em>.</p>",
+    );
+  });
+
+  it("reads a JSON Feed with content_html, content_text, a summary, an image and a banner", () => {
+    const { entries } = read("json-feed.json");
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "https://linklog.example.org/linked/2026/10/05/mockup",
+      "2026-10-04-sponsor",
+      "2026-10-03-text",
+    ]);
+    expect(property(entries[1], "title")).toBe(
+      "[Sponsor] A Tool & Its Friends",
+    );
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      undefined,
+      "https://linklog.example.org/images/sponsor.png",
+      "https://linklog.example.org/images/banner.png",
+    ]);
+    expect(entries.map((entry) => entry.occurred_at)).toEqual([
+      "2026-10-06T02:49:44.000Z",
+      "2026-10-04T12:00:00.000Z",
+      "2026-10-03T10:00:00.000Z",
+    ]);
+    expect(property(entries[0], "body")).toContain("<em>the book</em>");
+    expect(property(entries[2], "body")).toBe(
+      "Plain text,\nwith a line break.",
+    );
+    expect(property(entries[2], "language")).toBe("fr");
+    expect(property(entries[0], "language")).toBe("en");
+  });
+
+  it("reads a hand-written feed with a byte order mark, unclosed tags and wrong entities, as far as it can", () => {
+    const bytes = fixtureBytes("malformed.xml");
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const { entries, unkeyed } = read("malformed.xml");
+    expect(unkeyed).toBe(0);
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "messy-1",
+      "messy-2",
+      "messy-3",
+    ]);
+    // Entities it knows are decoded; those it does not are left as written.
+    expect(property(entries[0], "title")).toBe(
+      "Café & crème … AT&T ’s &unknown; &#xZZ;",
+    );
+    expect(property(entries[0], "description")).toBe(
+      "Line one Line two unclosed paragraph & an unclosed bold",
+    );
+    expect(property(entries[0], "source_title")).toBe(
+      "Messy Example Feed © 2026",
+    );
+    expect(property(entries[1], "title")).toBe("Second — with a CDATA section");
+    expect(property(entries[1], "description")).toBe(
+      "Plain encoded text & more",
+    );
+    expect(property(entries[2], "title")).toBe(
+      "Third, whose item never closes",
+    );
+  });
+
+  it("reads a feed with no declared encoding in the charset its server names, and as UTF-8 where none is named", () => {
+    const bytes = fixtureBytes("latin1-undeclared.xml");
+    const named = readFeed(
+      at("https://latin.example.org/feed"),
+      decodeFeed(bytes, "text/xml; charset=iso-8859-1"),
+    );
+    expect(property(named.entries[0], "title")).toBe("Crème brûlée");
+    expect(property(named.entries[0], "source_title")).toBe("Journal de Café");
+    const unnamed = readFeed(
+      at("https://latin.example.org/feed"),
+      decodeFeed(bytes, null),
+    );
+    expect(unnamed.entries).toHaveLength(1);
+    expect(property(unnamed.entries[0], "title")).toBe("Cr�me br�l�e");
+    expect(property(unnamed.entries[0], "url")).toBe(
+      "https://latin.example.org/creme",
+    );
+  });
+});
+
 describe("fetching a feed", () => {
   let server: Server;
   let base: string;
@@ -1957,6 +2207,40 @@ describe("the connector, run as a process", () => {
     expect(summary).toContain("could not be fetched");
     expect(summary).toContain(
       `feed 1 in RSS_FEEDS (${base}) has moved permanently, and is followed; update its address in RSS_FEEDS`,
+    );
+  });
+
+  it("reads every kind of real-world feed in one run, through the worker that bounds each parse", async () => {
+    const wild = [
+      ["xkcd-style-atom.xml", "application/atom+xml"],
+      ["blog-atom.xml", "application/atom+xml; charset=utf-8"],
+      ["podcast-rss.xml", "application/rss+xml"],
+      ["news-rss.xml", "text/xml"],
+      ["rdf-rss1.xml", "application/rdf+xml"],
+      ["json-feed.json", "application/feed+json"],
+      ["malformed.xml", "text/xml"],
+      ["latin1-undeclared.xml", "text/xml; charset=iso-8859-1"],
+    ] as const;
+    for (const [name, contentType] of wild) {
+      served[`/${name}`] = { body: fixtureBytes(name), contentType };
+    }
+    const { code, output } = await once(wild.map(([name]) => `/${name}`));
+    expect(code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 21, /);
+    expect(marfa.runs.at(-1)?.summary).not.toMatch(/is not an Atom|could not/);
+    expect(output).not.toContain("is not an Atom");
+    const titles = marfa.rows.map((candidate) => candidate.properties["title"]);
+    expect(titles).toContain("Crème brûlée");
+    expect(titles).toContain("Old hearts & young bodies");
+    expect(titles).toContain("[Sponsor] A Tool & Its Friends");
+    expect(titles).toContain(
+      "Why nobody reads the manual & what to do “instead”",
+    );
+    expect(
+      row("https://news.example.org/videos/abc123#1").properties["image_url"],
+    ).toBe("https://img.example.org/standard/240/abc123.jpg");
+    expect(row("messy-1").properties["description"]).toBe(
+      "Line one Line two unclosed paragraph & an unclosed bold",
     );
   });
 

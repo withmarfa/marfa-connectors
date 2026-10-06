@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns="http://purl.org/rss/1.0/"
+ xmlns:admin="http://webns.net/mvcb/"
+ xmlns:content="http://purl.org/rss/1.0/modules/content/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+ xmlns:syn="http://purl.org/rss/1.0/modules/syndication/"
+>
+
+<channel rdf:about="https://rdf.example.org/">
+<title>Example Stories</title>
+<link>https://rdf.example.org/</link>
+<description>News for examples</description>
+<dc:language>en-us</dc:language>
+<dc:rights>Copyright Example Media. All Rights Reserved.</dc:rights>
+<dc:date>2026-10-06T14:06:20+00:00</dc:date>
+<dc:publisher>Example Media</dc:publisher>
+<dc:creator>feedback@example.org</dc:creator>
+<dc:subject>Technology</dc:subject>
+<syn:updateBase>1970-01-01T00:00+00:00</syn:updateBase>
+<syn:updateFrequency>1</syn:updateFrequency>
+<syn:updatePeriod>hourly</syn:updatePeriod>
+<items>
+ <rdf:Seq>
+  <rdf:li rdf:resource="https://rdf.example.org/story/1?utm_source=rss1.0&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://rdf.example.org/story/2?utm_source=rss1.0&amp;utm_medium=feed" />
+ </rdf:Seq>
+</items>
+</channel>
+
+<image rdf:about="https://rdf.example.org/logo.png">
+<title>Example Stories</title>
+<url>https://rdf.example.org/logo.png</url>
+<link>https://rdf.example.org/</link>
+</image>
+
+<item rdf:about="https://rdf.example.org/story/1?utm_source=rss1.0&amp;utm_medium=feed">
+<title>Watermarking is coming to the chat tool</title>
+<link>https://rdf.example.org/story/1?utm_source=rss1.0&amp;utm_medium=feed</link>
+<description>A company said it is adding text watermarking. &lt;p&gt;Readers wonder how well it will hold up.&lt;/p&gt;</description>
+<dc:creator>exampleuser</dc:creator>
+<dc:date>2026-10-06T13:20:00+00:00</dc:date>
+<dc:subject>technology</dc:subject>
+<slash:department>marks-and-stamps</slash:department>
+<slash:comments>42</slash:comments>
+</item>
+
+<item rdf:about="https://rdf.example.org/story/2?utm_source=rss1.0&amp;utm_medium=feed">
+<title>Old hearts &amp;amp; young bodies</title>
+<link>https://rdf.example.org/story/2?utm_source=rss1.0&amp;utm_medium=feed</link>
+<description>A study found something.</description>
+<content:encoded><![CDATA[<p>A study found <em>something</em>.</p>]]></content:encoded>
+<dc:creator>otheruser</dc:creator>
+<dc:date>2026-10-06T12:10:00+00:00</dc:date>
+</item>
+
+</rdf:RDF>

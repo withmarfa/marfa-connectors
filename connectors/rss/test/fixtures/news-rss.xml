@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?><rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title><![CDATA[Example News]]></title>
+    <description><![CDATA[Example News - Front Page]]></description>
+    <link>https://news.example.org/</link>
+    <image>
+      <url>https://news.example.org/logo.gif</url>
+      <title>Example News</title>
+      <link>https://news.example.org/</link>
+    </image>
+    <generator>RSS for Node</generator>
+    <lastBuildDate>Tue, 06 Oct 2026 14:08:13 GMT</lastBuildDate>
+    <atom:link href="https://news.example.org/rss.xml" rel="self" type="application/rss+xml"/>
+    <language><![CDATA[en-gb]]></language>
+    <ttl>15</ttl>
+    <item>
+      <title><![CDATA[Watch: Students protest on the streets]]></title>
+      <description><![CDATA[The demonstrators are calling for better investment in schools.]]></description>
+      <link>https://news.example.org/videos/abc123?at_medium=RSS&amp;at_campaign=rss</link>
+      <guid isPermaLink="false">https://news.example.org/videos/abc123#1</guid>
+      <pubDate>Tue, 06 Oct 2026 10:22:42 GMT</pubDate>
+      <media:thumbnail width="240" height="134" url="https://img.example.org/standard/240/abc123.jpg"/>
+    </item>
+    <item>
+      <title><![CDATA[Arrest made after "incident" at the airfield]]></title>
+      <description><![CDATA[It is the seventh arrest in connection with the incident.]]></description>
+      <link>https://news.example.org/articles/def456?at_medium=RSS&amp;at_campaign=rss</link>
+      <guid isPermaLink="false">https://news.example.org/articles/def456#1</guid>
+      <pubDate>Tue, 06 Oct 2026 13:54:24 GMT</pubDate>
+      <dc:creator><![CDATA[Staff Reporter]]></dc:creator>
+      <content:encoded><![CDATA[<p>The full story.</p><img src="https://img.example.org/inline/def456.jpg" alt="The airfield"/>]]></content:encoded>
+      <media:thumbnail width="240" height="135" url="https://img.example.org/standard/240/def456.jpg"/>
+    </item>
+    <item>
+      <title><![CDATA[Live: Markets update]]></title>
+      <description><![CDATA[Updating through the day.]]></description>
+      <link>https://news.example.org/live/ghi789</link>
+      <guid isPermaLink="false">https://news.example.org/live/ghi789#1</guid>
+      <pubDate>Tue, 06 Oct 2026 14:00:00 +0100</pubDate>
+      <media:thumbnail width="1" height="1" url="https://img.example.org/pixel.gif"/>
+      <media:thumbnail width="240" height="135" url="https://img.example.org/standard/240/ghi789.jpg"/>
+    </item>
+  </channel>
+</rss>

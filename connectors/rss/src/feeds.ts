@@ -465,7 +465,7 @@ function atomTextOf(
 ): string | undefined {
   return text?.type === "html" || text?.type === "xhtml"
     ? plainOf(text.value)
-    : textOf(text?.value);
+    : textOf(text?.value?.replace(/\s+/g, " "));
 }
 
 // A width or height of 0 or 1 pixel is a tracking pixel, not a picture.

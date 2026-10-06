@@ -1,0 +1,41 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "The Example Linklog",
+  "home_page_url": "https://linklog.example.org/",
+  "feed_url": "https://linklog.example.org/feed.json",
+  "language": "en",
+  "authors": [
+    { "name": "Alex Example", "url": "https://linklog.example.org/about" }
+  ],
+  "icon": "https://linklog.example.org/icon.png",
+  "items": [
+    {
+      "id": "https://linklog.example.org/linked/2026/10/05/mockup",
+      "url": "https://linklog.example.org/linked/2026/10/05/mockup",
+      "external_url": "https://other.example.net/#photo-37",
+      "title": "A Mockup, Walked Through in 2010",
+      "date_published": "2026-10-06T02:49:44Z",
+      "date_modified": "2026-10-06T02:54:41Z",
+      "authors": [{ "name": "Alex Example" }],
+      "tags": ["links"],
+      "content_html": "\n<p>What an apt photo. What a gift <em>the book</em> is.</p>\n\n<p class=\"hide\" style=\"padding-top: 1.5em;\"><em>Link: <strong><a href=\"https://other.example.net/#photo-37\">other.example.net/#photo-37</a></strong></em></p>\n"
+    },
+    {
+      "id": "2026-10-04-sponsor",
+      "url": "https://linklog.example.org/2026/10/04/sponsor",
+      "title": "[Sponsor] A Tool &amp; Its Friends",
+      "summary": "A sponsored note about a tool.",
+      "image": "https://linklog.example.org/images/sponsor.png",
+      "date_published": "2026-10-04T08:00:00-04:00",
+      "content_html": "<p>Sponsored.</p><img src=\"https://linklog.example.org/images/inline.png\" alt=\"inline\">"
+    },
+    {
+      "id": "2026-10-03-text",
+      "title": "A text-only note",
+      "content_text": "Plain text,\nwith a line break.",
+      "banner_image": "https://linklog.example.org/images/banner.png",
+      "language": "fr",
+      "date_modified": "2026-10-03T10:00:00Z"
+    }
+  ]
+}

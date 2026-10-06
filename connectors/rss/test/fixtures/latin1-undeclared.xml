@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Journal de Café</title><link>https://latin.example.org/</link>
+<item><title>Crème brûlée</title><link>https://latin.example.org/creme</link><guid>latin-1</guid><description>À la carte</description></item>
+</channel></rss>
