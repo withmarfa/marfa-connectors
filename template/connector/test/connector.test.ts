@@ -42,6 +42,9 @@ let items: VendorItem[];
 let writes: VendorWrite[];
 let refuseNextWrite: number | undefined;
 let refuseNextPut: number | undefined;
+let hangNext: string | undefined;
+let unlisted: Set<string>;
+let failLookup: Set<string>;
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("example", {
@@ -51,6 +54,9 @@ beforeEach(async () => {
   writes = [];
   refuseNextWrite = undefined;
   refuseNextPut = undefined;
+  hangNext = undefined;
+  unlisted = new Set();
+  failLookup = new Set();
   let made = 0;
   const madeByKey = new Map<string, string>();
   // A day behind the scripted server's clock, so a change in Marfa is later
@@ -68,6 +74,10 @@ beforeEach(async () => {
         res.writeHead(401).end();
         return;
       }
+      if (hangNext === req.method) {
+        hangNext = undefined;
+        return;
+      }
       const text = Buffer.concat(chunks).toString("utf8");
       const body =
         text === "" ? undefined : (JSON.parse(text) as Record<string, unknown>);
@@ -75,6 +85,10 @@ beforeEach(async () => {
       const method = req.method ?? "GET";
       const one = /^\/items\/(.+)$/.exec(path);
       if (method === "GET" && one !== null) {
+        if (failLookup.has(decodeURIComponent(one[1] ?? ""))) {
+          res.writeHead(500).end();
+          return;
+        }
         const found = items.find(
           (item) => item.id === decodeURIComponent(one[1] ?? ""),
         );
@@ -88,7 +102,12 @@ beforeEach(async () => {
       }
       if (method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ account: "acct", items }));
+        res.end(
+          JSON.stringify({
+            account: "acct",
+            items: items.filter((item) => !unlisted.has(item.id)),
+          }),
+        );
         return;
       }
       const idempotencyKey = req.headers["idempotency-key"];
@@ -167,6 +186,7 @@ async function once(
 ): Promise<{ code: number; output: string }> {
   try {
     const { stderr } = await run("node", [built, "--once"], {
+      timeout: 30_000,
       env: {
         PATH: process.env["PATH"],
         MARFA_API_URL: marfa.url,
@@ -663,4 +683,120 @@ describe("the template, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(marfa.requests.length).toBeGreaterThan(0);
   });
+
+  it("archives an item the vendor no longer lists and no longer has", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    items = [];
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("acct:1").state).toBe("archived");
+    expect(marfa.runs.at(-1)?.summary).toMatch(/archived 1, /);
+  });
+
+  it("leaves an item the listing left out but the vendor still has", async () => {
+    items = [
+      { id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" },
+      { id: "2", title: "Two", created: "2026-09-02T10:00:00.000Z" },
+    ];
+    expect((await once()).code).toBe(0);
+    unlisted.add("2");
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("acct:2").state).toBe("active");
+    expect(marfa.runs.at(-1)?.summary).toMatch(/archived 0, /);
+  });
+
+  it("archives what it is sure of before a failed lookup fails the run", async () => {
+    items = [
+      { id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" },
+      { id: "2", title: "Two", created: "2026-09-02T10:00:00.000Z" },
+      { id: "3", title: "Three", created: "2026-09-03T10:00:00.000Z" },
+    ];
+    expect((await once()).code).toBe(0);
+    items = items.slice(0, 1);
+    failLookup.add("3");
+    expect((await once()).code).toBe(1);
+    expect(marfa.row("acct:2").state).toBe("archived");
+    expect(marfa.row("acct:3").state).toBe("active");
+    failLookup.clear();
+    expect((await once()).code).toBe(0);
+    expect(marfa.row("acct:3").state).toBe("archived");
+  });
+
+  it("fails the run, to be tried again, when the vendor does not answer a read in time", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    hangNext = "GET";
+    const { code, output } = await once({ EXAMPLE_TIMEOUT_MS: "300" });
+    expect(code).toBe(1);
+    expect(output).toContain("the example vendor did not answer");
+    expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+    expect((await once()).code).toBe(0);
+    expect(marfa.rows.map((row) => row.source_id)).toEqual(["acct:1"]);
+  });
+
+  it("waits a change to the next run when the vendor does not answer a write in time", async () => {
+    items = [{ id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" }];
+    expect((await once()).code).toBe(0);
+    const mine = marfa.row("acct:1");
+    marfa.edit(mine.id, { title: "One, edited" });
+    hangNext = "PUT";
+    expect((await once({ EXAMPLE_TIMEOUT_MS: "300" })).code).toBe(0);
+    expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      "1 change waits: the example vendor did not answer",
+    );
+    expect(items[0]?.title).toBe("One");
+    expect((await once()).code).toBe(0);
+    expect(items[0]?.title).toBe("One, edited");
+  });
+
+  it.each([
+    ["an address that is not one", { EXAMPLE_URL: "not an address" }],
+    [
+      "an address that is not http",
+      { EXAMPLE_URL: "ftp://vendor.example.com" },
+    ],
+    ["a time limit that is not a number", { EXAMPLE_TIMEOUT_MS: "soon" }],
+    ["a time limit of zero", { EXAMPLE_TIMEOUT_MS: "0" }],
+    [
+      "a time limit longer than a timer holds",
+      { EXAMPLE_TIMEOUT_MS: "3000000000" },
+    ],
+  ])("stops at start, before it reaches Marfa, on %s", async (_, env) => {
+    const { code, output } = await once(env);
+    expect(code).toBe(2);
+    expect(output).toContain("cannot start: EXAMPLE_");
+    expect(marfa.requests).toEqual([]);
+  });
+
+  it.each(["", "/"])(
+    "reaches the same place on a base address ending in %j",
+    async (ending) => {
+      const reached: string[] = [];
+      const prefixed = createServer((req, res) => {
+        reached.push(`${req.method ?? ""} ${req.url ?? ""}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            account: "acct",
+            items: [
+              { id: "1", title: "One", created: "2026-09-01T10:00:00.000Z" },
+            ],
+          }),
+        );
+      });
+      await new Promise<void>((done) => prefixed.listen(0, "127.0.0.1", done));
+      try {
+        const port = String((prefixed.address() as AddressInfo).port);
+        const { code } = await once({
+          EXAMPLE_URL: `http://127.0.0.1:${port}/api${ending}`,
+        });
+        expect(code).toBe(0);
+        expect(reached).toEqual(["GET /api/items"]);
+        expect(marfa.rows.map((row) => row.source_id)).toEqual(["acct:1"]);
+      } finally {
+        prefixed.closeAllConnections();
+        await new Promise((done) => prefixed.close(done));
+      }
+    },
+  );
 });
