@@ -84,7 +84,7 @@ Or leave it running, which checks every feed every 15 minutes:
 node connectors/rss/dist/main.js --every 15m
 ```
 
-[The template's README](../../template/README.md#run-it) says more about both schedules, including a launchd example and a container image: build one with `docker build -f template/Dockerfile --build-arg CONNECTOR=rss -t rss .` and pass the settings with `-e`. The connector keeps no file. Its state, which holds the validators it asks each feed with and the keys each feed's rows were written under, is on the instance, so a new process or container picks up where the last left off.
+[The template's README](../../template/README.md#run-it) says more about both schedules, including a launchd example and a container image: build one with `docker build -f template/Dockerfile --build-arg CONNECTOR=rss -t rss .` and pass the settings with `-e`. The connector keeps no file. Its state, which holds the validators it asks each feed with, the keys each feed's rows were written under, and whether a feed is gone or has moved, is on the instance, so a new process or container picks up where the last left off.
 
 Keep `RSS_FEEDS` and `MARFA_API_KEY` in your secret store and start the connector under a tool that sets them, so neither is in a file in the checkout or in a launchd plist.
 
@@ -175,8 +175,11 @@ A feed is skipped, and named in the run, when it:
 - carries more than 5,000 entries or 300,000 elements;
 - needs more memory to read than the connector allows, reads to more than 33,554,432 characters of entries, or takes more than 30 seconds to read;
 - is not Atom, RSS 2.0, RSS 1.0 or JSON Feed;
-- redirects more than five times, or to this machine or a private network that `RSS_PRIVATE_HOSTS` does not allow; or
-- does not answer, or answers with a status other than 200 or 304.
+- redirects more than five times, or to this machine or a private network that `RSS_PRIVATE_HOSTS` does not allow;
+- does not answer, or answers with a status other than 200 or 304, bar 410, below; or
+- answers 410 (gone). This one is not asked again while its address stays the same, and each run says so. Remove it from `RSS_FEEDS`, or give it its new address, which is read at once.
+
+A feed whose listed address answers with a permanent redirect (301 or 308) is still read, from where it moved to, and each run says that it has moved. Update its address in `RSS_FEEDS`; a feed listed without a name starts new rows at its new address, as above, so name it, with its address unchanged, before you change the address. The new address is not named, since it may carry a token. A temporary redirect (302, 303 or 307) raises nothing.
 
 The other feeds are still read. A run fails for its feeds only when none of those in `RSS_FEEDS` could be read.
 

@@ -171,8 +171,9 @@ export type Fetched =
       contentType: string | null;
       validators: Validators;
       url: string;
+      moved: boolean;
     }
-  | { status: number };
+  | { status: number; moved: boolean };
 
 /** A validator is echoed back verbatim; past this a server is not using it
  *  as one, and it is not kept. */
@@ -260,7 +261,9 @@ export async function fetchFeed(
     headers["If-Modified-Since"] = validators.last_modified;
   }
   const answer = await getFeed(feed.url, headers, allowed, signal);
-  if (answer.bytes === undefined) return { status: answer.status };
+  if (answer.bytes === undefined) {
+    return { status: answer.status, moved: answer.moved };
+  }
   const header = (name: string): string | undefined => {
     const value = answer.headers[name];
     return Array.isArray(value) ? value[0] : value;
@@ -282,6 +285,7 @@ export async function fetchFeed(
       ...(lastModified !== undefined && { last_modified: lastModified }),
     },
     url: answer.url,
+    moved: answer.moved,
   };
 }
 

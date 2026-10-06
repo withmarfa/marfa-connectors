@@ -1388,6 +1388,10 @@ interface Served {
   body: string | Buffer;
   authorization?: string;
   redirect?: string;
+  /** What a redirect answers with; 301 where not given. */
+  redirectStatus?: number;
+  /** Answers with this alone, whatever the request. */
+  status?: number;
   encoding?: string;
   contentType?: string;
   etag?: string;
@@ -1426,8 +1430,12 @@ describe("the connector, run as a process", () => {
         answer(404);
         return;
       }
+      if (feed.status !== undefined) {
+        answer(feed.status);
+        return;
+      }
       if (feed.redirect !== undefined) {
-        answer(301, { Location: feed.redirect });
+        answer(feed.redirectStatus ?? 301, { Location: feed.redirect });
         return;
       }
       if (
@@ -1853,6 +1861,102 @@ describe("the connector, run as a process", () => {
     expect((await once(["/gone.xml"])).code).toBe(1);
     expect(marfa.runs.at(-1)?.error).toContain(
       "the feed in RSS_FEEDS could not be read, so this run read nothing",
+    );
+  });
+
+  it("stops polling a feed that answers 410, says so on every run, and reads it again once its address changes", async () => {
+    const token = "s3cr3t-gone-token";
+    served[`/private/${token}/feed.xml`] = { body: "", status: 410 };
+    const gone = `/private/${token}/feed.xml`;
+    expect((await once(["/rss.xml", gone])).code).toBe(0);
+    const said = `feed 2 in RSS_FEEDS (${base}) answered 410, so it is not read again while its address stays the same; remove it from RSS_FEEDS, or change its address if the feed has a new one`;
+    expect(marfa.runs.at(-1)?.summary).toContain(said);
+    for (let run = 0; run < 2; run += 1) {
+      expect((await once(["/rss.xml", gone])).code).toBe(0);
+      expect(marfa.runs.at(-1)?.summary).toContain(said);
+    }
+    expect(asked.filter((request) => request.path === gone)).toHaveLength(1);
+    served[`/private/${token}/moved.xml`] = { body: fixture("atom.xml") };
+    expect((await once(["/rss.xml", `/private/${token}/moved.xml`])).code).toBe(
+      0,
+    );
+    expect(asked.at(-1)?.path).toBe(`/private/${token}/moved.xml`);
+    expect(marfa.runs.at(-1)?.summary).not.toContain("410");
+    expect(marfa.rows).toHaveLength(4);
+    const kept = JSON.stringify([marfa.states.get("rss") ?? {}, marfa.runs]);
+    expect(kept).not.toContain(token);
+    expect(kept).not.toContain("/private/");
+  });
+
+  it("reads a feed that is gone only as long as its address stays, even when another feed's entry is refused", async () => {
+    served["/gone.xml"] = { body: "", status: 410 };
+    const entryKey =
+      readFeed(at(`${base}/rss.xml`), fixture("rss.xml")).entries[0]
+        ?.source_id ?? "";
+    marfa.entryRefusals.set(entryKey, {
+      status: 400,
+      code: "invalid_properties",
+      message: "too long",
+    });
+    expect((await once(["/gone.xml", "/rss.xml"])).code).toBe(0);
+    expect((await once(["/gone.xml", "/rss.xml"])).code).toBe(0);
+    expect(
+      asked.filter((request) => request.path === "/gone.xml"),
+    ).toHaveLength(1);
+  });
+
+  it("follows a feed that moved permanently, and says on every run that its address is out of date", async () => {
+    const old = "s3cr3t-old-token";
+    const fresh = "s3cr3t-new-token";
+    served[`/private/${old}/301.xml`] = {
+      body: "",
+      redirect: `/private/${fresh}/rss.xml`,
+    };
+    served[`/private/${old}/308.xml`] = {
+      body: "",
+      redirect: `/private/${fresh}/rss.xml`,
+      redirectStatus: 308,
+    };
+    served[`/private/${old}/302.xml`] = {
+      body: "",
+      redirect: `/private/${fresh}/rss.xml`,
+      redirectStatus: 302,
+    };
+    served[`/private/${fresh}/rss.xml`] = {
+      body: fixture("rss.xml"),
+      lastModified: "Wed, 16 Sep 2026 09:00:00 GMT",
+    };
+    const list = [301, 308, 302].map(
+      (status) => `/private/${old}/${String(status)}.xml`,
+    );
+    for (let run = 0; run < 2; run += 1) {
+      expect((await once(list)).code).toBe(0);
+      const summary = marfa.runs.at(-1)?.summary ?? "";
+      for (const position of [1, 2]) {
+        expect(summary).toContain(
+          `feed ${String(position)} in RSS_FEEDS (${base}) has moved permanently, and is followed; update its address in RSS_FEEDS`,
+        );
+      }
+      expect(summary).not.toContain(`feed 3 in RSS_FEEDS (${base}) has moved`);
+    }
+    expect(marfa.rows).toHaveLength(6);
+    expect(asked.map((request) => request.answered).slice(6)).toEqual([
+      301, 304, 308, 304, 302, 304,
+    ]);
+    const kept = JSON.stringify([marfa.states.get("rss") ?? {}, marfa.runs]);
+    expect(kept).not.toContain(old);
+    expect(kept).not.toContain(fresh);
+  });
+
+  it("says a moved feed has moved when it did not answer this run, from what the last run saw", async () => {
+    served["/old.xml"] = { body: "", redirect: "/rss.xml" };
+    expect((await once(["/old.xml"])).code).toBe(0);
+    served["/old.xml"] = { body: "", redirect: "http://127.0.0.1:1/rss.xml" };
+    expect((await once(["/old.xml", "/atom.xml"])).code).toBe(0);
+    const summary = marfa.runs.at(-1)?.summary ?? "";
+    expect(summary).toContain("could not be fetched");
+    expect(summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) has moved permanently, and is followed; update its address in RSS_FEEDS`,
     );
   });
 
