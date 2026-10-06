@@ -140,6 +140,44 @@ describe("a cascade", () => {
     expect([...(held.changes[0]?.changed ?? [])]).toEqual(["title"]);
   });
 
+  it("does not offer to remake a restored row whose cascade trash never reached the vendor, and only returns it", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const taken = harness.server.row("a:1");
+    // The cascade landed after the log was read and the restore is not in it:
+    // the agreement says trashed by cascade while the row is active.
+    harness.server.agreements.set(taken.id, {
+      waiting: false,
+      updated_at: taken.updated_at,
+      record: {
+        ...harness.agreement(taken.id),
+        state: "trashed",
+        stateBy: "cascade",
+        stateAt: taken.updated_at,
+      },
+    });
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.remakes ?? []).toEqual([]);
+    expect(held.changes).toEqual([]);
+    expect(harness.agreement(taken.id)).toMatchObject({ state: "active" });
+    expect(harness.agreement(taken.id)).not.toHaveProperty("stateBy");
+  });
+
+  it("offers to remake a restored row whose own trash reached the vendor", async () => {
+    const held = vendor([one]);
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.trash(row.id);
+    await harness.twoWay(held);
+    expect(harness.agreement(row.id)).toMatchObject({ state: "trashed" });
+    harness.server.restore(row.id);
+    await harness.twoWay(held);
+    expect(held.remakes?.map((remake) => remake.change.kind)).toEqual([
+      "restored",
+    ]);
+  });
+
   it("carries no purge of a row another row's trash took", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
