@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
-import { parseFeed } from "feedsmith";
+import { parseFeed, parseJsonFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 import { isIP } from "node:net";
 import { getFeed, hostOf } from "./fetch.js";
@@ -171,8 +171,9 @@ export type Fetched =
       contentType: string | null;
       validators: Validators;
       url: string;
+      moved: boolean;
     }
-  | { status: number };
+  | { status: number; moved: boolean };
 
 /** A validator is echoed back verbatim; past this a server is not using it
  *  as one, and it is not kept. */
@@ -252,7 +253,7 @@ export async function fetchFeed(
 ): Promise<Fetched> {
   const headers: Record<string, string> = {
     Accept:
-      "application/atom+xml, application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+      "application/atom+xml, application/rss+xml, application/feed+json, application/xml;q=0.9, */*;q=0.8",
   };
   if (validators?.etag !== undefined)
     headers["If-None-Match"] = validators.etag;
@@ -260,7 +261,9 @@ export async function fetchFeed(
     headers["If-Modified-Since"] = validators.last_modified;
   }
   const answer = await getFeed(feed.url, headers, allowed, signal);
-  if (answer.bytes === undefined) return { status: answer.status };
+  if (answer.bytes === undefined) {
+    return { status: answer.status, moved: answer.moved };
+  }
   const header = (name: string): string | undefined => {
     const value = answer.headers[name];
     return Array.isArray(value) ? value[0] : value;
@@ -282,6 +285,7 @@ export async function fetchFeed(
       ...(lastModified !== undefined && { last_modified: lastModified }),
     },
     url: answer.url,
+    moved: answer.moved,
   };
 }
 
@@ -461,7 +465,7 @@ function atomTextOf(
 ): string | undefined {
   return text?.type === "html" || text?.type === "xhtml"
     ? plainOf(text.value)
-    : textOf(text?.value);
+    : textOf(text?.value?.replace(/\s+/g, " "));
 }
 
 // A width or height of 0 or 1 pixel is a tracking pixel, not a picture.
@@ -510,6 +514,45 @@ interface Written {
   image_url: string | undefined;
 }
 
+interface Images {
+  /** An image the entry names as its own: an enclosure, or a JSON Feed's
+   *  `image`. */
+  enclosure: string | undefined;
+  /** What `media:thumbnail` offers, used where nothing else gives a picture. */
+  thumbnail: string | undefined;
+}
+
+interface Thumbnails {
+  thumbnails?: { url?: string; width?: number; height?: number }[];
+}
+
+interface Media extends Thumbnails {
+  contents?: Thumbnails[];
+  groups?: (Thumbnails & { contents?: Thumbnails[] })[];
+}
+
+// The first `media:thumbnail` that is an http or https link once resolved
+// and does not declare itself a pixel, looked for where the entry names one,
+// then in its media groups and media contents.
+function thumbnailOf(media: Media | undefined, base: Base): string | undefined {
+  const places = [
+    media,
+    ...(media?.contents ?? []),
+    ...(media?.groups ?? []).flatMap((group) => [
+      group,
+      ...(group.contents ?? []),
+    ]),
+  ];
+  for (const place of places) {
+    for (const thumbnail of place?.thumbnails ?? []) {
+      if ((thumbnail.width ?? 2) <= 1 || (thumbnail.height ?? 2) <= 1) continue;
+      const url = linkOf(thumbnail.url, base);
+      if (url !== undefined) return url;
+    }
+  }
+  return undefined;
+}
+
 /**
  * A feed's content is its content element where it has one, else its
  * summary where that holds markup. The description is the summary as plain
@@ -518,14 +561,14 @@ interface Written {
 function contentOf(
   summary: Summary,
   content: string | undefined,
-  enclosure: string | undefined,
+  images: Images,
   base: Base,
   contentIsHtml = true,
 ): Written {
   const reading = summary.html ? readingOf(summary.value) : undefined;
   const picture = countedPicture(reading, base);
   const body = textOf(content);
-  const enclosed = linkOf(enclosure, base);
+  const enclosed = linkOf(images.enclosure, base);
   const found =
     enclosed === undefined
       ? ((contentIsHtml ? countedPicture(readingOf(body), base) : undefined) ??
@@ -540,7 +583,7 @@ function contentOf(
       (reading?.marked === true && !reading.empty
         ? textOf(summary.value)
         : undefined),
-    image_url: enclosed ?? found?.url,
+    image_url: enclosed ?? found?.url ?? images.thumbnail,
   };
 }
 
@@ -591,8 +634,14 @@ export function readFeed(
   text: string,
   documentUrl: string = feed.url,
 ): Read {
-  countTags(text);
-  const parsed = parseFeed(text);
+  // A JSON Feed holds its markup in strings, not elements, and its entries
+  // are counted once it is parsed. It is parsed as JSON alone: the parser's
+  // own detection looks for feed tags anywhere in the text, so a post about
+  // RSS in a JSON Feed would be taken for RSS, and an XML feed behind a
+  // leading brace would escape the tag counts.
+  const parsed = text.trimStart().startsWith("{")
+    ? { format: "json" as const, feed: parseJsonFeed(text) }
+    : (countTags(text), parseFeed(text));
   const { key } = feed;
   const named = {
     feed_origin: new URL(feed.url).origin,
@@ -637,6 +686,7 @@ export function readFeed(
         ?.href;
     const siteUrl = linkOf(alternate(atom.links), feedBase);
     const language = languageOf(atom.xml?.lang);
+    const sourceTitle = atomTextOf(atom.title);
     for (const entry of atom.entries ?? []) {
       const entryBase = baseOf(feedBase, entry.xml?.base);
       const url = linkOf(alternate(entry.links), entryBase);
@@ -652,7 +702,7 @@ export function readFeed(
             entry.summary?.type === "html" || entry.summary?.type === "xhtml",
         },
         entry.content?.value,
-        image,
+        { enclosure: image, thumbnail: thumbnailOf(entry.media, entryBase) },
         entryBase,
         entry.content?.type === "html" || entry.content?.type === "xhtml",
       );
@@ -666,7 +716,7 @@ export function readFeed(
           published_at: published,
           language,
           source_url: siteUrl,
-          source_title: atomTextOf(atom.title),
+          source_title: sourceTitle,
         },
         published ?? isoOf(entry.updated),
       );
@@ -689,6 +739,7 @@ export function readFeed(
     );
     const siteUrl = linkOf(rss.link, channelBase);
     const language = languageOf(rss.language);
+    const sourceTitle = plainOf(rss.title);
     for (const item of rss.items ?? []) {
       const itemBase = baseOf(channelBase, item.xml?.base);
       const url = linkOf(item.link, itemBase);
@@ -700,27 +751,92 @@ export function readFeed(
       const written = contentOf(
         { value: item.description, html: true },
         item.content?.encoded,
-        image,
+        { enclosure: image, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
       );
       keep(
         item.guid?.value ?? url,
         {
           url,
-          title: textOf(item.title),
+          title: plainOf(item.title),
           ...written,
           author: textOf(item.authors?.[0]?.name ?? item.dc?.creators?.[0]),
           published_at: published,
           language,
           source_url: siteUrl,
-          source_title: textOf(rss.title),
+          source_title: sourceTitle,
         },
         published ?? isoOf(item.dc?.dates?.[0]),
       );
     }
     return { entries, unkeyed, dropped, declared: undefined };
   }
-  throw new Error(
-    `a ${parsed.format} feed, where this connector reads Atom and RSS 2.0`,
-  );
+  if (parsed.format === "rdf") {
+    const rdf = parsed.feed;
+    const channelBase = baseOf(documentBase, rdf.xml?.base);
+    const siteUrl = linkOf(rdf.link, channelBase);
+    const language =
+      languageOf(rdf.dc?.languages?.[0]) ?? languageOf(rdf.xml?.lang);
+    const sourceTitle = plainOf(rdf.title);
+    for (const item of rdf.items ?? []) {
+      const itemBase = baseOf(channelBase, item.xml?.base);
+      const url = linkOf(item.link, itemBase);
+      const published = isoOf(item.dc?.dates?.[0]);
+      const written = contentOf(
+        { value: item.description, html: true },
+        item.content?.encoded,
+        { enclosure: undefined, thumbnail: thumbnailOf(item.media, itemBase) },
+        itemBase,
+      );
+      keep(
+        item.rdf?.about ?? url,
+        {
+          url,
+          title: plainOf(item.title),
+          ...written,
+          author: textOf(item.dc?.creators?.[0]),
+          published_at: published,
+          language,
+          source_url: siteUrl,
+          source_title: sourceTitle,
+        },
+        published,
+      );
+    }
+    return { entries, unkeyed, dropped, declared: undefined };
+  }
+  const json = parsed.feed;
+  if ((json.items?.length ?? 0) > maxFeedEntries) throw new TooManyEntries();
+  const siteUrl = linkOf(json.home_page_url, documentBase);
+  const sourceTitle = plainOf(json.title);
+  for (const item of json.items ?? []) {
+    const url = linkOf(item.url, documentBase);
+    const published = isoOf(item.date_published);
+    const html = textOf(item.content_html);
+    const written = contentOf(
+      { value: item.summary, html: false },
+      html ?? item.content_text,
+      {
+        enclosure: item.image ?? item.banner_image,
+        thumbnail: undefined,
+      },
+      documentBase,
+      html !== undefined,
+    );
+    keep(
+      item.id ?? url,
+      {
+        url,
+        title: plainOf(item.title),
+        ...written,
+        author: textOf(item.authors?.[0]?.name ?? json.authors?.[0]?.name),
+        published_at: published,
+        language: languageOf(item.language) ?? languageOf(json.language),
+        source_url: siteUrl,
+        source_title: sourceTitle,
+      },
+      published ?? isoOf(item.date_modified),
+    );
+  }
+  return { entries, unkeyed, dropped, declared: undefined };
 }

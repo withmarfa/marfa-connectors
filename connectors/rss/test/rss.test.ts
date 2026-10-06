@@ -38,6 +38,8 @@ const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
 const fixture = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "fixtures", name), "utf8");
+const fixtureBytes = (name: string): Buffer =>
+  readFileSync(resolve(import.meta.dirname, "fixtures", name));
 const at = (url: string, name?: string) => ({ url, key: feedKey(url, name) });
 
 /** Zeros, gzipped: a few hundred KiB on the wire for every 256 MiB inside. */
@@ -273,6 +275,45 @@ describe("reading a feed", () => {
     expect(entries[0]?.properties["source_title"]).toBe("Site & Co");
   });
 
+  it("reads an RSS 2.0 title, and the channel's, as plain text: entities decoded, markup removed, whitespace collapsed", () => {
+    const { entries } = readFeed(
+      at("https://example.org/rss.xml"),
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>Site &lt;i&gt;News&lt;/i&gt; &amp;amp; Co</title><link>https://example.org/</link>
+        <item><title>Undated &lt;b&gt;bold&lt;/b&gt;</title><guid>a</guid></item>
+        <item><title><![CDATA[Fish &amp; <i>chips</i>]]></title><guid>b</guid></item>
+        <item><title>Don&amp;#8217;t   split
+          this</title><guid>c</guid></item>
+        <item><title>   </title><guid>d</guid></item>
+      </channel></rss>`,
+    );
+    expect(entries.map((entry) => entry.properties["title"])).toEqual([
+      "Undated bold",
+      "Fish & chips",
+      "Don\u2019t split this",
+      undefined,
+    ]);
+    expect(entries[0]?.properties["source_title"]).toBe("Site News & Co");
+  });
+
+  it("collapses the whitespace in an Atom title that is text, as in the others", () => {
+    const { entries } = readFeed(
+      at("https://example.com/atom.xml"),
+      `<?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>A
+          wrapped   feed title</title>
+        <id>tag:example.com,2026:feed</id>
+        <entry>
+          <title>A wrapped
+            entry   title</title>
+          <id>tag:example.com,2026:entry:1</id>
+        </entry>
+      </feed>`,
+    );
+    expect(entries[0]?.properties["title"]).toBe("A wrapped entry title");
+    expect(entries[0]?.properties["source_title"]).toBe("A wrapped feed title");
+  });
+
   it("reads an RSS 2.0 description's entity-encoded HTML as plain text", () => {
     const { entries } = readFeed(
       at("https://example.org/rss.xml"),
@@ -394,7 +435,7 @@ describe("reading a feed", () => {
     ).toEqual(["Résumé"]);
   });
 
-  it("refuses what is neither Atom nor RSS 2.0", () => {
+  it("refuses what is not a feed it reads", () => {
     expect(() =>
       readFeed(
         at("https://example.org/x"),
@@ -855,6 +896,515 @@ describe("an entry's content and image", () => {
   });
 });
 
+describe("RSS 1.0 and JSON Feed", () => {
+  const rdf = `<?xml version="1.0" encoding="utf-8"?>
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/">
+      <channel rdf:about="https://example.org/feed.rdf">
+        <title>Example &lt;b&gt;RDF&lt;/b&gt;</title>
+        <link>https://example.org/</link>
+        <description>An RSS 1.0 feed.</description>
+        <dc:language>en-GB</dc:language>
+        <items><rdf:Seq><rdf:li rdf:resource="https://example.org/a"/></rdf:Seq></items>
+      </channel>
+      <item rdf:about="https://example.org/a#id">
+        <title>Fish &amp;amp; chips</title>
+        <link>https://example.org/a</link>
+        <description>&lt;p&gt;Short.&lt;/p&gt;</description>
+        <dc:date>2026-09-18T09:00:00+01:00</dc:date>
+        <dc:creator>A. Writer</dc:creator>
+        <content:encoded><![CDATA[<p>Long <img src="https://example.org/inline.png" alt="x"/></p>]]></content:encoded>
+      </item>
+      <item>
+        <title>Linked only</title>
+        <link>https://example.org/b</link>
+        <description>Plain summary.</description>
+        <media:thumbnail url="https://example.org/b.jpg" width="120" height="80"/>
+      </item>
+      <item><title>Nothing to know it by</title></item>
+    </rdf:RDF>`;
+
+  it("reads an RSS 1.0 feed into the same fields as the others", () => {
+    const read = readFeed(at("https://example.org/feed.rdf"), rdf);
+    expect(read.unkeyed).toBe(1);
+    expect(read.entries).toHaveLength(2);
+    expect(read.entries[0]).toMatchObject({
+      occurred_at: "2026-09-18T08:00:00.000Z",
+      properties: {
+        entry_id: "https://example.org/a#id",
+        url: "https://example.org/a",
+        title: "Fish & chips",
+        description: "Short.",
+        body: `<p>Long <img src="https://example.org/inline.png" alt="x"/></p>`,
+        author: "A. Writer",
+        published_at: "2026-09-18T08:00:00.000Z",
+        image_url: "https://example.org/inline.png",
+        source_url: "https://example.org/",
+        source_title: "Example RDF",
+        language: "en-GB",
+      },
+    });
+    expect(read.entries[1]?.properties).toMatchObject({
+      entry_id: "https://example.org/b",
+      description: "Plain summary.",
+      image_url: "https://example.org/b.jpg",
+    });
+    expect(read.entries[1]?.properties).not.toHaveProperty(
+      "body",
+      expect.anything(),
+    );
+    expect(read.entries[1]?.occurred_at).toBeUndefined();
+  });
+
+  const json = JSON.stringify({
+    version: "https://jsonfeed.org/version/1.1",
+    title: "Example <b>JSON</b>",
+    home_page_url: "https://example.org/",
+    language: "en",
+    authors: [{ name: "Feed Author" }],
+    items: [
+      {
+        id: "1",
+        url: "https://example.org/1",
+        title: "One &amp; <b>two</b>",
+        content_html: `<p>Hello <img src="https://example.org/inline.png"/></p>`,
+        summary: "Short.",
+        image: "https://example.org/hero.png",
+        date_published: "2026-09-18T09:00:00Z",
+        authors: [{ name: "Item Author" }],
+        language: "fr",
+      },
+      {
+        id: "2",
+        content_text: "Plain words",
+        date_modified: "2026-09-19T09:00:00Z",
+        banner_image: "https://example.org/banner.png",
+      },
+      { id: "3", summary: "Only a summary" },
+      { url: "https://example.org/4", title: "No id" },
+      { title: "Nothing to know it by" },
+    ],
+  });
+
+  it("reads a JSON Feed into the same fields as the others", () => {
+    const read = readFeed(at("https://example.org/feed.json"), json);
+    expect(read.unkeyed).toBe(1);
+    expect(read.entries.map((entry) => entry.properties["entry_id"])).toEqual([
+      "1",
+      "2",
+      "3",
+      "https://example.org/4",
+    ]);
+    expect(read.entries[0]).toMatchObject({
+      occurred_at: "2026-09-18T09:00:00.000Z",
+      properties: {
+        url: "https://example.org/1",
+        title: "One & two",
+        description: "Short.",
+        body: `<p>Hello <img src="https://example.org/inline.png"/></p>`,
+        author: "Item Author",
+        published_at: "2026-09-18T09:00:00.000Z",
+        image_url: "https://example.org/hero.png",
+        source_url: "https://example.org/",
+        source_title: "Example JSON",
+        language: "fr",
+      },
+    });
+    expect(read.entries[1]).toMatchObject({
+      occurred_at: "2026-09-19T09:00:00.000Z",
+      properties: {
+        body: "Plain words",
+        image_url: "https://example.org/banner.png",
+        author: "Feed Author",
+        language: "en",
+      },
+    });
+    expect(read.entries[1]?.properties).not.toHaveProperty(
+      "published_at",
+      expect.anything(),
+    );
+    expect(read.entries[2]?.properties).toMatchObject({
+      description: "Only a summary",
+    });
+    expect(read.entries[2]?.properties).not.toHaveProperty(
+      "body",
+      expect.anything(),
+    );
+    expect(read.entries[2]?.occurred_at).toBeUndefined();
+  });
+
+  it("reads a JSON Feed that mentions feed tags, and takes no XML behind a brace", () => {
+    const json = JSON.stringify({
+      version: "https://jsonfeed.org/version/1.1",
+      title: "Notes on RSS",
+      items: [
+        {
+          id: "1",
+          title: "Using  Rust",
+          content_html: "<p>An <rss> feed has a <channel> and <item>s.</p>",
+        },
+      ],
+    });
+    const read = readFeed(at("https://example.org/feed.json"), json);
+    expect(read.entries).toHaveLength(1);
+    expect(read.entries[0]?.properties["title"]).toBe("Using Rust");
+    expect(read.entries[0]?.properties["source_title"]).toBe("Notes on RSS");
+    const items = Array.from(
+      { length: maxFeedEntries + 10 },
+      (_, id) => `<item><guid>${String(id)}</guid></item>`,
+    ).join("");
+    expect(() =>
+      readFeed(
+        at("https://example.org/feed.json"),
+        `{ <rss version="2.0"><channel>${items}</channel></rss>`,
+      ),
+    ).toThrow();
+  });
+
+  it("counts a JSON Feed's entries against the cap, and its markup in strings against none", () => {
+    const feed = (items: object[]): string =>
+      JSON.stringify({
+        version: "https://jsonfeed.org/version/1.1",
+        title: "T",
+        items,
+      });
+    expect(() =>
+      readFeed(
+        at("https://example.org/feed.json"),
+        feed(
+          Array.from({ length: maxFeedEntries + 1 }, (_, id) => ({
+            id: String(id),
+          })),
+        ),
+      ),
+    ).toThrow(TooManyEntries);
+    const read = readFeed(
+      at("https://example.org/feed.json"),
+      feed([
+        { id: "1", content_html: "<i>x</i>".repeat(maxFeedElements) },
+        ...Array.from({ length: maxFeedEntries - 1 }, (_, id) => ({
+          id: `i${String(id)}`,
+        })),
+      ]),
+    );
+    expect(read.entries).toHaveLength(maxFeedEntries);
+  });
+
+  it("takes a JSON Feed's content picture where it names no image, and writes no link relative to where it was fetched", () => {
+    const read = readFeed(
+      at("https://example.org/private/token/feed.json"),
+      JSON.stringify({
+        version: "https://jsonfeed.org/version/1.1",
+        title: "T",
+        items: [
+          {
+            id: "1",
+            content_html: `<img src="https://example.org/in.png"/>`,
+            url: "post",
+          },
+        ],
+      }),
+    );
+    expect(read.entries[0]?.properties).toMatchObject({
+      image_url: "https://example.org/in.png",
+    });
+    expect(read.entries[0]?.properties).not.toHaveProperty(
+      "url",
+      expect.anything(),
+    );
+  });
+});
+
+describe("media:thumbnail", () => {
+  const rss = (item: string): string =>
+    `<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>T</title><link>https://example.org/</link><item><guid>a</guid>${item}</item></channel></rss>`;
+  const image = (document: string): unknown =>
+    readFeed(at("https://example.org/feed/rss.xml"), document).entries[0]
+      ?.properties["image_url"];
+  const thumbnail = `<media:thumbnail url="https://example.org/thumb.jpg" width="100" height="100"/>`;
+
+  it("supplies the image where nothing else does", () => {
+    expect(image(rss(thumbnail))).toBe("https://example.org/thumb.jpg");
+  });
+
+  it("comes after an enclosure, a content picture and a summary picture", () => {
+    expect(
+      image(
+        rss(
+          `${thumbnail}<enclosure url="https://example.org/enc.jpg" type="image/jpeg" length="1"/>`,
+        ),
+      ),
+    ).toBe("https://example.org/enc.jpg");
+    expect(
+      image(
+        rss(
+          `${thumbnail}<content:encoded><![CDATA[<img src="https://example.org/content.jpg"/>]]></content:encoded>`,
+        ),
+      ),
+    ).toBe("https://example.org/content.jpg");
+    expect(
+      image(
+        rss(
+          `${thumbnail}<description>&lt;img src="https://example.org/summary.jpg"/&gt;</description>`,
+        ),
+      ),
+    ).toBe("https://example.org/summary.jpg");
+  });
+
+  it("is the first thumbnail that is usable, in the item, its media group or its media content", () => {
+    const unusable = `<media:thumbnail url="https://example.org/pixel.gif" width="1" height="1"/><media:thumbnail url="data:image/gif;base64,R0lG"/><media:thumbnail url="relative.jpg"/>`;
+    expect(image(rss(`${unusable}${thumbnail}`))).toBe(
+      "https://example.org/thumb.jpg",
+    );
+    expect(
+      image(
+        rss(
+          `<media:group><media:content url="https://example.org/v.mp4" medium="video">${thumbnail}</media:content></media:group>`,
+        ),
+      ),
+    ).toBe("https://example.org/thumb.jpg");
+    expect(image(rss(unusable))).toBeUndefined();
+  });
+
+  it("supplies an Atom entry's image too", () => {
+    const entry = readFeed(
+      at("https://example.com/atom.xml"),
+      `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><title>T</title><id>f</id><entry><id>a</id><title>A</title>${thumbnail}</entry></feed>`,
+    ).entries[0];
+    expect(entry?.properties["image_url"]).toBe(
+      "https://example.org/thumb.jpg",
+    );
+  });
+});
+
+describe("feeds as they are found in the wild", () => {
+  const read = (name: string, url = "https://example.org/feed") =>
+    readFeed(at(url), decodeFeed(fixtureBytes(name), null));
+  const property = (entry: unknown, name: string): unknown =>
+    (entry as { properties: Record<string, unknown> }).properties[name];
+
+  it("reads an Atom comic feed whose entries are only a picture", () => {
+    const { entries, unkeyed } = read("xkcd-style-atom.xml");
+    expect(unkeyed).toBe(0);
+    expect(entries.map((entry) => property(entry, "title"))).toEqual([
+      "Spectrum Allocation",
+      "Accelerator Energies",
+      "Pixel Counter",
+    ]);
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      "https://imgs.example.org/comics/spectrum_allocation.png",
+      "https://imgs.example.org/comics/accelerator_energies.png",
+      "https://imgs.example.org/comics/pixel_counter.png",
+    ]);
+    // The picture's title text, else its alt text, and none where it has neither.
+    expect(entries.map((entry) => property(entry, "description"))).toEqual([
+      `Rumor has it that they're finally auctioning off the airship bands, but everyone is worried about the "scary" captains.`,
+      "Fans get extra excited.",
+      undefined,
+    ]);
+    expect(property(entries[0], "body")).toMatch(
+      /^<img src="https:\/\/imgs\.example\.org\/comics\/spectrum_allocation\.png" title="/,
+    );
+    expect(entries.map((entry) => entry.occurred_at)).toEqual([
+      "2026-10-05T00:00:00.000Z",
+      "2026-10-02T00:00:00.000Z",
+      "2026-09-30T00:00:00.000Z",
+    ]);
+    for (const entry of entries) {
+      expect(property(entry, "published_at")).toBeUndefined();
+      expect(property(entry, "source_title")).toBe("Example Comic");
+      expect(property(entry, "language")).toBe("en");
+    }
+  });
+
+  it("reads an Atom blog with html titles, relative links, and xml:base on its content", () => {
+    const { entries } = read("blog-atom.xml");
+    expect(entries.map((entry) => property(entry, "title"))).toEqual([
+      "Why nobody reads the manual & what to do “instead”",
+      "A plain title with odd spacing",
+      "Only a summary",
+    ]);
+    expect(entries[0]).toMatchObject({
+      occurred_at: "2026-09-28T07:00:00.000Z",
+      properties: {
+        url: "https://blog.example.org/2026/09/manual",
+        description: "Manuals are long. Skimming wins.",
+        author: "Sam Example",
+        language: "en-GB",
+        image_url: "https://blog.example.org/media/manual.jpg",
+        source_title: "The Example Blog – Notes & Essays",
+        source_url: "https://blog.example.org/",
+      },
+    });
+    expect(property(entries[0], "body")).toContain("<figure>");
+    // A tracking pixel is not the entry's image, and an xhtml content is kept as the body.
+    expect(property(entries[1], "image_url")).toBeUndefined();
+    expect(property(entries[1], "body")).toContain("<em>xhtml</em>");
+    expect(property(entries[1], "author")).toBe("Guest Writer");
+    expect(property(entries[2], "description")).toBe(
+      "Just text, with <angle brackets> kept as text.",
+    );
+    expect(property(entries[2], "body")).toBeUndefined();
+  });
+
+  it("reads a podcast feed: enclosures that are audio give no image, the notes become the body", () => {
+    const { entries } = read("podcast-rss.xml");
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "example-podcast-ep-12",
+      "https://podcast.example.org/episodes/11",
+      "example-podcast-bonus",
+    ]);
+    expect(property(entries[0], "title")).toBe(
+      "Episode 12: Fixtures & Friends",
+    );
+    expect(property(entries[0], "body")).toBe(
+      "<h2>Show notes</h2><ul><li>Fixtures</li><li>Friends</li></ul>",
+    );
+    expect(property(entries[0], "description")).toBe(
+      "Pat and Sam talk about fixtures. Show notes: notes",
+    );
+    expect(property(entries[0], "author")).toBe("Pat Host");
+    expect(property(entries[1], "description")).toBe(
+      "A short trailer, no markup at all.",
+    );
+    expect(property(entries[1], "body")).toBeUndefined();
+    // The witness for the two audio enclosures: an image enclosure in the same feed.
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      undefined,
+      undefined,
+      "https://media.example.org/cover-full.jpg",
+    ]);
+    expect(entries.map((entry) => entry.occurred_at)).toEqual([
+      "2026-09-21T05:00:00.000Z",
+      "2026-09-14T05:00:00.000Z",
+      "2026-09-11T05:00:00.000Z",
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("token=abc");
+  });
+
+  it("reads a news feed with CDATA and media:thumbnail, resolving each entry's image in order", () => {
+    const { entries } = read("news-rss.xml");
+    expect(entries.map((entry) => property(entry, "title"))).toEqual([
+      "Watch: Students protest on the streets",
+      `Arrest made after "incident" at the airfield`,
+      "Live: Markets update",
+    ]);
+    expect(property(entries[0], "url")).toBe(
+      "https://news.example.org/videos/abc123?at_medium=RSS&at_campaign=rss",
+    );
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      // The thumbnail, where nothing else gives a picture.
+      "https://img.example.org/standard/240/abc123.jpg",
+      // The content picture, before the thumbnail.
+      "https://img.example.org/inline/def456.jpg",
+      // The first thumbnail is a pixel, so the second.
+      "https://img.example.org/standard/240/ghi789.jpg",
+    ]);
+    expect(property(entries[1], "author")).toBe("Staff Reporter");
+    expect(entries[2]?.occurred_at).toBe("2026-10-06T13:00:00.000Z");
+    expect(property(entries[2], "language")).toBe("en-gb");
+  });
+
+  it("reads an RSS 1.0 feed, naming each entry by its rdf:about", () => {
+    const { entries, unkeyed } = read("rdf-rss1.xml");
+    expect(unkeyed).toBe(0);
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "https://rdf.example.org/story/1?utm_source=rss1.0&utm_medium=feed",
+      "https://rdf.example.org/story/2?utm_source=rss1.0&utm_medium=feed",
+    ]);
+    expect(entries[0]).toMatchObject({
+      occurred_at: "2026-10-06T13:20:00.000Z",
+      properties: {
+        title: "Watermarking is coming to the chat tool",
+        description:
+          "A company said it is adding text watermarking. Readers wonder how well it will hold up.",
+        author: "exampleuser",
+        language: "en-us",
+        source_title: "Example Stories",
+      },
+    });
+    expect(property(entries[1], "title")).toBe("Old hearts & young bodies");
+    expect(property(entries[1], "body")).toBe(
+      "<p>A study found <em>something</em>.</p>",
+    );
+  });
+
+  it("reads a JSON Feed with content_html, content_text, a summary, an image and a banner", () => {
+    const { entries } = read("json-feed.json");
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "https://linklog.example.org/linked/2026/10/05/mockup",
+      "2026-10-04-sponsor",
+      "2026-10-03-text",
+    ]);
+    expect(property(entries[1], "title")).toBe(
+      "[Sponsor] A Tool & Its Friends",
+    );
+    expect(entries.map((entry) => property(entry, "image_url"))).toEqual([
+      undefined,
+      "https://linklog.example.org/images/sponsor.png",
+      "https://linklog.example.org/images/banner.png",
+    ]);
+    expect(entries.map((entry) => entry.occurred_at)).toEqual([
+      "2026-10-06T02:49:44.000Z",
+      "2026-10-04T12:00:00.000Z",
+      "2026-10-03T10:00:00.000Z",
+    ]);
+    expect(property(entries[0], "body")).toContain("<em>the book</em>");
+    expect(property(entries[2], "body")).toBe(
+      "Plain text,\nwith a line break.",
+    );
+    expect(property(entries[2], "language")).toBe("fr");
+    expect(property(entries[0], "language")).toBe("en");
+  });
+
+  it("reads a hand-written feed with a byte order mark, unclosed tags and wrong entities, as far as it can", () => {
+    const bytes = fixtureBytes("malformed.xml");
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const { entries, unkeyed } = read("malformed.xml");
+    expect(unkeyed).toBe(0);
+    expect(entries.map((entry) => property(entry, "entry_id"))).toEqual([
+      "messy-1",
+      "messy-2",
+      "messy-3",
+    ]);
+    // Entities it knows are decoded; those it does not are left as written.
+    expect(property(entries[0], "title")).toBe(
+      "Café & crème … AT&T ’s &unknown; &#xZZ;",
+    );
+    expect(property(entries[0], "description")).toBe(
+      "Line one Line two unclosed paragraph & an unclosed bold",
+    );
+    expect(property(entries[0], "source_title")).toBe(
+      "Messy Example Feed © 2026",
+    );
+    expect(property(entries[1], "title")).toBe("Second — with a CDATA section");
+    expect(property(entries[1], "description")).toBe(
+      "Plain encoded text & more",
+    );
+    expect(property(entries[2], "title")).toBe(
+      "Third, whose item never closes",
+    );
+  });
+
+  it("reads a feed with no declared encoding in the charset its server names, and as UTF-8 where none is named", () => {
+    const bytes = fixtureBytes("latin1-undeclared.xml");
+    const named = readFeed(
+      at("https://latin.example.org/feed"),
+      decodeFeed(bytes, "text/xml; charset=iso-8859-1"),
+    );
+    expect(property(named.entries[0], "title")).toBe("Crème brûlée");
+    expect(property(named.entries[0], "source_title")).toBe("Journal de Café");
+    const unnamed = readFeed(
+      at("https://latin.example.org/feed"),
+      decodeFeed(bytes, null),
+    );
+    expect(unnamed.entries).toHaveLength(1);
+    expect(property(unnamed.entries[0], "title")).toBe("Cr�me br�l�e");
+    expect(property(unnamed.entries[0], "url")).toBe(
+      "https://latin.example.org/creme",
+    );
+  });
+});
+
 describe("fetching a feed", () => {
   let server: Server;
   let base: string;
@@ -1116,6 +1666,10 @@ interface Served {
   body: string | Buffer;
   authorization?: string;
   redirect?: string;
+  /** What a redirect answers with; 301 where not given. */
+  redirectStatus?: number;
+  /** Answers with this alone, whatever the request. */
+  status?: number;
   encoding?: string;
   contentType?: string;
   etag?: string;
@@ -1154,8 +1708,12 @@ describe("the connector, run as a process", () => {
         answer(404);
         return;
       }
+      if (feed.status !== undefined) {
+        answer(feed.status);
+        return;
+      }
       if (feed.redirect !== undefined) {
-        answer(301, { Location: feed.redirect });
+        answer(feed.redirectStatus ?? 301, { Location: feed.redirect });
         return;
       }
       if (
@@ -1251,6 +1809,21 @@ describe("the connector, run as a process", () => {
     expect(marfa.runs.at(-1)?.summary).toMatch(
       /^created 4, updated 0, archived 0, unchanged 0, skipped 0\. an entry in feed 2 in RSS_FEEDS \(http:\/\/127\.0\.0\.1:\d+\) has no id or link to be known by/,
     );
+  });
+
+  it("identifies itself to every feed, and to each hop of a redirect, with a product token and the repository's address and no version", async () => {
+    served["/moved.xml"] = { body: "", redirect: "/rss.xml" };
+    expect((await once(["/moved.xml", "/atom.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.path)).toEqual([
+      "/moved.xml",
+      "/rss.xml",
+      "/atom.xml",
+    ]);
+    for (const request of asked) {
+      expect(request.headers["user-agent"]).toBe(
+        "MarfaRSS (+https://github.com/withmarfa/marfa-connectors)",
+      );
+    }
   });
 
   it("asks again with the validators each feed gave, and writes nothing on a 304", async () => {
@@ -1424,7 +1997,7 @@ describe("the connector, run as a process", () => {
     expect(reported).toContain(`an entry in feed 1 in RSS_FEEDS (${base})`);
     expect(reported).toContain(`feed 2 in RSS_FEEDS (${base}) answered 404`);
     expect(reported).toContain(
-      `feed 3 in RSS_FEEDS (${base}) is not an Atom or RSS 2.0 feed`,
+      `feed 3 in RSS_FEEDS (${base}) is not an Atom, RSS or JSON feed`,
     );
     expect(reported).toContain(
       "feed 4 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",
@@ -1569,6 +2142,136 @@ describe("the connector, run as a process", () => {
     );
   });
 
+  it("stops polling a feed that answers 410, says so on every run, and reads it again once its address changes", async () => {
+    const token = "s3cr3t-gone-token";
+    served[`/private/${token}/feed.xml`] = { body: "", status: 410 };
+    const gone = `/private/${token}/feed.xml`;
+    expect((await once(["/rss.xml", gone])).code).toBe(0);
+    const said = `feed 2 in RSS_FEEDS (${base}) answered 410, so it is not read again while its address stays the same; remove it from RSS_FEEDS, or change its address if the feed has a new one`;
+    expect(marfa.runs.at(-1)?.summary).toContain(said);
+    for (let run = 0; run < 2; run += 1) {
+      expect((await once(["/rss.xml", gone])).code).toBe(0);
+      expect(marfa.runs.at(-1)?.summary).toContain(said);
+    }
+    expect(asked.filter((request) => request.path === gone)).toHaveLength(1);
+    served[`/private/${token}/moved.xml`] = { body: fixture("atom.xml") };
+    expect((await once(["/rss.xml", `/private/${token}/moved.xml`])).code).toBe(
+      0,
+    );
+    expect(asked.at(-1)?.path).toBe(`/private/${token}/moved.xml`);
+    expect(marfa.runs.at(-1)?.summary).not.toContain("410");
+    expect(marfa.rows).toHaveLength(4);
+    const kept = JSON.stringify([marfa.states.get("rss") ?? {}, marfa.runs]);
+    expect(kept).not.toContain(token);
+    expect(kept).not.toContain("/private/");
+  });
+
+  it("reads a feed that is gone only as long as its address stays, even when another feed's entry is refused", async () => {
+    served["/gone.xml"] = { body: "", status: 410 };
+    const entryKey =
+      readFeed(at(`${base}/rss.xml`), fixture("rss.xml")).entries[0]
+        ?.source_id ?? "";
+    marfa.entryRefusals.set(entryKey, {
+      status: 400,
+      code: "invalid_properties",
+      message: "too long",
+    });
+    expect((await once(["/gone.xml", "/rss.xml"])).code).toBe(0);
+    expect((await once(["/gone.xml", "/rss.xml"])).code).toBe(0);
+    expect(
+      asked.filter((request) => request.path === "/gone.xml"),
+    ).toHaveLength(1);
+  });
+
+  it("follows a feed that moved permanently, and says on every run that its address is out of date", async () => {
+    const old = "s3cr3t-old-token";
+    const fresh = "s3cr3t-new-token";
+    served[`/private/${old}/301.xml`] = {
+      body: "",
+      redirect: `/private/${fresh}/rss.xml`,
+    };
+    served[`/private/${old}/308.xml`] = {
+      body: "",
+      redirect: `/private/${fresh}/rss.xml`,
+      redirectStatus: 308,
+    };
+    served[`/private/${old}/302.xml`] = {
+      body: "",
+      redirect: `/private/${fresh}/rss.xml`,
+      redirectStatus: 302,
+    };
+    served[`/private/${fresh}/rss.xml`] = {
+      body: fixture("rss.xml"),
+      lastModified: "Wed, 16 Sep 2026 09:00:00 GMT",
+    };
+    const list = [301, 308, 302].map(
+      (status) => `/private/${old}/${String(status)}.xml`,
+    );
+    for (let run = 0; run < 2; run += 1) {
+      expect((await once(list)).code).toBe(0);
+      const summary = marfa.runs.at(-1)?.summary ?? "";
+      for (const position of [1, 2]) {
+        expect(summary).toContain(
+          `feed ${String(position)} in RSS_FEEDS (${base}) has moved permanently, and is followed; update its address in RSS_FEEDS`,
+        );
+      }
+      expect(summary).not.toContain(`feed 3 in RSS_FEEDS (${base}) has moved`);
+    }
+    expect(marfa.rows).toHaveLength(6);
+    expect(asked.map((request) => request.answered).slice(6)).toEqual([
+      301, 304, 308, 304, 302, 304,
+    ]);
+    const kept = JSON.stringify([marfa.states.get("rss") ?? {}, marfa.runs]);
+    expect(kept).not.toContain(old);
+    expect(kept).not.toContain(fresh);
+  });
+
+  it("says a moved feed has moved when it did not answer this run, from what the last run saw", async () => {
+    served["/old.xml"] = { body: "", redirect: "/rss.xml" };
+    expect((await once(["/old.xml"])).code).toBe(0);
+    served["/old.xml"] = { body: "", redirect: "http://127.0.0.1:1/rss.xml" };
+    expect((await once(["/old.xml", "/atom.xml"])).code).toBe(0);
+    const summary = marfa.runs.at(-1)?.summary ?? "";
+    expect(summary).toContain("could not be fetched");
+    expect(summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) has moved permanently, and is followed; update its address in RSS_FEEDS`,
+    );
+  });
+
+  it("reads every kind of real-world feed in one run, through the worker that bounds each parse", async () => {
+    const wild = [
+      ["xkcd-style-atom.xml", "application/atom+xml"],
+      ["blog-atom.xml", "application/atom+xml; charset=utf-8"],
+      ["podcast-rss.xml", "application/rss+xml"],
+      ["news-rss.xml", "text/xml"],
+      ["rdf-rss1.xml", "application/rdf+xml"],
+      ["json-feed.json", "application/feed+json"],
+      ["malformed.xml", "text/xml"],
+      ["latin1-undeclared.xml", "text/xml; charset=iso-8859-1"],
+    ] as const;
+    for (const [name, contentType] of wild) {
+      served[`/${name}`] = { body: fixtureBytes(name), contentType };
+    }
+    const { code, output } = await once(wild.map(([name]) => `/${name}`));
+    expect(code).toBe(0);
+    expect(marfa.runs.at(-1)?.summary).toMatch(/^created 21, /);
+    expect(marfa.runs.at(-1)?.summary).not.toMatch(/is not an Atom|could not/);
+    expect(output).not.toContain("is not an Atom");
+    const titles = marfa.rows.map((candidate) => candidate.properties["title"]);
+    expect(titles).toContain("Crème brûlée");
+    expect(titles).toContain("Old hearts & young bodies");
+    expect(titles).toContain("[Sponsor] A Tool & Its Friends");
+    expect(titles).toContain(
+      "Why nobody reads the manual & what to do “instead”",
+    );
+    expect(
+      row("https://news.example.org/videos/abc123#1").properties["image_url"],
+    ).toBe("https://img.example.org/standard/240/abc123.jpg");
+    expect(row("messy-1").properties["description"]).toBe(
+      "Line one Line two unclosed paragraph & an unclosed bold",
+    );
+  });
+
   it("asks a feed whose entries did not land again whole", async () => {
     const entryKey =
       readFeed(at(`${base}/atom.xml`), fixture("atom.xml")).entries[0]
@@ -1586,6 +2289,103 @@ describe("the connector, run as a process", () => {
     expect(asked[0]?.path).toBe("/atom.xml");
     expect(asked[1]?.headers["if-none-match"]).toBeUndefined();
     expect(marfa.rows).toHaveLength(2);
+  });
+
+  const progress = (
+    marfa: ScriptedServer,
+  ): Record<string, { validators?: object; key?: string }> =>
+    (marfa.connectorState?.["state"] as { feeds: never }).feeds;
+
+  it("keeps the other feed's reading progress when one feed has an entry Marfa refuses, and asks the refused feed again", async () => {
+    const entryKey =
+      readFeed(at(`${base}/atom.xml`), fixture("atom.xml")).entries[0]
+        ?.source_id ?? "";
+    marfa.entryRefusals.set(entryKey, {
+      status: 400,
+      code: "invalid_properties",
+      message: "too long",
+    });
+    expect((await once()).code).toBe(0);
+    expect(progress(marfa)[feedKey(`${base}/rss.xml`)]?.validators).toEqual({
+      last_modified: "Wed, 16 Sep 2026 09:00:00 GMT",
+    });
+    expect(progress(marfa)[feedKey(`${base}/atom.xml`)]).toBeUndefined();
+    expect((await once()).code).toBe(0);
+    expect(
+      asked.slice(2).map((request) => [request.path, request.answered]),
+    ).toEqual([
+      ["/atom.xml", 200],
+      ["/rss.xml", 304],
+    ]);
+    expect(asked[2]?.headers["if-none-match"]).toBeUndefined();
+    expect(marfa.rows).toHaveLength(3);
+    expect(marfa.runs.at(-1)?.summary).toContain(
+      `feed 1 in RSS_FEEDS (${base}) is read again next run, since its reading progress was not saved (row-refused)`,
+    );
+    marfa.entryRefusals.delete(entryKey);
+    expect((await once()).code).toBe(0);
+    expect(marfa.rows).toHaveLength(4);
+    expect((await once()).code).toBe(0);
+    expect(
+      asked.slice(6).map((request) => [request.path, request.answered]),
+    ).toEqual([
+      ["/atom.xml", 304],
+      ["/rss.xml", 304],
+    ]);
+  });
+
+  it("keeps a refused feed's earlier validators while the other feed's move on, so it is asked again until its entry lands", async () => {
+    expect((await once()).code).toBe(0);
+    const atom = served["/atom.xml"];
+    const rss = served["/rss.xml"];
+    if (typeof atom?.body !== "string" || typeof rss?.body !== "string") {
+      throw new Error("no fixtures");
+    }
+    atom.body = atom.body.replace(
+      "<title>First entry</title>",
+      "<title>First entry, revised</title>",
+    );
+    atom.etag = '"atom-2"';
+    rss.body = rss.body.replace(
+      "<title>Alpha</title>",
+      "<title>Alpha, changed</title>",
+    );
+    rss.lastModified = "Thu, 17 Sep 2026 09:00:00 GMT";
+    for (let refused = 0; refused < 2; refused += 1) {
+      marfa.refuseNext(
+        `PATCH /items/${row("tag:example.com,2026:entry:1").id}`,
+        400,
+        "invalid_properties",
+        "too long",
+      );
+    }
+    expect((await once()).code).toBe(0);
+    expect(progress(marfa)[feedKey(`${base}/atom.xml`)]?.validators).toEqual({
+      etag: '"atom-1"',
+    });
+    expect(progress(marfa)[feedKey(`${base}/rss.xml`)]?.validators).toEqual({
+      last_modified: "Thu, 17 Sep 2026 09:00:00 GMT",
+    });
+    expect((await once()).code).toBe(0);
+    expect(
+      asked.slice(4).map((request) => [request.path, request.answered]),
+    ).toEqual([
+      ["/atom.xml", 200],
+      ["/rss.xml", 304],
+    ]);
+    expect(asked[4]?.headers["if-none-match"]).toBe('"atom-1"');
+    expect(row("tag:example.com,2026:entry:1").properties["title"]).toBe(
+      "First entry",
+    );
+    expect((await once()).code).toBe(0);
+    expect(row("tag:example.com,2026:entry:1").properties["title"]).toBe(
+      "First entry, revised",
+    );
+    expect((await once()).code).toBe(0);
+    expect(asked.slice(8).map((request) => request.answered)).toEqual([
+      304, 304,
+    ]);
+    expect(asked[8]?.headers["if-none-match"]).toBe('"atom-2"');
   });
 
   it("skips a feed past the size cap, plain or compressed, naming it, and reads the others", async () => {
@@ -1781,6 +2581,38 @@ describe("the connector, run as a process", () => {
       0,
     );
     expect(asked.at(-1)?.answered).toBe(304);
+  });
+
+  it("saves a feed's move to its name even when a later feed in the run has an entry Marfa refuses", async () => {
+    expect((await once()).code).toBe(0);
+    const ids = marfa.rows.map((candidate) => candidate.id);
+    const rss = served["/rss.xml"];
+    if (typeof rss?.body !== "string") throw new Error("no rss fixture");
+    rss.body = rss.body.replace(
+      "<title>Alpha</title>",
+      "<title>Alpha, changed</title>",
+    );
+    rss.lastModified = "Thu, 17 Sep 2026 09:00:00 GMT";
+    marfa.refuseNext(
+      `PATCH /items/${row("1").id}`,
+      400,
+      "invalid_properties",
+      "too long",
+    );
+    const listed = `blog=${base}/atom.xml\n${base}/rss.xml`;
+    expect((await once([], ["--once"], listed)).code).toBe(0);
+    expect(Object.keys(progress(marfa)).sort()).toEqual(
+      [feedKey(`${base}/atom.xml`, "blog"), feedKey(`${base}/rss.xml`)].sort(),
+    );
+    expect((await once([], ["--once"], listed)).code).toBe(0);
+    expect(marfa.rows.map((candidate) => candidate.id)).toEqual(ids);
+    expect(row("1").properties["title"]).toBe("Alpha, changed");
+    expect(marfa.runs.at(-1)?.summary).not.toContain("share their key");
+    expect(
+      Object.values(progress(marfa)).every(
+        (feed) => (feed as { shared?: string[] }).shared === undefined,
+      ),
+    ).toBe(true);
   });
 
   it("moves rows an Atom feed's declared id keyed to its listed address's key", async () => {

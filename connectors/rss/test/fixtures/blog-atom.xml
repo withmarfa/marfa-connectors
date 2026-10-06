@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-GB" xml:base="https://blog.example.org/">
+  <title type="html">The Example Blog &amp;#8211; Notes &amp;amp; Essays</title>
+  <subtitle>Writing about writing.</subtitle>
+  <link rel="self" type="application/atom+xml" href="https://blog.example.org/feed.atom"/>
+  <link rel="alternate" type="text/html" href="https://blog.example.org/"/>
+  <id>https://blog.example.org/</id>
+  <updated>2026-09-28T08:15:00+01:00</updated>
+  <generator uri="https://example.net/engine/">Example Engine</generator>
+  <author><name>Sam Example</name><uri>https://blog.example.org/about</uri></author>
+  <entry>
+    <title type="html">Why &lt;em&gt;nobody&lt;/em&gt; reads the manual &amp;amp; what to do &amp;#8220;instead&amp;#8221;</title>
+    <link rel="alternate" type="text/html" href="2026/09/manual"/>
+    <link rel="replies" type="application/atom+xml" href="2026/09/manual/comments.atom"/>
+    <id>tag:blog.example.org,2026:post-41</id>
+    <published>2026-09-28T08:00:00+01:00</published>
+    <updated>2026-09-28T08:15:00+01:00</updated>
+    <category term="writing"/>
+    <summary type="html">&lt;p&gt;Manuals are long. &lt;strong&gt;Skimming&lt;/strong&gt; wins.&lt;/p&gt;</summary>
+    <content type="html" xml:base="https://blog.example.org/2026/09/">&lt;p&gt;Manuals are long.&lt;/p&gt;
+&lt;figure&gt;&lt;img src="media/manual.jpg" alt="A manual" width="800" height="600"/&gt;&lt;/figure&gt;
+&lt;p&gt;Read the &lt;a href="manual"&gt;post&lt;/a&gt;.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>A plain title with   odd
+      spacing</title>
+    <link href="https://blog.example.org/2026/09/plain"/>
+    <id>tag:blog.example.org,2026:post-40</id>
+    <updated>2026-09-20T12:00:00Z</updated>
+    <author><name>Guest Writer</name></author>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>An <em>xhtml</em> body with a tracking <img src="https://track.example.org/t.gif" width="1" height="1" alt=""/> pixel.</p></div></content>
+  </entry>
+  <entry>
+    <title>Only a summary</title>
+    <link href="https://blog.example.org/2026/09/short"/>
+    <id>tag:blog.example.org,2026:post-39</id>
+    <published>2026-09-10T09:00:00Z</published>
+    <summary>Just text, with &lt;angle brackets&gt; kept as text.</summary>
+  </entry>
+</feed>

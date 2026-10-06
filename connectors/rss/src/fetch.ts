@@ -15,6 +15,11 @@ export const maxFeedBytes = 24 * 1024 * 1024;
 
 export const maxRedirects = 5;
 
+/** A product token and where to read about it, as sites ask of a crawler.
+ *  It carries no version: a version exists only as a git tag. */
+export const userAgent =
+  "MarfaRSS (+https://github.com/withmarfa/marfa-connectors)";
+
 export class TooLarge extends Error {
   override name = "TooLarge";
 }
@@ -278,9 +283,12 @@ export interface Answer {
   bytes?: Uint8Array;
   /** Where the answer came from, after any redirects. */
   url: string;
+  /** Whether the feed's own address answered with a permanent redirect. */
+  moved: boolean;
 }
 
 const redirects = new Set([301, 302, 303, 307, 308]);
+const permanent = new Set([301, 308]);
 
 /**
  * Follows redirects by hand, checking every hop, the first among them: a host
@@ -310,6 +318,7 @@ export async function getFeed(
   // feed cannot redirect onto a host named for another feed.
   const ownerAllows = isPrivate(listed) || privateHosts.has(listed);
   let url = start;
+  let moved = false;
   for (let hop = 0; ; hop += 1) {
     const host = hostOf(url);
     const allowed = ownerAllows && host === listed;
@@ -321,6 +330,7 @@ export async function getFeed(
         {
           ...headers,
           "Accept-Encoding": "gzip, deflate, br",
+          "User-Agent": userAgent,
           ...(credentials !== undefined &&
             url.origin === start.origin && { Authorization: credentials }),
         },
@@ -334,6 +344,7 @@ export async function getFeed(
     const location = response.headers.location;
     if (redirects.has(status) && location !== undefined) {
       response.destroy();
+      if (hop === 0 && permanent.has(status)) moved = true;
       if (hop >= maxRedirects) throw new TooManyRedirects();
       const next = new URL(location, url);
       if (next.protocol !== "http:" && next.protocol !== "https:") {
@@ -347,13 +358,14 @@ export async function getFeed(
     }
     if (status !== 200) {
       response.destroy();
-      return { status, headers: response.headers, url: url.href };
+      return { status, headers: response.headers, url: url.href, moved };
     }
     return {
       status,
       headers: response.headers,
       bytes: await bodyOf(response, signal),
       url: url.href,
+      moved,
     };
   }
 }

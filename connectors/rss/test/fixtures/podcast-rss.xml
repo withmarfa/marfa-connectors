@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>The Example Podcast</title>
+    <link>https://podcast.example.org/</link>
+    <atom:link href="https://podcast.example.org/feed.xml" rel="self" type="application/rss+xml"/>
+    <description>Talk about examples.</description>
+    <language>en-us</language>
+    <itunes:author>Example Media</itunes:author>
+    <itunes:image href="https://podcast.example.org/cover.jpg"/>
+    <itunes:category text="Technology"/>
+    <item>
+      <title><![CDATA[Episode 12: Fixtures & Friends]]></title>
+      <link>https://podcast.example.org/episodes/12</link>
+      <guid isPermaLink="false">example-podcast-ep-12</guid>
+      <pubDate>Mon, 21 Sep 2026 05:00:00 +0000</pubDate>
+      <description><![CDATA[<p>Pat and Sam talk about fixtures.</p><p>Show notes: <a href="https://podcast.example.org/notes/12">notes</a></p>]]></description>
+      <content:encoded><![CDATA[<h2>Show notes</h2><ul><li>Fixtures</li><li>Friends</li></ul>]]></content:encoded>
+      <enclosure url="https://media.example.org/ep12.mp3" length="48211968" type="audio/mpeg"/>
+      <itunes:duration>00:33:21</itunes:duration>
+      <itunes:episode>12</itunes:episode>
+      <itunes:explicit>false</itunes:explicit>
+      <dc:creator>Pat Host</dc:creator>
+    </item>
+    <item>
+      <title>Episode 11: Trailer</title>
+      <guid isPermaLink="true">https://podcast.example.org/episodes/11</guid>
+      <pubDate>Mon, 14 Sep 2026 05:00:00 +0000</pubDate>
+      <description>A short trailer, no markup at all.</description>
+      <enclosure url="https://media.example.org/ep11.mp3?token=abc" length="9000" type="audio/mpeg"/>
+      <itunes:duration>312</itunes:duration>
+    </item>
+    <item>
+      <title>Bonus: the cover art</title>
+      <link>https://podcast.example.org/episodes/bonus</link>
+      <guid isPermaLink="false">example-podcast-bonus</guid>
+      <pubDate>Fri, 11 Sep 2026 05:00:00 +0000</pubDate>
+      <description>The art, in full.</description>
+      <enclosure url="https://media.example.org/cover-full.jpg" length="120000" type="image/jpeg"/>
+    </item>
+  </channel>
+</rss>

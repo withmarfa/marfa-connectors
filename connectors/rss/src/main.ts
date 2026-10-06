@@ -54,6 +54,12 @@ interface FeedState {
   /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
    *  named again if it returns. */
   left?: string;
+  /** Set when its address answered 410: it is not read again while its
+   *  `address` stays the one that answered. */
+  gone?: true;
+  /** Set when its address answers with a permanent redirect, which is
+   *  followed. */
+  moved?: true;
 }
 
 /** Feeds kept after leaving the list, newest first; one leaves only by the
@@ -92,7 +98,7 @@ function refusal(error: unknown): string | undefined {
 
 const connector = defineConnector({
   name: "rss",
-  description: "Entries from Atom and RSS 2.0 feeds.",
+  description: "Entries from Atom, RSS and JSON feeds.",
   source: "rss",
   readme: "connectors/rss/README.md",
   types: [
@@ -112,7 +118,7 @@ const connector = defineConnector({
     feedList(env.RSS_FEEDS);
     privateHosts(env.RSS_PRIVATE_HOSTS);
   },
-  async run({ env, signal, state, log, upsert }) {
+  async run({ env, signal, state, log, forScope }) {
     const feeds = feedList(env.RSS_FEEDS);
     const allowed = privateHosts(env.RSS_PRIVATE_HOSTS);
     const known = (state.get("feeds") ?? {}) as Record<string, FeedState>;
@@ -180,6 +186,18 @@ const connector = defineConnector({
     // the kit would otherwise take them as cleared.
     const raise = (feed: Feed, held: FeedState): void => {
       const name = feedName(feed);
+      if (held.moved === true) {
+        log.condition(
+          `moved:${feed.key}`,
+          `${name} has moved permanently, and is followed; update its address in RSS_FEEDS`,
+        );
+      }
+      if (held.gone === true && held.address === feed.address) {
+        log.condition(
+          `gone:${feed.key}`,
+          `${name} answered 410, so it is not read again while its address stays the same; remove it from RSS_FEEDS, or change its address if the feed has a new one`,
+        );
+      }
       const long = held.dropped ?? 0;
       if (long > 0) {
         log.condition(
@@ -216,6 +234,24 @@ const connector = defineConnector({
       );
     };
 
+    // A checkpoint replaces the whole value, so the candidate is the last
+    // acknowledged one with this feed's entry alone changed.
+    const checkpointed = async (
+      feed: Feed,
+      id: string | undefined,
+      next: FeedState,
+    ) => {
+      const scope = forScope(feed.key);
+      const saved = {
+        ...((scope.state.get("feeds") ?? {}) as Record<string, FeedState>),
+      };
+      if (id !== undefined && id !== feed.key) {
+        Reflect.deleteProperty(saved, id);
+      }
+      saved[feed.key] = next;
+      return scope.state.checkpoint("feeds", saved);
+    };
+
     let read = 0;
     for (const feed of feeds) {
       const name = feedName(feed);
@@ -233,12 +269,16 @@ const connector = defineConnector({
         ]),
       ];
       const was = earlier.filter((key) => !shared.includes(key));
-      const carried: FeedState = {
+      let carried: FeedState = {
         ...held,
         ...(was.length > 0 && { was }),
         ...(shared.length > 0 && { shared }),
       };
       kept[feed.key] = carried;
+      if (held.gone === true && held.address === feed.address) {
+        raise(feed, carried);
+        continue;
+      }
       let fetched;
       try {
         // Rows not yet under this key are read whole, so they move now.
@@ -258,6 +298,18 @@ const connector = defineConnector({
           `${name} ${why ?? `could not be fetched: ${failureOf(error)}`}`,
         );
         raise(feed, carried);
+        continue;
+      }
+      carried = { ...carried };
+      if (fetched.moved) carried.moved = true;
+      else Reflect.deleteProperty(carried, "moved");
+      kept[feed.key] = carried;
+      if (fetched.status === 410) {
+        Reflect.deleteProperty(carried, "validators");
+        carried = { ...carried, address: feed.address, gone: true };
+        kept[feed.key] = carried;
+        raise(feed, carried);
+        await checkpointed(feed, id, carried);
         continue;
       }
       if (fetched.status === 304) {
@@ -289,7 +341,7 @@ const connector = defineConnector({
         const why = refusal(error);
         log.condition(
           why === undefined ? `unreadable:${feed.key}` : `refused:${feed.key}`,
-          `${name} ${why ?? "is not an Atom or RSS 2.0 feed"}`,
+          `${name} ${why ?? "is not an Atom, RSS or JSON feed"}`,
         );
         raise(feed, carried);
         continue;
@@ -300,6 +352,7 @@ const connector = defineConnector({
         key: feed.key,
         ...(was.length > 0 && { was }),
         ...(shared.length > 0 && { shared }),
+        ...(fetched.moved && { moved: true as const }),
         ...(parsed.unkeyed > 0 && { unkeyed: parsed.unkeyed }),
         ...(parsed.dropped > 0 && { dropped: parsed.dropped }),
         ...(parsed.declared !== undefined && { declared: parsed.declared }),
@@ -308,7 +361,10 @@ const connector = defineConnector({
       kept[feed.key] = now;
       raise(feed, now);
       signal.throwIfAborted();
-      await upsert(
+      // Each feed is a scope of its own, so its reading progress is saved
+      // once its entries are acknowledged and a refused entry in one feed
+      // holds back that feed alone.
+      await forScope(feed.key).upsert(
         rssEntry.id,
         was.length === 0
           ? parsed.entries
@@ -317,6 +373,14 @@ const connector = defineConnector({
               return { ...entry, movedFrom: was.map((key) => `${key}${id}`) };
             }),
       );
+      const progress = await checkpointed(feed, id, now);
+      if (!progress.committed) {
+        kept[feed.key] = carried;
+        log.condition(
+          `progress:${feed.key}`,
+          `${name} is read again next run, since its reading progress was not saved (${progress.reason})`,
+        );
+      }
     }
     if (feeds.length > 0 && read === 0) {
       throw new Error(
