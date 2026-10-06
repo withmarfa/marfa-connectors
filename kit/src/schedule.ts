@@ -1,3 +1,4 @@
+import { parseArgs } from "node:util";
 import { ConfigurationError } from "./environment.js";
 
 export type Schedule =
@@ -24,22 +25,28 @@ function interval(text: string | undefined): number | undefined {
   return Number(match[1]) * units[match[2] as keyof typeof units];
 }
 
+const flags = {
+  help: { type: "boolean", short: "h" },
+  once: { type: "boolean" },
+  setup: { type: "string" },
+  every: { type: "string" },
+  "look-every": { type: "string" },
+} as const;
+
 export function readSchedule(argv: readonly string[]): Schedule {
-  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
-    return { mode: "help" };
+  const given = flagsOf(argv);
+  // The flags, in the order given, name the one shape a schedule can take.
+  const shape = given.map((flag) => flag.name).join(" ");
+  const first = given[0]?.value;
+  if (shape === "help") return { mode: "help" };
+  if (shape === "once") return { mode: "once" };
+  if (shape === "setup" && first !== undefined && first !== "") {
+    return { mode: "setup", file: first };
   }
-  if (argv.length === 1 && argv[0] === "--once") return { mode: "once" };
-  if (argv.length === 2 && argv[0] === "--setup" && argv[1] !== "") {
-    return { mode: "setup", file: argv[1] ?? "" };
-  }
-  if (argv[0] === "--every" && (argv.length === 2 || argv.length === 4)) {
-    const intervalMs = interval(argv[1]);
-    const lookGiven = argv.length === 4;
-    const lookMs = !lookGiven
-      ? defaultLookMs
-      : argv[2] === "--look-every"
-        ? interval(argv[3])
-        : undefined;
+  if (shape === "every" || shape === "every look-every") {
+    const intervalMs = interval(first);
+    const lookGiven = given.length === 2;
+    const lookMs = lookGiven ? interval(given[1]?.value) : defaultLookMs;
     if (intervalMs !== undefined && lookMs !== undefined) {
       return { mode: "every", intervalMs, lookMs, lookGiven };
     }
@@ -49,6 +56,27 @@ export function readSchedule(argv: readonly string[]): Schedule {
       ? `no schedule was given: ${usage}`
       : `${usage}; got "${argv.join(" ")}"`,
   );
+}
+
+/** What was given, or nothing the schedule can use when it does not parse
+ *  as flags alone. */
+function flagsOf(
+  argv: readonly string[],
+): { name: string; value: string | undefined }[] {
+  try {
+    const { tokens } = parseArgs({
+      args: [...argv],
+      options: flags,
+      tokens: true,
+    });
+    return tokens.map((token): { name: string; value: string | undefined } =>
+      token.kind === "option"
+        ? { name: token.name, value: token.value }
+        : { name: token.kind, value: undefined },
+    );
+  } catch {
+    return [];
+  }
 }
 
 export function backoff(intervalMs: number, failures: number): number {
