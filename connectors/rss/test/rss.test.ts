@@ -1167,8 +1167,8 @@ describe("the connector, run as a process", () => {
       const { stderr } = await run("node", [built, ...argv], {
         env: {
           PATH: process.env["PATH"],
-          MARFA_URL: marfa.url,
-          MARFA_KEY: marfa.key,
+          MARFA_API_URL: marfa.url,
+          MARFA_API_KEY: marfa.key,
           RSS_FEEDS: feedList,
           ...env,
         },

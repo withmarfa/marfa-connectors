@@ -25,7 +25,7 @@ describe("configuration", () => {
     const reached = harness.server.requests.length;
     expect(reached).toBeGreaterThan(0);
 
-    const required = ["MARFA_URL", "MARFA_KEY", "TEST_TOKEN"];
+    const required = ["MARFA_API_URL", "MARFA_API_KEY", "TEST_TOKEN"];
     for (const name of required) {
       harness.lines.length = 0;
       expect(await harness.once(vendor([entry]), { [name]: undefined })).toBe(
@@ -45,6 +45,21 @@ describe("configuration", () => {
       `cannot start without ${required.join(", ")} in the environment`,
     );
     expect(harness.server.requests.length).toBe(reached);
+  });
+
+  it("refuses to start on the old names alone, naming the ones it needs", async () => {
+    const server = harness.server.url;
+    const code = await harness.once(vendor([entry]), {
+      MARFA_API_URL: undefined,
+      MARFA_API_KEY: undefined,
+      MARFA_URL: server,
+      MARFA_KEY: "marfa_k1_the_old_name_holds_a_key",
+    });
+    expect(code).toBe(2);
+    expect(harness.lines.join("\n")).toContain(
+      "cannot start without MARFA_API_URL, MARFA_API_KEY in the environment",
+    );
+    expect(harness.server.requests).toEqual([]);
   });
 
   it("takes an optional value as absent when it is unset", async () => {
@@ -93,7 +108,7 @@ describe("configuration", () => {
     ).toBe(0);
     const help = harness.lines.join("\n");
     expect(help).toContain("--every");
-    expect(help).toContain("MARFA_URL");
+    expect(help).toContain("MARFA_API_URL");
     expect(help).toContain("TEST_TOKEN");
     expect(help).toContain("as the template's README says");
     harness.lines.length = 0;
@@ -117,14 +132,16 @@ describe("configuration", () => {
     expect(harness.server.requests.length).toBeGreaterThan(0);
   });
 
-  it("refuses a MARFA_URL it cannot use, without showing what it holds", async () => {
+  it("refuses a MARFA_API_URL it cannot use, without showing what it holds", async () => {
     const pasted = "marfa_k1_pasted_into_the_wrong_variable";
-    expect(await harness.once(vendor(), { MARFA_URL: pasted })).toBe(2);
+    expect(await harness.once(vendor(), { MARFA_API_URL: pasted })).toBe(2);
     expect(
-      await harness.once(vendor(), { MARFA_URL: "ftp://marfa.example.com" }),
+      await harness.once(vendor(), {
+        MARFA_API_URL: "ftp://marfa.example.com",
+      }),
     ).toBe(2);
     const said = harness.lines.join("\n");
-    expect(said).toContain("MARFA_URL");
+    expect(said).toContain("MARFA_API_URL");
     expect(said).not.toContain(pasted);
     expect(harness.server.requests).toEqual([]);
     expect(await harness.once(vendor())).toBe(0);

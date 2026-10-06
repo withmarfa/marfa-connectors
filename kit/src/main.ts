@@ -391,8 +391,8 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
   return [
     `${connector.name}: ${usage}`,
     "It reads its settings from the environment:",
-    "  MARFA_URL (the address of the Marfa server)",
-    `  MARFA_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
+    "  MARFA_API_URL (the address of the Marfa server)",
+    `  MARFA_API_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
   ];
 }
@@ -400,8 +400,8 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
 function addressProblem(error: unknown, server: string): string {
   const fault = faultOf(error);
   return fault === undefined
-    ? `could not start: MARFA_URL (${server}) cannot be used (${describe(error)}). It must name the Marfa server itself, with no redirect in front of it.`
-    : `could not start: MARFA_URL (${server}) cannot be used, since ${fault} (${describe(error)}). Check the address, and that the server's certificate is one this machine trusts.`;
+    ? `could not start: MARFA_API_URL (${server}) cannot be used (${describe(error)}). It must name the Marfa server itself, with no redirect in front of it.`
+    : `could not start: MARFA_API_URL (${server}) cannot be used, since ${fault} (${describe(error)}). Check the address, and that the server's certificate is one this machine trusts.`;
 }
 
 /** Said once a connector that has run cannot reach Marfa for a fault in the
@@ -410,21 +410,21 @@ function faultWarning(error: unknown): string | undefined {
   const fault = faultOf(error);
   return fault === undefined
     ? undefined
-    : `MARFA_URL cannot be used for now, since ${fault} (${describe(error)}); the connector waits for it to mend, and stops only when told to`;
+    : `MARFA_API_URL cannot be used for now, since ${fault} (${describe(error)}); the connector waits for it to mend, and stops only when told to`;
 }
 
 function startProblem(error: unknown, server: string, guide: string): string {
   const cause = causeOf(error);
   if (cause === "key") {
-    return `could not start: the server at MARFA_URL (${server}) refused MARFA_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_KEY to a key minted for this connector, as ${guide} says.`;
+    return `could not start: the server at MARFA_API_URL (${server}) refused MARFA_API_KEY (${describe(error)}): the key is wrong or revoked. Set MARFA_API_KEY to a key minted for this connector, as ${guide} says.`;
   }
   if (cause === "marfa") {
-    return `could not start: the server at MARFA_URL (${server}) did not answer (${describe(error)}). Check MARFA_URL and that the server is up, then start the connector again.`;
+    return `could not start: the server at MARFA_API_URL (${server}) did not answer (${describe(error)}). Check MARFA_API_URL and that the server is up, then start the connector again.`;
   }
   if (error instanceof Refusal && error.status === 403) {
-    return `could not start: the server at MARFA_URL (${server}) will not register this connector (${describe(error)}). MARFA_KEY must be a key minted for the connector itself, not an app's or a session's.`;
+    return `could not start: the server at MARFA_API_URL (${server}) will not register this connector (${describe(error)}). MARFA_API_KEY must be a key minted for the connector itself, not an app's or a session's.`;
   }
-  return `could not start against the server at MARFA_URL (${server}): ${describe(error)}`;
+  return `could not start against the server at MARFA_API_URL (${server}): ${describe(error)}`;
 }
 
 interface Shared<E extends EnvDeclaration> {
@@ -596,7 +596,7 @@ async function serve<E extends EnvDeclaration>(
         Math.min(retryAfterOf(error) ?? 0, longestRetryAfterMs),
       );
       logger.warn(
-        `could not reach the server at MARFA_URL (${environment.url}), trying again in ${describeDuration(wait)}: ${describe(error)}`,
+        `could not reach the server at MARFA_API_URL (${environment.url}), trying again in ${describeDuration(wait)}: ${describe(error)}`,
       );
       await clock.sleep(wait, stop.signal);
       if (stopped()) return 0;
@@ -921,13 +921,13 @@ async function serve<E extends EnvDeclaration>(
   if (halted === undefined || (succeeded && code === 0)) return code;
   if (halted === "key") {
     logger.error(
-      `the server refused MARFA_KEY, or the key no longer reaches the connector's types, so the connector stops: the key is wrong, revoked or narrowed. Mint another as ${keyGuide(connector)} says, set MARFA_KEY, and start the connector again.`,
+      `the server refused MARFA_API_KEY, or the key no longer reaches the connector's types, so the connector stops: the key is wrong, revoked or narrowed. Mint another as ${keyGuide(connector)} says, set MARFA_API_KEY, and start the connector again.`,
     );
     return 1;
   }
   if (halted === "address") {
     logger.error(
-      `the server's address stopped working (${describe(haltedBy)}), so the connector stops: MARFA_URL must name the Marfa server itself, with no redirect in front of it and a certificate this machine trusts.`,
+      `the server's address stopped working (${describe(haltedBy)}), so the connector stops: MARFA_API_URL must name the Marfa server itself, with no redirect in front of it and a certificate this machine trusts.`,
     );
     return 2;
   }

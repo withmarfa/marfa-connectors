@@ -320,8 +320,8 @@ export async function proveInbound(
           {
             env: {
               PATH: process.env["PATH"],
-              MARFA_URL: url,
-              MARFA_KEY: key.key,
+              MARFA_API_URL: url,
+              MARFA_API_KEY: key.key,
               ...env,
             },
             stdio: "ignore",

@@ -68,8 +68,8 @@ async function once(
     const { stderr } = await run("node", [built, "--once"], {
       env: {
         PATH: process.env["PATH"],
-        MARFA_URL: marfa.url,
-        MARFA_KEY: marfa.key,
+        MARFA_API_URL: marfa.url,
+        MARFA_API_KEY: marfa.key,
         TODOIST_API_TOKEN: token,
         TODOIST_API_URL: todoist.url,
         ...env,
@@ -3136,8 +3136,8 @@ async function looking(during: () => Promise<void>): Promise<void> {
   const child = spawn("node", [built, "--every", "1h", "--look-every", "1s"], {
     env: {
       PATH: process.env["PATH"],
-      MARFA_URL: marfa.url,
-      MARFA_KEY: marfa.key,
+      MARFA_API_URL: marfa.url,
+      MARFA_API_KEY: marfa.key,
       TODOIST_API_TOKEN: token,
       TODOIST_API_URL: todoist.url,
     },
@@ -3197,8 +3197,8 @@ describe("a change made in Marfa between runs", () => {
       {
         env: {
           PATH: process.env["PATH"],
-          MARFA_URL: marfa.url,
-          MARFA_KEY: marfa.key,
+          MARFA_API_URL: marfa.url,
+          MARFA_API_KEY: marfa.key,
           TODOIST_API_TOKEN: token,
           TODOIST_API_URL: todoist.url,
         },

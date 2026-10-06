@@ -156,17 +156,17 @@ describe("--every", () => {
     const held = vendor([one]);
     const exit = start(
       testConnector(held),
-      harness.runtime(["--every", "5m"], { MARFA_URL: closed }),
+      harness.runtime(["--every", "5m"], { MARFA_API_URL: closed }),
     );
     await harness.clock.sleeping(minute);
     expect(harness.lines.join("\n")).toContain(
-      `could not reach the server at MARFA_URL (${closed})`,
+      `could not reach the server at MARFA_API_URL (${closed})`,
     );
     harness.stop();
     expect(await exit).toBe(0);
-    expect(await harness.once(held, { MARFA_URL: closed })).toBe(1);
+    expect(await harness.once(held, { MARFA_API_URL: closed })).toBe(1);
     expect(harness.lines.at(-1)).toContain(
-      `could not start: the server at MARFA_URL (${closed}) did not answer`,
+      `could not start: the server at MARFA_API_URL (${closed}) did not answer`,
     );
   });
 
@@ -175,9 +175,9 @@ describe("--every", () => {
     harness.requestTimeoutMs = 200;
     try {
       const began = Date.now();
-      expect(await harness.once(vendor([one]), { MARFA_URL: silent.url })).toBe(
-        1,
-      );
+      expect(
+        await harness.once(vendor([one]), { MARFA_API_URL: silent.url }),
+      ).toBe(1);
       expect(Date.now() - began).toBeLessThan(3000);
       expect(harness.lines.join("\n")).toContain("could not start");
     } finally {
