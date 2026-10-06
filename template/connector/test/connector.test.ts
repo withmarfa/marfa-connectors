@@ -734,6 +734,10 @@ describe("the template, run as a process", () => {
     ],
     ["a time limit that is not a number", { EXAMPLE_TIMEOUT_MS: "soon" }],
     ["a time limit of zero", { EXAMPLE_TIMEOUT_MS: "0" }],
+    [
+      "a time limit longer than a timer holds",
+      { EXAMPLE_TIMEOUT_MS: "3000000000" },
+    ],
   ])("stops at start, before it reaches Marfa, on %s", async (_, env) => {
     const { code, output } = await once(env);
     expect(code).toBe(2);

@@ -56,12 +56,20 @@ function address(base: string, path: string): URL {
   return new URL(path, base.endsWith("/") ? base : `${base}/`);
 }
 
+// Past this a timer cannot hold the limit: `AbortSignal.timeout` throws, or
+// fires after one millisecond.
+const longestTimeoutMs = 2_147_483_647;
+
 function timeoutOf(value: string | undefined): number {
   if (value === undefined) return defaultTimeoutMs;
   const milliseconds = Number(value);
-  if (!Number.isInteger(milliseconds) || milliseconds < 1) {
+  if (
+    !Number.isInteger(milliseconds) ||
+    milliseconds < 1 ||
+    milliseconds > longestTimeoutMs
+  ) {
     throw new Error(
-      "EXAMPLE_TIMEOUT_MS is not a whole number of milliseconds above zero",
+      `EXAMPLE_TIMEOUT_MS is not a whole number of milliseconds from 1 to ${String(longestTimeoutMs)}`,
     );
   }
   return milliseconds;

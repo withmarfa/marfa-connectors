@@ -15,7 +15,7 @@ A connector does four things, and the kit carries all but the vendor's side of e
 
 1. **Registers.** On every start the kit registers the connector with the instance, reads the key back and refuses one that is wrong, then registers each type the connector declares, or checks it against the instance's. The connector declares its `name`, `source`, `types` and `env`; the key is minted by hand ([The key](#the-key)).
 2. **Reads.** `run` reads the vendor, and hands what it found to `upsert` and what the vendor deleted to `archive`. The kit writes only what changed. A scheduled run reads the vendor whole.
-3. **Delivers.** A connector that also carries changes made in Marfa back to its vendor declares `link_field` on its type and an `onChange` ([Carrying changes back](#carrying-changes-back)). A vendor that cannot take a change now says so by throwing `Unreachable`, `Refused` or `Declined`, and the run goes on.
+3. **Delivers.** A connector that also carries changes made in Marfa back to its vendor declares `link_field` on its type and an `onChange` ([Carrying changes back](#carrying-changes-back)). A vendor that cannot take a change says so by throwing `Unreachable`, `Refused` or `Declined`, and the run goes on.
 4. **Reports.** The kit reports each run to the instance as succeeded or failed, with a summary. A problem that lasts but lets the run go on is `log.condition`. An error thrown from `run`, such as a vendor refusing the token, fails the run, and the process exits with code 1 under `--once` ([Run it](#run-it)).
 
 ## Start one
@@ -36,12 +36,12 @@ A connector does four things, and the kit carries all but the vendor's side of e
 
 ### What the example does
 
-The example vendor lists every item on `GET items` as `{ account, items }`, and takes `POST items`, `PUT items/<id>` and `DELETE items/<id>`. Replace those calls with the vendor's; keep the behavior:
+The example vendor lists every item on `GET items` as `{ account, items }`, answers one on `GET items/<id>`, and takes `POST items`, `PUT items/<id>` and `DELETE items/<id>`. Replace those calls with the vendor's; keep the behavior:
 
 - **Every vendor call has a time limit.** `EXAMPLE_TIMEOUT_MS`, 30000 milliseconds unless it is set, covers the answer and its body, beside the kit's `signal`. A vendor that does not answer in time is treated as one that did not answer at all: from `onChange` or `remake` that is `Unreachable`, so the change is sent again next run, and from `run` it fails the run, which the next scheduled run tries again. Without a limit, a vendor that never answers stalls the run, and nothing in the kit but a stop ends the call.
-- **The environment is checked on start.** `checkEnv` refuses an `EXAMPLE_URL` that is not an http or https address and an `EXAMPLE_TIMEOUT_MS` that is not a whole number of milliseconds above zero, naming the variable and never its value. The process exits with code 2 before it reaches the instance.
+- **The environment is checked on start.** `checkEnv` refuses an `EXAMPLE_URL` that is not an http or https address and an `EXAMPLE_TIMEOUT_MS` that is not a whole number of milliseconds from 1 to 2147483647, naming the variable and never its value. The process exits with code 2 before it reaches the instance.
 - **A base address with or without a trailing slash reaches the same place.** `new URL(path, base)` drops the base's last segment when the base lacks the slash, so the example adds one: `https://vendor.example.com/api` and `https://vendor.example.com/api/` both reach `/api/items`.
-- **A row the vendor stops listing is asked about.** An item marked `deleted` is archived. An item left out of the listing is read back from the instance with `held`, and the vendor is asked for it: if it answers 404, or answers that the item is deleted, the row is archived; if it still has it, the row is left as it is, since a listing that leaves something out is not the vendor deleting it. A row archived this way comes back when the vendor lists it again.
+- **A row the vendor stops listing is asked about.** An item marked `deleted` is archived. An item left out of the listing is read back from the instance with `held`, and the vendor is asked for it: if it answers 404, or answers that the item is deleted, the row is archived; if it still has it, the row is left as it is, since a listing that leaves something out is not the vendor deleting it. A row archived this way comes back when the vendor lists it again. Any other answer, a rate limit or a server error included, fails the run after the listing's rows are written and before anything is archived, and the next scheduled run asks again.
 
 What a run has to hand:
 
