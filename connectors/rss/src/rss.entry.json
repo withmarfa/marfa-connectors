@@ -7,7 +7,7 @@
     "entry_id": {
       "type": "string",
       "required": true,
-      "description": "The entry's id in its feed: its Atom id or RSS guid, else its link."
+      "description": "The entry's id in its feed: its Atom id, RSS guid, RSS 1.0 rdf:about or JSON Feed id, else its link."
     },
     "feed_origin": {
       "type": "url",

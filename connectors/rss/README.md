@@ -1,6 +1,6 @@
 # RSS
 
-Reads Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed feeds into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed, and it never writes into a library type. Promoting an entry out of the feed is a person's or an app's act.
+Reads feeds in Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed, and it never writes into a library type. Promoting an entry out of the feed is a person's or an app's act.
 
 ## What it does
 

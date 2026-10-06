@@ -683,6 +683,7 @@ export function readFeed(
         ?.href;
     const siteUrl = linkOf(alternate(atom.links), feedBase);
     const language = languageOf(atom.xml?.lang);
+    const sourceTitle = atomTextOf(atom.title);
     for (const entry of atom.entries ?? []) {
       const entryBase = baseOf(feedBase, entry.xml?.base);
       const url = linkOf(alternate(entry.links), entryBase);
@@ -712,7 +713,7 @@ export function readFeed(
           published_at: published,
           language,
           source_url: siteUrl,
-          source_title: atomTextOf(atom.title),
+          source_title: sourceTitle,
         },
         published ?? isoOf(entry.updated),
       );
@@ -735,6 +736,7 @@ export function readFeed(
     );
     const siteUrl = linkOf(rss.link, channelBase);
     const language = languageOf(rss.language);
+    const sourceTitle = plainOf(rss.title);
     for (const item of rss.items ?? []) {
       const itemBase = baseOf(channelBase, item.xml?.base);
       const url = linkOf(item.link, itemBase);
@@ -759,7 +761,7 @@ export function readFeed(
           published_at: published,
           language,
           source_url: siteUrl,
-          source_title: plainOf(rss.title),
+          source_title: sourceTitle,
         },
         published ?? isoOf(item.dc?.dates?.[0]),
       );
@@ -772,6 +774,7 @@ export function readFeed(
     const siteUrl = linkOf(rdf.link, channelBase);
     const language =
       languageOf(rdf.dc?.languages?.[0]) ?? languageOf(rdf.xml?.lang);
+    const sourceTitle = plainOf(rdf.title);
     for (const item of rdf.items ?? []) {
       const itemBase = baseOf(channelBase, item.xml?.base);
       const url = linkOf(item.link, itemBase);
@@ -792,7 +795,7 @@ export function readFeed(
           published_at: published,
           language,
           source_url: siteUrl,
-          source_title: plainOf(rdf.title),
+          source_title: sourceTitle,
         },
         published,
       );
@@ -802,6 +805,7 @@ export function readFeed(
   const json = parsed.feed;
   if ((json.items?.length ?? 0) > maxFeedEntries) throw new TooManyEntries();
   const siteUrl = linkOf(json.home_page_url, documentBase);
+  const sourceTitle = plainOf(json.title);
   for (const item of json.items ?? []) {
     const url = linkOf(item.url, documentBase);
     const published = isoOf(item.date_published);
@@ -826,7 +830,7 @@ export function readFeed(
         published_at: published,
         language: languageOf(item.language) ?? languageOf(json.language),
         source_url: siteUrl,
-        source_title: plainOf(json.title),
+        source_title: sourceTitle,
       },
       published ?? isoOf(item.date_modified),
     );
