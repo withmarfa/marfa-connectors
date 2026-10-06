@@ -27,6 +27,9 @@
   <key>WorkingDirectory</key>
   <string>/path/to/marfa-connectors/connectors/example</string>
 
+  <key>RunAtLoad</key>
+  <true/>
+
   <key>StartInterval</key>
   <integer>900</integer>
 

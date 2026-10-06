@@ -19,6 +19,8 @@ interface VendorItem {
   deleted?: boolean;
 }
 
+const defaultTimeoutMs = 30_000;
+
 class NotTaken extends Error {
   constructor(readonly status: number | undefined) {
     super(
@@ -42,17 +44,61 @@ function undelivered(error: unknown, signal: AbortSignal): unknown {
     : new Refused(error.message);
 }
 
+interface VendorEnv {
+  readonly EXAMPLE_URL: string;
+  readonly EXAMPLE_TOKEN: string;
+  readonly EXAMPLE_TIMEOUT_MS?: string | undefined;
+}
+
+// `new URL(path, base)` drops the base's last segment unless the base ends in
+// a slash, so `https://v.example.com/api` plus `items` would reach `/items`.
+function address(base: string, path: string): URL {
+  return new URL(path, base.endsWith("/") ? base : `${base}/`);
+}
+
+function timeoutOf(value: string | undefined): number {
+  if (value === undefined) return defaultTimeoutMs;
+  const milliseconds = Number(value);
+  if (!Number.isInteger(milliseconds) || milliseconds < 1) {
+    throw new Error(
+      "EXAMPLE_TIMEOUT_MS is not a whole number of milliseconds above zero",
+    );
+  }
+  return milliseconds;
+}
+
+function checkAddress(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("EXAMPLE_URL is not an address");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("EXAMPLE_URL is not an http or https address");
+  }
+}
+
+// A stop is the kit's, and passes as it is; any other failure to get an answer,
+// a timeout included, is the vendor not answering.
+function unanswered(error: unknown, signal: AbortSignal): unknown {
+  return signal.aborted ? error : new NotTaken(undefined);
+}
+
+// One call, answer read in full, under a time limit that covers the body too.
+// A vendor that does not answer in time is `NotTaken` with no status, which is
+// the same transient failure as a dropped connection.
 async function call(
-  env: { EXAMPLE_URL: string; EXAMPLE_TOKEN: string },
+  env: VendorEnv,
   signal: AbortSignal,
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: Record<string, unknown>,
   headers: Record<string, string> = {},
-): Promise<Response> {
+): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(new URL(path, env.EXAMPLE_URL), {
+    response = await fetch(address(env.EXAMPLE_URL, path), {
       method,
       headers: {
         Authorization: `Bearer ${env.EXAMPLE_TOKEN}`,
@@ -60,11 +106,13 @@ async function call(
         ...headers,
       },
       ...(body !== undefined && { body: JSON.stringify(body) }),
-      signal,
+      signal: AbortSignal.any([
+        signal,
+        AbortSignal.timeout(timeoutOf(env.EXAMPLE_TIMEOUT_MS)),
+      ]),
     });
   } catch (error) {
-    if (signal.aborted) throw error;
-    throw new NotTaken(undefined);
+    throw unanswered(error, signal);
   }
   if (response.status === 401 || response.status === 403) {
     throw new Error(
@@ -72,7 +120,31 @@ async function call(
     );
   }
   if (!response.ok) throw new NotTaken(response.status);
-  return response;
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    throw unanswered(error, signal);
+  }
+  return text === "" ? undefined : (JSON.parse(text) as unknown);
+}
+
+async function itemOf(
+  env: VendorEnv,
+  signal: AbortSignal,
+  id: string,
+): Promise<VendorItem | undefined> {
+  try {
+    return (await call(
+      env,
+      signal,
+      "GET",
+      `items/${encodeURIComponent(id)}`,
+    )) as VendorItem;
+  } catch (error) {
+    if (error instanceof NotTaken && error.status === 404) return undefined;
+    throw error;
+  }
 }
 
 // Replace the type file, the environment, `run` and `onChange` with your
@@ -94,10 +166,16 @@ const connector = defineConnector({
   env: {
     EXAMPLE_URL: "required",
     EXAMPLE_TOKEN: "secret",
+    EXAMPLE_TIMEOUT_MS: "optional",
   },
-  async run({ env, signal, log, upsert, archive }) {
-    const response = await call(env, signal, "GET", "items");
-    const { account, items } = (await response.json()) as {
+  // Refuses on start what can be told wrong on sight, naming the variable and
+  // never its value.
+  checkEnv(env) {
+    checkAddress(env.EXAMPLE_URL);
+    timeoutOf(env.EXAMPLE_TIMEOUT_MS);
+  },
+  async run({ env, signal, log, upsert, archive, held }) {
+    const { account, items } = (await call(env, signal, "GET", "items")) as {
       account: string;
       items: VendorItem[];
     };
@@ -132,13 +210,24 @@ const connector = defineConnector({
         changed_at: item.updated,
       }));
     await upsert(exampleItem.id, entries);
+
+    // What to archive: what the vendor marks deleted, and what it no longer
+    // lists and says it no longer has. An item the listing leaves out that
+    // the vendor still answers for is left as it is.
+    const gone = items
+      .filter((item) => item.deleted === true)
+      .map((item) => item.id);
+    const listed = new Set(items.map((item) => item.id));
+    for (const row of await held(exampleItem.id)) {
+      const id = row.properties["example_id"];
+      if (typeof id !== "string" || listed.has(id)) continue;
+      const found = await itemOf(env, signal, id);
+      if (found === undefined || found.deleted === true) gone.push(id);
+    }
     // Archive matches the link value when the type has a `link_field`, else
     // the source id: a read-only copy that drops `link_field` must archive by
     // `key(item)`.
-    await archive(
-      exampleItem.id,
-      items.filter((item) => item.deleted === true).map((item) => item.id),
-    );
+    await archive(exampleItem.id, gone);
   },
   async onChange(
     { kind, item, changed, attempted, refused },
@@ -162,12 +251,10 @@ const connector = defineConnector({
         // The row's id is the idempotency key, so a run that fails between
         // the vendor's answer and the link makes one item when it retries;
         // a refused create made nothing, so the next takes a key of its own.
-        const made = (await (
-          await call(env, signal, "POST", "items", body, {
-            "Idempotency-Key":
-              refused === undefined ? item.id : `${item.id}:${refused}`,
-          })
-        ).json()) as { id: string };
+        const made = (await call(env, signal, "POST", "items", body, {
+          "Idempotency-Key":
+            refused === undefined ? item.id : `${item.id}:${refused}`,
+        })) as { id: string };
         // Linked first, so whatever follows changes this item, never makes
         // another. A retry may be answered with what the first try made,
         // from the values the row held then, so it is brought up to date.
@@ -205,12 +292,9 @@ const connector = defineConnector({
     const id = item.properties["example_id"];
     if (typeof id !== "string" || id === "") return false;
     try {
-      await call(env, signal, "GET", `items/${encodeURIComponent(id)}`);
-      return false;
+      if ((await itemOf(env, signal, id)) !== undefined) return false;
     } catch (error) {
-      if (!(error instanceof NotTaken) || error.status !== 404) {
-        throw undelivered(error, signal);
-      }
+      throw undelivered(error, signal);
     }
     // Made again and linked, under a key of its own so the vendor does
     // not answer the first create again, nor a refused remake's.
@@ -220,11 +304,9 @@ const connector = defineConnector({
       note: item.properties["note"] ?? null,
     };
     try {
-      const made = (await (
-        await call(env, signal, "POST", "items", body, {
-          "Idempotency-Key": `${item.id}:${id}${refused === undefined ? "" : `:${refused}`}`,
-        })
-      ).json()) as { id: string };
+      const made = (await call(env, signal, "POST", "items", body, {
+        "Idempotency-Key": `${item.id}:${id}${refused === undefined ? "" : `:${refused}`}`,
+      })) as { id: string };
       await setLink(item, made.id);
       if (attempted !== undefined) {
         await call(
