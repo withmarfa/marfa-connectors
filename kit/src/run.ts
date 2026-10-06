@@ -62,6 +62,9 @@ import {
   reasonBytes,
   Store,
   withRefusal,
+  purgeBytes,
+  purgeOf,
+  purgeRefusalLimit,
   type Purge,
 } from "./store.js";
 import {
@@ -988,6 +991,32 @@ export async function runOnce<E extends EnvDeclaration>(
   const purged = new Map<string, Purge>(
     (stored.purges ?? []).map((purge) => [purge.id, purge]),
   );
+  const refusals = (purge: Purge): number =>
+    purge.refused === undefined ? 0 : (purge.refused.count ?? 1);
+  // Past what the state may hold, the ones the vendor has refused most go
+  // first, so they leave room for the rest of the state. Only the last save
+  // gives them up, once the run has asked the vendor for every one; a save
+  // before that keeps the same list and leaves them to be carried.
+  const keepPurges = (final = false): Purge[] => {
+    const ranked = [...purged.values()].sort(
+      (a, b) => refusals(a) - refusals(b),
+    );
+    let bytes = 0;
+    const kept: Purge[] = [];
+    const dropped: Purge[] = [];
+    for (const purge of ranked) {
+      bytes += Buffer.byteLength(JSON.stringify(purge)) + 1;
+      (bytes > purgeBytes ? dropped : kept).push(purge);
+    }
+    if (final && dropped.length > 0) {
+      for (const purge of dropped) purged.delete(purge.id);
+      raised.set(
+        "purges-given-up",
+        `${String(dropped.length)} ${dropped.length === 1 ? "purge was" : "purges were"} given up, since the state keeps at most ${String(purgeBytes / 1024)} KiB of them and more waited: the vendor may still hold ${dropped.length === 1 ? "that row" : "those rows"}`,
+      );
+    }
+    return kept;
+  };
   const relinked = new Map(
     Object.entries(stored.relinked?.rows ?? {}).filter(
       ([, row]) => specs.get(row.type)?.twoWay === true,
@@ -999,6 +1028,7 @@ export async function runOnce<E extends EnvDeclaration>(
     vendorState: Record<string, unknown>,
     inbound = acknowledged.inbound ?? [],
   ): Kept => ({
+    ...(purged.size > 0 && { purges: keepPurges() }),
     ...(inbound.length > 0 && { inbound }),
     state: vendorState,
     conditions: Object.fromEntries(
@@ -1021,7 +1051,6 @@ export async function runOnce<E extends EnvDeclaration>(
       ].slice(0, keptConditions),
     ),
     ...(acknowledged.cursor !== undefined && { cursor: acknowledged.cursor }),
-    ...(purged.size > 0 && { purges: [...purged.values()] }),
     ...((relinked.size > 0 || overflowed) && {
       relinked: {
         rows: Object.fromEntries(relinked),
@@ -1755,9 +1784,10 @@ export async function runOnce<E extends EnvDeclaration>(
               `the purge of ${id} is not carried, since its link may have been changed in Marfa since the vendor last had it`,
             );
           } else {
+            const refused = purged.get(id)?.refused;
             purged.set(id, {
-              ...last,
-              properties: { ...last.properties, [kind.link]: link },
+              ...purgeOf(last, kind.link, link),
+              ...(refused !== undefined && { refused }),
             });
           }
         }
@@ -1853,6 +1883,18 @@ export async function runOnce<E extends EnvDeclaration>(
         if (agreement.waiting?.[createKey] !== undefined) {
           if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
           done.add(id);
+          continue;
+        }
+        if (agreement.stateBy === "cascade" && item.state !== "trashed") {
+          // Out of another row's trash, which never reached the vendor, so
+          // there is nothing for it to remake.
+          const returned: Agreement = {
+            ...agreement,
+            state: agreedState(item.state),
+          };
+          Reflect.deleteProperty(returned, "stateBy");
+          Reflect.deleteProperty(returned, "stateAt");
+          store.set(id, returned);
           continue;
         }
         const told = kind.link === undefined || agreement.link !== undefined;
@@ -2064,17 +2106,31 @@ export async function runOnce<E extends EnvDeclaration>(
             purged.delete(item.id);
           } else if (error instanceof Unreachable) {
             unreached(item.id, error);
-            purged.set(item.id, item);
-          } else if (error instanceof Refused) {
-            const said = logger.redact(error.message);
-            purgeRefusedOf(item.id, said);
             purged.set(item.id, {
               ...item,
-              refused: {
-                at: clock.now().toISOString(),
-                reason: capBytes(said, reasonBytes),
-              },
+              ...(refused !== undefined && { refused }),
             });
+          } else if (error instanceof Refused) {
+            const said = logger.redact(error.message);
+            const count =
+              (refused === undefined ? 0 : (refused.count ?? 1)) + 1;
+            if (count >= purgeRefusalLimit) {
+              purged.delete(item.id);
+              raised.set(
+                `purge-given-up:${item.id}`,
+                `the purge of ${item.id} was refused ${String(count)} times, so it is given up and the vendor may still hold the row: ${said}`,
+              );
+            } else {
+              purgeRefusedOf(item.id, said);
+              purged.set(item.id, {
+                ...item,
+                refused: {
+                  at: clock.now().toISOString(),
+                  reason: capBytes(said, reasonBytes),
+                  count,
+                },
+              });
+            }
           } else throw error;
           continue;
         }
@@ -2155,6 +2211,7 @@ export async function runOnce<E extends EnvDeclaration>(
       `the server refused ${record.identity.type} ${record.identity.sourceId}: ${record.code}, ${record.reason}; durable retry intent waits`,
     );
   }
+  const keptPurges = keepPurges(true);
   // Kept redacted, key and message, since the conditions are kept on the
   // instance as they stand.
   const redacted = new Map(
@@ -2244,7 +2301,7 @@ export async function runOnce<E extends EnvDeclaration>(
           : acknowledged.cursor !== undefined && {
               cursor: acknowledged.cursor,
             }),
-        ...(purged.size > 0 && { purges: [...purged.values()] }),
+        ...(keptPurges.length > 0 && { purges: keptPurges }),
         ...((relinked.size > 0 || overflowed) && {
           relinked: {
             rows: Object.fromEntries(relinked),
