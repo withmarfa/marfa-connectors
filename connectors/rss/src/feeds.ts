@@ -391,16 +391,27 @@ const blockElements = new Set([
 
 type Markup = ReturnType<typeof parseDocument>["children"];
 
+// Walked with a stack of its own, so nesting as deep as a feed can write it
+// cannot overflow the call stack.
 function readText(nodes: Markup): string {
   let text = "";
-  for (const node of nodes) {
-    if (node.type === ElementType.Text) {
-      text += node.data;
-    } else if (node.type === ElementType.CDATA) {
-      text += DomUtils.textContent(node);
-    } else if (node.type === ElementType.Tag) {
-      const inner = readText(node.children);
-      text += blockElements.has(node.name) ? ` ${inner} ` : inner;
+  const work: (Markup[number] | string)[] = [...nodes].reverse();
+  for (let next = work.pop(); next !== undefined; next = work.pop()) {
+    if (typeof next === "string") {
+      text += next;
+    } else if (next.type === ElementType.Text) {
+      text += next.data;
+    } else if (next.type === ElementType.CDATA) {
+      text += DomUtils.textContent(next);
+    } else if (next.type === ElementType.Tag) {
+      if (blockElements.has(next.name)) {
+        text += " ";
+        work.push(" ");
+      }
+      for (let at = next.children.length - 1; at >= 0; at -= 1) {
+        const child = next.children[at];
+        if (child !== undefined) work.push(child);
+      }
     }
   }
   return text;
@@ -412,16 +423,32 @@ interface Reading {
   plain: string | undefined;
   /** Whether it holds an element, so is HTML and not text. */
   marked: boolean;
+  /** Whether it shows nothing: no text, and no element but tracking pixels
+   *  and wrappers that hold nothing. */
+  empty: boolean;
   pictures: Picture[];
 }
+
+// Elements that show nothing of their own.
+const wrappers = new Set(["br", "div", "p", "span", "wbr"]);
 
 function readingOf(markup: string | undefined): Reading | undefined {
   if (markup === undefined) return undefined;
   const { children } = parseDocument(markup, { recognizeCDATA: true });
+  const plain = textOf(readText(children).replace(/\s+/g, " "));
+  const pictures = DomUtils.getElementsByTagName("img", children);
   return {
-    plain: textOf(readText(children).replace(/\s+/g, " ")),
+    plain,
     marked: DomUtils.findOne(() => true, children) !== null,
-    pictures: DomUtils.getElementsByTagName("img", children),
+    empty:
+      plain === undefined &&
+      DomUtils.findAll(
+        (element) =>
+          !wrappers.has(element.name) &&
+          !(element.name === "img" && isTiny(element)),
+        children,
+      ).length === 0,
+    pictures,
   };
 }
 
@@ -493,6 +520,7 @@ function contentOf(
   content: string | undefined,
   enclosure: string | undefined,
   base: Base,
+  contentIsHtml = true,
 ): Written {
   const reading = summary.html ? readingOf(summary.value) : undefined;
   const picture = countedPicture(reading, base);
@@ -500,7 +528,8 @@ function contentOf(
   const enclosed = linkOf(enclosure, base);
   const found =
     enclosed === undefined
-      ? (countedPicture(readingOf(body), base) ?? picture)
+      ? ((contentIsHtml ? countedPicture(readingOf(body), base) : undefined) ??
+        picture)
       : undefined;
   return {
     description: summary.html
@@ -508,8 +537,7 @@ function contentOf(
       : textOf(summary.value),
     body:
       body ??
-      (reading?.marked === true &&
-      (reading.plain !== undefined || picture !== undefined)
+      (reading?.marked === true && !reading.empty
         ? textOf(summary.value)
         : undefined),
     image_url: enclosed ?? found?.url,
@@ -626,6 +654,7 @@ export function readFeed(
         entry.content?.value,
         image,
         entryBase,
+        entry.content?.type === "html" || entry.content?.type === "xhtml",
       );
       keep(
         entry.id ?? url,

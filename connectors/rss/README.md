@@ -116,7 +116,7 @@ Links are resolved against the feed's `xml:base`, or else the address the feed w
 
 Where a feed gives an entry content (an Atom `content`, an RSS `content:encoded`), `body` holds it and `description` holds the plain text of the summary, if there is one.
 
-Where the summary or description is the feed's only content, `body` holds its markup and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing, such as a lone tracking pixel, gives no `body`.
+Where the summary or description is the feed's only content, `body` holds its markup and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing, such as a lone tracking pixel or empty paragraphs and line breaks, gives no `body`; one that shows anything else, such as an embedded player or a picture that does not count as the entry's image, keeps its markup in `body`.
 
 The connector does not clean the markup it keeps in `body`. Treat it as untrusted wherever it is shown.
 

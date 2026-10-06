@@ -803,6 +803,48 @@ describe("an entry's content and image", () => {
     }
   });
 
+  it("keeps the markup of a summary that shows something even where no picture of it counts", () => {
+    const kept = readFeed(
+      at("https://example.org/rss.xml"),
+      rss(
+        [
+          `<item><guid>a</guid><description>&lt;iframe src="https://example.org/embed"&gt;&lt;/iframe&gt;</description></item>`,
+          `<item><guid>b</guid><description>&lt;video src="https://example.org/clip.mp4"&gt;&lt;/video&gt;</description></item>`,
+          `<item><guid>c</guid><description>&lt;img src="data:image/gif;base64,R0lGODlhAQABAAAAACw="&gt;</description></item>`,
+          `<item><guid>d</guid><description>&lt;img src="pics/a.png"&gt;</description></item>`,
+          `<item><guid>e</guid><description>&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;img src="https://example.org/t.gif" width="1" height="1"&gt;</description></item>`,
+        ].join(""),
+      ),
+    ).entries;
+    expect(kept.map((entry) => entry.properties["body"] !== undefined)).toEqual(
+      [true, true, true, true, false],
+    );
+  });
+
+  it("reads content nested deeper than the call stack, and a text content that only holds picture-like text", () => {
+    const depth = 12_000;
+    const nested = `${"<i>".repeat(depth)}deep${"</i>".repeat(depth)}`;
+    const deep = only(
+      rss(
+        `<item><guid>a</guid><description>one</description><content:encoded><![CDATA[${nested}]]></content:encoded></item>`,
+      ),
+    );
+    expect(deep?.["body"]).toBe(nested);
+    const described = only(
+      rss(
+        `<item><guid>b</guid><description><![CDATA[${nested}]]></description></item>`,
+      ),
+    );
+    expect(described?.["description"]).toBe("deep");
+    const text = readFeed(
+      at("https://example.org/feed.xml"),
+      atom(
+        `<entry><id>a</id><title>A</title><content type="text">&lt;img src="https://example.org/x.png"&gt;</content></entry>`,
+      ),
+    ).entries;
+    expect(text[0]?.properties["image_url"]).toBeUndefined();
+  });
+
   it("gives an entry with no date no date of its own, leaving the server to date it when it is first stored", () => {
     const { entries } = readFeed(
       at("https://example.org/rss.xml"),
