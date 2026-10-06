@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
-    "@withmarfa/client": "0.0.4"
+    "@withmarfa/client": "0.0.4",
+    "eventsource-parser": "4.1.1"
   }
 }
