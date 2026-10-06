@@ -236,15 +236,6 @@ async function registerAndCheck<E extends EnvDeclaration>(
 ): Promise<Started> {
   const id = await marfa.register(connector.name, connector.description);
   const key = await marfa.currentKey();
-  if (key === undefined) {
-    return {
-      id,
-      spare: undefined,
-      narrowed: undefined,
-      problem:
-        "the server has no door for a key to read itself (GET /keys/current), so the key cannot be checked; the server is older than this kit",
-    };
-  }
   const problems = keyProblems(connector, key);
   const stopped = (problem: string): Started => ({
     id,
@@ -297,7 +288,6 @@ async function checkTypesAgain<E extends EnvDeclaration>(
   logger: Logger,
 ): Promise<TypeStep | undefined> {
   const key = await marfa.currentKey();
-  if (key === undefined) return undefined;
   const problem = keyProblems(connector, key);
   if (problem !== undefined) return { problem, narrowed: undefined };
   return ensureTypes(

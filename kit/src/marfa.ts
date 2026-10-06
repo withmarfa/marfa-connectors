@@ -8,6 +8,8 @@ import {
 import type { ConnectionDefinition, Item, TypeDefinition } from "./define.js";
 
 export type BulkResult = components["schemas"]["BulkResultEntry"];
+/** The schema types a delivery's headers as pairs, but the fetch client's
+ *  response type turns every tuple into an array, so a row is read as one. */
 export type InboundDeliveryRow = Omit<
   components["schemas"]["InboundDelivery"],
   "headers"
@@ -369,9 +371,8 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  async currentKey(): Promise<Key | undefined> {
+  async currentKey(): Promise<Key> {
     const { data, error, response } = await this.client.GET("/keys/current");
-    if (response.status === 404) return undefined;
     if (data === undefined) throw refusal(response, error);
     return data;
   }
@@ -381,10 +382,7 @@ export class Marfa {
     types: ReadonlySet<string>,
     connections: ReadonlySet<string>,
   ): Promise<string[]> {
-    const key = await this.currentKey();
-    return key === undefined
-      ? []
-      : keyNarrowerThanTypes(key, types, connections);
+    return keyNarrowerThanTypes(await this.currentKey(), types, connections);
   }
 
   async type(id: string): Promise<Record<string, unknown> | undefined> {
@@ -453,12 +451,12 @@ export class Marfa {
         const edges: Edge[] = [];
         for (const [edgeType, page] of Object.entries(item.edges ?? {})) {
           if (!edgeTypes.has(edgeType)) continue;
-          edges.push(...page.data);
-          if (page.next_cursor !== null) {
-            edges.push(
-              ...(await this.moreEdges(item.id, edgeType, page.next_cursor)),
-            );
-          }
+          edges.push(
+            ...page.data,
+            ...(page.next_cursor === null
+              ? []
+              : await this.moreEdges(item.id, edgeType, page.next_cursor)),
+          );
         }
         const row: Item = { ...item };
         Reflect.deleteProperty(row, "edges");
@@ -474,24 +472,20 @@ export class Marfa {
     from: string,
   ): Promise<Edge[]> {
     const edges: Edge[] = [];
-    let cursor: string | null = from;
-    while (cursor !== null) {
-      const answer: {
-        data?: { data: Edge[]; next_cursor: string | null };
-        error?: unknown;
-        response: Response;
-      } = await this.client.GET("/items/{id}/edges", {
-        params: {
-          path: { id },
-          query: { edge_type: edgeType, limit: 200, cursor },
+    const walk = pages(async (cursor) => {
+      const { data, error, response } = await this.client.GET(
+        "/items/{id}/edges",
+        {
+          params: {
+            path: { id },
+            query: { edge_type: edgeType, limit: 200, cursor: cursor ?? from },
+          },
         },
-      });
-      if (answer.data === undefined) {
-        throw refusal(answer.response, answer.error);
-      }
-      edges.push(...answer.data.data);
-      cursor = answer.data.next_cursor;
-    }
+      );
+      if (data === undefined) throw refusal(response, error);
+      return data;
+    });
+    for await (const edge of walk) edges.push(edge);
     return edges;
   }
 
@@ -554,7 +548,8 @@ export class Marfa {
   ): Promise<{ hash: string; mime_type: string }> {
     const { data, error, response } = await this.uploads.POST("/blobs", {
       body: bytes,
-      bodySerializer: (body) => body,
+      // The client labels bytes `application/octet-stream` unless told; the
+      // blob keeps the type of its first upload.
       headers: { "Content-Type": mimeType },
     });
     if (data === undefined) throw refusal(response, error);
@@ -803,8 +798,7 @@ export class Marfa {
     signal: AbortSignal,
   ): Promise<InboundDeliveryRow[]> {
     const rows: InboundDeliveryRow[] = [];
-    let cursor: string | undefined;
-    do {
+    const walk = pages(async (cursor) => {
       const { data, error, response } = await this.client.GET(
         "/connectors/{id}/deliveries",
         {
@@ -820,9 +814,12 @@ export class Marfa {
         },
       );
       if (data === undefined) throw refusal(response, error);
-      rows.push(...data.data);
-      cursor = data.next_cursor ?? undefined;
-    } while (cursor !== undefined && rows.length < limit);
+      return data;
+    });
+    for await (const row of walk) {
+      rows.push(row);
+      if (rows.length >= limit) break;
+    }
     return rows;
   }
 

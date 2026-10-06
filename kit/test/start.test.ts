@@ -383,7 +383,7 @@ describe("the key check on start", () => {
     expect(harness.server.rows).toEqual([]);
   });
 
-  it("stops on a server with no door for a key to read itself, saying so", async () => {
+  it("stops, saying what the server said, when it refuses to show the key", async () => {
     harness.server.refuseNext(
       "GET /keys/current",
       404,
@@ -391,8 +391,9 @@ describe("the key check on start", () => {
       "Not found",
     );
     expect(await harness.once(vendor([entry]))).toBe(1);
-    expect(harness.lastRun().outcome).toBe("failed");
-    expect(harness.lastRun().error).toContain("GET /keys/current");
+    expect(harness.lines.join("\n")).toContain("could not start");
+    expect(harness.lines.join("\n")).toContain("Not found");
+    expect(harness.server.runs).toEqual([]);
     expect(harness.server.rows).toEqual([]);
   });
 
