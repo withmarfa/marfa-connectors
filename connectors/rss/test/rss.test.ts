@@ -1032,6 +1032,34 @@ describe("RSS 1.0 and JSON Feed", () => {
     expect(read.entries[2]?.occurred_at).toBeUndefined();
   });
 
+  it("reads a JSON Feed that mentions feed tags, and takes no XML behind a brace", () => {
+    const json = JSON.stringify({
+      version: "https://jsonfeed.org/version/1.1",
+      title: "Notes on RSS",
+      items: [
+        {
+          id: "1",
+          title: "Using  Rust",
+          content_html: "<p>An <rss> feed has a <channel> and <item>s.</p>",
+        },
+      ],
+    });
+    const read = readFeed(at("https://example.org/feed.json"), json);
+    expect(read.entries).toHaveLength(1);
+    expect(read.entries[0]?.properties["title"]).toBe("Using Rust");
+    expect(read.entries[0]?.properties["source_title"]).toBe("Notes on RSS");
+    const items = Array.from(
+      { length: maxFeedEntries + 10 },
+      (_, id) => `<item><guid>${String(id)}</guid></item>`,
+    ).join("");
+    expect(() =>
+      readFeed(
+        at("https://example.org/feed.json"),
+        `{ <rss version="2.0"><channel>${items}</channel></rss>`,
+      ),
+    ).toThrow();
+  });
+
   it("counts a JSON Feed's entries against the cap, and its markup in strings against none", () => {
     const feed = (items: object[]): string =>
       JSON.stringify({

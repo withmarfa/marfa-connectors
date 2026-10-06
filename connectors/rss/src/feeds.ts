@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
-import { parseFeed } from "feedsmith";
+import { parseFeed, parseJsonFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 import { isIP } from "node:net";
 import { getFeed, hostOf } from "./fetch.js";
@@ -635,10 +635,13 @@ export function readFeed(
   documentUrl: string = feed.url,
 ): Read {
   // A JSON Feed holds its markup in strings, not elements, and its entries
-  // are counted once it is parsed.
-  const isJson = text.trimStart().startsWith("{");
-  if (!isJson) countTags(text);
-  const parsed = parseFeed(text);
+  // are counted once it is parsed. It is parsed as JSON alone: the parser's
+  // own detection looks for feed tags anywhere in the text, so a post about
+  // RSS in a JSON Feed would be taken for RSS, and an XML feed behind a
+  // leading brace would escape the tag counts.
+  const parsed = text.trimStart().startsWith("{")
+    ? { format: "json" as const, feed: parseJsonFeed(text) }
+    : (countTags(text), parseFeed(text));
   const { key } = feed;
   const named = {
     feed_origin: new URL(feed.url).origin,
