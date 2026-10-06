@@ -1,6 +1,6 @@
 # RSS
 
-Reads Atom and RSS 2.0 feeds into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed, and it never writes into a library type. Promoting an entry out of the feed is a person's or an app's act.
+Reads Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed feeds into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed, and it never writes into a library type. Promoting an entry out of the feed is a person's or an app's act.
 
 ## What it does
 
@@ -92,31 +92,44 @@ Keep `RSS_FEEDS` and `MARFA_API_KEY` in your secret store and start the connecto
 
 Each entry is an `rss.entry` row, a kind of `core.bookmark`, written at the feed tier with the source `rss`. The row's `source_id` is the feed's identity, a hash of its name or, without one, its address, then a colon, then the entry's id.
 
-| Field          | What it holds                                                                                                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `entry_id`     | The entry's id in its feed: its Atom `id` or RSS `guid`, else its link. An entry with none of these has nothing to be known by, and is left out.             |
-| `url`          | The entry's link: an Atom entry's `alternate` link, or an RSS item's `link`.                                                                                 |
-| `title`        | The entry's title as plain text: entities decoded, markup removed and whitespace collapsed, whatever the feed's format.                                      |
-| `description`  | The entry's summary as plain text. Where the summary is only a picture, the picture's `title` text, else its `alt` text.                                     |
-| `body`         | The entry's content with its markup, as the feed gave it. Where the feed gives no content, its summary with its markup, if the summary holds any. See below. |
-| `author`       | The first author the entry names, else, for Atom, the feed's first author.                                                                                   |
-| `published_at` | When the feed says the entry was published, in UTC.                                                                                                          |
-| `image_url`    | The entry's image enclosure, else the first picture in its content or summary. See below.                                                                    |
-| `source_url`   | The address of the feed's site.                                                                                                                              |
-| `source_title` | The feed's title, as plain text in the same way.                                                                                                             |
-| `language`     | The feed's language, as a BCP 47 tag, where it gives one that is well formed.                                                                                |
-| `feed_origin`  | The scheme, host and port of the feed's address, with no path or query, where a private feed carries its token.                                              |
-| `feed_hash`    | The hash that identifies the feed, the same for every entry of one feed.                                                                                     |
+| Field          | What it holds                                                                                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `entry_id`     | The entry's id in its feed: its Atom `id`, RSS `guid`, RSS 1.0 `rdf:about` or JSON Feed `id`, else its link. An entry with none of these has nothing to be known by, and is left out. |
+| `url`          | The entry's link: an Atom entry's `alternate` link, an RSS item's `link`, or a JSON Feed item's `url`.                                                                                |
+| `title`        | The entry's title as plain text: entities decoded, markup removed and whitespace collapsed, whatever the feed's format.                                                               |
+| `description`  | The entry's summary as plain text. Where the summary is only a picture, the picture's `title` text, else its `alt` text.                                                              |
+| `body`         | The entry's content with its markup, as the feed gave it. Where the feed gives no content, its summary with its markup, if the summary holds any. See below.                          |
+| `author`       | The first author the entry names, else, for Atom and JSON Feed, the feed's first author.                                                                                              |
+| `published_at` | When the feed says the entry was published, in UTC.                                                                                                                                   |
+| `image_url`    | The entry's image enclosure, else the first picture in its content or summary, else its first `media:thumbnail`. See below.                                                           |
+| `source_url`   | The address of the feed's site.                                                                                                                                                       |
+| `source_title` | The feed's title, as plain text in the same way.                                                                                                                                      |
+| `language`     | The feed's language, or for a JSON Feed the item's own, as a BCP 47 tag, where it gives one that is well formed.                                                                      |
+| `feed_origin`  | The scheme, host and port of the feed's address, with no path or query, where a private feed carries its token.                                                                       |
+| `feed_hash`    | The hash that identifies the feed, the same for every entry of one feed.                                                                                                              |
 
 The connector writes a field only where the feed has a value for it. A value longer than 100,000 characters, which Marfa refuses, is left out of its entry, and the rest of the entry is written. Each run names what it left out.
 
 Links are resolved against the feed's `xml:base`, or else the address the feed was fetched from. Credentials in a link are dropped. A link relative to the path the feed was fetched from is not written, since it would carry that path, where a private feed may carry its token.
 
+### Formats
+
+The connector reads four formats, and writes the same fields for each:
+
+- Atom;
+- RSS 2.0;
+- RSS 1.0, which is RDF: an item's `rdf:about` is its id, else its link, and its `dc:date` and `dc:creator` are its date and author; and
+- JSON Feed: an item's `id`, `url`, `title`, `content_html` or `content_text`, `summary`, `image`, `banner_image`, `date_published`, `authors` and `language`, and the feed's `title`, `home_page_url`, `authors` and `language`.
+
+A document in another format is skipped and named in the run. The connector reads a feed by what the document is, not by the content type its server names.
+
 ### Content and description
 
 Where a feed gives an entry content (an Atom `content`, an RSS `content:encoded`), `body` holds it and `description` holds the plain text of the summary, if there is one.
 
-Where the summary or description is the feed's only content, `body` holds its markup and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing, such as a lone tracking pixel or empty paragraphs and line breaks, gives no `body`; one that shows anything else, such as an embedded player or a picture that does not count as the entry's image, keeps its markup in `body`.
+In a JSON Feed, `content_html` is the content and is kept as markup. `content_text` is the content as plain text, so `body` holds it as it is. A `summary` is plain text, so it goes to `description` alone, and a JSON Feed item with only a summary has no `body`.
+
+Where the summary or description is the feed's only content, `body` holds its markup and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS 2.0 or RSS 1.0 description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing, such as a lone tracking pixel or empty paragraphs and line breaks, gives no `body`; one that shows anything else, such as an embedded player or a picture that does not count as the entry's image, keeps its markup in `body`.
 
 The connector does not clean the markup it keeps in `body`. Treat it as untrusted wherever it is shown.
 
@@ -124,17 +137,19 @@ A summary that is only a picture, as in a comic's feed, gives a `body` that is t
 
 ### Which images count
 
-An entry with an image enclosure takes it as `image_url`. Otherwise `image_url` is the first `<img>` in the entry's content, else in its summary, that counts. An `<img>` does not count when:
+An entry with an image enclosure takes it as `image_url`: an Atom `enclosure` link or an RSS `enclosure` of an image type, or in a JSON Feed the item's `image`, else its `banner_image`. Otherwise `image_url` is the first `<img>` in the entry's content, else in its summary, that counts. Only where none does, it is the first `media:thumbnail` of the entry that counts, looked for on the entry, then in its `media:content` elements, then in its `media:group` elements. An `<img>` does not count when:
 
 - it has no `src`, or its `src` is not an `http` or `https` address once resolved, such as a `data:` URI;
 - its `src` is a link relative to the feed's fetch path, as above; or
 - it declares a `width` or `height` of 0 or 1 pixel, as a tracking pixel does.
 
+A `media:thumbnail` is held to the same rules, with its `url` for the `src`.
+
 Only the declared size is read: a picture is never fetched, and one that is hidden by a style or sized by the stylesheet counts.
 
 ### Dates
 
-`published_at` is the entry's published time: an Atom `published`, or an RSS `pubDate`. The entry's own time in Marfa, its `occurred_at`, is that time, else an Atom `updated` or an RSS `dc:date`.
+`published_at` is the entry's published time: an Atom `published`, an RSS `pubDate`, an RSS 1.0 `dc:date` or a JSON Feed `date_published`. The entry's own time in Marfa, its `occurred_at`, is that time, else an Atom `updated`, an RSS 2.0 `dc:date` or a JSON Feed `date_modified`.
 
 An entry with none of these has no date from its feed. Marfa then dates it by when the connector first stored it. That date does not move when the entry is read again, however the entry changes, until the feed gives the entry a date of its own. The first run over a feed therefore gives every undated entry in it the time of that run. The connector keeps no date of its own for these entries: one kept in its state would be the same time, and the state would grow with every entry.
 
@@ -159,7 +174,7 @@ A feed is skipped, and named in the run, when it:
 - is larger than 24 MiB, on the wire or after decompression;
 - carries more than 5,000 entries or 300,000 elements;
 - needs more memory to read than the connector allows, reads to more than 33,554,432 characters of entries, or takes more than 30 seconds to read;
-- is not Atom or RSS 2.0;
+- is not Atom, RSS 2.0, RSS 1.0 or JSON Feed;
 - redirects more than five times, or to this machine or a private network that `RSS_PRIVATE_HOSTS` does not allow; or
 - does not answer, or answers with a status other than 200 or 304.
 

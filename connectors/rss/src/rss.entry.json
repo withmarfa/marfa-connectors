@@ -1,7 +1,7 @@
 {
   "id": "rss.entry",
   "label": "Feed Entry",
-  "description": "An entry from an Atom or RSS 2.0 feed, as the RSS connector reads it: a bookmark whose title and description are plain text and whose body keeps the feed's markup, with the entry's id in its feed and the feed's origin and identity hash beside the bookmark's fields. The body is the entry's content, or its summary where that holds markup and the feed gives no content; the description is the summary as plain text, or the caption of its picture where the summary is only a picture. The image is the entry's image enclosure, else the first picture in its content or summary.",
+  "description": "An entry from an Atom, RSS or JSON Feed, as the RSS connector reads it: a bookmark whose title and description are plain text and whose body keeps the feed's markup, with the entry's id in its feed and the feed's origin and identity hash beside the bookmark's fields. The body is the entry's content, or its summary where that holds markup and the feed gives no content; the description is the summary as plain text, or the caption of its picture where the summary is only a picture. The image is the entry's image enclosure, else the first picture in its content or summary, else its media thumbnail.",
   "parent": "core.bookmark",
   "fields": {
     "entry_id": {

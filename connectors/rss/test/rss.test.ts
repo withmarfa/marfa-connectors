@@ -414,7 +414,7 @@ describe("reading a feed", () => {
     ).toEqual(["Résumé"]);
   });
 
-  it("refuses what is neither Atom nor RSS 2.0", () => {
+  it("refuses what is not a feed it reads", () => {
     expect(() =>
       readFeed(
         at("https://example.org/x"),
@@ -872,6 +872,258 @@ describe("an entry's content and image", () => {
     );
     expect(entries[0]?.occurred_at).toBeUndefined();
     expect(entries[0]?.properties["published_at"]).toBeUndefined();
+  });
+});
+
+describe("RSS 1.0 and JSON Feed", () => {
+  const rdf = `<?xml version="1.0" encoding="utf-8"?>
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/">
+      <channel rdf:about="https://example.org/feed.rdf">
+        <title>Example &lt;b&gt;RDF&lt;/b&gt;</title>
+        <link>https://example.org/</link>
+        <description>An RSS 1.0 feed.</description>
+        <dc:language>en-GB</dc:language>
+        <items><rdf:Seq><rdf:li rdf:resource="https://example.org/a"/></rdf:Seq></items>
+      </channel>
+      <item rdf:about="https://example.org/a#id">
+        <title>Fish &amp;amp; chips</title>
+        <link>https://example.org/a</link>
+        <description>&lt;p&gt;Short.&lt;/p&gt;</description>
+        <dc:date>2026-09-18T09:00:00+01:00</dc:date>
+        <dc:creator>A. Writer</dc:creator>
+        <content:encoded><![CDATA[<p>Long <img src="https://example.org/inline.png" alt="x"/></p>]]></content:encoded>
+      </item>
+      <item>
+        <title>Linked only</title>
+        <link>https://example.org/b</link>
+        <description>Plain summary.</description>
+        <media:thumbnail url="https://example.org/b.jpg" width="120" height="80"/>
+      </item>
+      <item><title>Nothing to know it by</title></item>
+    </rdf:RDF>`;
+
+  it("reads an RSS 1.0 feed into the same fields as the others", () => {
+    const read = readFeed(at("https://example.org/feed.rdf"), rdf);
+    expect(read.unkeyed).toBe(1);
+    expect(read.entries).toHaveLength(2);
+    expect(read.entries[0]).toMatchObject({
+      occurred_at: "2026-09-18T08:00:00.000Z",
+      properties: {
+        entry_id: "https://example.org/a#id",
+        url: "https://example.org/a",
+        title: "Fish & chips",
+        description: "Short.",
+        body: `<p>Long <img src="https://example.org/inline.png" alt="x"/></p>`,
+        author: "A. Writer",
+        published_at: "2026-09-18T08:00:00.000Z",
+        image_url: "https://example.org/inline.png",
+        source_url: "https://example.org/",
+        source_title: "Example RDF",
+        language: "en-GB",
+      },
+    });
+    expect(read.entries[1]?.properties).toMatchObject({
+      entry_id: "https://example.org/b",
+      description: "Plain summary.",
+      image_url: "https://example.org/b.jpg",
+    });
+    expect(read.entries[1]?.properties).not.toHaveProperty(
+      "body",
+      expect.anything(),
+    );
+    expect(read.entries[1]?.occurred_at).toBeUndefined();
+  });
+
+  const json = JSON.stringify({
+    version: "https://jsonfeed.org/version/1.1",
+    title: "Example <b>JSON</b>",
+    home_page_url: "https://example.org/",
+    language: "en",
+    authors: [{ name: "Feed Author" }],
+    items: [
+      {
+        id: "1",
+        url: "https://example.org/1",
+        title: "One &amp; <b>two</b>",
+        content_html: `<p>Hello <img src="https://example.org/inline.png"/></p>`,
+        summary: "Short.",
+        image: "https://example.org/hero.png",
+        date_published: "2026-09-18T09:00:00Z",
+        authors: [{ name: "Item Author" }],
+        language: "fr",
+      },
+      {
+        id: "2",
+        content_text: "Plain words",
+        date_modified: "2026-09-19T09:00:00Z",
+        banner_image: "https://example.org/banner.png",
+      },
+      { id: "3", summary: "Only a summary" },
+      { url: "https://example.org/4", title: "No id" },
+      { title: "Nothing to know it by" },
+    ],
+  });
+
+  it("reads a JSON Feed into the same fields as the others", () => {
+    const read = readFeed(at("https://example.org/feed.json"), json);
+    expect(read.unkeyed).toBe(1);
+    expect(read.entries.map((entry) => entry.properties["entry_id"])).toEqual([
+      "1",
+      "2",
+      "3",
+      "https://example.org/4",
+    ]);
+    expect(read.entries[0]).toMatchObject({
+      occurred_at: "2026-09-18T09:00:00.000Z",
+      properties: {
+        url: "https://example.org/1",
+        title: "One & two",
+        description: "Short.",
+        body: `<p>Hello <img src="https://example.org/inline.png"/></p>`,
+        author: "Item Author",
+        published_at: "2026-09-18T09:00:00.000Z",
+        image_url: "https://example.org/hero.png",
+        source_url: "https://example.org/",
+        source_title: "Example JSON",
+        language: "fr",
+      },
+    });
+    expect(read.entries[1]).toMatchObject({
+      occurred_at: "2026-09-19T09:00:00.000Z",
+      properties: {
+        body: "Plain words",
+        image_url: "https://example.org/banner.png",
+        author: "Feed Author",
+        language: "en",
+      },
+    });
+    expect(read.entries[1]?.properties).not.toHaveProperty(
+      "published_at",
+      expect.anything(),
+    );
+    expect(read.entries[2]?.properties).toMatchObject({
+      description: "Only a summary",
+    });
+    expect(read.entries[2]?.properties).not.toHaveProperty(
+      "body",
+      expect.anything(),
+    );
+    expect(read.entries[2]?.occurred_at).toBeUndefined();
+  });
+
+  it("counts a JSON Feed's entries against the cap, and its markup in strings against none", () => {
+    const feed = (items: object[]): string =>
+      JSON.stringify({
+        version: "https://jsonfeed.org/version/1.1",
+        title: "T",
+        items,
+      });
+    expect(() =>
+      readFeed(
+        at("https://example.org/feed.json"),
+        feed(
+          Array.from({ length: maxFeedEntries + 1 }, (_, id) => ({
+            id: String(id),
+          })),
+        ),
+      ),
+    ).toThrow(TooManyEntries);
+    const read = readFeed(
+      at("https://example.org/feed.json"),
+      feed([
+        { id: "1", content_html: "<i>x</i>".repeat(maxFeedElements) },
+        ...Array.from({ length: maxFeedEntries - 1 }, (_, id) => ({
+          id: `i${String(id)}`,
+        })),
+      ]),
+    );
+    expect(read.entries).toHaveLength(maxFeedEntries);
+  });
+
+  it("takes a JSON Feed's content picture where it names no image, and writes no link relative to where it was fetched", () => {
+    const read = readFeed(
+      at("https://example.org/private/token/feed.json"),
+      JSON.stringify({
+        version: "https://jsonfeed.org/version/1.1",
+        title: "T",
+        items: [
+          {
+            id: "1",
+            content_html: `<img src="https://example.org/in.png"/>`,
+            url: "post",
+          },
+        ],
+      }),
+    );
+    expect(read.entries[0]?.properties).toMatchObject({
+      image_url: "https://example.org/in.png",
+    });
+    expect(read.entries[0]?.properties).not.toHaveProperty(
+      "url",
+      expect.anything(),
+    );
+  });
+});
+
+describe("media:thumbnail", () => {
+  const rss = (item: string): string =>
+    `<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>T</title><link>https://example.org/</link><item><guid>a</guid>${item}</item></channel></rss>`;
+  const image = (document: string): unknown =>
+    readFeed(at("https://example.org/feed/rss.xml"), document).entries[0]
+      ?.properties["image_url"];
+  const thumbnail = `<media:thumbnail url="https://example.org/thumb.jpg" width="100" height="100"/>`;
+
+  it("supplies the image where nothing else does", () => {
+    expect(image(rss(thumbnail))).toBe("https://example.org/thumb.jpg");
+  });
+
+  it("comes after an enclosure, a content picture and a summary picture", () => {
+    expect(
+      image(
+        rss(
+          `${thumbnail}<enclosure url="https://example.org/enc.jpg" type="image/jpeg" length="1"/>`,
+        ),
+      ),
+    ).toBe("https://example.org/enc.jpg");
+    expect(
+      image(
+        rss(
+          `${thumbnail}<content:encoded><![CDATA[<img src="https://example.org/content.jpg"/>]]></content:encoded>`,
+        ),
+      ),
+    ).toBe("https://example.org/content.jpg");
+    expect(
+      image(
+        rss(
+          `${thumbnail}<description>&lt;img src="https://example.org/summary.jpg"/&gt;</description>`,
+        ),
+      ),
+    ).toBe("https://example.org/summary.jpg");
+  });
+
+  it("is the first thumbnail that is usable, in the item, its media group or its media content", () => {
+    const unusable = `<media:thumbnail url="https://example.org/pixel.gif" width="1" height="1"/><media:thumbnail url="data:image/gif;base64,R0lG"/><media:thumbnail url="relative.jpg"/>`;
+    expect(image(rss(`${unusable}${thumbnail}`))).toBe(
+      "https://example.org/thumb.jpg",
+    );
+    expect(
+      image(
+        rss(
+          `<media:group><media:content url="https://example.org/v.mp4" medium="video">${thumbnail}</media:content></media:group>`,
+        ),
+      ),
+    ).toBe("https://example.org/thumb.jpg");
+    expect(image(rss(unusable))).toBeUndefined();
+  });
+
+  it("supplies an Atom entry's image too", () => {
+    const entry = readFeed(
+      at("https://example.com/atom.xml"),
+      `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><title>T</title><id>f</id><entry><id>a</id><title>A</title>${thumbnail}</entry></feed>`,
+    ).entries[0];
+    expect(entry?.properties["image_url"]).toBe(
+      "https://example.org/thumb.jpg",
+    );
   });
 });
 
@@ -1444,7 +1696,7 @@ describe("the connector, run as a process", () => {
     expect(reported).toContain(`an entry in feed 1 in RSS_FEEDS (${base})`);
     expect(reported).toContain(`feed 2 in RSS_FEEDS (${base}) answered 404`);
     expect(reported).toContain(
-      `feed 3 in RSS_FEEDS (${base}) is not an Atom or RSS 2.0 feed`,
+      `feed 3 in RSS_FEEDS (${base}) is not an Atom, RSS or JSON feed`,
     );
     expect(reported).toContain(
       "feed 4 in RSS_FEEDS (http://127.0.0.1:1) could not be fetched: its server refused the connection (ECONNREFUSED)",

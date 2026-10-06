@@ -252,7 +252,7 @@ export async function fetchFeed(
 ): Promise<Fetched> {
   const headers: Record<string, string> = {
     Accept:
-      "application/atom+xml, application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+      "application/atom+xml, application/rss+xml, application/feed+json, application/xml;q=0.9, */*;q=0.8",
   };
   if (validators?.etag !== undefined)
     headers["If-None-Match"] = validators.etag;
@@ -510,6 +510,45 @@ interface Written {
   image_url: string | undefined;
 }
 
+interface Images {
+  /** An image the entry names as its own: an enclosure, or a JSON Feed's
+   *  `image`. */
+  enclosure: string | undefined;
+  /** What `media:thumbnail` offers, used where nothing else gives a picture. */
+  thumbnail: string | undefined;
+}
+
+interface Thumbnails {
+  thumbnails?: { url?: string; width?: number; height?: number }[];
+}
+
+interface Media extends Thumbnails {
+  contents?: Thumbnails[];
+  groups?: (Thumbnails & { contents?: Thumbnails[] })[];
+}
+
+// The first `media:thumbnail` that is an http or https link once resolved
+// and does not declare itself a pixel, looked for where the entry names one,
+// then in its media groups and media contents.
+function thumbnailOf(media: Media | undefined, base: Base): string | undefined {
+  const places = [
+    media,
+    ...(media?.contents ?? []),
+    ...(media?.groups ?? []).flatMap((group) => [
+      group,
+      ...(group.contents ?? []),
+    ]),
+  ];
+  for (const place of places) {
+    for (const thumbnail of place?.thumbnails ?? []) {
+      if ((thumbnail.width ?? 2) <= 1 || (thumbnail.height ?? 2) <= 1) continue;
+      const url = linkOf(thumbnail.url, base);
+      if (url !== undefined) return url;
+    }
+  }
+  return undefined;
+}
+
 /**
  * A feed's content is its content element where it has one, else its
  * summary where that holds markup. The description is the summary as plain
@@ -518,14 +557,14 @@ interface Written {
 function contentOf(
   summary: Summary,
   content: string | undefined,
-  enclosure: string | undefined,
+  images: Images,
   base: Base,
   contentIsHtml = true,
 ): Written {
   const reading = summary.html ? readingOf(summary.value) : undefined;
   const picture = countedPicture(reading, base);
   const body = textOf(content);
-  const enclosed = linkOf(enclosure, base);
+  const enclosed = linkOf(images.enclosure, base);
   const found =
     enclosed === undefined
       ? ((contentIsHtml ? countedPicture(readingOf(body), base) : undefined) ??
@@ -540,7 +579,7 @@ function contentOf(
       (reading?.marked === true && !reading.empty
         ? textOf(summary.value)
         : undefined),
-    image_url: enclosed ?? found?.url,
+    image_url: enclosed ?? found?.url ?? images.thumbnail,
   };
 }
 
@@ -591,7 +630,10 @@ export function readFeed(
   text: string,
   documentUrl: string = feed.url,
 ): Read {
-  countTags(text);
+  // A JSON Feed holds its markup in strings, not elements, and its entries
+  // are counted once it is parsed.
+  const isJson = text.trimStart().startsWith("{");
+  if (!isJson) countTags(text);
   const parsed = parseFeed(text);
   const { key } = feed;
   const named = {
@@ -652,7 +694,7 @@ export function readFeed(
             entry.summary?.type === "html" || entry.summary?.type === "xhtml",
         },
         entry.content?.value,
-        image,
+        { enclosure: image, thumbnail: thumbnailOf(entry.media, entryBase) },
         entryBase,
         entry.content?.type === "html" || entry.content?.type === "xhtml",
       );
@@ -700,7 +742,7 @@ export function readFeed(
       const written = contentOf(
         { value: item.description, html: true },
         item.content?.encoded,
-        image,
+        { enclosure: image, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
       );
       keep(
@@ -720,7 +762,70 @@ export function readFeed(
     }
     return { entries, unkeyed, dropped, declared: undefined };
   }
-  throw new Error(
-    `a ${parsed.format} feed, where this connector reads Atom and RSS 2.0`,
-  );
+  if (parsed.format === "rdf") {
+    const rdf = parsed.feed;
+    const channelBase = baseOf(documentBase, rdf.xml?.base);
+    const siteUrl = linkOf(rdf.link, channelBase);
+    const language =
+      languageOf(rdf.dc?.languages?.[0]) ?? languageOf(rdf.xml?.lang);
+    for (const item of rdf.items ?? []) {
+      const itemBase = baseOf(channelBase, item.xml?.base);
+      const url = linkOf(item.link, itemBase);
+      const published = isoOf(item.dc?.dates?.[0]);
+      const written = contentOf(
+        { value: item.description, html: true },
+        item.content?.encoded,
+        { enclosure: undefined, thumbnail: thumbnailOf(item.media, itemBase) },
+        itemBase,
+      );
+      keep(
+        item.rdf?.about ?? url,
+        {
+          url,
+          title: plainOf(item.title),
+          ...written,
+          author: textOf(item.dc?.creators?.[0]),
+          published_at: published,
+          language,
+          source_url: siteUrl,
+          source_title: plainOf(rdf.title),
+        },
+        published,
+      );
+    }
+    return { entries, unkeyed, dropped, declared: undefined };
+  }
+  const json = parsed.feed;
+  if ((json.items?.length ?? 0) > maxFeedEntries) throw new TooManyEntries();
+  const siteUrl = linkOf(json.home_page_url, documentBase);
+  for (const item of json.items ?? []) {
+    const url = linkOf(item.url, documentBase);
+    const published = isoOf(item.date_published);
+    const html = textOf(item.content_html);
+    const written = contentOf(
+      { value: item.summary, html: false },
+      html ?? item.content_text,
+      {
+        enclosure: item.image ?? item.banner_image,
+        thumbnail: undefined,
+      },
+      documentBase,
+      html !== undefined,
+    );
+    keep(
+      item.id ?? url,
+      {
+        url,
+        title: plainOf(item.title),
+        ...written,
+        author: textOf(item.authors?.[0]?.name ?? json.authors?.[0]?.name),
+        published_at: published,
+        language: languageOf(item.language) ?? languageOf(json.language),
+        source_url: siteUrl,
+        source_title: plainOf(json.title),
+      },
+      published ?? isoOf(item.date_modified),
+    );
+  }
+  return { entries, unkeyed, dropped, declared: undefined };
 }

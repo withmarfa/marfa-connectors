@@ -92,7 +92,7 @@ function refusal(error: unknown): string | undefined {
 
 const connector = defineConnector({
   name: "rss",
-  description: "Entries from Atom and RSS 2.0 feeds.",
+  description: "Entries from Atom, RSS and JSON feeds.",
   source: "rss",
   readme: "connectors/rss/README.md",
   types: [
@@ -289,7 +289,7 @@ const connector = defineConnector({
         const why = refusal(error);
         log.condition(
           why === undefined ? `unreadable:${feed.key}` : `refused:${feed.key}`,
-          `${name} ${why ?? "is not an Atom or RSS 2.0 feed"}`,
+          `${name} ${why ?? "is not an Atom, RSS or JSON feed"}`,
         );
         raise(feed, carried);
         continue;
