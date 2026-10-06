@@ -47,8 +47,8 @@ async function once(
     const { stderr } = await run("node", [built, "--once"], {
       env: {
         PATH: process.env["PATH"],
-        MARFA_URL: marfa.url,
-        MARFA_KEY: marfa.key,
+        MARFA_API_URL: marfa.url,
+        MARFA_API_KEY: marfa.key,
         GITHUB_APP_ID: "12345",
         GITHUB_PRIVATE_KEY: key,
         GITHUB_WEBHOOK_SECRET: "github-test-webhook-secret",

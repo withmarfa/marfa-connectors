@@ -44,22 +44,17 @@ To use a server of your own, follow the Quick start in the Marfa repository's RE
 cargo install --locked --path vendor/marfa/core/marfa-cli
 ```
 
-Point `marfa` at the server with `MARFA_API_URL` and `MARFA_API_KEY`, and mint the connector's own key with `marfa keys create`, as [the template's README](./template/README.md#the-key) describes. Then run the connector once with the connector's key:
+Mint the connector's own key with `marfa keys create`, as [the template's README](./template/README.md#the-key) describes. Then run the connector once with the connector's key:
 
 ```bash
-export MARFA_URL=<the server's address>
-export MARFA_KEY=<the connector's key>
+export MARFA_API_URL=<the server's address>
+export MARFA_API_KEY=<the connector's key>
 node connectors/<name>/dist/main.js --once
 ```
 
 A connector also reads the settings its own README names, such as a vendor token.
 
-The two programs name their settings differently, so it is easy to set the wrong pair:
-
-| Program             | Server address  | Key             |
-| ------------------- | --------------- | --------------- |
-| a connector         | `MARFA_URL`     | `MARFA_KEY`     |
-| the `marfa` command | `MARFA_API_URL` | `MARFA_API_KEY` |
+The `marfa` command and a connector read the server's address and the key from the same two settings, `MARFA_API_URL` and `MARFA_API_KEY`. A connector's key is its own, so set the connector's key in the connector's environment, not the one you use for the `marfa` command.
 
 A connector keeps no file and holds no secret of its own: its state is on the instance, and its secrets come from the environment.
 

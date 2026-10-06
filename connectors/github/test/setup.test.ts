@@ -46,8 +46,8 @@ function setup(
   const child = spawn("node", [built, "--setup", file], {
     env: {
       PATH: process.env["PATH"],
-      MARFA_URL: marfa.url,
-      MARFA_KEY: marfa.key,
+      MARFA_API_URL: marfa.url,
+      MARFA_API_KEY: marfa.key,
       GITHUB_API_URL: github.url,
       ...env,
     },

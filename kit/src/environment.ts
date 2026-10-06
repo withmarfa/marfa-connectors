@@ -48,10 +48,10 @@ export function readEnvironment<E extends EnvDeclaration>(
     return value ?? "";
   };
 
-  const url = need("MARFA_URL");
-  const key = need("MARFA_KEY");
+  const url = need("MARFA_API_URL");
+  const key = need("MARFA_API_KEY");
   const values: Record<string, string | undefined> = {};
-  const secrets = new Map([["MARFA_KEY", key]]);
+  const secrets = new Map([["MARFA_API_KEY", key]]);
   for (const [name, kind] of Object.entries(connector.env ?? {})) {
     // Setup makes what the connector needs later, so it needs none of it.
     if (kind === "optional" || setup) {
@@ -73,7 +73,7 @@ export function readEnvironment<E extends EnvDeclaration>(
   // the key itself.
   if (!isServerUrl(url)) {
     throw new ConfigurationError(
-      "MARFA_URL is not an http or https address without credentials, a query or a fragment",
+      "MARFA_API_URL is not an http or https address without credentials, a query or a fragment",
     );
   }
   const short = [...secrets].filter(

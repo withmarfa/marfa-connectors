@@ -107,7 +107,7 @@ describe("the type check", () => {
   });
 });
 
-describe("MARFA_URL", () => {
+describe("MARFA_API_URL", () => {
   let harness: Harness;
   beforeEach(async () => {
     harness = await Harness.create();
@@ -129,13 +129,13 @@ describe("MARFA_URL", () => {
       expect(
         await start(
           testConnector(vendor()),
-          harness.runtime(["--every", "1m"], { MARFA_URL: url }),
+          harness.runtime(["--every", "1m"], { MARFA_API_URL: url }),
         ),
       ).toBe(2);
     }
     const said = harness.lines.join("\n");
     expect(said).toContain(
-      "MARFA_URL is not an http or https address without credentials",
+      "MARFA_API_URL is not an http or https address without credentials",
     );
     expect(said).not.toContain("hunter2-pass");
     expect(harness.server.requests).toEqual([]);
