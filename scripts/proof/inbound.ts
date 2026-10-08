@@ -212,8 +212,8 @@ export async function proveInbound(
           },
         );
         if (
-          deliveryAccess.response.status !== 404 ||
-          deliveryAccess.error?.error.code !== "connector_not_found"
+          deliveryAccess.response.status !== 403 ||
+          deliveryAccess.error?.error.code !== "forbidden"
         ) {
           throw new Error(
             "connector management allowed reading another connector's deliveries",
