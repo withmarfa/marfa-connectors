@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { createClient } from "@withmarfa/client";
+import { request } from "node:http";
+import type { Minted } from "./connector.js";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +26,7 @@ const bootChoices = [
 export interface Booted {
   url: string;
   key: string;
-  operatorKey: string;
+  managementKey: string;
   commit: string;
 }
 
@@ -41,6 +44,7 @@ function parseEnv(text: string): Map<string, string> {
 export class ProofServer {
   constructor(private readonly connectorHoldMs?: number) {}
   private dir: string | undefined;
+  private socketPath: string | undefined;
   private stopped: Promise<void> | undefined;
 
   async boot(): Promise<Booted> {
@@ -59,19 +63,113 @@ export class ProofServer {
     const vars = parseEnv(await readFile(this.envFile(), "utf8"));
     const url = vars.get("MARFA_TEST_URL");
     const key = vars.get("MARFA_TEST_KEY");
-    const operatorKey = vars.get("MARFA_TEST_OPERATOR_KEY");
+    this.socketPath = vars.get("MARFA_TEST_SOCKET");
     if (
       url === undefined ||
       key === undefined ||
       key === "" ||
-      operatorKey === undefined ||
-      operatorKey === ""
+      this.socketPath === undefined ||
+      this.socketPath === ""
     ) {
       throw new Error(
-        "the boot script wrote no server URL, working key or operator key",
+        "the boot script wrote no server URL, working key or private socket",
       );
     }
-    return { url, key, operatorKey, commit };
+    const management = await this.mintKey({
+      label: "connector proof reports",
+      source: "proof-reports",
+      permissions: ["connectors.manage", "keys.manage"],
+      type_permissions: {},
+      extension_permissions: {},
+      edge_permissions: {},
+      metadata_permissions: {},
+      profile_permissions: {},
+    });
+    const client = createClient({ baseUrl: url, credential: key });
+    const current = await client.GET("/keys/current");
+    if (current.data === undefined)
+      throw new Error("the working key was refused");
+    const narrowed = await client.PATCH("/keys/{id}", {
+      params: { path: { id: current.data.id } },
+      body: {
+        permissions: [
+          "keys.mint",
+          "items.purge",
+          "webhooks.manage",
+          "grants.manage",
+          "audit.read",
+          "config.manage",
+          "schema.write",
+        ],
+      },
+    });
+    if (!narrowed.response.ok)
+      throw new Error("the working key could not shed management permissions");
+    return { url, key, managementKey: management.key, commit };
+  }
+
+  // Fixture provisioning uses the server's private machine-authority transport.
+  // All connector and public proof requests still use the published SDK.
+  async mintKey(body: Record<string, unknown>): Promise<Minted> {
+    const minted = (await this.localKeyRequest(
+      "POST",
+      "/keys",
+      body,
+    )) as Minted;
+    if (typeof minted.id !== "string" || typeof minted.key !== "string")
+      throw new Error("local key provisioning returned no key");
+    return minted;
+  }
+
+  async updateKey(id: string, body: Record<string, unknown>): Promise<void> {
+    await this.localKeyRequest(
+      "PATCH",
+      `/keys/${encodeURIComponent(id)}`,
+      body,
+    );
+  }
+
+  private async localKeyRequest(
+    method: "POST" | "PATCH",
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (this.socketPath === undefined)
+      throw new Error("the server was never booted");
+    return new Promise((resolve, reject) => {
+      const req = request(
+        {
+          socketPath: this.socketPath,
+          path,
+          method,
+          headers: { "content-type": "application/json" },
+        },
+        (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => {
+            text += chunk;
+          });
+          res.on("error", reject);
+          res.on("end", () => {
+            try {
+              if (res.statusCode !== (method === "POST" ? 201 : 200))
+                throw new Error(
+                  `local key provisioning returned ${String(res.statusCode)}`,
+                );
+              resolve(JSON.parse(text) as unknown);
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+          });
+        },
+      );
+      req.on("error", reject);
+      req.setTimeout(15_000, () =>
+        req.destroy(new Error("local key provisioning timed out")),
+      );
+      req.end(JSON.stringify(body));
+    });
   }
 
   /** Safe to call more than once, and after a boot that failed. */

@@ -17,7 +17,7 @@ You need a Marfa server, the `marfa` command-line tool, a credential that can mi
    pnpm build
    ```
 
-2. Mint the connector's key, with `marfa` pointed at your server (`MARFA_API_URL`, and `MARFA_API_KEY` set to a key that holds `keys.mint`, such as the operator key):
+2. Mint the connector's key, with `marfa` pointed at your server (`MARFA_API_URL`, and `MARFA_API_KEY` set to a key that holds `keys.mint` and the content permissions listed below):
 
    ```bash
    marfa keys create --label rss --source rss --type-permission rss.entry=write --metadata-permission types=write --default-tier feed

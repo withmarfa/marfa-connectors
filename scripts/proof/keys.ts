@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
+import type { ProofServer } from "./server.js";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
@@ -44,7 +45,8 @@ async function update(
 export async function proveKeys(
   marfa: MarfaClient,
   url: string,
-  operator: MarfaClient,
+  manager: MarfaClient,
+  updateKey: ProofServer["updateKey"],
 ): Promise<void> {
   const vendor = await serveThings();
   try {
@@ -60,7 +62,7 @@ export async function proveKeys(
         entry,
       );
 
-    // Only the operator key grants a claim on a source a caller does not
+    // Only direct owner or local authority grants a source a caller does not
     // hold, and the boot hands the proof a working key, which grants its own
     // source and its claims. So the connector's key goes, freeing its source,
     // and a key of that source claiming the boot key's own mints the rest.
@@ -70,14 +72,14 @@ export async function proveKeys(
       "keys: the connector's source is taken over by a key that may mint keys claiming it and one other source",
       async () => {
         const current = await marfa.GET("/keys/current");
-        const listed = await marfa.GET("/keys");
+        const listed = await manager.GET("/keys");
         const inbound = listed.data?.data.find(
           (key) => key.source === "proof-inbound",
         );
         if (current.data === undefined || inbound === undefined)
           throw new Error("the boot key or the connector's key is not listed");
         elsewhere = current.data.source;
-        const revoked = await marfa.DELETE("/keys/{id}", {
+        const revoked = await manager.DELETE("/keys/{id}", {
           params: { path: { id: inbound.id } },
         });
         if (!revoked.response.ok) throw new Error("the revoke was refused");
@@ -126,7 +128,7 @@ export async function proveKeys(
             typePermission: "proof.thing",
           }),
         });
-        await marfa.DELETE("/keys/{id}", {
+        await manager.DELETE("/keys/{id}", {
           params: { path: { id: narrow.id } },
         });
         const said = JSON.stringify(refused.error);
@@ -159,10 +161,10 @@ export async function proveKeys(
       "keys: narrowed in place to read on types, the server keeps the key's other reach and the connector still starts, its type being current",
       async () => {
         if (second === undefined) throw new Error("no second key");
-        await update(minter, second.id, {
+        await update(manager, second.id, {
           metadata_permissions: { types: "read" },
         });
-        const { data } = await minter.GET("/keys");
+        const { data } = await manager.GET("/keys");
         const held = data?.data.find((key) => key.id === second?.id);
         const { code, output } = await runner(second).once();
         if (
@@ -189,7 +191,7 @@ export async function proveKeys(
           elsewhere,
         ]);
         const refused = await runner(wide).once();
-        const error = (await lastRun(operator, wide.id)).error ?? "";
+        const error = (await lastRun(manager, wide.id)).error ?? "";
         const narrow = `marfa keys update ${wide.id} --claim proof-inbound`;
         if (
           refused.code !== 1 ||
@@ -200,7 +202,7 @@ export async function proveKeys(
             `exited ${String(refused.code)}, reported ${error}: ${refused.output}`,
           );
         }
-        await update(minter, wide.id, { sources: ["proof-inbound"] });
+        await update(manager, wide.id, { sources: ["proof-inbound"] });
         const narrowed = await runner(wide).once();
         if (narrowed.code !== 0) {
           throw new Error(
@@ -212,30 +214,42 @@ export async function proveKeys(
     );
 
     await check(
-      "keys: a key of another source claiming nothing is refused at start, saying how to claim the connector's, and starts once it claims it",
+      "keys: a key of another source claiming nothing is refused at start, saying how to claim the connector's, management cannot widen it, and it starts once local authority grants the claim",
       async () => {
         const foreign = await mint(minter, "proof-foreign", []);
         const refused = await runner(foreign).once();
-        const error = (await lastRun(operator, foreign.id)).error ?? "";
+        const error = (await lastRun(manager, foreign.id)).error ?? "";
         if (
           refused.code !== 1 ||
           !error.includes("own source proof-foreign") ||
           !error.includes(
-            `marfa keys update ${foreign.id} --claim proof-inbound`,
+            `marfa --socket <socket-path> keys update ${foreign.id} --claim proof-inbound`,
           )
         ) {
           throw new Error(
             `exited ${String(refused.code)}, reported ${error}: ${refused.output}`,
           );
         }
-        await update(minter, foreign.id, { sources: ["proof-inbound"] });
+        const widened = await manager.PATCH("/keys/{id}", {
+          params: { path: { id: foreign.id } },
+          body: { sources: ["proof-inbound"] },
+        });
+        if (
+          widened.response.status !== 403 ||
+          widened.error?.error.code !== "forbidden"
+        ) {
+          throw new Error(
+            "keys.manage widened the connector key's source claims",
+          );
+        }
+        await updateKey(foreign.id, { sources: ["proof-inbound"] });
         const claimed = await runner(foreign).once();
         if (claimed.code !== 0) {
           throw new Error(
             `claiming it, it exited ${String(claimed.code)}: ${claimed.output}`,
           );
         }
-        return `exited 1, reporting: ${error}; claiming it, exited 0`;
+        return `exited 1, reporting: ${error}; management widening refused; local claim granted, exited 0`;
       },
     );
   } finally {

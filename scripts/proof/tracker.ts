@@ -98,7 +98,7 @@ async function until(
 export async function proveTracker(
   marfa: MarfaClient,
   url: string,
-  operator: MarfaClient,
+  manager: MarfaClient,
 ): Promise<void> {
   const tracker = await new Tracker().start();
   try {
@@ -279,7 +279,7 @@ export async function proveTracker(
         child.updated_at = tracker.touch();
         await runOnce();
         const back = await row(child.id);
-        const summary = (await lastRun(operator, key.id)).summary ?? "";
+        const summary = (await lastRun(manager, key.id)).summary ?? "";
         const written = tracker.writes().length;
         await runOnce();
         if (
@@ -338,7 +338,7 @@ export async function proveTracker(
         const written = tracker.writes().length;
         await runOnce();
         const onPurge = writesSince(written);
-        const connectorId = (await registration(operator, key.id)).id;
+        const connectorId = (await registration(manager, key.id)).id;
         const cleared = await createClient({
           baseUrl: url,
           credential: key.key,
@@ -350,7 +350,7 @@ export async function proveTracker(
             `the clear was refused: ${JSON.stringify(cleared.error)}`,
           );
         }
-        const revoked = await marfa.DELETE("/keys/{id}", {
+        const revoked = await manager.DELETE("/keys/{id}", {
           params: { path: { id: key.id } },
         });
         if (!revoked.response.ok) throw new Error("the revoke was refused");
@@ -489,9 +489,9 @@ export async function proveTracker(
           body: "edited beside a retyped issue",
         });
         await runOnce();
-        const first = await lastRun(operator, key.id);
+        const first = await lastRun(manager, key.id);
         await runOnce();
-        const second = await lastRun(operator, key.id);
+        const second = await lastRun(manager, key.id);
         const note = await item(marfa, was.id);
         const said = `the server refused ${retyped.id}: type_not_permitted`;
         tracker.hidden.add(retyped.id);
@@ -526,7 +526,7 @@ export async function proveTracker(
           env,
           entry,
         ).once();
-        const error = (await lastRun(operator, narrow.id)).error ?? "";
+        const error = (await lastRun(manager, narrow.id)).error ?? "";
         if (refused.code !== 1 || !error.includes("may not write edge")) {
           throw new Error(`exit ${String(refused.code)}, ${error}`);
         }
@@ -569,7 +569,7 @@ export async function proveTracker(
       "tracker: under a schedule, a delivery fetches only the issue it names, and an edit in Marfa reaches the tracker within a look",
       async () => {
         const own = createClient({ baseUrl: url, credential: key.key });
-        const connectorId = (await registration(operator, key.id)).id;
+        const connectorId = (await registration(manager, key.id)).id;
         const made = await own.POST("/connectors/{id}/endpoints", {
           params: { path: { id: connectorId } },
           body: { duplicate_header: "X-GitHub-Delivery" },
@@ -595,10 +595,9 @@ export async function proveTracker(
           }),
         );
         try {
-          const before = (await lastRun(operator, key.id)).reported_at;
+          const before = (await lastRun(manager, key.id)).reported_at;
           await until(
-            async () =>
-              (await lastRun(operator, key.id)).reported_at !== before,
+            async () => (await lastRun(manager, key.id)).reported_at !== before,
             "the scheduled run",
           );
           parent.title = "Parent, changed at the tracker";
@@ -670,10 +669,9 @@ export async function proveTracker(
           }),
         );
         try {
-          const before = (await lastRun(operator, key.id)).reported_at;
+          const before = (await lastRun(manager, key.id)).reported_at;
           await until(
-            async () =>
-              (await lastRun(operator, key.id)).reported_at !== before,
+            async () => (await lastRun(manager, key.id)).reported_at !== before,
             "the scheduled run",
           );
           const deleted = await marfa.DELETE("/types/{id}", {
@@ -696,7 +694,7 @@ export async function proveTracker(
           );
           await until(
             async () =>
-              (await lastRun(operator, key.id)).outcome === "succeeded" &&
+              (await lastRun(manager, key.id)).outcome === "succeeded" &&
               (await typeHeld(marfa, "proof.attachment")),
             "a run succeeding with the type registered again",
           );
