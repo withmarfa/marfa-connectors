@@ -187,8 +187,7 @@ export class ScriptedServer {
   grants: {
     sources?: string[];
     oauth_client_id?: string;
-    permissions?: string[];
-    is_operator?: boolean;
+    permissions?: readonly string[];
     type_permissions?: Record<string, string>;
     metadata_permissions?: Record<string, string>;
     edge_permissions?: Record<string, string>;
@@ -838,7 +837,6 @@ export class ScriptedServer {
         sources: [],
         permissions: [],
         default_tier: "feed",
-        is_operator: false,
         ...this.minted,
         extension_permissions: {},
         metadata_permissions: {},

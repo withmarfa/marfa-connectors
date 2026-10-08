@@ -27,7 +27,7 @@ pnpm build
 
 The proof server is independently pinned in `scripts/monorepo.commit`. Run `scripts/monorepo.sh` before `pnpm proof`; it prepares only the server checkout, and the proof uses the installed registry client.
 
-`scripts/monorepo.sh` leaves a checkout of the Marfa monorepo in `vendor/marfa`. Build its server and boot a throwaway one, which exports the server's address as `MARFA_TEST_URL`, a working key as `MARFA_TEST_KEY`, and an operator key for connector report inspection as `MARFA_TEST_OPERATOR_KEY`, and stop it afterward:
+`scripts/monorepo.sh` leaves a checkout of the Marfa monorepo in `vendor/marfa`. Build its server and boot a throwaway one, which exports the server's address as `MARFA_TEST_URL`, an ordinary working key as `MARFA_TEST_KEY`, and the private socket as `MARFA_TEST_SOCKET`. The launcher claims the owner through that socket, and the proof uses it to mint a separate ordinary key with `connectors.manage` and `keys.manage` for report inspection and key administration. It narrows the working key to the seven existing permissions, removing management access. Stop the server afterward:
 
 ```bash
 scripts/monorepo.sh

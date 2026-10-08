@@ -105,7 +105,7 @@ function keySourceProblem(
   const own = key.source === source;
   const others = key.sources.filter((claim) => claim !== source);
   if (!own && !key.sources.includes(source)) {
-    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it with \`marfa keys update ${key.id} --claim ${source}\` from the operator key, or mint a key as ${guide} says.`;
+    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it through the private socket with \`marfa --socket <socket-path> keys update ${key.id} --claim ${source}\`, or mint a key as ${guide} says.`;
   }
   if (others.length > 0) {
     return `the key ${key.id} claims sources besides the connector's, ${source}, and is refused: ${others.join(", ")}. Narrow it with \`marfa keys update ${key.id} ${own ? "--no-claims" : `--claim ${source}`}\`.`;
@@ -119,7 +119,6 @@ function keyWiderThanTypes(
   connections: ReadonlySet<string>,
 ): string[] {
   const wider: string[] = [];
-  if (key.is_operator) wider.push("it is the operator key");
   wider.push(...key.permissions);
   const held = (
     family: string,

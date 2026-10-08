@@ -122,7 +122,7 @@ async function deliveries(
 export async function proveInbound(
   marfa: MarfaClient,
   url: string,
-  operator: MarfaClient,
+  manager: MarfaClient,
 ): Promise<void> {
   const vendor = await serveThings();
   try {
@@ -157,8 +157,8 @@ export async function proveInbound(
       "inbound: the connector's first run registers it, and an endpoint made for it answers its address in full once",
       async () => {
         await runOnce();
-        connectorId = (await registration(operator, key.id)).id;
-        const unmade = (await lastRun(operator, key.id)).summary ?? "";
+        connectorId = (await registration(manager, key.id)).id;
+        const unmade = (await lastRun(manager, key.id)).summary ?? "";
         if (!unmade.includes("no webhook endpoint is live")) {
           throw new Error(`the first run's report said: ${unmade}`);
         }
@@ -185,9 +185,9 @@ export async function proveInbound(
     );
 
     await check(
-      "inbound: own and operator keys read reports, while an unrelated working key cannot list or read them",
+      "inbound: own and manager keys read reports, while an unrelated working key cannot list or read them",
       async () => {
-        for (const reader of [own, operator]) {
+        for (const reader of [own, manager]) {
           const listed = await registration(reader, key.id);
           const detail = await reader.GET("/connectors/{id}", {
             params: { path: { id: connectorId } },
@@ -204,6 +204,20 @@ export async function proveInbound(
               "an authorized reader could not read the registration and its runs",
             );
           }
+        }
+        const deliveryAccess = await manager.GET(
+          "/connectors/{id}/deliveries",
+          {
+            params: { path: { id: connectorId } },
+          },
+        );
+        if (
+          deliveryAccess.response.status !== 403 ||
+          deliveryAccess.error?.error.code !== "forbidden"
+        ) {
+          throw new Error(
+            "connector management allowed reading another connector's deliveries",
+          );
         }
         const listed = await marfa.GET("/connectors");
         const detail = await marfa.GET("/connectors/{id}", {
@@ -223,7 +237,7 @@ export async function proveInbound(
             `unrelated key: list ${String(listed.response.status)}, detail ${String(detail.response.status)}, runs ${String(runs.response.status)}`,
           );
         }
-        return "own and operator list, detail and runs succeed; unrelated list is empty, detail and runs answer 404 connector_not_found";
+        return "own and manager list, detail and runs succeed; management cannot read deliveries; unrelated list is empty, detail and runs answer 404 connector_not_found";
       },
     );
 
@@ -263,7 +277,7 @@ export async function proveInbound(
         await runOnce();
         const handled = await deliveries(own, connectorId, "handled");
         const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-        const summary = (await lastRun(operator, key.id)).summary ?? "";
+        const summary = (await lastRun(manager, key.id)).summary ?? "";
         if (
           handled.map((delivery) => delivery.outcome).join() !== "processed" ||
           rows.get("t2")?.properties["title"] !== "Second" ||
@@ -297,7 +311,7 @@ export async function proveInbound(
         await runOnce();
         const every = await deliveries(own, connectorId, "any");
         const outcomes = every.map((delivery) => delivery.outcome).join();
-        const summary = (await lastRun(operator, key.id)).summary ?? "";
+        const summary = (await lastRun(manager, key.id)).summary ?? "";
         if (
           repeat?.duplicate_of?.outcome !== "processed" ||
           outcomes !== "processed,duplicate,rejected" ||
@@ -333,15 +347,15 @@ export async function proveInbound(
           }),
         );
         try {
-          const runsBefore = (await lastRun(operator, key.id)).reported_at;
+          const runsBefore = (await lastRun(manager, key.id)).reported_at;
           await until(
             async () =>
-              (await lastRun(operator, key.id)).reported_at !== runsBefore,
+              (await lastRun(manager, key.id)).reported_at !== runsBefore,
             "the scheduled run",
           );
           vendor.things.set("t3", "Third");
           vendor.asked.length = 0;
-          const deliveryReportBefore = (await lastRun(operator, key.id))
+          const deliveryReportBefore = (await lastRun(manager, key.id))
             .reported_at;
           const sentAt = Date.now();
           await post(
@@ -351,7 +365,7 @@ export async function proveInbound(
           );
           await until(async () => {
             const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-            const report = await lastRun(operator, key.id);
+            const report = await lastRun(manager, key.id);
             const handled = await deliveries(own, connectorId, "handled");
             return deliverySettled(
               {
@@ -382,13 +396,13 @@ export async function proveInbound(
             await rowsOf(marfa, "proof.thing", "proof-inbound")
           ).get("t2");
           if (second === undefined) throw new Error("t2 is not held");
-          const restorationReportBefore = (await lastRun(operator, key.id))
+          const restorationReportBefore = (await lastRun(manager, key.id))
             .reported_at;
           await edit(marfa, second, { title: "Edited in Marfa" });
           const editedAt = Date.now();
           await until(async () => {
             const rows = await rowsOf(marfa, "proof.thing", "proof-inbound");
-            const report = await lastRun(operator, key.id);
+            const report = await lastRun(manager, key.id);
             return restorationSettled(
               {
                 rowReady: rows.get("t2")?.properties["title"] === "Second",
@@ -402,7 +416,7 @@ export async function proveInbound(
             );
           }, "t2 being put back");
           const putBack = Date.now() - editedAt;
-          const summary = (await lastRun(operator, key.id)).summary ?? "";
+          const summary = (await lastRun(manager, key.id)).summary ?? "";
           if (
             !summary.includes(
               `title on ${second.id} was changed in Marfa and put back`,

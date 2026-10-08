@@ -63,9 +63,9 @@ try {
   if (booted === undefined) throw new Error("the boot answered nothing");
   const marfa = createClient({ baseUrl: booted.url, credential: booted.key });
 
-  const operator = createClient({
+  const manager = createClient({
     baseUrl: booted.url,
-    credential: booted.operatorKey,
+    credential: booted.managementKey,
   });
 
   await check("the server speaks the client's contract", async () => {
@@ -89,12 +89,14 @@ try {
     () => witnessTypeAnswers(marfa),
   );
 
-  await proveRss(marfa, booted.url, operator);
-  await proveTodoist(marfa, booted.url, operator);
-  await proveInbound(marfa, booted.url, operator);
-  await proveKeys(marfa, booted.url, operator);
-  await proveTracker(marfa, booted.url, operator);
-  await proveGitHub(marfa, booted.url, operator);
+  await proveRss(marfa, booted.url, manager);
+  await proveTodoist(marfa, booted.url, manager);
+  await proveInbound(marfa, booted.url, manager);
+  await proveKeys(marfa, booted.url, manager, (id, body) =>
+    server.updateKey(id, body),
+  );
+  await proveTracker(marfa, booted.url, manager);
+  await proveGitHub(marfa, booted.url, manager, (body) => server.mintKey(body));
   await proveCheckpoint(marfa, booted.url);
   await proveWatchCheckpoint(marfa, booted.url);
   await proveInboundRetry(booted.url, marfa);

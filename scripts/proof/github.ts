@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createHmac } from "node:crypto";
 import { join, resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
+import type { ProofServer } from "./server.js";
 import { check } from "./check.js";
 import {
   ConnectorUnderProof,
@@ -62,7 +63,8 @@ async function connect(
 export async function proveGitHub(
   marfa: MarfaClient,
   url: string,
-  operator: MarfaClient,
+  manager: MarfaClient,
+  mintKey: ProofServer["mintKey"],
 ): Promise<void> {
   const github = await new GitHubStub().start();
   try {
@@ -156,7 +158,7 @@ export async function proveGitHub(
         const added = ["github.issue", "github.comment"].filter((type) =>
           output.includes(`added private to the type ${type}`),
         );
-        const summary = String((await lastRun(operator, key.id)).summary);
+        const summary = String((await lastRun(manager, key.id)).summary);
         const grown = await Promise.all(
           ["github.issue", "github.comment"].map(async (type) => {
             const { data } = await marfa.GET("/types/{id}", {
@@ -427,7 +429,7 @@ export async function proveGitHub(
         const still = [...(await rows()).values()].filter(
           (one) => one.state === "active",
         ).length;
-        const summary = String((await lastRun(operator, key.id)).summary);
+        const summary = String((await lastRun(manager, key.id)).summary);
         if (back === 0 || still !== back || !lost.includes("refused it")) {
           throw new Error(
             `${String(back)} back, ${String(still)} after the loss: ${summary}`,
@@ -462,7 +464,7 @@ export async function proveGitHub(
       async () => {
         const installation = github.installations[0];
         if (installation !== undefined) installation.lost = false;
-        const connectorId = (await registration(operator, key.id)).id;
+        const connectorId = (await registration(manager, key.id)).id;
         const own = createClient({ baseUrl: url, credential: key.key });
         const { data, error } = await own.POST("/connectors/{id}/endpoints", {
           params: { path: { id: connectorId } },
@@ -476,7 +478,7 @@ export async function proveGitHub(
           await post("ping", { zen: "Forged" }, "a guess"),
         ];
         await runOnce();
-        const summary = String((await lastRun(operator, key.id)).summary);
+        const summary = String((await lastRun(manager, key.id)).summary);
         if (
           statuses.join() !== "202,202" ||
           !summary.includes("deliveries processed 1, rejected 1")
@@ -519,17 +521,16 @@ export async function proveGitHub(
           }
         };
         try {
-          const before = (await lastRun(operator, key.id)).reported_at;
+          const before = (await lastRun(manager, key.id)).reported_at;
           await until(
-            async () =>
-              (await lastRun(operator, key.id)).reported_at !== before,
+            async () => (await lastRun(manager, key.id)).reported_at !== before,
             "the scheduled run",
           );
-          const settled = (await lastRun(operator, key.id)).reported_at;
+          const settled = (await lastRun(manager, key.id)).reported_at;
           await post("ping", {});
           await until(
             async () =>
-              (await lastRun(operator, key.id)).reported_at !== settled,
+              (await lastRun(manager, key.id)).reported_at !== settled,
             "the first run for deliveries",
           );
           github.asked.length = 0;
@@ -636,14 +637,14 @@ export async function proveGitHub(
         const said = await row(comment.node);
         await edit(marfa, said, { body: "Edited in Marfa" });
         await runOnce();
-        const edited = String((await lastRun(operator, key.id)).summary);
+        const edited = String((await lastRun(manager, key.id)).summary);
         const back = await row(comment.node);
         const second = github.addComment(parent, "Second");
         await runOnce();
         const secondRow = await row(second.node);
         await trash(marfa, secondRow.id);
         await runOnce();
-        const binned = String((await lastRun(operator, key.id)).summary);
+        const binned = String((await lastRun(manager, key.id)).summary);
         const kept = await row(second.node);
         await restore(marfa, secondRow.id);
         await runOnce();
@@ -770,7 +771,7 @@ export async function proveGitHub(
   } finally {
     await github.stop();
   }
-  await proveGitHubCoverage(url, operator);
+  await proveGitHubCoverage(url, manager, mintKey);
 }
 
 interface CoverageEnvelope {
@@ -780,7 +781,8 @@ interface CoverageEnvelope {
 
 export async function proveGitHubCoverage(
   url: string,
-  operator: MarfaClient,
+  manager: MarfaClient,
+  mintKey: ProofServer["mintKey"],
 ): Promise<void> {
   const github = await new GitHubStub().start();
   try {
@@ -798,23 +800,19 @@ export async function proveGitHubCoverage(
       installation: 2,
       issuesOff: true,
     });
-    const { data: key, error } = await operator.POST("/keys", {
-      body: {
-        label: "github read coverage",
-        source: "proof-github-coverage",
-        sources: [source],
-        type_permissions: Object.fromEntries(
-          types.map((type) => [type, "write" as const]),
-        ),
-        edge_permissions: Object.fromEntries(
-          connections.map((type) => [type, "write" as const]),
-        ),
-        metadata_permissions: { types: "write", edge_types: "write" },
-        default_tier: "feed",
-      },
+    const key = await mintKey({
+      label: "github read coverage",
+      source: "proof-github-coverage",
+      sources: [source],
+      type_permissions: Object.fromEntries(
+        types.map((type) => [type, "write" as const]),
+      ),
+      edge_permissions: Object.fromEntries(
+        connections.map((type) => [type, "write" as const]),
+      ),
+      metadata_permissions: { types: "write", edge_types: "write" },
+      default_tier: "feed",
     });
-    if (key === undefined)
-      throw new Error(`coverage key refused: ${JSON.stringify(error)}`);
     const own = createClient({ baseUrl: url, credential: key.key });
     const runner = () =>
       new ConnectorUnderProof(source, url, key.key, {
@@ -878,7 +876,7 @@ export async function proveGitHubCoverage(
         github.asked.length = 0;
         const skipped = await run();
         const retained = await state();
-        const report = await lastRun(operator, key.id);
+        const report = await lastRun(manager, key.id);
         if (
           !disabled(retained, a.node) ||
           !String(report.summary).includes(
@@ -918,7 +916,7 @@ export async function proveGitHubCoverage(
         first.lost = true;
         const skipped = await run();
         const partial = await state();
-        const report = await lastRun(operator, key.id);
+        const report = await lastRun(manager, key.id);
         if (
           !disabled(partial, a.node) ||
           disabled(partial, b.node) ||
@@ -948,7 +946,7 @@ export async function proveGitHubCoverage(
           )
         )
           throw new Error(`A did not clear: ${reached}`);
-        return "own-key state and operator reports retained A, cleared B, then cleared A; every run was a fresh executable process";
+        return "own-key state and manager reports retained A, cleared B, then cleared A; every run was a fresh executable process";
       },
     );
 
@@ -964,7 +962,7 @@ export async function proveGitHubCoverage(
         const failed = await runner().once();
         github.rateLimited = false;
         const retained = await state();
-        const report = await lastRun(operator, key.id);
+        const report = await lastRun(manager, key.id);
         if (
           failed.code !== 1 ||
           report.outcome !== "failed" ||
@@ -976,7 +974,7 @@ export async function proveGitHubCoverage(
             `failed retention wrong: ${JSON.stringify(retained)}; ${JSON.stringify(report)}; ${failed.output}`,
           );
         }
-        return "exit 1 and a failed operator report, with both original conditions durable and no clearance log";
+        return "exit 1 and a failed manager report, with both original conditions durable and no clearance log";
       },
     );
 
@@ -998,7 +996,7 @@ export async function proveGitHubCoverage(
         github.asked.length = 0;
         await run();
         const retained = await state();
-        const report = await lastRun(operator, key.id);
+        const report = await lastRun(manager, key.id);
         const listings = github.asked.filter(
           (request) =>
             request.path.startsWith("/repos/") &&

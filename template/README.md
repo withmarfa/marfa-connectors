@@ -151,13 +151,13 @@ How deliveries are taken:
 - With `--every`, the kit looks between scheduled runs, every ten seconds or as often as `--look-every` says: for a waiting delivery, for a change in Marfa its vendor has not had, where the connector has `onChange`, and for a change in Marfa to a field it mirrors, which it reads from the log and tells from its own writes. Any of them starts a run for it at once, so a change made in Marfa reaches the vendor, or is put back, within a look rather than at the next schedule. A run that fails, or whose deliveries could not be marked, leaves what waits for the scheduled run rather than trying again at every look. The schedule stays the safety net, since a vendor does not promise to deliver: GitHub does not retry a failed delivery. `--look-every` is refused for a connector that neither receives webhooks nor carries changes back.
 - Each run's report counts the deliveries it processed, rejected and marked duplicate.
 
-The address comes from the instance, never from the kit. With the connector registered, make an endpoint with its own key or the operator key:
+The address comes from the instance, never from the kit. With the connector registered, make an endpoint with its own key or a key holding `connectors.manage`:
 
 ```bash
 marfa connectors endpoints create <connector-id> --label <vendor> --duplicate-header <header>
 ```
 
-The answer carries the address in full this once, as `path` and as `url`, the address the binary reached joined to it; later reads show only its last four characters. Give the vendor the instance's public address with that path, and the secret it signs with. `--duplicate-header` names the header a vendor repeats on a redelivery, such as `X-GitHub-Delivery`. A scheduled run whose registration holds no live endpoint says how to make one. `marfa connectors endpoints retire <connector-id> <endpoint-id>` stops an address answering. `marfa connectors deliveries list <connector-id>` shows what waits, with the connector's own key only: the operator key is refused, as on every read of the connector's data.
+The answer carries the address in full this once, as `path` and as `url`, the address the binary reached joined to it; later reads show only its last four characters. Give the vendor the instance's public address with that path, and the secret it signs with. `--duplicate-header` names the header a vendor repeats on a redelivery, such as `X-GitHub-Delivery`. A scheduled run whose registration holds no live endpoint says how to make one. `marfa connectors endpoints retire <connector-id> <endpoint-id>` stops an address answering. `marfa connectors deliveries list <connector-id>` shows what waits, with the connector's own key only: a management key is refused, as on every read of the connector's data.
 
 ## The key
 
@@ -177,7 +177,7 @@ Naming the maps, the key holds no permission: it cannot mint keys, purge, delete
 
 The kit reads the key back on every start (`GET /keys/current`), before it registers a type or writes a row, and names the key and what to change when it refuses one. The refusal is the registration's failed run. It refuses a key that:
 
-- is the operator key, or holds any permission, `schema.write` included;
+- holds any permission, including management permissions and `schema.write`;
 - holds any level on a type other than the connector's own, or on a connection other than the ones it declares, or on an extension or profile field, or any enforcement override;
 - holds a metadata entry other than `types`, or `edge_types` for a connector that declares a connection type of its own;
 - does not hold write on each of the connector's own types and connections;
@@ -186,7 +186,7 @@ The kit reads the key back on every start (`GET /keys/current`), before it regis
 
 It does not read the key's default tier, which the connector never relies on, and it does not refuse a key that holds only read on `types`; such a key cannot register a type or add a field, and [When the connector's type changes](#when-the-connectors-type-changes) says what the connector does then. Revoke a refused key with `marfa keys revoke <id>` and mint another as above; its source is free again once it is revoked. The revoked key's registration stays, with its failed run, until `marfa connectors delete <id>` removes it.
 
-The key keeps `types=write` for as long as the connector runs, since it is how the connector keeps its types current and registers one that is deleted from the instance. Once every connection the connector declares is registered, it has no use for `edge_types=write`, and the kit warns on each start while the key still holds it. Narrow the key in place with the operator key:
+The key keeps `types=write` for as long as the connector runs, since it is how the connector keeps its types current and registers one that is deleted from the instance. Once every connection the connector declares is registered, it has no use for `edge_types=write`, and the kit warns on each start while the key still holds it. Narrow the key in place using a key holding `keys.manage`:
 
 ```bash
 marfa keys update <key-id> --metadata-permission types=write --metadata-permission edge_types=read
@@ -197,10 +197,10 @@ Read on `edge_types` registers nothing, and is the narrowing the kit's warning n
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among unrevoked keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 
 ```bash
-marfa keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
+marfa --socket <socket-path> keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
 ```
 
-Mint the key with the operator key. A working key can pass on only the sources it writes under itself, its own and its claims, so even one holding every permission is refused `<name>`; it can pass on only the map entries it holds, too, so one holding `keys.mint` without `types=write` in its metadata map is refused the key's `types=write`. The operator key is exempt from both, which is how a claim starts. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state on the instance, under its own source. For a connector that carries changes back, one account per instance: a row of the type without a link would be created in whichever account's connector ran first, and the other could not tell that account's item from one gone.
+Mint this key through the server's private socket, as shown, or as the directly signed-in owner. An ordinary key can pass on only its own source and existing claims, and only map entries it currently holds. `keys.manage` does not remove those limits or allow widening a key. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state on the instance, under its own source. For a connector that carries changes back, one account per instance: a row of the type without a link would be created in whichever account's connector ran first, and the other could not tell that account's item from one gone.
 
 ### When the connector's type changes
 
