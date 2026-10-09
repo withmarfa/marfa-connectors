@@ -284,19 +284,22 @@ describe("each job reads its answer", () => {
     ["success success cancelled success", "success success", false],
     ["success skipped skipped skipped", "success skipped", false],
     ["skipped skipped skipped skipped", "skipped skipped", false],
-  ])("Full CI for the results %s (%s) passes: %s", (results, always, passes) => {
-    const script = jobs["gate"]?.steps[0]?.run ?? "";
-    let status = 0;
-    try {
-      execFileSync("sh", ["-c", script], {
-        env: { ...process.env, RESULTS: results, ALWAYS_RUN: always },
-        stdio: "ignore",
-      });
-    } catch (error) {
-      status = (error as { status: number }).status;
-    }
-    expect(status === 0).toBe(passes);
-  });
+  ])(
+    "Full CI for the results %s (%s) passes: %s",
+    (results, always, passes) => {
+      const script = jobs["gate"]?.steps[0]?.run ?? "";
+      let status = 0;
+      try {
+        execFileSync("sh", ["-c", script], {
+          env: { ...process.env, RESULTS: results, ALWAYS_RUN: always },
+          stdio: "ignore",
+        });
+      } catch (error) {
+        status = (error as { status: number }).status;
+      }
+      expect(status === 0).toBe(passes);
+    },
+  );
 });
 
 /**
