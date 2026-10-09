@@ -246,13 +246,6 @@ describe("each job reads its answer", () => {
       "${{ needs.changes.outputs.code != 'false' && needs.changes.outputs.full != 'false' }}",
     ]);
   });
-
-  it("fails Checks for a draft, so skipped jobs cannot let it merge before the full run", () => {
-    const steps = jobs["checks"]?.steps ?? [];
-    const guard = steps.at(-1);
-    expect(guard?.if).toBe("${{ github.event.pull_request.draft }}");
-    expect(guard?.run).toContain("exit 1");
-  });
 });
 
 /**

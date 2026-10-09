@@ -150,9 +150,9 @@ jobs:
           gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="Gate check" -f head_sha="$SHA" -f status=in_progress -f "output[title]=Waiting" -f "output[summary]=Runs once ready for review"
 
   gate:
-    name: ${{ github.event.pull_request.draft && 'Gate job (draft)' || 'Gate job' }}
+    name: ${{ github.event.pull_request.draft && 'Draft CI' || 'Gate job' }}
     needs: [changes, checks, proof, image]
-    if: ${{ always() && !github.event.pull_request.draft }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -168,7 +168,8 @@ jobs:
             *" failure "*|*" cancelled "*) echo "state=failure" >> "$GITHUB_OUTPUT" ;;
             *) echo "state=success" >> "$GITHUB_OUTPUT" ;;
           esac
-      - env:
+      - if: ${{ !github.event.pull_request.draft }}
+        env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           STATE: ${{ steps.verdict.outputs.state }}
