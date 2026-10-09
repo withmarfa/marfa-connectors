@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   # A draft runs only the quick checks; marking it ready for review runs the
-  # rest, and so does every push after that.
+  # rest, and so does every push after that. `Full CI` is the required check.
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -80,14 +80,6 @@ jobs:
         run: pnpm test
       - if: ${{ needs.changes.outputs.code == 'false' }}
         run: pnpm exec vitest run scripts/test/tree.test.ts
-      # A skipped job passes its required check, and a draft skips `Proof`
-      # and `Image`, so a draft's results would let a pull request merge in
-      # the moment between marking it ready and the first run that runs them.
-      # `Checks` fails for a draft, whatever the diff, until that run replaces it.
-      - if: ${{ github.event.pull_request.draft }}
-        run: |
-          echo "::error::A draft runs only the quick checks. Mark the pull request ready for review to run the tests, the proof and the image."
-          exit 1
 
   proof:
     name: Proof
@@ -128,7 +120,7 @@ jobs:
           cache: pnpm
       - name: Check the LaunchAgent example is well-formed
         run: |
-          command -v xmllint >/dev/null || sudo apt-get install -y --no-install-recommends libxml2-utils
+          command -v xmllint >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends libxml2-utils; }
           xmllint --noout --nonet template/launchd.plist.example
       - run: pnpm install --frozen-lockfile
       - name: Build the template's image and each connector's
@@ -138,4 +130,27 @@ jobs:
             docker build -f template/Dockerfile --build-arg CONNECTOR="${name}" --build-arg CONNECTOR_DIR="${dir}" -t "image-${name}" .
           done
       - name: Check each image holds the installed registry client
-        run: node --experimental-strip-types scripts/check-image-client.ts $(docker images --format '{{.Repository}}' 'image-*')
+        run: docker images --format '{{.Repository}}' 'image-*' | xargs node --experimental-strip-types scripts/check-image-client.ts
+
+  # The one required check. A skipped job passes a required check, and a draft
+  # skips the tests, `Proof` and `Image`, so on a draft this job is named `Draft
+  # CI`: the required `Full CI` stays expected, which blocks a merge, until the
+  # run that marking the pull request ready starts has finished every job.
+  # It runs after a failed job and fails then; a cancelled run skips it, and a
+  # skipped job never reports as `Full CI`, so a cancel cannot leave it green.
+  gate:
+    name: ${{ github.event.pull_request.draft && 'Draft CI' || 'Full CI' }}
+    needs: [changes, checks, proof, image]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          case " ${RESULTS} " in
+            *" failure "* | *" cancelled "*)
+              echo "::error::A job failed or was cancelled: ${RESULTS}"
+              exit 1
+              ;;
+          esac
