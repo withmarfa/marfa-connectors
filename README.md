@@ -16,7 +16,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
 
 ## Run a connector by hand
 
-The connector runtime needs Node 22.12 or later. Repository tooling uses pnpm 11, which needs Node 22.13 or later. You also need Rust (for the `marfa` command), a Marfa server and a key for the connector.
+The connector runtime needs Node 22.12 or later. Repository tooling uses pnpm 11, which needs Node 22.13 or later. You also need Rust (for the CLI), a Marfa server and a key for the connector.
 
 The kit and proof use the published `@withmarfa/client` version pinned in their manifests and the lockfile. Install and build without a server checkout:
 
@@ -54,7 +54,7 @@ node connectors/<name>/dist/main.js --once
 
 A connector also reads the settings its own README names, such as a vendor token.
 
-The `marfa` command and a connector read the server's address and the key from the same two settings, `MARFA_API_URL` and `MARFA_API_KEY`. A connector's key is its own, so set the connector's key in the connector's environment, not the one you use for the `marfa` command.
+The CLI and a connector read the server's address and the key from the same two settings, `MARFA_API_URL` and `MARFA_API_KEY`. A connector's key is its own, so set the connector's key in the connector's environment, not the one you use for the CLI.
 
 A connector keeps no file and holds no secret of its own: its state is on the instance, and its secrets come from the environment.
 
