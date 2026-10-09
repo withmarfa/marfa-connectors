@@ -2023,7 +2023,7 @@ export class ScriptedServer {
   ): void {
     const row = this.rows.find((candidate) => candidate.id === id);
     // The door reads the row as every read does, the bin left out, and one
-    // the key may not read as a missing one (keys-and-oauth.md 20).
+    // the key may not read as a missing one (`keys-and-oauth/unreadable-as-missing`).
     if (
       row === undefined ||
       row.state === "trashed" ||
