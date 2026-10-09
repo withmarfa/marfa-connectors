@@ -6,7 +6,7 @@ on:
   # A draft runs only the quick checks; marking it ready for review runs the
   # rest, and so does every push after that.
   pull_request:
-    branches: [main]
+    branches: [main, gate-test]
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
@@ -80,14 +80,6 @@ jobs:
         run: pnpm test
       - if: ${{ needs.changes.outputs.code == 'false' }}
         run: pnpm exec vitest run scripts/test/tree.test.ts
-      # A skipped job passes its required check, and a draft skips `Proof`
-      # and `Image`, so a draft's results would let a pull request merge in
-      # the moment between marking it ready and the first run that runs them.
-      # `Checks` fails for a draft, whatever the diff, until that run replaces it.
-      - if: ${{ github.event.pull_request.draft }}
-        run: |
-          echo "::error::A draft runs only the quick checks. Mark the pull request ready for review to run the tests, the proof and the image."
-          exit 1
 
   proof:
     name: Proof
@@ -139,3 +131,49 @@ jobs:
           done
       - name: Check each image holds the installed registry client
         run: node --experimental-strip-types scripts/check-image-client.ts $(docker images --format '{{.Repository}}' 'image-*')
+
+  # Scratch: mechanisms 1 and 2 mark the head pending on a draft.
+  draft-pending:
+    name: Draft pending
+    if: ${{ github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+      checks: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context="Gate status" -f description="Runs once ready for review"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="Gate check" -f head_sha="$SHA" -f status=in_progress -f "output[title]=Waiting" -f "output[summary]=Runs once ready for review"
+
+  gate:
+    name: ${{ github.event.pull_request.draft && 'Gate job (draft)' || 'Gate job' }}
+    needs: [changes, checks, proof, image]
+    if: ${{ always() && !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+      checks: write
+    steps:
+      - id: verdict
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) echo "state=failure" >> "$GITHUB_OUTPUT" ;;
+            *) echo "state=success" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          STATE: ${{ steps.verdict.outputs.state }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$STATE" -f context="Gate status"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="Gate check" -f head_sha="$SHA" -f status=completed -f conclusion="$STATE" -f "output[title]=$STATE" -f "output[summary]=$STATE"
+      - if: ${{ steps.verdict.outputs.state != 'success' }}
+        run: exit 1
