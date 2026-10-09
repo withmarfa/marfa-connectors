@@ -267,22 +267,29 @@ describe("each job reads its answer", () => {
     );
     expect(gate?.if).toBe("${{ always() }}");
     expect(gate?.steps.map((step) => step.env)).toEqual([
-      { RESULTS: "${{ join(needs.*.result, ' ') }}" },
+      {
+        RESULTS: "${{ join(needs.*.result, ' ') }}",
+        ALWAYS_RUN: "${{ needs.changes.result }} ${{ needs.checks.result }}",
+      },
     ]);
   });
 
-  it.each<[string, boolean]>([
-    ["success success success success", true],
-    ["success success skipped skipped", true],
-    ["success failure skipped skipped", false],
-    ["failure success success success", false],
-    ["success success cancelled success", false],
-  ])("Full CI for the results %s passes: %s", (results, passes) => {
+  // `Classify changes` and `Checks` run on every run that is not cancelled, so
+  // a skip of either means the run was cancelled before they were evaluated.
+  it.each<[string, string, boolean]>([
+    ["success success success success", "success success", true],
+    ["success success skipped skipped", "success success", true],
+    ["success failure skipped skipped", "success failure", false],
+    ["failure success success success", "failure success", false],
+    ["success success cancelled success", "success success", false],
+    ["success skipped skipped skipped", "success skipped", false],
+    ["skipped skipped skipped skipped", "skipped skipped", false],
+  ])("Full CI for the results %s (%s) passes: %s", (results, always, passes) => {
     const script = jobs["gate"]?.steps[0]?.run ?? "";
     let status = 0;
     try {
       execFileSync("sh", ["-c", script], {
-        env: { ...process.env, RESULTS: results },
+        env: { ...process.env, RESULTS: results, ALWAYS_RUN: always },
         stdio: "ignore",
       });
     } catch (error) {
