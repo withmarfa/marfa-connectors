@@ -81,3 +81,5 @@ export const reportCap = 2000;
 export function cap(text: string, limit = reportCap): string {
   return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
+
+// Scratch gate test.
