@@ -120,7 +120,7 @@ jobs:
           cache: pnpm
       - name: Check the LaunchAgent example is well-formed
         run: |
-          command -v xmllint >/dev/null || sudo apt-get install -y --no-install-recommends libxml2-utils
+          command -v xmllint >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends libxml2-utils; }
           xmllint --noout --nonet template/launchd.plist.example
       - run: pnpm install --frozen-lockfile
       - name: Build the template's image and each connector's
