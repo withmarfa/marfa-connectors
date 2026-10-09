@@ -134,7 +134,8 @@ interface Workflow {
   jobs: Record<
     string,
     {
-      needs?: string;
+      name?: string;
+      needs?: string | string[];
       if?: string;
       outputs?: Record<string, string>;
       permissions?: Record<string, string>;
@@ -247,11 +248,47 @@ describe("each job reads its answer", () => {
     ]);
   });
 
-  it("fails Checks for a draft, so skipped jobs cannot let it merge before the full run", () => {
+  it("never fails Checks for being a draft", () => {
     const steps = jobs["checks"]?.steps ?? [];
-    const guard = steps.at(-1);
-    expect(guard?.if).toBe("${{ github.event.pull_request.draft }}");
-    expect(guard?.run).toContain("exit 1");
+    expect(
+      steps.some((step) => step.if?.includes("pull_request.draft") === true),
+    ).toBe(false);
+  });
+
+  it("waits for every other job before Full CI reports, and names it Full CI only for a run that ran everything", () => {
+    const gate = jobs["gate"];
+    expect(gate?.name).toBe(
+      "${{ github.event.pull_request.draft && 'Draft CI' || 'Full CI' }}",
+    );
+    expect([gate?.needs ?? []].flat().sort()).toEqual(
+      Object.keys(jobs)
+        .filter((job) => job !== "gate")
+        .sort(),
+    );
+    expect(gate?.if).toBe("${{ always() }}");
+    expect(gate?.steps.map((step) => step.env)).toEqual([
+      { RESULTS: "${{ join(needs.*.result, ' ') }}" },
+    ]);
+  });
+
+  it.each<[string, boolean]>([
+    ["success success success success", true],
+    ["success success skipped skipped", true],
+    ["success failure skipped skipped", false],
+    ["failure success success success", false],
+    ["success success cancelled success", false],
+  ])("Full CI for the results %s passes: %s", (results, passes) => {
+    const script = jobs["gate"]?.steps[0]?.run ?? "";
+    let status = 0;
+    try {
+      execFileSync("sh", ["-c", script], {
+        env: { ...process.env, RESULTS: results },
+        stdio: "ignore",
+      });
+    } catch (error) {
+      status = (error as { status: number }).status;
+    }
+    expect(status === 0).toBe(passes);
   });
 });
 

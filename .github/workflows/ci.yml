@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   # A draft runs only the quick checks; marking it ready for review runs the
-  # rest, and so does every push after that.
+  # rest, and so does every push after that. `Full CI` is the required check.
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -80,14 +80,6 @@ jobs:
         run: pnpm test
       - if: ${{ needs.changes.outputs.code == 'false' }}
         run: pnpm exec vitest run scripts/test/tree.test.ts
-      # A skipped job passes its required check, and a draft skips `Proof`
-      # and `Image`, so a draft's results would let a pull request merge in
-      # the moment between marking it ready and the first run that runs them.
-      # `Checks` fails for a draft, whatever the diff, until that run replaces it.
-      - if: ${{ github.event.pull_request.draft }}
-        run: |
-          echo "::error::A draft runs only the quick checks. Mark the pull request ready for review to run the tests, the proof and the image."
-          exit 1
 
   proof:
     name: Proof
@@ -139,3 +131,25 @@ jobs:
           done
       - name: Check each image holds the installed registry client
         run: node --experimental-strip-types scripts/check-image-client.ts $(docker images --format '{{.Repository}}' 'image-*')
+
+  # The one required check, since a skipped job passes a required check and a
+  # draft skips the tests, `Proof` and `Image`. On a draft this job is `Draft
+  # CI`, so the required `Full CI` stays expected, and blocks a merge, until
+  # the run that marking it ready starts has finished every job. A skipped
+  # job keeps its name unevaluated, so it can never report as `Full CI`.
+  gate:
+    name: ${{ github.event.pull_request.draft && 'Draft CI' || 'Full CI' }}
+    needs: [changes, checks, proof, image]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          case " ${RESULTS} " in
+            *" failure "* | *" cancelled "*)
+              echo "::error::A job failed or was cancelled: ${RESULTS}"
+              exit 1
+              ;;
+          esac
