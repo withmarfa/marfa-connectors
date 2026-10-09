@@ -27,3 +27,5 @@ One Todoist account per instance for two-way sync. A second account's connector 
 The key holds read and write on `todoist.task` and `--metadata-permission types=write`, which registers the type and adds a field a later version of the connector declares, and no permission beside them; when the instance refuses a change to the type, an operator runs `marfa types update`. The key and the run are as `template/README.md` says.
 
 Scratch gate test.
+
+Scratch gate status test.
