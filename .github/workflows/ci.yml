@@ -136,24 +136,18 @@ jobs:
   # skips the tests, `Proof` and `Image`, so on a draft this job is named `Draft
   # CI`: the required `Full CI` stays expected, which blocks a merge, until the
   # run that marking the pull request ready starts has finished every job.
-  # `always()` runs it after a failed or cancelled job too, and it fails then.
+  # It runs after a failed job and fails then; a cancelled run skips it, and a
+  # skipped job never reports as `Full CI`, so a cancel cannot leave it green.
   gate:
     name: ${{ github.event.pull_request.draft && 'Draft CI' || 'Full CI' }}
     needs: [changes, checks, proof, image]
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
-          ALWAYS_RUN: ${{ needs.changes.result }} ${{ needs.checks.result }}
         run: |
-          # These two run unless the run is cancelled, so a skip of either
-          # means a cancel landed before they were evaluated.
-          if [ "${ALWAYS_RUN}" != "success success" ]; then
-            echo "::error::The run did not classify and check the change: ${ALWAYS_RUN}"
-            exit 1
-          fi
           case " ${RESULTS} " in
             *" failure "* | *" cancelled "*)
               echo "::error::A job failed or was cancelled: ${RESULTS}"
