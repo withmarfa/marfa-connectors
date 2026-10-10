@@ -181,7 +181,7 @@ describe("a key with metadata types=write", () => {
       fields: { title: "last_writer_wins" },
     });
     expect(body["parent"]).toBe("test.base");
-    expect(harness.lastRun().summary ?? "").not.toContain("types update");
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
   });
 
   it("sends only the roles and version policy the type holds itself, not those it inherits", async () => {
@@ -207,7 +207,7 @@ describe("a key with metadata types=write", () => {
       retention_days: 30,
     });
     expect(puts()).toBe(1);
-    expect(harness.lastRun().summary ?? "").not.toContain("types update");
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
   });
 
   it("sends no roles or version policy where the type adds nothing to its parent's", async () => {
@@ -266,7 +266,7 @@ describe("a key with metadata types=write", () => {
       Object.keys(harness.server.types.get("test.entry")?.["fields"] as object),
     ).toContain("note");
     expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
-    expect(harness.lastRun().summary ?? "").not.toContain("types update");
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
   });
 
   it("starts without the field, naming what the server refused, where the type holds a member of its own that the subset leaves out", async () => {
@@ -284,7 +284,7 @@ describe("a key with metadata types=write", () => {
     ).toBe(0);
     expect(puts()).toBe(1);
     const summary = harness.lastRun().summary ?? "";
-    expect(summary).toContain("marfa types update test.entry --file");
+    expect(summary).toContain("marfa types replace test.entry --file");
     expect(summary).toContain("roles");
     expect(summary).toContain("link, note");
     expect(harness.server.rows[0]?.properties["note"]).toBeUndefined();
@@ -394,14 +394,14 @@ describe("a key with metadata types=write", () => {
       expect(row?.properties["note"]).toBe("From the vendor");
       const run = harness.lastRun();
       expect(run.outcome).toBe("succeeded");
-      expect(run.summary).toContain("marfa types update test.entry --file");
+      expect(run.summary).toContain("marfa types replace test.entry --file");
       expect(run.summary).toContain("fields.note");
       expect(run.summary).not.toContain("--metadata-permission");
       const condition = (
         harness.kept()["conditions"] as Record<string, string>
       )["type-fields:test.entry"];
       expect(condition).toContain("fields.note");
-      expect(condition?.slice(0, 120)).toContain("marfa types update");
+      expect(condition?.slice(0, 120)).toContain("marfa types replace");
       expect(
         harness.server.types.get("test.entry")?.["fields"],
       ).not.toHaveProperty("note");
@@ -417,7 +417,7 @@ describe("a key with metadata types=write", () => {
       await harness.clock.sleeping(15 * minute);
       expect(held.runs).toBe(1);
       expect(puts()).toBe(1);
-      expect(harness.lastRun().summary).toContain("marfa types update");
+      expect(harness.lastRun().summary).toContain("marfa types replace");
 
       await harness.clock.wake(15 * minute);
       await harness.clock.sleeping(15 * minute);
@@ -429,7 +429,7 @@ describe("a key with metadata types=write", () => {
       await harness.clock.sleeping(15 * minute);
       expect(held.runs).toBe(3);
       expect(puts()).toBe(2);
-      expect(harness.lastRun().summary).not.toContain("types update");
+      expect(harness.lastRun().summary).not.toContain("types replace");
       harness.stop();
       expect(await exit).toBe(0);
     });
@@ -460,7 +460,7 @@ describe("a key with metadata types=write", () => {
       const error = harness.lastRun().error ?? "";
       expect(error).toContain("vendor_id");
       expect(error).toContain("fields.vendor_id");
-      expect(error).toContain("marfa types update test.entry --file");
+      expect(error).toContain("marfa types replace test.entry --file");
       expect(error).not.toContain("--metadata-permission");
     });
 
@@ -563,7 +563,7 @@ describe("a key with metadata types=write", () => {
       ).toBe(1);
       const error = harness.lastRun().error ?? "";
       expect(error).toContain(named);
-      expect(error).toContain("marfa types update test.entry --file");
+      expect(error).toContain("marfa types replace test.entry --file");
       expect(harness.server.types.get("test.entry")).toBe(served);
     }
     expect(puts()).toBe(0);
@@ -833,7 +833,7 @@ describe("a key without metadata types=write", () => {
     expect(harness.lastRun().outcome).toBe("failed");
     expect(harness.lastRun().error).toContain("link_field");
     expect(harness.lastRun().error).toContain(
-      "marfa types update test.entry --file",
+      "marfa types replace test.entry --file",
     );
   });
 });
@@ -907,7 +907,7 @@ describe("the fix in a narrowed type's condition", () => {
     });
     expect(text.length).toBeGreaterThan(500);
     expect(text.slice(0, 500)).toContain(
-      "marfa types update test.entry --file <definition>",
+      "marfa types replace test.entry --file <definition>",
     );
   });
 });
