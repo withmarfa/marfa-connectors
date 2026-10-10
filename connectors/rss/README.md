@@ -8,7 +8,7 @@ Each run fetches every feed in `RSS_FEEDS`, reads the entries it finds, and writ
 
 ## Set it up
 
-You need a Marfa server, the `marfa` command-line tool, a credential that can mint keys, and Node 22.13 or later.
+You need a Marfa server, the CLI (`marfa`), a credential that can mint keys, and Node 22.13 or later.
 
 1. From the repository root, install and build:
 
