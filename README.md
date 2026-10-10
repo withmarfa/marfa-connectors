@@ -38,7 +38,7 @@ vendor/marfa/core/scripts/server-down.sh "${MARFA_SERVER_ENV}"
 
 That first key holds every permission, so it is for minting the connector's key, and a connector refuses to run on it.
 
-To use a server of your own, follow the Quick start in the Marfa repository's README. Either way you need the `marfa` command-line tool, built from the same checkout so its commands match the server:
+To use a server of your own, follow the Quick start in the Marfa repository's README. Either way you need the CLI, `marfa`, built from the same checkout so its commands match the server:
 
 ```bash
 cargo install --locked --path vendor/marfa/core/marfa-cli
