@@ -527,7 +527,7 @@ describe("the type check on start", () => {
       '"link"',
       '"title"',
       "compatible_with",
-      "marfa types update test.entry --file",
+      "marfa types replace test.entry --file",
     ]) {
       expect(run.error).toContain(difference);
     }

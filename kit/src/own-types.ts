@@ -69,7 +69,7 @@ export function narrowedCondition(
   if (withheld.kind === "grant") {
     return `grant the key ${withheld.key} metadata types=write with \`${withheld.command}\`, and the connector adds ${them} on its next start or scheduled run; ${until}, and the key may not add ${them}`;
   }
-  return `an operator replaces the type with the connector's definition, \`marfa types update ${type} --file <definition>\`, and the connector then writes ${them} on its next start or scheduled run; ${until}, and the server refused the key the change to ${withheld.changes.join(", ")}, which needs schema.write`;
+  return `an operator replaces the type with the connector's definition, \`marfa types replace ${type} --file <definition>\`, and the connector then writes ${them} on its next start or scheduled run; ${until}, and the server refused the key the change to ${withheld.changes.join(", ")}, which needs schema.write`;
 }
 
 function grantWithheld(key: Key): Withheld {
@@ -77,7 +77,7 @@ function grantWithheld(key: Key): Withheld {
 }
 
 function operatorFix(id: string): string {
-  return `an operator who means the change replaces the type with the connector's definition, \`marfa types update ${id} --file <definition>\`, and the rows it holds keep their values until their next write`;
+  return `an operator who means the change replaces the type with the connector's definition, \`marfa types replace ${id} --file <definition>\`, and the rows it holds keep their values until their next write`;
 }
 
 /** The members the server named when it refused a replacement as beyond the
