@@ -267,12 +267,20 @@ describe("a first sync", () => {
     blocked.blocked_by = [blocker.node];
     await ok();
     expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
+    const unseen = github.addIssue(first);
+    blocked.blocked_by.push(unseen.node);
+    blocked.parent = unseen.node;
     github.metadataLimitedInstallation = 1;
     github.edit(blocked, { title: "Changed" });
     github.asked = [];
     await ok();
     expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
-    expect(row(blocked.node).properties["blocked_by_urls"]).toEqual([]);
+    expect(row(blocked.node).properties["blocked_by_urls"]).toEqual([
+      `https://github.com/someone/first/issues/${String(unseen.number)}`,
+    ]);
+    expect(row(blocked.node).properties["parent_url"]).toBe(
+      `https://github.com/someone/first/issues/${String(unseen.number)}`,
+    );
     expect(
       github.asked.filter((one) =>
         one.path.startsWith("/repos/someone/first/"),

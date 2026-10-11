@@ -310,6 +310,16 @@ async function readAll(
       deferred.has(old.installation) ? [node] : [],
     ),
   );
+  const retainedIssues = new Set<string>();
+  for (const node of retained) {
+    for (const row of await context.linked(issueType, inRepository, {
+      type: repositoryType,
+      id: node,
+    })) {
+      const link = linkOf(row);
+      if (link !== undefined) retainedIssues.add(link);
+    }
+  }
   const privacy: Privacy = new Map(
     [...listed].map(([node, { repository }]) => [node, repository.private]),
   );
@@ -353,10 +363,15 @@ async function readAll(
       context,
       new Map([...listed].filter(([node]) => !unsettled.has(node))),
       clients,
-      new Set([...paused, ...unsettled, ...retained]),
+      new Set([...paused, ...unsettled]),
       privacy,
-      deferred,
-      retained,
+      new Set(
+        installations
+          .filter((one) => !answered.has(one.id))
+          .map((one) => one.id),
+      ),
+      new Set(outside.keys()),
+      retainedIssues,
     );
     return;
   }
@@ -444,7 +459,8 @@ async function readAll(
     try {
       next[node] = await syncRepository(scoped, octokit, node, repository, {
         synced,
-        inside: new Set([...synced, ...paused, ...retained]),
+        inside: new Set([...synced, ...paused]),
+        retainedIssues,
         privacy,
         check,
       });
@@ -521,6 +537,7 @@ async function syncRepository(
   options: {
     synced: ReadonlySet<string>;
     inside: ReadonlySet<string>;
+    retainedIssues: ReadonlySet<string>;
     privacy: Privacy;
     check: boolean;
   },
@@ -605,7 +622,13 @@ async function syncRepository(
       const found = relations.get(issue.node_id);
       if (found === undefined) return [];
       return [
-        issueEntry(issueOfRest(issue, at), found, options.inside, hidden),
+        issueEntry(
+          issueOfRest(issue, at),
+          found,
+          options.inside,
+          hidden,
+          options.retainedIssues,
+        ),
       ];
     }),
     ...beside
@@ -616,6 +639,7 @@ async function syncRepository(
           known,
           options.inside,
           privateIn(options.privacy, issue.repository.node),
+          options.retainedIssues,
         ),
       ),
   ]);
@@ -969,7 +993,8 @@ async function readNamed(
   paused: ReadonlySet<string>,
   privacy: Privacy,
   initiallyDeferred: ReadonlySet<number>,
-  deferredRepositories: ReadonlySet<string>,
+  excluded: ReadonlySet<string>,
+  retainedIssues: ReadonlySet<string>,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(every);
@@ -1010,7 +1035,7 @@ async function readNamed(
     )) ?? []) {
       shown.add(comment.node);
       if (!synced.has(comment.repository.node)) {
-        if (deferredRepositories.has(comment.repository.node))
+        if (!excluded.has(comment.repository.node))
           notApplied.add(comment.node);
         continue;
       }
@@ -1025,7 +1050,10 @@ async function readNamed(
         issuesByNode(octokit, wanted),
       )) ?? []) {
         shown.add(found.issue.node);
-        if (deferredRepositories.has(found.issue.repository.node))
+        if (
+          !synced.has(found.issue.repository.node) &&
+          !excluded.has(found.issue.repository.node)
+        )
           notApplied.add(found.issue.node);
         if (synced.has(found.issue.repository.node)) {
           issues.set(found.issue.node, found);
@@ -1062,6 +1090,7 @@ async function readNamed(
         relations,
         new Set([...synced, ...paused]),
         privateIn(privacy, issue.repository.node),
+        retainedIssues,
       ),
     ),
   );

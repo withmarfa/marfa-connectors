@@ -245,6 +245,42 @@ describe("a run for deliveries", () => {
     });
   });
 
+  it.each(["limit", "suspended", "lost"])(
+    "retains an unapplied hint from a newly added public repository during incomplete inventory (%s)",
+    async (unavailable) => {
+      github.installations.push({ id: 2, login: "another" });
+      github.addRepository("another/healthy", { installation: 2 });
+      let node = "";
+      await watching(async () => {
+        const added = github.addRepository("someone/new-public", {
+          private: false,
+        });
+        const issue = github.addIssue(added);
+        node = issue.node;
+        const installation = github.installations[0];
+        if (installation === undefined) throw new Error("missing installation");
+        if (unavailable === "limit") github.metadataLimitedInstallation = 1;
+        else if (unavailable === "suspended") installation.suspended = true;
+        else installation.lost = true;
+        deliver("issues", { action: "opened", issue: { node_id: node } });
+        await until(() => marfa.runs.length > 1, "the hinted run");
+        expect(
+          marfa.rows.some((one) => one.properties["github_id"] === node),
+        ).toBe(false);
+        expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
+        expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+      });
+      github.metadataLimitedInstallation = undefined;
+      const installation = github.installations[0];
+      if (installation === undefined) throw new Error("missing installation");
+      installation.suspended = false;
+      installation.lost = false;
+      await once();
+      expect(row(node).state).toBe("active");
+      expect(marfa.deliveries[0]?.outcome).toBe("processed");
+    },
+  );
+
   it.each(["budget", "metadata"])(
     "applies healthy hints while retaining deliveries whose installation waits (%s)",
     async (limited) => {
