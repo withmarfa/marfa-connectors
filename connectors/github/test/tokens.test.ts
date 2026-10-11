@@ -1,6 +1,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
-import { asApp, asInstallation, ClockSkew, type App } from "../src/github.js";
+import {
+  asApp,
+  asInstallation,
+  ClockSkew,
+  RateLimitWaiting,
+  type App,
+} from "../src/github.js";
 
 let key: string;
 let github: GitHubStub;
@@ -40,6 +46,38 @@ function reader(signal = new AbortController().signal) {
 }
 
 describe("an installation token", () => {
+  it("shares the REST reserve with metadata tokens and retries only after the real reset", async () => {
+    const { octokit } = reader();
+    github.rateRemaining = 100;
+    const reset = Math.floor(Date.now() / 1000) + 2;
+    github.rateReset = reset;
+    await octokit.request("GET /repos/{owner}/{repo}", {
+      owner: "someone",
+      repo: "tracker",
+    });
+    const metadata = asInstallation(
+      app,
+      1,
+      { access: "list" },
+      () => undefined,
+      new AbortController().signal,
+    );
+    await expect(
+      metadata.request("GET /installation/repositories"),
+    ).rejects.toBeInstanceOf(RateLimitWaiting);
+    expect(
+      github.asked.filter((one) => one.path === "/installation/repositories"),
+    ).toHaveLength(0);
+    await new Promise((done) =>
+      setTimeout(done, reset * 1000 - Date.now() + 20),
+    );
+    const response = await metadata.request("GET /installation/repositories");
+    expect(response.status).toBe(200);
+    expect(
+      github.asked.filter((one) => one.path === "/installation/repositories"),
+    ).toHaveLength(1);
+  });
+
   it("is minted, as the first request the App signs, though GitHub's clock is minutes behind", async () => {
     const { octokit } = reader();
     github.clockAhead = -9 * 60;

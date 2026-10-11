@@ -112,6 +112,149 @@ function checkDue(): void {
 }
 
 describe("a first sync", () => {
+  it("keeps a finished repository when the next repository fails", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    github.addIssue(first);
+    github.addIssue(second);
+    github.readFailure = second.name;
+    const failed = await once();
+    expect(failed.code, failed.output).toBe(1);
+    expect(kept()[first.node]?.["comments"]).toBeDefined();
+    expect(kept()[second.node]?.["comments"]).toBeUndefined();
+    github.readFailure = undefined;
+    github.asked = [];
+    await ok();
+    expect(
+      github.asked
+        .filter((one) => one.path === "/repos/someone/first/issues")
+        .map((one) => one.status),
+    ).toEqual([304, 304]);
+    expect(kept()[second.node]?.["comments"]).toBeDefined();
+  });
+
+  it("keeps only acknowledged repository progress after a refused issue", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    const refused = github.addIssue(first);
+    github.addIssue(second);
+    marfa.entryRefusals.set(refused.node, {
+      status: 400,
+      code: "type_mismatch",
+      message: "type moved",
+    });
+    const result = await once();
+    expect(result.output).toContain(
+      "progress could not be saved (row-refused)",
+    );
+    expect(kept()[first.node]).toBeUndefined();
+    expect(kept()[second.node]?.["comments"]).toBeDefined();
+    marfa.entryRefusals.clear();
+    await ok();
+    expect(row(refused.node).state).toBe("active");
+    expect(kept()[first.node]?.["comments"]).toBeDefined();
+  });
+
+  it("reloads a checkpoint whose acknowledgment was uncertain without rolling it back", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    github.addIssue(first);
+    github.addIssue(second);
+    marfa.stateAnswer = { value: {} };
+    const result = await once();
+    expect(result.code, result.output).toBe(1);
+    expect(kept()[first.node]?.["comments"]).toBeDefined();
+    expect(kept()[second.node]).toBeUndefined();
+    expect(
+      github.asked.some((one) => one.path === "/repos/someone/second/issues"),
+    ).toBe(false);
+    marfa.stateAnswer = undefined;
+    await ok();
+    expect(kept()[second.node]?.["comments"]).toBeDefined();
+  });
+
+  it("keeps a completed repository across a long GitHub reset", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    github.addIssue(first);
+    github.addIssue(second);
+    github.longResetRepository = second.name;
+    const result = await once();
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("someone/second waits for the next run");
+    expect(kept()[first.node]?.["comments"]).toBeDefined();
+    expect(kept()[second.node]).toBeUndefined();
+    github.longResetRepository = undefined;
+    await ok();
+    expect(kept()[second.node]?.["comments"]).toBeDefined();
+  });
+
+  it("checks the REST reserve before the next page and retains earlier repositories", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    github.addIssue(first);
+    github.addIssue(second);
+    Object.defineProperty(github, "rateRemaining", {
+      get: () =>
+        github.asked.some((one) => one.path === "/repos/someone/second/issues")
+          ? 100
+          : 4999,
+      configurable: true,
+    });
+    await ok();
+    expect(kept()[first.node]?.["comments"]).toBeDefined();
+    expect(kept()[second.node]).toBeUndefined();
+    expect(
+      github.asked.filter((one) => one.path === "/repos/someone/second/issues"),
+    ).toHaveLength(1);
+  });
+
+  it("uses separate GraphQL and REST budgets and lets an independent repository finish", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    const empty = github.addRepository("someone/empty");
+    github.addIssue(first);
+    github.addIssue(second);
+    github.graphqlRemaining = 100;
+    const output = await ok();
+    expect(output).toContain("someone/second waits for the next run");
+    expect(kept()[first.node]?.["comments"]).toBeDefined();
+    expect(kept()[second.node]).toBeUndefined();
+    expect(kept()[empty.node]?.["comments"]).toBeDefined();
+    expect(github.asked.filter((one) => one.path === "/graphql")).toHaveLength(
+      1,
+    );
+    expect(
+      github.asked.filter((one) => one.path === "/repos/someone/second/issues"),
+    ).toHaveLength(2);
+  });
+
+  it("keeps saved repositories and their warnings when metadata is rate limited while another installation finishes", async () => {
+    const first = github.addRepository("someone/first");
+    const firstIssue = github.addIssue(first);
+    await ok();
+    const before = structuredClone(kept()[first.node]);
+    const document = marfa.states.get("github");
+    if (document === undefined) throw new Error("no saved connector state");
+    document["conditions"] = {
+      [`repository-unreadable:${first.node}`]: "Earlier warning",
+    };
+    github.installations.push({ id: 2, login: "another" });
+    const second = github.addRepository("another/second", { installation: 2 });
+    github.addIssue(second);
+    github.metadataLimitedInstallation = 1;
+    const output = await ok();
+    expect(output).toContain("someone's repositories");
+    expect(kept()[first.node]).toEqual(before);
+    expect(row(firstIssue.node).state).toBe("active");
+    expect(marfa.states.get("github")?.["conditions"]).toHaveProperty(
+      `repository-unreadable:${first.node}`,
+      "Earlier warning",
+    );
+    expect(kept()[second.node]?.["comments"]).toBeDefined();
+    expect(output).not.toContain("can no longer be read");
+  });
+
   it("writes the repositories, the issues open and closed within ninety days, their comments and their relations", async () => {
     const repository = github.addRepository("someone/tracker", {
       description: "Where things are tracked",
@@ -737,7 +880,7 @@ describe("read check coverage", () => {
     expect(conditions()).toHaveProperty("clock-skew");
   });
 
-  it("retains all old evidence when rate limiting fails the run", async () => {
+  it("retains unread body evidence while reporting a rate-limited read", async () => {
     const repository = github.addRepository("someone/tracker");
     await ok();
     seedConditions({
@@ -746,16 +889,13 @@ describe("read check coverage", () => {
     });
     github.rateLimited = true;
     const result = await once();
-    expect(result.code).toBe(1);
-    expect(conditions()).toHaveProperty(
-      `issues-off:${repository.node}`,
-      "metadata problem",
-    );
+    expect(result.code, result.output).toBe(0);
+    expect(conditions()).not.toHaveProperty(`issues-off:${repository.node}`);
     expect(conditions()).toHaveProperty(
       `repository-unreadable:${repository.node}`,
       "body problem",
     );
-    expect(result.output).not.toContain("cleared:");
+    expect(result.output).toContain("waits for the next run");
   });
 
   it("updates body refusal evidence without clearing unseen issue checks", async () => {
@@ -1086,13 +1226,14 @@ describe("what the adversarial review found", () => {
     expect(row(comment.node).properties["body"]).toBe("After");
   });
 
-  it("fails a run GitHub's rate limit refuses, rather than calling it lost access", async () => {
+  it("reports a rate-limited read as waiting, rather than calling it lost access", async () => {
     const repository = github.addRepository("someone/tracker");
     github.addIssue(repository);
     await ok();
     github.rateLimited = true;
     const { code, output } = await once();
-    expect(code).toBe(1);
+    expect(code, output).toBe(0);
+    expect(output).toContain("waits for the next run");
     expect(output).not.toContain("so its rows are left as they are");
   });
 
