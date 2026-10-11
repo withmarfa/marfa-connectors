@@ -11,7 +11,7 @@ export interface Environment {
   secrets: string[];
 }
 
-const reservedSourcePrefixes = ["oauth:", "connector:"];
+const reservedSourcePrefixes = ["oauth:", "restored:", "connector:"];
 
 /** Shorter than this, a secret cannot be redacted without the redaction
  *  showing where each character falls in ordinary text. */
