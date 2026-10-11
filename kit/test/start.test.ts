@@ -627,14 +627,7 @@ describe("the type check on start", () => {
       id: "test.base",
       fields: { origin: { type: "string", required: true } },
     });
-    harness.server.types.set("test.entry", {
-      ...testType,
-      parent: "test.base",
-      fields: {
-        ...testType.fields,
-        origin: { type: "string", required: true },
-      },
-    });
+    harness.server.store({ ...testType, parent: "test.base" });
     const connector = testConnector(vendor([entry]));
     const child = {
       ...connector,

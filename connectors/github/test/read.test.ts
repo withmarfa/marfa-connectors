@@ -236,9 +236,9 @@ describe("a first sync", () => {
     const before = structuredClone(kept()[first.node]);
     const document = marfa.states.get("github");
     if (document === undefined) throw new Error("no saved connector state");
-    document["conditions"] = {
+    marfa.problems.set("github", {
       [`repository-unreadable:${first.node}`]: "Earlier warning",
-    };
+    });
     github.installations.push({ id: 2, login: "another" });
     const second = github.addRepository("another/second", { installation: 2 });
     github.addIssue(second);
@@ -247,7 +247,7 @@ describe("a first sync", () => {
     expect(output).toContain("someone's repositories");
     expect(kept()[first.node]).toEqual(before);
     expect(row(firstIssue.node).state).toBe("active");
-    expect(marfa.states.get("github")?.["conditions"]).toHaveProperty(
+    expect(marfa.problems.get("github")).toHaveProperty(
       `repository-unreadable:${first.node}`,
       "Earlier warning",
     );
@@ -742,10 +742,7 @@ describe("what GitHub no longer lists", () => {
 });
 
 function conditions(): Record<string, string> {
-  return (marfa.states.get("github")?.["conditions"] ?? {}) as Record<
-    string,
-    string
-  >;
+  return marfa.problems.get("github") ?? {};
 }
 
 function envelope(): Record<string, unknown> {
@@ -761,8 +758,7 @@ function installation() {
 }
 
 function seedConditions(values: Record<string, string>): void {
-  const document = envelope();
-  document["conditions"] = { ...conditions(), ...values };
+  marfa.problems.set("github", { ...conditions(), ...values });
 }
 
 describe("read check coverage", () => {

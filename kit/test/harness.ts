@@ -454,6 +454,10 @@ export class Harness {
     return this.server.connectorState ?? {};
   }
 
+  problems(): Record<string, string> {
+    return this.server.problems.get(this.server.keySource) ?? {};
+  }
+
   agreement(id: string): Record<string, unknown> | undefined {
     return this.server.agreements.get(id)?.record;
   }

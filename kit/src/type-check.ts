@@ -11,12 +11,6 @@ const shape = [
   "maxItems",
 ] as const;
 
-const defaults: Partial<Record<(typeof shape)[number], unknown>> = {
-  searchable: true,
-};
-
-const typeFormats = new Set(["url", "email", "datetime", "date", "thumbnail"]);
-
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -28,18 +22,6 @@ function names(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((v): v is string => typeof v === "string").sort()
     : [];
-}
-
-function normalized(field: unknown): Record<string, unknown> {
-  const out = { ...record(field) };
-  const format = out["format"];
-  if (typeof format === "string" && typeFormats.has(format)) {
-    // The server folds the format into the field's type, or into `items_type`
-    // on an array of strings.
-    out[out["type"] === "array" ? "items_type" : "type"] = format;
-    delete out["format"];
-  }
-  return out;
 }
 
 function requiredSet(type: Record<string, unknown>): string[] {
@@ -69,7 +51,7 @@ export interface TypeDifferences {
 export function typeDifferences(
   carried: TypeDefinition,
   served: Record<string, unknown>,
-  inherited: readonly string[] = [],
+  declared: Record<string, unknown> = served,
 ): TypeDifferences {
   const missing: string[] = [];
   const other: string[] = [];
@@ -78,20 +60,20 @@ export function typeDifferences(
   const required = requiredSet(carried);
 
   for (const name of Object.keys(mine)
-    .filter((n) => !(n in theirs))
+    .filter((n) => !Object.hasOwn(theirs, n))
     .sort()) {
     if (required.includes(name)) {
       other.push(`field "${name}" is required here and missing on the server`);
     } else missing.push(name);
   }
   for (const name of Object.keys(mine)
-    .filter((n) => n in theirs)
+    .filter((n) => Object.hasOwn(theirs, n))
     .sort()) {
-    const here = normalized(mine[name]);
-    const there = normalized(theirs[name]);
+    const here = record(mine[name]);
+    const there = record(theirs[name]);
     for (const attribute of shape) {
-      const a = here[attribute] ?? defaults[attribute];
-      const b = there[attribute] ?? defaults[attribute];
+      const a = here[attribute];
+      const b = there[attribute];
       if (JSON.stringify(a) !== JSON.stringify(b)) {
         other.push(
           `field "${name}" has ${attribute} ${show(a)} here and ${show(b)} on the server`,
@@ -100,11 +82,12 @@ export function typeDifferences(
     }
   }
 
+  const requiredDeclared = requiredSet(declared);
   const requiredThere = requiredSet(served).filter(
-    (n) => n in mine || !inherited.includes(n),
+    (n) => Object.hasOwn(mine, n) || requiredDeclared.includes(n),
   );
   for (const name of required.filter(
-    (n) => n in theirs && !requiredThere.includes(n),
+    (n) => Object.hasOwn(theirs, n) && !requiredThere.includes(n),
   )) {
     other.push(`field "${name}" is required here and not on the server`);
   }

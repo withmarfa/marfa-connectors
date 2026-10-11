@@ -945,7 +945,7 @@ describe("Todoist's answers", () => {
     marfa.edit(row.id, { title: "Task a, renamed again" });
     await landed();
     expect(todoist.tasks.get("a")?.content).toBe("Task a, renamed again");
-    expect(marfa.states.get("todoist")?.["conditions"]).toEqual({});
+    expect(marfa.problems.get("todoist")).toEqual({});
   });
 
   it("keeps a trash Todoist refused, and deletes on the next run one it put off", async () => {
@@ -2113,7 +2113,7 @@ describe("labels, project and section changed in Marfa", () => {
       project_id: "p-home",
       section_id: "s-home",
     });
-    expect(marfa.states.get("todoist")?.["conditions"]).toEqual({});
+    expect(marfa.problems.get("todoist")).toEqual({});
   });
 
   it("closes or reopens the task before it moves it", async () => {
@@ -2216,7 +2216,7 @@ describe("labels, project and section changed in Marfa", () => {
       checked: true,
     });
     expect(summary()).not.toContain("refused");
-    expect(marfa.states.get("todoist")?.["conditions"]).toEqual({});
+    expect(marfa.problems.get("todoist")).toEqual({});
     expect(marfa.byId(row.id).properties["status"]).toBe("completed");
   });
 
@@ -3028,10 +3028,7 @@ describe("a full sync", () => {
     const named = (id: string): string =>
       `Todoist does not answer task ${id} for this token, so its row is left as it is`;
     const held = (): Record<string, string> =>
-      (marfa.states.get("todoist")?.["conditions"] ?? {}) as Record<
-        string,
-        string
-      >;
+      marfa.problems.get("todoist") ?? {};
     await landed();
     expect(summary()).toContain(named("a"));
     expect(summary()).toContain(named("b"));

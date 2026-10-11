@@ -1,3 +1,4 @@
+import { canonicalType } from "./scripted-server.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
 import { narrowedCondition } from "../src/own-types.js";
@@ -51,6 +52,35 @@ const puts = (): number =>
   harness.server.requestsTo("PUT", "/types/test.entry").length;
 
 describe("a key with metadata types=write", () => {
+  it.each([false, true])(
+    "uses a fresh canonical snapshot after a registration race: conflicting=%s",
+    async (conflicting) => {
+      harness.server.grants = fixer;
+      harness.server.beforeAnswer = (request) => {
+        if (request.method === "POST" && request.path === "/types") {
+          harness.server.store({
+            ...testType,
+            ...(conflicting && {
+              fields: {
+                ...testType.fields,
+                extra: { type: "string", required: true },
+              },
+            }),
+          });
+        }
+      };
+      const held = vendor([entry]);
+      expect(await harness.once(held)).toBe(conflicting ? 1 : 0);
+      expect(held.runs).toBe(conflicting ? 0 : 1);
+      expect(
+        harness.server.requestsTo("POST", "/types/normalize"),
+      ).toHaveLength(2);
+      expect(puts()).toBe(0);
+      if (conflicting)
+        expect(harness.lastRun().error).toContain('field "extra" is required');
+    },
+  );
+
   it("is accepted beside its own types, and schema.write or anything else wider refused", async () => {
     harness.server.grants = fixer;
     expect(await harness.once(vendor([entry]))).toBe(0);
@@ -92,21 +122,23 @@ describe("a key with metadata types=write", () => {
 
     const sent = harness.server.requestsTo("PUT", "/types/test.entry");
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.body).toEqual({
-      label: testType.label,
-      description: testType.description,
-      fields: {
-        ...testType.fields,
-        extra: { type: "string", description: "An operator's own field" },
-      },
-      version: 4,
-      version_policy: { max_versions: 10 },
-      roles: ["container"],
-      merge_policy: {
-        default: "last_writer_wins",
-        fields: { title: "keep_both_copies" },
-      },
-    });
+    expect(sent[0]?.body).toEqual(
+      canonicalType({
+        label: testType.label,
+        description: testType.description,
+        fields: {
+          ...testType.fields,
+          extra: { type: "string", description: "An operator's own field" },
+        },
+        version: 4,
+        version_policy: { max_versions: 10 },
+        roles: ["container"],
+        merge_policy: {
+          default: "last_writer_wins",
+          fields: { title: "keep_both_copies" },
+        },
+      }),
+    );
     expect(harness.lines.join("\n")).toContain(
       "added link, note to the type test.entry",
     );
@@ -269,26 +301,152 @@ describe("a key with metadata types=write", () => {
     expect(harness.lastRun().summary ?? "").not.toContain("types replace");
   });
 
-  it("starts without the field, naming what the server refused, where the type holds a member of its own that the subset leaves out", async () => {
+  it("keeps explicit parent-equal roles, policies and version when adding optional fields", async () => {
     harness.server.grants = fixer;
+    const equal = {
+      roles: ["container"],
+      version_policy: { max_versions: 10 },
+      merge_policy: {
+        default: "keep_both_copies",
+        fields: { title: "last_writer_wins" },
+      },
+    };
     harness.server.store({
       id: "test.base",
-      fields: { origin: { type: "string" } },
-      roles: ["container"],
+      fields: {
+        origin: { type: "string" },
+        title: { type: "string", required: true },
+      },
+      ...equal,
     });
-    // The type lists its parent's role again, which the replacement leaves to
-    // the parent.
-    underParent({ roles: ["container", "task"] });
+    underParent({ ...equal, version: 4 });
     expect(
       await start(child(everything, {}), harness.runtime(["--once"])),
     ).toBe(0);
     expect(puts()).toBe(1);
-    const summary = harness.lastRun().summary ?? "";
-    expect(summary).toContain("marfa types replace test.entry --file");
-    expect(summary).toContain("roles");
-    expect(summary).toContain("link, note");
-    expect(harness.server.rows[0]?.properties["note"]).toBeUndefined();
+    const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
+      ?.body as Record<string, unknown>;
+    expect.soft(body["roles"]).toEqual(["container"]);
+    expect.soft(body["version_policy"]).toEqual(equal.version_policy);
+    expect.soft(body["merge_policy"]).toEqual(equal.merge_policy);
+    expect.soft(body["version"]).toBe(4);
+    expect(harness.server.owned.get("test.entry")?.own).toMatchObject({
+      ...equal,
+      version: 4,
+    });
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
     expect(harness.lastRun().outcome).toBe("succeeded");
+  });
+
+  it("keeps an optional child refinement omitted by the connector when adding optional fields", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { extra: { type: "string", maxLength: 120 } },
+    });
+    const refinement = {
+      type: "string",
+      maxLength: 120,
+      description: "An operator's child refinement",
+    };
+    underParent({
+      fields: {
+        title: { type: "string", required: true },
+        vendor_id: { type: "string" },
+        extra: refinement,
+      },
+    });
+    expect(
+      await start(child(everything, {}), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(puts()).toBe(1);
+    const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
+      ?.body as Record<string, unknown>;
+    expect(body["fields"]).toEqual(
+      canonicalType({ fields: { ...testType.fields, extra: refinement } })[
+        "fields"
+      ],
+    );
+    expect(harness.server.owned.get("test.entry")?.own["fields"]).toEqual(
+      body["fields"],
+    );
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
+  });
+
+  it("stops before running when a child requires an inherited optional field the connector omits", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { extra: { type: "string" } },
+    });
+    harness.server.store({
+      ...testType,
+      parent: "test.base",
+      fields: {
+        ...testType.fields,
+        extra: { type: "string", required: true },
+      },
+    });
+    const held = vendor([entry]);
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(1);
+    expect(held.runs).toBe(0);
+    expect(harness.lastRun().error).toContain(
+      'field "extra" is required on the server and not here',
+    );
+    expect(puts()).toBe(0);
+    expect(harness.server.rows).toEqual([]);
+
+    harness.server.store({ ...testType, parent: "test.base" });
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(held.runs).toBe(1);
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
+  });
+
+  it("accepts the parent's identical effective field without adding an own declaration", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { note: testType.fields["note"] },
+    });
+    const { note: inheritedNote, ...ownFields } = testType.fields;
+    expect(inheritedNote).toEqual({ type: "string" });
+    harness.server.store({
+      ...testType,
+      parent: "test.base",
+      fields: ownFields,
+    });
+    const held = vendor([entry]);
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(puts()).toBe(0);
+    expect(
+      harness.server.owned.get("test.entry")?.own["fields"],
+    ).not.toHaveProperty("note");
+    expect(held.runs).toBe(1);
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
+  });
+
+  it("runs when an inherited optional field omitted by the connector stays optional", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { extra: { type: "string" } },
+    });
+    harness.server.store({ ...testType, parent: "test.base" });
+    const held = vendor([entry]);
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(held.runs).toBe(1);
+    expect(puts()).toBe(0);
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
   });
 
   it("reads the type back, and stops without trying again where it still differs", async () => {
@@ -300,8 +458,8 @@ describe("a key with metadata types=write", () => {
       // Another version of the connector replaces the type in between.
       if (
         put &&
-        request.method === "GET" &&
-        request.path === "/types/test.entry"
+        request.method === "POST" &&
+        request.path === "/types/normalize"
       ) {
         harness.server.types.set("test.entry", older());
       }
@@ -321,7 +479,7 @@ describe("a key with metadata types=write", () => {
     harness.server.beforeAnswer = (request) => {
       if (replacing(request)) {
         put = true;
-        harness.server.refuseNext("GET /types/test.entry", 503, "unavailable");
+        harness.server.refuseNext("POST /types/normalize", 503, "unavailable");
       }
       if (put) harness.server.beforeAnswer = undefined;
     };
@@ -397,9 +555,7 @@ describe("a key with metadata types=write", () => {
       expect(run.summary).toContain("marfa types replace test.entry --file");
       expect(run.summary).toContain("fields.note");
       expect(run.summary).not.toContain("--metadata-permission");
-      const condition = (
-        harness.kept()["conditions"] as Record<string, string>
-      )["type-fields:test.entry"];
+      const condition = harness.problems()["type-fields:test.entry"];
       expect(condition).toContain("fields.note");
       expect(condition?.slice(0, 120)).toContain("marfa types replace");
       expect(
@@ -645,11 +801,7 @@ describe("a key without metadata types=write", () => {
     expect(run.summary).toContain(
       "marfa keys update key-1 --metadata-permission types=write",
     );
-    expect(
-      (harness.kept()["conditions"] as Record<string, string>)[
-        "type-fields:test.entry"
-      ],
-    ).toBeDefined();
+    expect(harness.problems()["type-fields:test.entry"]).toBeDefined();
   });
 
   it("still stops where the server lacks the link field or a file field", async () => {

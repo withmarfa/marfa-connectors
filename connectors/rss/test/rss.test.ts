@@ -1955,7 +1955,10 @@ describe("the connector, run as a process", () => {
     expect(asked.map((request) => request.answered)).toEqual([200]);
     expect(marfa.rows).toHaveLength(2);
     expect(JSON.stringify(marfa.rows)).not.toContain("s3cr3t");
-    const stored = JSON.stringify(marfa.states.get("rss") ?? {});
+    const stored = JSON.stringify({
+      state: marfa.states.get("rss") ?? {},
+      problems: marfa.problems.get("rss") ?? {},
+    });
     expect(stored).toContain("last_modified");
     expect(stored).not.toContain("s3cr3t");
   });
@@ -1983,6 +1986,7 @@ describe("the connector, run as a process", () => {
     const reported = JSON.stringify(marfa.runs);
     const stored = JSON.stringify([
       marfa.states.get("rss") ?? {},
+      marfa.problems.get("rss") ?? {},
       ...marfa.agreements.values(),
     ]);
     for (const text of [JSON.stringify(marfa.rows), output, reported, stored]) {
@@ -2161,7 +2165,11 @@ describe("the connector, run as a process", () => {
     expect(asked.at(-1)?.path).toBe(`/private/${token}/moved.xml`);
     expect(marfa.runs.at(-1)?.summary).not.toContain("410");
     expect(marfa.rows).toHaveLength(4);
-    const kept = JSON.stringify([marfa.states.get("rss") ?? {}, marfa.runs]);
+    const kept = JSON.stringify([
+      marfa.states.get("rss") ?? {},
+      marfa.problems.get("rss") ?? {},
+      marfa.runs,
+    ]);
     expect(kept).not.toContain(token);
     expect(kept).not.toContain("/private/");
   });
@@ -2221,7 +2229,11 @@ describe("the connector, run as a process", () => {
     expect(asked.map((request) => request.answered).slice(6)).toEqual([
       301, 304, 308, 304, 302, 304,
     ]);
-    const kept = JSON.stringify([marfa.states.get("rss") ?? {}, marfa.runs]);
+    const kept = JSON.stringify([
+      marfa.states.get("rss") ?? {},
+      marfa.problems.get("rss") ?? {},
+      marfa.runs,
+    ]);
     expect(kept).not.toContain(old);
     expect(kept).not.toContain(fresh);
   });

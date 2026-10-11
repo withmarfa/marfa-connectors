@@ -603,7 +603,7 @@ describe("the state", () => {
     expect(harness.lastRun().summary).toBe(
       "created 1, updated 0, archived 0, unchanged 0, skipped 0",
     );
-    expect(harness.kept()).toMatchObject({ state: {}, conditions: {} });
+    expect(harness.kept()).toMatchObject({ state: {} });
   });
 });
 
@@ -643,8 +643,7 @@ describe("a row the server refuses", () => {
       "the server refused a:1: type_not_permitted",
     );
     expect(harness.server.row("a:2").type).toBe("test.entry");
-    const refused = () =>
-      (harness.kept()["conditions"] as Record<string, string>)["refused:a:1"];
+    const refused = () => harness.problems()["refused:a:1"];
     expect(harness.kept()).toMatchObject({ state: { token: "t1" } });
     expect(refused()).toContain("type_not_permitted");
 
@@ -658,7 +657,7 @@ describe("a row the server refuses", () => {
 
     held.entries = [two];
     expect(await harness.once(held)).toBe(0);
-    expect(harness.kept()).toHaveProperty("conditions", {});
+    expect(harness.problems()).toEqual({});
   });
 
   it("fails the run when a key narrowed since it started may no longer write the connector's type", async () => {

@@ -319,7 +319,7 @@ it("keeps durable refusal visibility beyond 200 generic conditions", async () =>
   expect(harness.lines.slice(first).join("\n")).toContain(
     "durable retry intent waits",
   );
-  expect(Object.keys(harness.kept()["conditions"] as object).length).toBe(200);
+  expect(Object.keys(harness.problems() as object).length).toBe(200);
 });
 it("checks the complete envelope before acknowledging marker removal", async () => {
   refused();
@@ -362,7 +362,6 @@ it("rejects nonlossless replay and malformed saved intent", async () => {
   expect(inbound()).toBeUndefined();
   harness.server.states.set("test", {
     state: {},
-    conditions: {},
     inbound: [{ invalid: true }],
   });
   const saved = structuredClone(harness.kept());

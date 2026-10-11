@@ -391,9 +391,7 @@ it("accepts the complete 512 KiB checkpoint envelope and blocks one byte over", 
   const held = vendor();
   held.read = async (context) => {
     const a = context.forScope("A");
-    const overhead = Buffer.byteLength(
-      JSON.stringify({ state: { A: "" }, conditions: {} }),
-    );
+    const overhead = Buffer.byteLength(JSON.stringify({ state: { A: "" } }));
     const candidate = "x".repeat(512 * 1024 - overhead);
     expect(await a.state.checkpoint("A", candidate)).toEqual({
       committed: true,
