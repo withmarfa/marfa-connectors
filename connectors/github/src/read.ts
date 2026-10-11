@@ -26,6 +26,7 @@ import {
   asApp,
   asInstallation,
   ClockSkew,
+  RateLimitWaiting,
   namedAtMost,
   rateLimited,
   numbersIn,
@@ -178,10 +179,12 @@ export async function read(
         "rate-limit-reserve",
         "GitHub is rate limited, so unfinished reads wait for the next run",
       );
+      if (context.hints !== undefined) throw error;
       return;
     }
     if (!(error instanceof ClockSkew)) throw error;
     context.log.condition("clock-skew", error.message);
+    if (context.hints !== undefined) throw error;
   } finally {
     coverage.retain(context);
   }
@@ -302,6 +305,11 @@ async function readAll(
     }
   }
   const synced = new Set(listed.keys());
+  const retained = new Set(
+    Object.entries(kept).flatMap(([node, old]) =>
+      deferred.has(old.installation) ? [node] : [],
+    ),
+  );
   const privacy: Privacy = new Map(
     [...listed].map(([node, { repository }]) => [node, repository.private]),
   );
@@ -345,8 +353,10 @@ async function readAll(
       context,
       new Map([...listed].filter(([node]) => !unsettled.has(node))),
       clients,
-      new Set([...paused, ...unsettled]),
+      new Set([...paused, ...unsettled, ...retained]),
       privacy,
+      deferred,
+      retained,
     );
     return;
   }
@@ -434,7 +444,7 @@ async function readAll(
     try {
       next[node] = await syncRepository(scoped, octokit, node, repository, {
         synced,
-        inside: new Set([...synced, ...paused]),
+        inside: new Set([...synced, ...paused, ...retained]),
         privacy,
         check,
       });
@@ -958,9 +968,29 @@ async function readNamed(
   every: ReadonlyMap<number, Client>,
   paused: ReadonlySet<string>,
   privacy: Privacy,
+  initiallyDeferred: ReadonlySet<number>,
+  deferredRepositories: ReadonlySet<string>,
 ): Promise<void> {
   const { hints, upsert, log } = context;
-  const clients = every;
+  const clients = new Map(every);
+  const deferred = new Set(initiallyDeferred);
+  const attempt = async <T>(
+    installation: number,
+    act: () => Promise<T>,
+  ): Promise<T | undefined> => {
+    try {
+      return await act();
+    } catch (error) {
+      if (!rateLimited(error)) throw error;
+      deferred.add(installation);
+      clients.delete(installation);
+      log.condition(
+        "rate-limit-reserve",
+        `GitHub's limit ran low for installation ${String(installation)}, so unfinished deliveries wait for the next run`,
+      );
+      return undefined;
+    }
+  };
   const synced = new Set(
     [...listed].flatMap(([node, { installation }]) =>
       clients.has(installation) ? [node] : [],
@@ -970,22 +1000,33 @@ async function readNamed(
   const comments = new Map<string, Comment>();
   // What GitHub shows anywhere is not gone, though outside the sync.
   const shown = new Set<string>();
+  const notApplied = new Set<string>();
   const namedComments = [...(hints?.get(commentType) ?? [])];
   const namedIssues = new Set(hints?.get(issueType) ?? []);
-  for (const octokit of clients.values()) {
+  for (const [installation, octokit] of clients) {
     const wanted = namedComments.filter((id) => !comments.has(id));
-    for (const comment of await commentsByNode(octokit, wanted)) {
+    for (const comment of (await attempt(installation, () =>
+      commentsByNode(octokit, wanted),
+    )) ?? []) {
       shown.add(comment.node);
-      if (!synced.has(comment.repository.node)) continue;
+      if (!synced.has(comment.repository.node)) {
+        if (deferredRepositories.has(comment.repository.node))
+          notApplied.add(comment.node);
+        continue;
+      }
       comments.set(comment.node, comment);
       namedIssues.add(comment.issue);
     }
   }
   const ask = async (ids: readonly string[]): Promise<void> => {
-    for (const octokit of clients.values()) {
+    for (const [installation, octokit] of clients) {
       const wanted = ids.filter((id) => !issues.has(id));
-      for (const found of await issuesByNode(octokit, wanted)) {
+      for (const found of (await attempt(installation, () =>
+        issuesByNode(octokit, wanted),
+      )) ?? []) {
         shown.add(found.issue.node);
+        if (deferredRepositories.has(found.issue.repository.node))
+          notApplied.add(found.issue.node);
         if (synced.has(found.issue.repository.node)) {
           issues.set(found.issue.node, found);
         }
@@ -1031,10 +1072,24 @@ async function readNamed(
     ),
   );
 
+  const unfinished = (): void => {
+    if (
+      deferred.size > 0 &&
+      [...namedIssues, ...namedComments].some(
+        (id) => !shown.has(id) || notApplied.has(id),
+      )
+    )
+      throw new RateLimitWaiting("unfinished delivery reads");
+  };
+  if (deferred.size > 0) {
+    unfinished();
+    return;
+  }
   const unseenIssues = new Set([...namedIssues].filter((id) => !shown.has(id)));
   const unseenComments = new Set(namedComments.filter((id) => !shown.has(id)));
   for (const [node, { repository, installation }] of listed) {
-    if (unseenIssues.size === 0 && unseenComments.size === 0) return;
+    if (unseenIssues.size === 0 && unseenComments.size === 0) break;
+    if (deferred.size > 0) break;
     const octokit = clients.get(installation);
     if (octokit === undefined || repository.has_issues === false) continue;
     const under = { type: repositoryType, id: node };
@@ -1059,17 +1114,20 @@ async function readNamed(
           );
     if (issueRows.length === 0 && commentRows.length === 0) continue;
     const [owner = "", name = ""] = repository.full_name.split("/");
-    if (!(await reads(octokit, owner, name))) {
-      log.condition(
-        `repository-unreadable:${node}`,
-        `${repository.full_name} is listed for the App but does not read, so its rows are left as they are`,
+    await attempt(installation, async () => {
+      if (!(await reads(octokit, owner, name))) {
+        log.condition(
+          `repository-unreadable:${node}`,
+          `${repository.full_name} is listed for the App but does not read, so its rows are left as they are`,
+        );
+        return;
+      }
+      await archiveGone(context, octokit, { owner, name }, issueRows);
+      await context.archive(
+        commentType,
+        commentRows.flatMap((row) => linkOf(row) ?? []),
       );
-      continue;
-    }
-    await archiveGone(context, octokit, { owner, name }, issueRows);
-    await context.archive(
-      commentType,
-      commentRows.flatMap((row) => linkOf(row) ?? []),
-    );
+    });
   }
+  unfinished();
 }

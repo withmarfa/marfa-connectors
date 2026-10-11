@@ -255,6 +255,30 @@ describe("a first sync", () => {
     expect(output).not.toContain("can no longer be read");
   });
 
+  it("retains a deferred installation as a relation target without reading it", async () => {
+    const first = github.addRepository("someone/first", { private: false });
+    const blocker = github.addIssue(first);
+    github.installations.push({ id: 2, login: "another" });
+    const second = github.addRepository("another/second", {
+      installation: 2,
+      private: false,
+    });
+    const blocked = github.addIssue(second);
+    blocked.blocked_by = [blocker.node];
+    await ok();
+    expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
+    github.metadataLimitedInstallation = 1;
+    github.edit(blocked, { title: "Changed" });
+    github.asked = [];
+    await ok();
+    expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
+    expect(row(blocked.node).properties["blocked_by_urls"]).toEqual([]);
+    expect(
+      github.asked.filter((one) =>
+        one.path.startsWith("/repos/someone/first/"),
+      ),
+    ).toEqual([]);
+  });
   it("writes the repositories, the issues open and closed within ninety days, their comments and their relations", async () => {
     const repository = github.addRepository("someone/tracker", {
       description: "Where things are tracked",

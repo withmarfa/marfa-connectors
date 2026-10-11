@@ -105,17 +105,28 @@ function counted(octokit: Client, key: string, guard: boolean): Client {
       throw new RateLimitWaiting(resource);
   });
   const count = (headers: Record<string, unknown>, url: string): void => {
-    const left = Number(headers["x-ratelimit-remaining"]);
-    if (!Number.isFinite(left)) return;
+    const numeric = (value: unknown): number | undefined => {
+      if (
+        typeof value !== "number" &&
+        (typeof value !== "string" || value.trim() === "")
+      )
+        return;
+      const result = Number(value);
+      return Number.isFinite(result) && result >= 0 ? result : undefined;
+    };
+    const left = numeric(headers["x-ratelimit-remaining"]);
+    if (left === undefined) return;
     const resource = headers["x-ratelimit-resource"];
-    const reset = Number(headers["x-ratelimit-reset"]);
+    if (resource !== undefined && resource !== "core" && resource !== "graphql")
+      return;
+    const reset = numeric(headers["x-ratelimit-reset"]);
     held.set(
       resource === "core" || resource === "graphql"
         ? resource
         : resourceOf(url),
       {
         left,
-        ...(Number.isFinite(reset) && { reset: reset * 1000 }),
+        ...(reset !== undefined && { reset: reset * 1000 }),
       },
     );
   };
@@ -123,8 +134,20 @@ function counted(octokit: Client, key: string, guard: boolean): Client {
     count(response.headers, options.url);
   });
   octokit.hook.error("request", (error, options) => {
-    if (error instanceof RequestError && error.response !== undefined)
-      count(error.response.headers, options.url);
+    const response = (error as { response?: unknown } | null)?.response;
+    if (
+      typeof response === "object" &&
+      response !== null &&
+      "headers" in response
+    ) {
+      const headers = response.headers;
+      if (
+        typeof headers === "object" &&
+        headers !== null &&
+        !Array.isArray(headers)
+      )
+        count(headers as Record<string, unknown>, options.url);
+    }
     throw error;
   });
   return octokit;

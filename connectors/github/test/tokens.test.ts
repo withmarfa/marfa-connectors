@@ -46,6 +46,48 @@ function reader(signal = new AbortController().signal) {
 }
 
 describe("an installation token", () => {
+  it("preserves GraphQL errors with malformed budget headers", async () => {
+    const { octokit } = reader();
+    github.graphqlRemaining = Number.NaN;
+    github.rateReset = Number.NaN;
+    github.graphqlLimitedInstallations.add(1);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = github.asked.filter(
+        (one) => one.path === "/graphql",
+      ).length;
+      await expect(
+        octokit.graphql(
+          "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+          { ids: ["unknown"] },
+        ),
+      ).rejects.toThrow("GraphQL Rate Limit Exceeded");
+      expect(
+        github.asked.filter((one) => one.path === "/graphql").length,
+      ).toBeGreaterThan(before);
+    }
+  });
+  it("counts plain GraphQL throttling errors before another request", async () => {
+    const { octokit } = reader();
+    github.graphqlRemaining = 0;
+    github.rateReset = Math.ceil(Date.now() / 1000) + 3600;
+    github.graphqlLimitedInstallations.add(1);
+    await expect(
+      octokit.graphql(
+        "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+        { ids: ["unknown"] },
+      ),
+    ).rejects.toThrow();
+    await expect(
+      octokit.graphql(
+        "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+        { ids: ["unknown"] },
+      ),
+    ).rejects.toBeInstanceOf(RateLimitWaiting);
+    expect(github.asked.filter((one) => one.path === "/graphql")).toHaveLength(
+      1,
+    );
+  });
+
   it("shares the REST reserve with metadata tokens and retries only after the real reset", async () => {
     const { octokit } = reader();
     github.rateRemaining = 100;
