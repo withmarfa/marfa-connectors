@@ -269,26 +269,150 @@ describe("a key with metadata types=write", () => {
     expect(harness.lastRun().summary ?? "").not.toContain("types replace");
   });
 
-  it("starts without the field, naming what the server refused, where the type holds a member of its own that the subset leaves out", async () => {
+  it("keeps explicit parent-equal roles, policies and version when adding optional fields", async () => {
     harness.server.grants = fixer;
+    const equal = {
+      roles: ["container"],
+      version_policy: { max_versions: 10 },
+      merge_policy: {
+        default: "keep_both_copies",
+        fields: { title: "last_writer_wins" },
+      },
+    };
     harness.server.store({
       id: "test.base",
-      fields: { origin: { type: "string" } },
-      roles: ["container"],
+      fields: {
+        origin: { type: "string" },
+        title: { type: "string", required: true },
+      },
+      ...equal,
     });
-    // The type lists its parent's role again, which the replacement leaves to
-    // the parent.
-    underParent({ roles: ["container", "task"] });
+    underParent({ ...equal, roles: ["container", "task"], version: 4 });
     expect(
       await start(child(everything, {}), harness.runtime(["--once"])),
     ).toBe(0);
     expect(puts()).toBe(1);
-    const summary = harness.lastRun().summary ?? "";
-    expect(summary).toContain("marfa types replace test.entry --file");
-    expect(summary).toContain("roles");
-    expect(summary).toContain("link, note");
-    expect(harness.server.rows[0]?.properties["note"]).toBeUndefined();
+    const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
+      ?.body as Record<string, unknown>;
+    expect.soft(body["roles"]).toEqual(["container", "task"]);
+    expect.soft(body["version_policy"]).toEqual(equal.version_policy);
+    expect.soft(body["merge_policy"]).toEqual(equal.merge_policy);
+    expect.soft(body["version"]).toBe(4);
+    expect(harness.server.owned.get("test.entry")?.own).toMatchObject({
+      ...equal,
+      roles: ["container", "task"],
+      version: 4,
+    });
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
     expect(harness.lastRun().outcome).toBe("succeeded");
+  });
+
+  it("keeps an optional child refinement omitted by the connector when adding optional fields", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { extra: { type: "string", maxLength: 120 } },
+    });
+    const refinement = {
+      type: "string",
+      maxLength: 80,
+      description: "An operator's child refinement",
+    };
+    underParent({
+      fields: {
+        title: { type: "string", required: true },
+        vendor_id: { type: "string" },
+        extra: refinement,
+      },
+    });
+    expect(
+      await start(child(everything, {}), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(puts()).toBe(1);
+    const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
+      ?.body as Record<string, unknown>;
+    expect(body["fields"]).toEqual({ ...testType.fields, extra: refinement });
+    expect(harness.server.owned.get("test.entry")?.own["fields"]).toEqual({
+      ...testType.fields,
+      extra: refinement,
+    });
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
+    expect(harness.lastRun().summary ?? "").not.toContain("types replace");
+  });
+
+  it("stops before running when a child requires an inherited optional field the connector omits", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { extra: { type: "string" } },
+    });
+    harness.server.store({
+      ...testType,
+      parent: "test.base",
+      fields: {
+        ...testType.fields,
+        extra: { type: "string", required: true },
+      },
+    });
+    const held = vendor([entry]);
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(1);
+    expect(held.runs).toBe(0);
+    expect(harness.lastRun().error).toContain(
+      'field "extra" is required on the server and not here',
+    );
+    expect(puts()).toBe(0);
+    expect(harness.server.rows).toEqual([]);
+
+    harness.server.store({ ...testType, parent: "test.base" });
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(held.runs).toBe(1);
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
+  });
+
+  it("accepts the parent's identical effective field without adding an own declaration", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { note: testType.fields["note"] },
+    });
+    const { note: inheritedNote, ...ownFields } = testType.fields;
+    expect(inheritedNote).toEqual({ type: "string" });
+    harness.server.store({
+      ...testType,
+      parent: "test.base",
+      fields: ownFields,
+    });
+    const held = vendor([entry]);
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(puts()).toBe(0);
+    expect(
+      harness.server.owned.get("test.entry")?.own["fields"],
+    ).not.toHaveProperty("note");
+    expect(held.runs).toBe(1);
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
+  });
+
+  it("runs when an inherited optional field omitted by the connector stays optional", async () => {
+    harness.server.grants = fixer;
+    harness.server.store({
+      id: "test.base",
+      fields: { extra: { type: "string" } },
+    });
+    harness.server.store({ ...testType, parent: "test.base" });
+    const held = vendor([entry]);
+    expect(
+      await start(child(everything, {}, held), harness.runtime(["--once"])),
+    ).toBe(0);
+    expect(held.runs).toBe(1);
+    expect(puts()).toBe(0);
+    expect(harness.server.rows[0]?.properties["note"]).toBe("From the vendor");
   });
 
   it("reads the type back, and stops without trying again where it still differs", async () => {
