@@ -255,38 +255,66 @@ describe("a first sync", () => {
     expect(output).not.toContain("can no longer be read");
   });
 
-  it("retains a deferred installation as a relation target without reading it", async () => {
-    const first = github.addRepository("someone/first", { private: false });
-    const blocker = github.addIssue(first);
-    github.installations.push({ id: 2, login: "another" });
-    const second = github.addRepository("another/second", {
-      installation: 2,
-      private: false,
-    });
-    const blocked = github.addIssue(second);
-    blocked.blocked_by = [blocker.node];
-    await ok();
-    expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
-    const unseen = github.addIssue(first);
-    blocked.blocked_by.push(unseen.node);
-    blocked.parent = unseen.node;
-    github.metadataLimitedInstallation = 1;
-    github.edit(blocked, { title: "Changed" });
-    github.asked = [];
-    await ok();
-    expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
-    expect(row(blocked.node).properties["blocked_by_urls"]).toEqual([
-      `https://github.com/someone/first/issues/${String(unseen.number)}`,
-    ]);
-    expect(row(blocked.node).properties["parent_url"]).toBe(
-      `https://github.com/someone/first/issues/${String(unseen.number)}`,
-    );
-    expect(
-      github.asked.filter((one) =>
-        one.path.startsWith("/repos/someone/first/"),
-      ),
-    ).toEqual([]);
-  });
+  it.each([
+    ["active", "active"],
+    ["archived", "active"],
+    ["active", "archived"],
+    ["archived", "archived"],
+  ])(
+    "retains a deferred installation as a relation target without reading it (target %s, source %s)",
+    async (targetState, sourceState) => {
+      const first = github.addRepository("someone/first", { private: false });
+      const blocker = github.addIssue(first);
+      github.installations.push({ id: 2, login: "another" });
+      const second = github.addRepository("another/second", {
+        installation: 2,
+        private: false,
+      });
+      const blocked = github.addIssue(second);
+      blocked.blocked_by = [blocker.node];
+      const child = github.addIssue(second);
+      child.parent = blocker.node;
+      await ok();
+      expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
+      if (targetState === "archived")
+        marfa.transition(row(blocker.node).id, "archived");
+      if (sourceState === "archived") {
+        blocked.deleted = true;
+        child.deleted = true;
+        checkDue();
+        await ok();
+        expect(row(blocked.node).state).toBe("archived");
+        expect(row(child.node).state).toBe("archived");
+        blocked.deleted = false;
+        child.deleted = false;
+      }
+      const unseen = github.addIssue(first);
+      blocked.blocked_by.push(unseen.node);
+      blocked.parent = unseen.node;
+      github.metadataLimitedInstallation = 1;
+      github.edit(blocked, { title: "Changed" });
+      github.edit(child, { title: "Changed child" });
+      github.asked = [];
+      await ok();
+      expect(links(blocked.node, "github.blocked-by")).toEqual([blocker.node]);
+      expect(row(blocker.node).state).toBe(targetState);
+      expect(row(blocked.node).state).toBe("active");
+      expect(row(child.node).state).toBe("active");
+      expect(links(child.node, "github.sub-issue-of")).toEqual([blocker.node]);
+      expect(row(child.node).properties["parent_url"] ?? null).toBeNull();
+      expect(row(blocked.node).properties["blocked_by_urls"]).toEqual([
+        `https://github.com/someone/first/issues/${String(unseen.number)}`,
+      ]);
+      expect(row(blocked.node).properties["parent_url"]).toBe(
+        `https://github.com/someone/first/issues/${String(unseen.number)}`,
+      );
+      expect(
+        github.asked.filter((one) =>
+          one.path.startsWith("/repos/someone/first/"),
+        ),
+      ).toEqual([]);
+    },
+  );
   it("writes the repositories, the issues open and closed within ninety days, their comments and their relations", async () => {
     const repository = github.addRepository("someone/tracker", {
       description: "Where things are tracked",

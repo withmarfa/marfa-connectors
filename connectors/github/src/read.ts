@@ -310,16 +310,6 @@ async function readAll(
       deferred.has(old.installation) ? [node] : [],
     ),
   );
-  const retainedIssues = new Set<string>();
-  for (const node of retained) {
-    for (const row of await context.linked(issueType, inRepository, {
-      type: repositoryType,
-      id: node,
-    })) {
-      const link = linkOf(row);
-      if (link !== undefined) retainedIssues.add(link);
-    }
-  }
   const privacy: Privacy = new Map(
     [...listed].map(([node, { repository }]) => [node, repository.private]),
   );
@@ -371,7 +361,7 @@ async function readAll(
           .map((one) => one.id),
       ),
       new Set(outside.keys()),
-      retainedIssues,
+      retained,
     );
     return;
   }
@@ -460,7 +450,7 @@ async function readAll(
       next[node] = await syncRepository(scoped, octokit, node, repository, {
         synced,
         inside: new Set([...synced, ...paused]),
-        retainedIssues,
+        retainedRepositories: retained,
         privacy,
         check,
       });
@@ -537,7 +527,7 @@ async function syncRepository(
   options: {
     synced: ReadonlySet<string>;
     inside: ReadonlySet<string>;
-    retainedIssues: ReadonlySet<string>;
+    retainedRepositories: ReadonlySet<string>;
     privacy: Privacy;
     check: boolean;
   },
@@ -617,6 +607,11 @@ async function syncRepository(
     octokit,
     around.filter((id) => !listedNodes.has(id)),
   );
+  const knownTargets = await retainedTargets(
+    context,
+    [...relations.values(), ...beside.map((one) => one.relations)],
+    options.retainedRepositories,
+  );
   await upsert(issueType, [
     ...listed.flatMap((issue) => {
       const found = relations.get(issue.node_id);
@@ -627,7 +622,7 @@ async function syncRepository(
           found,
           options.inside,
           hidden,
-          options.retainedIssues,
+          knownTargets,
         ),
       ];
     }),
@@ -639,7 +634,7 @@ async function syncRepository(
           known,
           options.inside,
           privateIn(options.privacy, issue.repository.node),
-          options.retainedIssues,
+          knownTargets,
         ),
       ),
   ]);
@@ -983,6 +978,21 @@ async function askIssue(
   }
 }
 
+async function retainedTargets(
+  context: Context,
+  relations: readonly Relations[],
+  repositories: ReadonlySet<string>,
+): Promise<ReadonlySet<string>> {
+  const candidates = relations
+    .flatMap((one) => [
+      ...(one.parent === null ? [] : [one.parent]),
+      ...one.blockedBy,
+    ])
+    .filter((one) => repositories.has(one.repository.id))
+    .map((one) => one.id);
+  return context.known(issueType, [...new Set(candidates)]);
+}
+
 async function readNamed(
   context: Context,
   listed: ReadonlyMap<
@@ -994,7 +1004,7 @@ async function readNamed(
   privacy: Privacy,
   initiallyDeferred: ReadonlySet<number>,
   excluded: ReadonlySet<string>,
-  retainedIssues: ReadonlySet<string>,
+  retainedRepositories: ReadonlySet<string>,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(every);
@@ -1071,6 +1081,11 @@ async function readNamed(
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),
   );
+  const knownTargets = await retainedTargets(
+    context,
+    [...issues.values()].map((one) => one.relations),
+    retainedRepositories,
+  );
   const touched = new Set([
     ...[...issues.values()].map(({ issue }) => issue.repository.node),
     ...[...comments.values()].map((comment) => comment.repository.node),
@@ -1090,7 +1105,7 @@ async function readNamed(
         relations,
         new Set([...synced, ...paused]),
         privateIn(privacy, issue.repository.node),
-        retainedIssues,
+        knownTargets,
       ),
     ),
   );

@@ -239,6 +239,17 @@ export interface RunContext<E extends EnvDeclaration> {
     target: Target,
   ) => Promise<Item[]>;
   /**
+   * Requested natural keys, or vendor IDs for a linked type, whose rows have
+   * an agreement under that identity. Includes active, archived and trashed
+   * rows; excludes missing, purged and unagreed manually assigned identities.
+   * Returns a detached set without restoring or updating any row. This proves
+   * an imported identity, not that the vendor still has the item.
+   */
+  readonly known: (
+    type: string,
+    keys: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
+  /**
    * The active rows of the type that carry a value for its link, or, where
    * it has none, that were written under the connector's source, read from
    * the instance, whether or not the vendor was told of them: what Marfa
