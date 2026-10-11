@@ -122,8 +122,13 @@ describe("configuration", () => {
     expect(harness.server.requests).toEqual([]);
   });
 
-  it("refuses a source under a reserved prefix", async () => {
-    const connector = { ...testConnector(vendor()), source: "Connector:test" };
+  it.each([
+    "Connector:test",
+    "oauth:test",
+    "restored:oauth:test",
+    " Restored:oauth:test ",
+  ])("refuses source %s under a reserved prefix", async (source) => {
+    const connector = { ...testConnector(vendor()), source };
     expect(await start(connector, harness.runtime(["--once"]))).toBe(2);
     expect(harness.server.requests).toEqual([]);
     expect(
