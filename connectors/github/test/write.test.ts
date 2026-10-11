@@ -115,6 +115,22 @@ async function settled(env: Record<string, string> = {}): Promise<string> {
 }
 
 describe("an issue changed in Marfa", () => {
+  it("keeps a change waiting when its lookup hits the read reserve", async () => {
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    marfa.edit(row(issue.node).id, { title: "After" });
+    const other = github.addRepository("someone/other");
+    github.addIssue(other);
+    github.graphqlRemaining = 100;
+    const output = await ok();
+    expect(output).toContain("rate limit ran out");
+    expect(issue.title).toBe("Before");
+    expect(row(issue.node).properties["title"]).toBe("After");
+    github.graphqlRemaining = 4999;
+    await ok();
+    expect(issue.title).toBe("After");
+  });
+
   it("is carried with a token that names its own repository by id, and may write only issues", async () => {
     github.addRepository("someone/other");
     const issue = github.addIssue(repository, { title: "Before" });

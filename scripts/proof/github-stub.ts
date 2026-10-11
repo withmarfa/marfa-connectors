@@ -107,6 +107,13 @@ export class GitHubStub {
   echoCredentials = false;
   rateRemaining = 4999;
   rateLimited = false;
+  readFailure: string | undefined;
+  graphqlRemaining = 4999;
+  graphqlRemainingByInstallation = new Map<number, number>();
+  graphqlLimitedInstallations = new Set<number>();
+  rateReset: number | undefined;
+  metadataLimitedInstallation: number | undefined;
+  longResetRepository: string | undefined;
   appId = 12345;
   appSlug = "marfa-connectors";
   loseNextCreate = false;
@@ -516,7 +523,17 @@ export class GitHubStub {
       res.writeHead(status, {
         "content-type": "application/json",
         date: new Date(this.clock + this.clockAhead * 1000).toUTCString(),
-        "x-ratelimit-remaining": String(this.rateRemaining),
+        "x-ratelimit-remaining": String(
+          path === "/graphql"
+            ? (this.graphqlRemainingByInstallation.get(
+                this.installationOf(req)?.id ?? -1,
+              ) ?? this.graphqlRemaining)
+            : this.rateRemaining,
+        ),
+        "x-ratelimit-resource": path === "/graphql" ? "graphql" : "core",
+        ...(this.rateReset !== undefined && {
+          "x-ratelimit-reset": String(this.rateReset),
+        }),
         ...headers,
       });
       res.end(data === undefined ? undefined : JSON.stringify(data));
@@ -674,6 +691,17 @@ export class GitHubStub {
         send(401, { message: "Bad credentials" });
         return;
       }
+      if (installation.id === this.metadataLimitedInstallation) {
+        send(
+          403,
+          { message: "API rate limit exceeded for installation" },
+          {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.ceil(Date.now() / 1000) + 3600),
+          },
+        );
+        return;
+      }
       const repositories = this.repositories
         .filter((one) => this.reaches(req, one))
         .map((one) => this.restRepository(one));
@@ -786,6 +814,27 @@ export class GitHubStub {
       method === "GET"
     ) {
       const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      if (
+        repository?.name === this.longResetRepository &&
+        this.longResetRepository !== undefined
+      ) {
+        send(
+          403,
+          { message: "API rate limit exceeded for installation" },
+          {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.ceil(Date.now() / 1000) + 3600),
+          },
+        );
+        return;
+      }
+      if (
+        repository?.name === this.readFailure &&
+        this.readFailure !== undefined
+      ) {
+        send(422, { message: "Repository listing failed" });
+        return;
+      }
       if (this.echoCredentials) {
         send(500, { message: `broken for ${req.headers.authorization ?? ""}` });
         return;
@@ -1144,6 +1193,15 @@ export class GitHubStub {
     const operation = /^\s*(query|mutation)\s+(\w+)/.exec(body.query)?.[2];
     if (this.installationOf(req) === undefined) {
       send(401, { message: "Bad credentials" });
+      return;
+    }
+    if (
+      this.graphqlLimitedInstallations.has(this.installationOf(req)?.id ?? -1)
+    ) {
+      send(200, {
+        data: null,
+        errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+      });
       return;
     }
     const errors: { type: string; message: string }[] = [];

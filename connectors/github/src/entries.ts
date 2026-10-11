@@ -171,8 +171,10 @@ export function issueEntry(
   relations: Relations,
   synced: ReadonlySet<string>,
   hidden?: boolean,
+  retainedIssues: ReadonlySet<string> = new Set(),
 ): Entry {
-  const inside = (one: Related): boolean => synced.has(one.repository.id);
+  const inside = (one: Related): boolean =>
+    synced.has(one.repository.id) || retainedIssues.has(one.id);
   const target = (one: Related): Target => ({ type: issueType, id: one.id });
   const parent = relations.parent;
   return {

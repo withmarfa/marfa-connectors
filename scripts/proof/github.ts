@@ -12,6 +12,7 @@ import {
   item,
   lastRun,
   moved,
+  purge,
   registration,
   restore,
   rowsOf,
@@ -814,12 +815,14 @@ export async function proveGitHubCoverage(
       default_tier: "feed",
     });
     const own = createClient({ baseUrl: url, credential: key.key });
+    let readOnly = false;
     const runner = () =>
       new ConnectorUnderProof(source, url, key.key, {
         GITHUB_APP_ID: "12345",
         GITHUB_PRIVATE_KEY: privateKey,
         GITHUB_WEBHOOK_SECRET: "github-coverage-webhook-secret",
         GITHUB_API_URL: github.url,
+        GITHUB_READ_ONLY: String(readOnly),
       });
     const privateKey = appKey();
     const run = async () => {
@@ -951,19 +954,38 @@ export async function proveGitHubCoverage(
     );
 
     await check(
-      "github: a failed rate-limited run retains both installations' saved conditions and reports failure without claiming clearance",
+      "github: a rate-limited installation followed by an independent listing failure retains both installations' saved conditions without claiming clearance",
       async () => {
         a.issuesOff = true;
         b.issuesOff = true;
         await run();
         a.issuesOff = false;
         b.issuesOff = false;
-        github.rateLimited = true;
-        const failed = await runner().once();
-        github.rateLimited = false;
+        github.longResetRepository = a.name;
+        github.readFailure = b.name;
+        github.asked.length = 0;
+        let failed;
+        try {
+          failed = await runner().once();
+        } finally {
+          github.longResetRepository = undefined;
+          github.readFailure = undefined;
+        }
+        const limited = github.asked.some(
+          (request) =>
+            request.path === "/repos/someone/coverage-a/issues" &&
+            request.status === 403,
+        );
+        const refused = github.asked.some(
+          (request) =>
+            request.path === "/repos/another/coverage-b/issues" &&
+            request.status === 422,
+        );
         const retained = await state();
         const report = await lastRun(manager, key.id);
         if (
+          !limited ||
+          !refused ||
           failed.code !== 1 ||
           report.outcome !== "failed" ||
           !disabled(retained, a.node) ||
@@ -971,10 +993,31 @@ export async function proveGitHubCoverage(
           failed.output.includes("cleared:")
         ) {
           throw new Error(
-            `failed retention wrong: ${JSON.stringify(retained)}; ${JSON.stringify(report)}; ${failed.output}`,
+            `failed retention wrong (rate limit reached: ${String(limited)}, independent failure reached: ${String(refused)}): ${JSON.stringify(retained)}; ${JSON.stringify(report)}; ${failed.output}`,
           );
         }
-        return "exit 1 and a failed manager report, with both original conditions durable and no clearance log";
+        github.longResetRepository = a.name;
+        github.asked.length = 0;
+        let waiting;
+        try {
+          waiting = await run();
+        } finally {
+          github.longResetRepository = undefined;
+        }
+        const recovered = await lastRun(manager, key.id);
+        if (
+          recovered.outcome !== "succeeded" ||
+          !/waits? for the next run/.test(waiting) ||
+          !github.asked.some(
+            (request) =>
+              request.path === "/repos/another/coverage-b/issues" &&
+              [200, 304].includes(request.status),
+          )
+        )
+          throw new Error(
+            `removing the independent failure did not permit rate-limited waiting: ${JSON.stringify(recovered)}; ${waiting}`,
+          );
+        return "A returned 403 with a long reset and B returned 422: exit 1 and a failed manager report retained both original conditions without clearance; removing B's failure allowed a successful run while A still waited";
       },
     );
 
@@ -1015,6 +1058,113 @@ export async function proveGitHubCoverage(
           );
         }
         return "an actual point-fetch 404 raised the condition; after restart the saved condition and report survived 304 listings with no issue-by-ID request";
+      },
+    );
+    await check(
+      "github: deferred repository relations retain acknowledged active and archived identities on the real server, with URLs for manual, missing, and purged targets",
+      async () => {
+        readOnly = true;
+        a.private = false;
+        const active = github.addIssue(a, {
+          node: "I_identity_active",
+          title: "Active target",
+        });
+        const archived = github.addIssue(a, {
+          node: "I_identity_archived",
+          title: "Archived target",
+        });
+        const purged = github.addIssue(a, {
+          node: "I_identity_purged",
+          title: "Purged target",
+        });
+        const referring = github.addIssue(b, {
+          node: "I_identity_referrer",
+          title: "Referring issue",
+        });
+        referring.parent = archived.node;
+        referring.blocked_by = [active.node, archived.node, purged.node];
+        await run();
+        const imported = await rowsOf(own, "github.issue", source);
+        const activeRow = imported.get(active.node);
+        const archivedRow = imported.get(archived.node);
+        const purgedRow = imported.get(purged.node);
+        const referringRow = imported.get(referring.node);
+        if (!activeRow || !archivedRow || !purgedRow || !referringRow)
+          throw new Error("the identity witness was not imported");
+        const transition = await own.POST("/items/{id}/transition", {
+          params: { path: { id: archivedRow.id } },
+          body: { state: "archived" },
+        });
+        if (transition.error) throw new Error(JSON.stringify(transition.error));
+        await trash(own, purgedRow.id);
+        const cleanup = await mintKey({
+          label: "github identity proof cleanup",
+          source: "proof-github-identity-cleanup",
+          sources: [source],
+          permissions: ["items.purge"],
+          type_permissions: { "github.issue": "write" },
+        });
+        await purge(
+          createClient({ baseUrl: url, credential: cleanup.key }),
+          purgedRow.id,
+        );
+        const manual = github.addIssue(a, {
+          node: "I_identity_manual",
+          title: "Manual target",
+        });
+        const missing = github.addIssue(a, {
+          node: "I_identity_missing",
+          title: "Never imported target",
+        });
+        await create(own, "github.issue", {
+          title: manual.title,
+          github_id: manual.node,
+          repository: "someone/coverage-a",
+          number: manual.number,
+        });
+        github.edit(referring, {
+          title: "Updated referring issue",
+          blocked_by: [
+            active.node,
+            archived.node,
+            purged.node,
+            manual.node,
+            missing.node,
+          ],
+        });
+        github.metadataLimitedInstallation = 1;
+        github.asked.length = 0;
+        try {
+          await run();
+        } finally {
+          github.metadataLimitedInstallation = undefined;
+        }
+        const blockers = (
+          await targets(own, referringRow, "github.blocked-by")
+        ).sort();
+        const parents = await targets(own, referringRow, "github.sub-issue-of");
+        const updated = await item(own, referringRow.id);
+        const urls = updated.properties["blocked_by_urls"] as string[];
+        const expectedUrls = [purged, manual, missing]
+          .map(
+            (issue) =>
+              `https://github.com/someone/coverage-a/issues/${String(issue.number)}`,
+          )
+          .sort();
+        if (
+          JSON.stringify(blockers) !==
+            JSON.stringify([activeRow.id, archivedRow.id].sort()) ||
+          JSON.stringify(parents) !== JSON.stringify([archivedRow.id]) ||
+          JSON.stringify([...urls].sort()) !== JSON.stringify(expectedUrls) ||
+          (await item(own, archivedRow.id)).state !== "archived" ||
+          github.asked.some((request) =>
+            request.path.startsWith("/repos/someone/coverage-a/"),
+          )
+        )
+          throw new Error(
+            `deferred identities wrong: ${JSON.stringify({ blockers, parents, fields: updated.properties, requests: github.asked })}`,
+          );
+        return "the actual pinned server retained active and archived acknowledged targets and archived row state; manual, never-imported, and purged targets stayed URLs while their installation metadata was deferred";
       },
     );
   } finally {

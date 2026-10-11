@@ -901,6 +901,7 @@ export async function runOnce<E extends EnvDeclaration>(
         derive: (type, keys, values) =>
           serial(scope, () => lane(type).rows.derive(keys, values)),
         linked: (...args) => serial(scope, () => linked(...args)),
+        known: (type, keys) => serial(scope, () => known(type, keys)),
         held: (type) => serial(scope, () => heldRows(type)),
         written,
       };
@@ -911,8 +912,17 @@ export async function runOnce<E extends EnvDeclaration>(
     derive: (type, keys, values) =>
       unscoped(() => lane(type).rows.derive(keys, values)),
     linked: (...args) => unscoped(() => linked(...args)),
+    known: (type, keys) => unscoped(() => known(type, keys)),
     held: (type) => unscoped(() => heldRows(type)),
     written,
+  };
+  const known: RunContext<E>["known"] = async (type, keys) => {
+    const { rows } = lane(type);
+    const found = await rows.named(keys);
+    const told = await rows.told([...found.values()]);
+    return new Set(
+      [...found].filter(([, row]) => told.has(row.id)).map(([key]) => key),
+    );
   };
   const linked: RunContext<E>["linked"] = async (type, connection, target) => {
     const { rows } = lane(type);

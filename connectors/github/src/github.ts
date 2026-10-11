@@ -48,20 +48,107 @@ function client(base: string, signal: AbortSignal, auth?: object): Client {
   return octokit;
 }
 
-/** GitHub's hourly limit is the installation's, whichever token spends it. */
-const budgets = new Map<string, number>();
-const budgetOf = new WeakMap<Client, string>();
-
-export function remaining(octokit: Client): number | undefined {
-  const key = budgetOf.get(octokit);
-  return key === undefined ? undefined : budgets.get(key);
+export class RateLimitWaiting extends Error {
+  override name = "RateLimitWaiting";
+  constructor(resource: string) {
+    super(`GitHub's ${resource} rate-limit budget reached the reserve`);
+  }
 }
 
-function counted(octokit: Client, key: string): Client {
-  budgetOf.set(octokit, key);
-  octokit.hook.after("request", (response) => {
-    const left = Number(response.headers["x-ratelimit-remaining"]);
-    if (Number.isFinite(left)) budgets.set(key, left);
+export function rateLimited(error: unknown): boolean {
+  if (error instanceof RateLimitWaiting) return true;
+  const said = (error as { response?: { data?: { errors?: unknown } } } | null)
+    ?.response?.data?.errors;
+  if (
+    Array.isArray(said) &&
+    said.some(
+      (one) => (one as { type?: unknown } | null)?.type === "RATE_LIMITED",
+    )
+  )
+    return true;
+  if (error instanceof GraphqlResponseError)
+    return error.errors?.some((one) => one.type === "RATE_LIMITED") === true;
+  if (!(error instanceof RequestError) || ![403, 429].includes(error.status))
+    return false;
+  return (
+    error.status === 429 ||
+    error.response?.headers["x-ratelimit-remaining"] === "0" ||
+    /rate limit/i.test(error.message)
+  );
+}
+
+type Resource = "core" | "graphql";
+const reserve = 500;
+const budgets = new Map<
+  string,
+  Map<Resource, { left: number; reset?: number }>
+>();
+
+function counted(octokit: Client, key: string, guard: boolean): Client {
+  let budget = budgets.get(key);
+  if (budget === undefined) {
+    budget = new Map();
+    budgets.set(key, budget);
+  }
+  const held = budget;
+  const resourceOf = (url: string): Resource =>
+    /\/graphql(?:[?#]|$)/.test(url) ? "graphql" : "core";
+  octokit.hook.before("request", (options) => {
+    if (!guard) return;
+    const resource = resourceOf(options.url);
+    const known = held.get(resource);
+    if (known?.reset !== undefined && Date.now() >= known.reset) {
+      held.delete(resource);
+      return;
+    }
+    if (known !== undefined && known.left < reserve)
+      throw new RateLimitWaiting(resource);
+  });
+  const count = (headers: Record<string, unknown>, url: string): void => {
+    const numeric = (value: unknown): number | undefined => {
+      if (
+        typeof value !== "number" &&
+        (typeof value !== "string" || value.trim() === "")
+      )
+        return;
+      const result = Number(value);
+      return Number.isFinite(result) && result >= 0 ? result : undefined;
+    };
+    const left = numeric(headers["x-ratelimit-remaining"]);
+    if (left === undefined) return;
+    const resource = headers["x-ratelimit-resource"];
+    if (resource !== undefined && resource !== "core" && resource !== "graphql")
+      return;
+    const reset = numeric(headers["x-ratelimit-reset"]);
+    held.set(
+      resource === "core" || resource === "graphql"
+        ? resource
+        : resourceOf(url),
+      {
+        left,
+        ...(reset !== undefined && { reset: reset * 1000 }),
+      },
+    );
+  };
+  octokit.hook.after("request", (response, options) => {
+    count(response.headers, options.url);
+  });
+  octokit.hook.error("request", (error, options) => {
+    const response = (error as { response?: unknown } | null)?.response;
+    if (
+      typeof response === "object" &&
+      response !== null &&
+      "headers" in response
+    ) {
+      const headers = response.headers;
+      if (
+        typeof headers === "object" &&
+        headers !== null &&
+        !Array.isArray(headers)
+      )
+        count(headers as Record<string, unknown>, options.url);
+    }
+    throw error;
   });
   return octokit;
 }
@@ -259,6 +346,7 @@ export function asInstallation(
   const octokit = counted(
     client(app.base, signal),
     `${app.base} ${app.appId} ${String(installationId)}`,
+    reach.access !== "write",
   );
   octokit.hook.wrap("request", async (request, options) => {
     const sign = async (refresh: boolean): Promise<string> => {

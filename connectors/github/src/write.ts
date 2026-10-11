@@ -33,6 +33,7 @@ import {
 import {
   asApp,
   asInstallation,
+  rateLimited,
   ClockSkew,
   reads,
   status,
@@ -112,15 +113,7 @@ function refusedApp(error: unknown): boolean {
 }
 
 function unreachable(error: unknown): string | undefined {
-  // The throttling plugin answers GraphQL's limit with a plain error.
-  const said = (error as { response?: { data?: { errors?: unknown } } })
-    .response?.data?.errors;
-  if (
-    Array.isArray(said) &&
-    said.some((one) => (one as { type?: unknown }).type === "RATE_LIMITED")
-  ) {
-    return "GitHub's rate limit ran out";
-  }
+  if (rateLimited(error)) return "GitHub's rate limit ran out";
   if (
     error instanceof GraphqlResponseError &&
     error.errors?.some((one) => !refusedTypes.has(one.type)) === true
@@ -135,13 +128,6 @@ function unreachable(error: unknown): string | undefined {
   // for first.
   if (error.status >= 500) {
     return `GitHub answered ${String(error.status)}`;
-  }
-  const remaining = error.response?.headers["x-ratelimit-remaining"];
-  if (
-    (error.status === 403 || error.status === 429) &&
-    (remaining === "0" || /rate limit/i.test(error.message))
-  ) {
-    return "GitHub's rate limit ran out";
   }
   return undefined;
 }

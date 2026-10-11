@@ -226,6 +226,110 @@ describe("a delivery", () => {
 });
 
 describe("a run for deliveries", () => {
+  it("processes healthy hints when the depleted installation has no named changes", async () => {
+    const first = github.addRepository("someone/first");
+    github.addIssue(first);
+    github.installations.push({ id: 2, login: "another" });
+    const second = github.addRepository("another/second", { installation: 2 });
+    const issue = github.addIssue(second, { title: "Before" });
+    github.graphqlRemainingByInstallation.set(1, 100);
+    await watching(async () => {
+      github.edit(issue, { title: "After" });
+      deliver("issues", { action: "edited", issue: { node_id: issue.node } });
+      await until(
+        () => marfa.deliveries[0]?.outcome === "processed",
+        "the healthy delivery being processed",
+      );
+      expect(row(issue.node).properties["title"]).toBe("After");
+      expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+    });
+  });
+
+  it.each(["limit", "suspended", "lost"])(
+    "retains an unapplied hint from a newly added public repository during incomplete inventory (%s)",
+    async (unavailable) => {
+      github.installations.push({ id: 2, login: "another" });
+      github.addRepository("another/healthy", { installation: 2 });
+      let node = "";
+      await watching(async () => {
+        const added = github.addRepository("someone/new-public", {
+          private: false,
+        });
+        const issue = github.addIssue(added);
+        node = issue.node;
+        const installation = github.installations[0];
+        if (installation === undefined) throw new Error("missing installation");
+        if (unavailable === "limit") github.metadataLimitedInstallation = 1;
+        else if (unavailable === "suspended") installation.suspended = true;
+        else installation.lost = true;
+        deliver("issues", { action: "opened", issue: { node_id: node } });
+        await until(() => marfa.runs.length > 1, "the hinted run");
+        expect(
+          marfa.rows.some((one) => one.properties["github_id"] === node),
+        ).toBe(false);
+        expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
+        expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+      });
+      github.metadataLimitedInstallation = undefined;
+      const installation = github.installations[0];
+      if (installation === undefined) throw new Error("missing installation");
+      installation.suspended = false;
+      installation.lost = false;
+      await once();
+      expect(row(node).state).toBe("active");
+      expect(marfa.deliveries[0]?.outcome).toBe("processed");
+    },
+  );
+
+  it.each(["budget", "metadata"])(
+    "applies healthy hints while retaining deliveries whose installation waits (%s)",
+    async (limited) => {
+      const first = github.addRepository("someone/first", {
+        private: limited !== "metadata",
+      });
+      const firstIssue = github.addIssue(first, { title: "A before" });
+      github.installations.push({ id: 2, login: "another" });
+      const second = github.addRepository("another/second", {
+        installation: 2,
+      });
+      const secondIssue = github.addIssue(second, { title: "B before" });
+      if (limited === "budget")
+        github.graphqlRemainingByInstallation.set(1, 100);
+      let healthyUpdatedAt: string | undefined;
+      await watching(async () => {
+        if (limited === "metadata") github.metadataLimitedInstallation = 1;
+        github.edit(firstIssue, { title: "A after" });
+        github.edit(secondIssue, { title: "B after" });
+        deliver("issues", {
+          action: "edited",
+          issue: { node_id: firstIssue.node },
+        });
+        deliver("issues", {
+          action: "edited",
+          issue: { node_id: secondIssue.node },
+        });
+        await until(() => marfa.runs.length > 1, "the hinted run");
+        expect(row(secondIssue.node).properties["title"]).toBe("B after");
+        expect(row(firstIssue.node).properties["title"]).toBe("A before");
+        expect(row(firstIssue.node).state).toBe("active");
+        healthyUpdatedAt = row(secondIssue.node).updated_at;
+        expect(
+          marfa.deliveries.every((one) => one.outcome !== "processed"),
+        ).toBe(true);
+        expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+      });
+      github.graphqlRemainingByInstallation.set(1, 4999);
+      github.metadataLimitedInstallation = undefined;
+      await once();
+      expect(row(firstIssue.node).properties["title"]).toBe("A after");
+      expect(row(secondIssue.node).updated_at).toBe(healthyUpdatedAt);
+      expect(marfa.deliveries.map((one) => one.outcome)).toEqual([
+        "processed",
+        "processed",
+      ]);
+    },
+  );
+
   it("writes an issue edited on GitHub within seconds, asking GitHub for it by node id alone, and leaves the cursors as they were", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository, { title: "Before" });
