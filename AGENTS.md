@@ -49,7 +49,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 
 Report only a real problem: one that breaks the issue's acceptance criteria, a rule written in this file (quote it) or correctness, and say how it fails: the input, state or step, and what goes wrong. If you cannot say how it fails, it is not a finding. Leave formatting, lint and anything CI catches to CI, and skip any convention that is not written down. Check the whole tree, not only the diff, and name each finding by the check it breaks.
 
-- **Done.** The acceptance criteria are met, new behavior has a test that was seen failing first, and what the pull request claims is true. A test that asserts absence has a witness: the same path with the condition removed produces the thing.
+- **Done.** The acceptance criteria are met, the change was run for real in the conditions it will meet and not only compiled, new behavior has a test that was seen failing first, and what the pull request claims is true. A test that asserts absence has a witness: the same path with the condition removed produces the thing.
 - **True.** A comment, doc, instruction file or contract statement the change touches or leaves untrue is a finding, fixed in the same change. New prose follows the standard under Writing for its kind. A claim of completeness ("all callers updated") is checked by searching, not accepted.
 - **Nothing left behind.** Dead code, shims, old names and references to removed things.
 - **Every path.** A permission, check or interpretation of a value holds at every door, including one the change adds, and in every copy of the logic: the server and the working copy, a fallback, a retry. Nothing is exempted by a name or field someone else controls.
