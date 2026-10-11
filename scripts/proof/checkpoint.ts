@@ -755,7 +755,7 @@ export async function proveCheckpoint(
               params: { path: { id: registered.id } },
               body: {
                 process,
-                state: { state: { successor: ordinal }, conditions: {} },
+                state: { state: { successor: ordinal } },
               },
             });
             assert.ok(kept.data);
@@ -881,7 +881,7 @@ export async function proveCheckpoint(
             params: { path: { id } },
             body: {
               process: old,
-              state: { state: { stale: true }, conditions: {} },
+              state: { state: { stale: true } },
             },
           });
           const staleAgreement = await test.own.POST(

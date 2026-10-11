@@ -103,108 +103,27 @@ function listed(differences: TypeDifferences): string {
   ].join("; ");
 }
 
-/** The parent's merge policy, resolved, which a served type's answer
- *  carries beside its own entries. */
-function ownPolicy(
-  served: unknown,
-  parent: unknown,
-): Record<string, unknown> | undefined {
-  const policy = record(served);
-  if (Object.keys(policy).length === 0) return undefined;
-  if (parent === undefined) return policy;
-  const above = record(parent);
-  const aboveFields = record(above["fields"]);
-  const fields = Object.fromEntries(
-    Object.entries(record(policy["fields"])).filter(
-      ([name, strategy]) => aboveFields[name] !== strategy,
-    ),
-  );
-  const own: Record<string, unknown> = {};
-  if (Object.keys(fields).length > 0) own["fields"] = fields;
-  if (
-    policy["default"] !== undefined &&
-    policy["default"] !== above["default"]
-  ) {
-    own["default"] = policy["default"];
-  }
-  return Object.keys(own).length === 0 ? undefined : own;
-}
-
-/** The parent's version policy, resolved, which a served type's answer
- *  merges with its own entries key by key. */
-function ownVersionPolicy(
-  served: unknown,
-  parent: unknown,
-): Record<string, unknown> | undefined {
-  const policy = record(served);
-  const above = record(parent);
-  const own = Object.fromEntries(
-    Object.entries(policy).filter(
-      ([name, value]) => JSON.stringify(above[name]) !== JSON.stringify(value),
-    ),
-  );
-  return Object.keys(own).length === 0 ? undefined : own;
-}
-
-/** The roles a served type carries beyond its ancestors', since its answer
- *  holds the union across the parent chain. */
-function ownRoles(served: unknown, parent: unknown): string[] | undefined {
-  const above = new Set(Array.isArray(parent) ? parent : []);
-  const own = (Array.isArray(served) ? served : []).filter(
-    (role): role is string => typeof role === "string" && !above.has(role),
-  );
-  return own.length === 0 ? undefined : own;
-}
-
-/**
- * The connector's own definition, with what the server holds that is not
- * the connector's to change: the fields neither it nor the parent
- * declares, the version, and the type's own version policy, roles and merge
- * policy. The served answer resolves the parent, so it is never sent back
- * whole.
- */
 export function replacement(
   type: TypeDefinition,
   served: Record<string, unknown>,
-  parent: Record<string, unknown> | undefined,
 ): TypeUpdate {
-  const declared = record(type.fields);
-  const inherited = record(parent?.["fields"]);
-  const kept = Object.fromEntries(
-    Object.entries(record(served["fields"])).filter(
-      ([name]) => !(name in declared) && !(name in inherited),
-    ),
-  );
-  const definition: Record<string, unknown> = { ...type };
-  for (const name of [
-    "id",
-    "version",
-    "version_policy",
-    "roles",
-    "merge_policy",
-  ]) {
-    Reflect.deleteProperty(definition, name);
-  }
-  const policy = ownPolicy(served["merge_policy"], parent?.["merge_policy"]);
-  const versions = ownVersionPolicy(
-    served["version_policy"],
-    parent?.["version_policy"],
-  );
-  const roles = ownRoles(served["roles"], parent?.["roles"]);
-  return {
-    ...definition,
-    fields: { ...type.fields, ...kept } as TypeUpdate["fields"],
-    ...(typeof served["version"] === "number" && {
-      version: served["version"],
-    }),
-    ...(versions !== undefined && {
-      version_policy: versions,
-    }),
-    ...(roles !== undefined && { roles }),
-    ...(policy !== undefined && {
-      merge_policy: policy,
-    }),
+  const definition = {
+    ...served,
+    ...type,
+    fields: { ...record(served["fields"]), ...type.fields },
   };
+  Reflect.deleteProperty(definition, "id");
+  for (const name of ["version", "version_policy", "roles", "merge_policy"]) {
+    Reflect.deleteProperty(definition, name);
+    if (Object.hasOwn(served, name))
+      Object.defineProperty(definition, name, {
+        value: served[name],
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+  }
+  return definition as TypeUpdate;
 }
 
 /**
@@ -226,11 +145,12 @@ export async function ensureTypes(
   const fields = new Map<string, readonly string[]>();
   const conditions = new Map<string, string>();
   for (const type of types) {
-    const served = await marfa.type(type.id);
+    const snapshot = await marfa.normalizeType(type);
+    const served = snapshot.resolved_type;
     const outcome =
-      served === undefined
+      served === null
         ? await register(type, marfa, key, again, say)
-        : await reconcile(type, marfa, key, served, say, true);
+        : await reconcile(type, marfa, key, snapshot, say, true);
     if ("problem" in outcome) {
       return { problem: outcome.problem, narrowed: undefined };
     }
@@ -272,8 +192,8 @@ async function register(
     // Another process holding the key registered it first, which is as good
     // as registering it, if it is the same type.
     if (error instanceof Refusal && error.status === 409) {
-      const now = await marfa.type(type.id);
-      if (now !== undefined) {
+      const now = await marfa.normalizeType(type);
+      if (now.resolved_type !== null) {
         return reconcile(type, marfa, key, now, say, false);
       }
     }
@@ -289,14 +209,15 @@ async function reconcile(
   type: TypeDefinition,
   marfa: Marfa,
   key: Key,
-  served: Record<string, unknown>,
+  snapshot: components["schemas"]["NormalizedType"],
   say: (message: string) => void,
   deletable: boolean,
 ): Promise<Outcome> {
-  const parent =
-    type.parent === undefined ? undefined : await marfa.type(type.parent);
-  const inherited = Object.keys(record(parent?.["fields"]));
-  const differences = typeDifferences(type, served, inherited);
+  const served = snapshot.registered_type;
+  const resolved = snapshot.resolved_type;
+  if (served === null || resolved === null)
+    throw new Error("invalid normalized type snapshot");
+  const differences = typeDifferences(snapshot.type, resolved, served);
   if (differences.other.length > 0) {
     return {
       problem: `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${listed(differences)}. ${capitalized(operatorFix(type.id))}`,
@@ -327,7 +248,7 @@ async function reconcile(
           problem: `the type ${type.id} was deleted from the instance while it was brought up to date`,
         };
   try {
-    await marfa.replaceType(type.id, replacement(type, served, parent));
+    await marfa.replaceType(type.id, replacement(snapshot.type, served));
   } catch (error) {
     if (causeOf(error) === "marfa") throw error;
     if (error instanceof Refusal && error.status === 404) return gone();
@@ -346,9 +267,15 @@ async function reconcile(
   say(
     `added ${missing.join(", ")} to the type ${type.id}, which this connector declares and the server lacked`,
   );
-  const now = await marfa.type(type.id);
-  if (now === undefined) return gone();
-  const left = typeDifferences(type, now, inherited);
+  const now = await marfa.normalizeType(type);
+  if (now.resolved_type === null) return gone();
+  if (now.registered_type === null)
+    throw new Error("invalid normalized type snapshot");
+  const left = typeDifferences(
+    now.type,
+    now.resolved_type,
+    now.registered_type,
+  );
   if (left.other.length > 0 || left.missing.length > 0) {
     return {
       problem: `the type ${type.id} on the server still differs from the one this connector carries after it was brought up to date, so another process may be changing it: ${listed(left)}`,

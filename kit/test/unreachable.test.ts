@@ -188,8 +188,7 @@ describe("changes waiting on one scope", () => {
     expect(summary).toContain("2 changes wait: the shelf cannot be reached");
     expect(summary.match(/the shelf/g)).toHaveLength(1);
     expect(summary).toContain(`${third} cannot be reached`);
-    const raised = () =>
-      Object.keys(harness.kept()["conditions"] as Record<string, string>);
+    const raised = () => Object.keys(harness.problems());
     expect(raised().sort()).toEqual(
       ["unreachable-in:the shelf", `unreachable:${third}`].sort(),
     );

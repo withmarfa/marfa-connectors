@@ -165,7 +165,6 @@ class Fixture {
     ).state as {
       state?: { page?: number };
       inbound?: PendingInbound[];
-      conditions: Record<string, string>;
     };
     const rows = [...(await rowsOf(this.own, this.type, this.source)).values()];
     const pages = Array.from(

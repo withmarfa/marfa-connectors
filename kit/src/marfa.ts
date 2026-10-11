@@ -385,11 +385,13 @@ export class Marfa {
     return keyNarrowerThanTypes(await this.currentKey(), types, connections);
   }
 
-  async type(id: string): Promise<Record<string, unknown> | undefined> {
-    const { data, error, response } = await this.client.GET("/types/{id}", {
-      params: { path: { id } },
-    });
-    if (response.status === 404) return undefined;
+  async normalizeType(
+    type: TypeDefinition,
+  ): Promise<components["schemas"]["NormalizedType"]> {
+    const { data, error, response } = await this.client.POST(
+      "/types/normalize",
+      { body: type },
+    );
     if (data === undefined) throw refusal(response, error);
     return data;
   }
@@ -914,24 +916,27 @@ export class Marfa {
       { params: { path: { id } } },
     );
     if (data === undefined) throw refusal(response, error);
-    return data.state;
+    return data;
   }
 
   async putConnectorState(
     id: string,
     process: string,
     state: Record<string, unknown>,
+    problems: Record<string, string>,
   ): Promise<void> {
+    const intended = JSON.parse(JSON.stringify({ state, problems })) as {
+      state: Record<string, unknown>;
+      problems: Record<string, string>;
+    };
     const { data, error, response } = await this.client.PUT(
       "/connectors/{id}/state",
-      { params: { path: { id } }, body: { process, state } },
+      { params: { path: { id } }, body: { process, ...intended } },
     );
     if (data === undefined) throw refusal(response, error);
     if (
-      !isDeepStrictEqual(
-        data.state,
-        JSON.parse(JSON.stringify(state)) as unknown,
-      )
+      !isDeepStrictEqual(data.state, intended.state) ||
+      !isDeepStrictEqual(data.problems, intended.problems)
     ) {
       throw new Error(
         "invalid state acknowledgment; restart before writing again",

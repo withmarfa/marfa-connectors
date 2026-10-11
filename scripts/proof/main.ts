@@ -9,6 +9,7 @@ import {
   statementsHeld,
 } from "./check.js";
 import { witnessTypeAnswers } from "./connector.js";
+import { proveAdoption } from "./adoption.js";
 import { proveInboundRetry } from "./inbound-retry.js";
 import { proveWatchCheckpoint } from "./watch-checkpoint.js";
 import { proveCheckpoint } from "./checkpoint.js";
@@ -21,7 +22,7 @@ import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
-const statements = 126;
+const statements = 129;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -89,6 +90,9 @@ try {
     () => witnessTypeAnswers(marfa),
   );
 
+  await proveAdoption(booted.url, marfa, manager, (body) =>
+    server.mintKey(body),
+  );
   await proveRss(marfa, booted.url, manager);
   await proveTodoist(marfa, booted.url, manager);
   await proveInbound(marfa, booted.url, manager);

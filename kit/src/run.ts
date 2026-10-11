@@ -151,7 +151,7 @@ const moreNote = 80;
 /** The longest a single condition may be, so one never crowds out the rest. */
 const conditionCap = 500;
 
-/** The most conditions kept between runs, which bounds the state they share. */
+/** The most conditions kept in the source's explicit problem snapshot. */
 const keptConditions = 200;
 
 /** The conditions that fit in a report beside counts of this length. */
@@ -1104,7 +1104,12 @@ export async function runOnce<E extends EnvDeclaration>(
     if (!fitsJournal(inbound))
       return { committed: false, reason: "state-oversized" };
     const fitsState = (): boolean =>
-      Buffer.byteLength(JSON.stringify(envelope(vendorState, inbound))) <=
+      Buffer.byteLength(
+        JSON.stringify({
+          ...envelope(vendorState, inbound),
+          conditions: undefined,
+        }),
+      ) <=
       512 * 1024;
     if (!fitsState()) return { committed: false, reason: "state-oversized" };
     const refusal = blocked(scope);
@@ -2242,7 +2247,9 @@ export async function runOnce<E extends EnvDeclaration>(
   // the last report had no room for ahead of those it carried.
   const clears = failure === undefined && whole;
   const standing = new Map(
-    [...redacted].filter(([key]) => !(key in acknowledged.conditions)),
+    [...redacted].filter(
+      ([key]) => !Object.hasOwn(acknowledged.conditions, key),
+    ),
   );
   const cleared: string[] = [];
   for (const [key, message] of Object.entries(acknowledged.conditions)) {

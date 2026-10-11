@@ -16,8 +16,7 @@ const noted = {
   properties: { title: "One", note: "Kept note", vendor_id: "v1" },
 };
 
-const conditions = (): Record<string, string> =>
-  (harness.kept()["conditions"] ?? {}) as Record<string, string>;
+const conditions = (): Record<string, string> => harness.problems();
 
 describe("a change the vendor refuses", () => {
   it("is not agreed, keeps the edit over the vendor's next read, and says why until a later change lands", async () => {

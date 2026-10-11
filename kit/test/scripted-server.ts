@@ -132,6 +132,33 @@ function plain(value: unknown): unknown {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+export function canonicalType(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    version: 0,
+    ...value,
+    fields: Object.fromEntries(
+      Object.entries(fieldsOf(value)).map(([name, raw]) => {
+        const field = {
+          required: false,
+          searchable: true,
+          ...(raw as Record<string, unknown>),
+        } as Record<string, unknown>;
+        const format = field["format"];
+        if (
+          typeof format === "string" &&
+          ["url", "email", "datetime", "date", "thumbnail"].includes(format)
+        ) {
+          field[field["type"] === "array" ? "items_type" : "type"] = format;
+          delete field["format"];
+        }
+        return [name, field];
+      }),
+    ),
+  };
+}
+
 function fieldsOf(type: Record<string, unknown>): Record<string, unknown> {
   return (type["fields"] ?? {}) as Record<string, unknown>;
 }
@@ -285,6 +312,7 @@ export class ScriptedServer {
     string,
     { purged_at: string; settled_at: string }
   >();
+  readonly problems = new Map<string, Record<string, string>>();
   readonly states = new Map<string, Record<string, unknown>>();
   private readonly agreementsBySource = new Map<string, Map<string, Held>>();
 
@@ -868,6 +896,7 @@ export class ScriptedServer {
         updated_at: at,
         last_heartbeat_at: null,
         last_run: null,
+        problems: this.problems.get(this.keySource) ?? {},
       });
       return;
     }
@@ -1064,6 +1093,41 @@ export class ScriptedServer {
     }
     if (
       parts[0] === "connectors" &&
+      parts[1] !== undefined &&
+      parts.length === 2 &&
+      method === "GET"
+    ) {
+      send(200, {
+        id: parts[1],
+        source: this.keySource,
+        problems: this.problems.get(this.keySource) ?? {},
+      });
+      return;
+    }
+    if (
+      parts[0] === "connectors" &&
+      parts[2] === "state" &&
+      method === "DELETE"
+    ) {
+      this.states.delete(this.keySource);
+      this.problems.delete(this.keySource);
+      this.agreementsBySource.delete(this.keySource);
+      send(200, { ok: true });
+      return;
+    }
+    if (
+      parts[0] === "connectors" &&
+      parts[1] !== undefined &&
+      parts.length === 2 &&
+      method === "DELETE"
+    ) {
+      this.lost = true;
+      this.holder = undefined;
+      send(200, { ok: true });
+      return;
+    }
+    if (
+      parts[0] === "connectors" &&
       parts[2] === "state" &&
       (method === "GET" || method === "PUT")
     ) {
@@ -1081,6 +1145,26 @@ export class ScriptedServer {
           refuse(400, "validation_error", "a state is at most 512 KiB");
           return;
         }
+        const problems = input["problems"];
+        if (
+          Object.hasOwn(input, "problems") &&
+          (typeof problems !== "object" ||
+            problems === null ||
+            Array.isArray(problems) ||
+            Object.keys(problems).length > 200 ||
+            Object.values(problems).some(
+              (message) => typeof message !== "string" || message.length > 500,
+            ) ||
+            Buffer.byteLength(JSON.stringify(problems)) > 512 * 1024)
+        ) {
+          refuse(400, "validation_error", "invalid problems");
+          return;
+        }
+        if (Object.hasOwn(input, "problems"))
+          this.problems.set(
+            this.keySource,
+            structuredClone(problems) as Record<string, string>,
+          );
         this.states.set(
           this.keySource,
           structuredClone(state) as Record<string, unknown>,
@@ -1099,6 +1183,7 @@ export class ScriptedServer {
       }
       send(200, {
         state: this.connectorState ?? {},
+        problems: this.problems.get(this.keySource) ?? {},
         updated_at: this.connectorState === undefined ? null : this.now(),
       });
       return;
@@ -1190,6 +1275,18 @@ export class ScriptedServer {
       });
       return;
     }
+    if (method === "POST" && url.pathname === "/types/normalize") {
+      const served = this.types.get(String(input["id"]));
+      send(200, {
+        type: canonicalType(input),
+        registered_type:
+          served === undefined
+            ? null
+            : canonicalType(this.ownOf(String(input["id"]), served)),
+        resolved_type: served === undefined ? null : canonicalType(served),
+      });
+      return;
+    }
     if (method === "GET" && parts[0] === "types" && parts[1] !== undefined) {
       const type = this.types.get(parts[1]);
       if (type === undefined) {
@@ -1229,8 +1326,8 @@ export class ScriptedServer {
       }
       if (!schema) {
         const { needsSchemaWrite, additions } = evolutionOf(
-          this.ownOf(id, served),
-          input,
+          canonicalType(this.ownOf(id, served)),
+          canonicalType(input),
         );
         const held = this.holding(id, additions);
         const changes = [

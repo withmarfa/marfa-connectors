@@ -777,7 +777,7 @@ export async function proveGitHub(
 
 interface CoverageEnvelope {
   state?: { repositories?: Record<string, unknown> };
-  conditions?: Record<string, string>;
+  problems?: Record<string, string>;
 }
 
 export async function proveGitHubCoverage(
@@ -840,10 +840,10 @@ export async function proveGitHubCoverage(
       });
       if (data === undefined)
         throw new Error(`coverage state refused: ${JSON.stringify(error)}`);
-      return data.state;
+      return { ...(data.state as CoverageEnvelope), problems: data.problems };
     };
     const disabled = (envelope: CoverageEnvelope, node: string): boolean =>
-      envelope.conditions?.[`issues-off:${node}`] !== undefined;
+      envelope.problems?.[`issues-off:${node}`] !== undefined;
 
     await check(
       "github: a handled clock skew saves disabled-issues evidence without repository progress, and a later inaccessible installation preserves it until its metadata is reached",
@@ -1034,7 +1034,7 @@ export async function proveGitHubCoverage(
         missing.repository = "R_not_installed";
         await run();
         const condition = `issue-missing:${missing.node}`;
-        if ((await state()).conditions?.[condition] === undefined)
+        if ((await state()).problems?.[condition] === undefined)
           throw new Error("the actual 404 did not raise issue-missing");
         github.asked.length = 0;
         await run();
@@ -1046,7 +1046,7 @@ export async function proveGitHubCoverage(
             !/\/issues\/\d+$/.test(request.path),
         );
         if (
-          retained.conditions?.[condition] === undefined ||
+          retained.problems?.[condition] === undefined ||
           !String(report.summary).includes(
             "answered 404 though its repository reads",
           ) ||

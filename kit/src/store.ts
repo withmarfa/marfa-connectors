@@ -52,12 +52,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function keptOf(value: unknown): Kept {
+function keptOf(value: unknown, problems: unknown): Kept {
   const kept = isRecord(value) ? value : {};
   const state = isRecord(kept["state"]) ? kept["state"] : {};
-  const conditions = isRecord(kept["conditions"])
+  const conditions = isRecord(problems)
     ? Object.fromEntries(
-        Object.entries(kept["conditions"]).filter(
+        Object.entries(problems).filter(
           (entry): entry is [string, string] => typeof entry[1] === "string",
         ),
       )
@@ -162,23 +162,45 @@ export class Store {
   ) {}
 
   async load(): Promise<Kept> {
-    return keptOf(await this.marfa.connectorState(this.connectorId));
+    const snapshot = await this.marfa.connectorState(this.connectorId);
+    if (
+      !isRecord(snapshot) ||
+      !isRecord(snapshot["state"]) ||
+      !isRecord(snapshot["problems"]) ||
+      Object.values(snapshot["problems"]).some(
+        (message) => typeof message !== "string",
+      )
+    )
+      throw new Error("invalid state snapshot");
+    return keptOf(snapshot["state"], snapshot["problems"]);
   }
 
   save(kept: Kept): Promise<void> {
-    if (kept.inbound !== undefined) {
-      readJournal(kept.inbound);
-      if (Buffer.byteLength(JSON.stringify(kept), "utf8") > 512 * 1024)
-        throw new Error("inbound retry envelope exceeds 512 KiB");
-    }
-    return this.marfa.putConnectorState(this.connectorId, this.process, {
+    if (kept.inbound !== undefined) readJournal(kept.inbound);
+    const state = {
       ...(kept.inbound !== undefined && { inbound: kept.inbound }),
       state: kept.state,
-      conditions: kept.conditions,
       ...(kept.cursor !== undefined && { cursor: kept.cursor }),
       ...(kept.purges !== undefined && { purges: kept.purges }),
       ...(kept.relinked !== undefined && { relinked: kept.relinked }),
-    });
+    };
+    if (
+      kept.inbound !== undefined &&
+      Buffer.byteLength(JSON.stringify(state)) > 512 * 1024
+    )
+      throw new Error("inbound retry envelope exceeds 512 KiB");
+    if (
+      Object.keys(kept.conditions).length > 200 ||
+      Object.values(kept.conditions).some((message) => message.length > 500) ||
+      Buffer.byteLength(JSON.stringify(kept.conditions)) > 512 * 1024
+    )
+      throw new Error("problem snapshot exceeds its limits");
+    return this.marfa.putConnectorState(
+      this.connectorId,
+      this.process,
+      state,
+      kept.conditions,
+    );
   }
 
   async fetch(ids: Iterable<string>): Promise<void> {

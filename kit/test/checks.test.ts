@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TypeDefinition } from "../src/define.js";
 import { start } from "../src/main.js";
+import { canonicalType } from "./scripted-server.js";
 import { typeDifferences } from "../src/type-check.js";
 import { Harness, testConnector, testType, vendor } from "./harness.js";
+
+function compare(carried: TypeDefinition, served: Record<string, unknown>) {
+  return typeDifferences(
+    canonicalType(carried) as TypeDefinition,
+    canonicalType(served),
+  );
+}
 
 describe("the type check", () => {
   const none = { missing: [], other: [] };
@@ -16,7 +24,7 @@ describe("the type check", () => {
     },
   };
 
-  it("folds any format that is a field type of its own, as the server does", () => {
+  it("compares canonical server answers for equivalent formats", () => {
     const withFormat = (link: object): TypeDefinition => ({
       ...testType,
       fields: {
@@ -25,13 +33,13 @@ describe("the type check", () => {
       },
     });
     expect(
-      typeDifferences(withFormat({ type: "string", format: "url" }), served),
+      compare(withFormat({ type: "string", format: "url" }), served),
     ).toEqual(none);
+    expect(compare(withFormat({ type: "url", format: "url" }), served)).toEqual(
+      none,
+    );
     expect(
-      typeDifferences(withFormat({ type: "url", format: "url" }), served),
-    ).toEqual(none);
-    expect(
-      typeDifferences(
+      compare(
         withFormat({ type: "array", items_type: "string", format: "url" }),
         {
           ...served,
@@ -43,15 +51,14 @@ describe("the type check", () => {
       ),
     ).toEqual(none);
     expect(
-      typeDifferences(withFormat({ type: "string", format: "bcp47" }), served)
-        .other,
+      compare(withFormat({ type: "string", format: "bcp47" }), served).other,
     ).toEqual([
       'field "link" has type "string" here and "url" on the server',
       'field "link" has format "bcp47" here and nothing on the server',
     ]);
   });
 
-  it("takes an absent searchable as searchable", () => {
+  it("compares canonical server defaults for searchable", () => {
     const searchable = (value: boolean): TypeDefinition => ({
       ...testType,
       fields: {
@@ -59,17 +66,33 @@ describe("the type check", () => {
         note: { type: "string", searchable: value },
       },
     });
-    expect(typeDifferences(searchable(true), served)).toEqual(none);
-    expect(typeDifferences(searchable(false), served).other).toEqual([
+    expect(compare(searchable(true), served)).toEqual(none);
+    expect(compare(searchable(false), served).other).toEqual([
       'field "note" has searchable false here and true on the server',
     ]);
   });
 
+  it("compares prototype-named fields as opaque own keys", () => {
+    const carried = {
+      ...testType,
+      fields: {
+        ...testType.fields,
+        ...Object.fromEntries([
+          ["toString", { type: "string" }],
+          ["__proto__", { type: "string" }],
+        ]),
+      },
+    } as TypeDefinition;
+    expect(compare(carried, served).missing).toEqual(["__proto__", "toString"]);
+    const matched = { ...served, fields: carried.fields };
+    expect(compare(carried, matched)).toEqual(none);
+  });
+
   it("compares the parent", () => {
-    expect(typeDifferences(testType, served)).toEqual(none);
-    expect(
-      typeDifferences(testType, { ...served, parent: "test.base" }).other,
-    ).toEqual(['parent is nothing here and "test.base" on the server']);
+    expect(compare(testType, served)).toEqual(none);
+    expect(compare(testType, { ...served, parent: "test.base" }).other).toEqual(
+      ['parent is nothing here and "test.base" on the server'],
+    );
   });
 
   it("keeps an optional field the server holds and the connector does not declare, and refuses a required one", () => {
@@ -77,9 +100,9 @@ describe("the type check", () => {
       ...served,
       fields: { ...served.fields, extra: field },
     });
-    expect(typeDifferences(testType, extra({ type: "string" }))).toEqual(none);
+    expect(compare(testType, extra({ type: "string" }))).toEqual(none);
     expect(
-      typeDifferences(testType, extra({ type: "string", required: true })),
+      compare(testType, extra({ type: "string", required: true })),
     ).toEqual({
       missing: [],
       other: ['field "extra" is required on the server and not here'],
@@ -89,14 +112,14 @@ describe("the type check", () => {
   it("tells an optional field the server lacks apart from every other difference", () => {
     const { title, vendor_id } = served.fields;
     expect(
-      typeDifferences(testType, { ...served, fields: { title, vendor_id } }),
+      compare(testType, { ...served, fields: { title, vendor_id } }),
     ).toEqual({
       missing: ["link", "note"],
       other: [],
     });
     const { note, link } = served.fields;
     expect(
-      typeDifferences(testType, {
+      compare(testType, {
         ...served,
         fields: { note, link, vendor_id },
       }),

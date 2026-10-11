@@ -608,7 +608,7 @@ export async function proveWatchCheckpoint(
               params: { path: { id } },
               body: {
                 process,
-                state: { state: { successor: 141 }, conditions: {} },
+                state: { state: { successor: 141 } },
               },
             });
             assert.ok(state.data);
@@ -660,7 +660,7 @@ export async function proveWatchCheckpoint(
           params: { path: { id } },
           body: {
             process: old,
-            state: { state: { stale: true }, conditions: {} },
+            state: { state: { stale: true } },
           },
         });
         const staleAgreement = await fixture.own.POST(

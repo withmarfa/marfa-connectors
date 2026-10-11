@@ -424,7 +424,7 @@ describe("secrets", () => {
     held.conditions = [[`expiring:${secretToken}`, "the token expires soon"]];
     await harness.once(held);
     expect(harness.lastRun().summary).toContain("the token expires soon");
-    const stored = JSON.stringify(harness.kept());
+    const stored = JSON.stringify(harness.problems());
     expect(stored).toContain("expiring:[redacted]");
     expect(stored).not.toContain(secretToken);
   });
@@ -499,7 +499,7 @@ describe("secrets", () => {
     leaky.conditions = [["token", `the token ${token} is about to expire`]];
     await harness.once(leaky, { TEST_TOKEN: token });
     expect(JSON.stringify(harness.kept())).not.toContain(token);
-    expect(JSON.stringify(harness.kept())).toContain(
+    expect(JSON.stringify(harness.problems())).toContain(
       "[redacted] is about to expire",
     );
     const said = harness.lines.join("\n");
