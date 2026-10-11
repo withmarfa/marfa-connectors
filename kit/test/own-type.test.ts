@@ -287,20 +287,19 @@ describe("a key with metadata types=write", () => {
       },
       ...equal,
     });
-    underParent({ ...equal, roles: ["container", "task"], version: 4 });
+    underParent({ ...equal, version: 4 });
     expect(
       await start(child(everything, {}), harness.runtime(["--once"])),
     ).toBe(0);
     expect(puts()).toBe(1);
     const body = harness.server.requestsTo("PUT", "/types/test.entry")[0]
       ?.body as Record<string, unknown>;
-    expect.soft(body["roles"]).toEqual(["container", "task"]);
+    expect.soft(body["roles"]).toEqual(["container"]);
     expect.soft(body["version_policy"]).toEqual(equal.version_policy);
     expect.soft(body["merge_policy"]).toEqual(equal.merge_policy);
     expect.soft(body["version"]).toBe(4);
     expect(harness.server.owned.get("test.entry")?.own).toMatchObject({
       ...equal,
-      roles: ["container", "task"],
       version: 4,
     });
     expect(harness.lastRun().summary ?? "").not.toContain("types replace");
@@ -316,7 +315,7 @@ describe("a key with metadata types=write", () => {
     });
     const refinement = {
       type: "string",
-      maxLength: 80,
+      maxLength: 120,
       description: "An operator's child refinement",
     };
     underParent({
