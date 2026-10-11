@@ -216,7 +216,10 @@ it("validates independent UTF-8 snapshots, UTF-16 messages, count and opaque key
     value: "😀".repeat(250),
     enumerable: true,
   });
-  accepted.toString = "x".repeat(500);
+  Object.defineProperty(accepted, "toString", {
+    value: "x".repeat(500),
+    enumerable: true,
+  });
   expect((await write({}, accepted)).response.status).toBe(200);
   expect(harness.problems()).toEqual(accepted);
   expect(Object.hasOwn(harness.problems(), "__proto__")).toBe(true);

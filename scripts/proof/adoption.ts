@@ -115,24 +115,25 @@ export async function proveAdoption(
       const result = await run("type", true);
       assert.equal(result.code, 0, result.output);
       const after = await normalized();
-      assert.equal(after.registered_type?.version, 4);
+      assert.ok(after.registered_type);
+      assert.equal(after.registered_type.version, 4);
       assert.deepEqual(
-        after.registered_type?.roles,
+        after.registered_type.roles,
         before.registered_type.roles,
       );
       assert.deepEqual(
-        after.registered_type?.version_policy,
+        after.registered_type.version_policy,
         before.registered_type.version_policy,
       );
       assert.deepEqual(
-        after.registered_type?.merge_policy,
+        after.registered_type.merge_policy,
         before.registered_type.merge_policy,
       );
       assert.deepEqual(
-        after.registered_type?.fields["extra"],
+        after.registered_type.fields["extra"],
         before.registered_type.fields["extra"],
       );
-      assert.ok(after.registered_type?.fields["note"]);
+      assert.ok(after.registered_type.fields["note"]);
       assert.equal((await run("type", true)).code, 0);
       assert.deepEqual(await normalized(), after);
       return "registry SDK normalization preserves child refinements and parent-equal policies/version; required refinement stops the process; repeat is stable";
@@ -249,7 +250,7 @@ export async function proveAdoption(
         );
         const kept = await own.GET("/connectors/{id}/state", { params });
         assert.deepEqual(kept.data?.state, state);
-        assert.deepEqual(kept.data?.problems, problems);
+        assert.deepEqual(kept.data.problems, problems);
       }
       const opaque = Object.fromEntries(
         Array.from({ length: 198 }, (_, i) => [String(i), "x"]),
@@ -258,7 +259,10 @@ export async function proveAdoption(
         value: "😀".repeat(250),
         enumerable: true,
       });
-      opaque.toString = "x".repeat(500);
+      Object.defineProperty(opaque, "toString", {
+        value: "x".repeat(500),
+        enumerable: true,
+      });
       assert.ok((await write({ kept: true }, opaque)).data);
       assert.ok(
         (
