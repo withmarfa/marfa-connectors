@@ -232,8 +232,11 @@ export interface Hooks {
     attempt: UpsertAttempt,
     error: Refusal,
     singleton: boolean,
-  ): boolean;
+    refusedInsert: boolean,
+  ): false | "new" | "retained";
   upserted?(type: string, entry: Entry): void;
+  archivePending?(type: string, key: string): boolean;
+  archived?(type: string, key: string, absent?: boolean): void;
   suppressed?(type: string, entry: Entry): boolean;
   omitted?(): void;
   condition(key: string, message: string): void;
@@ -883,17 +886,43 @@ export class Rows {
 
   async archive(keys: readonly string[]): Promise<void> {
     this.batch = batch();
-    await this.know(this.kind.link === undefined ? { keys } : { links: keys });
-    const rows = [...new Set(keys)].flatMap((key) => {
+    const named = [...new Set(keys)];
+    await this.know(
+      this.kind.link === undefined ? { keys: named } : { links: named },
+    );
+    const rows = new Map<string, Item>();
+    for (const key of named) {
       const id =
         this.kind.link === undefined
           ? this.byKey.get(key)
           : this.byLink.get(key);
       const row = id === undefined ? undefined : this.byId.get(id);
-      return row === undefined ? [] : [{ key, row }];
-    });
-    await this.store.fetch(rows.map(({ row }) => row.id));
-    for (const { key, row } of rows) {
+      if (row !== undefined) rows.set(key, row);
+    }
+    const pending = named.filter(
+      (key) => this.hooks.archivePending?.(this.kind.type, key) === true,
+    );
+    if (pending.length > 0) {
+      // Settling a durable retry needs current evidence, not a cached absence
+      // or state predating the explicit upstream deletion.
+      const found = await this.marfa.lookup(
+        this.kind.type,
+        this.kind.link === undefined
+          ? { source: this.kind.source, source_ids: pending }
+          : { links: pending },
+      );
+      for (const key of pending) rows.delete(key);
+      for (const row of found.data) {
+        this.adopt(row);
+        const key =
+          this.kind.link === undefined
+            ? row.source_id
+            : this.linkOf(row.properties);
+        if (key !== undefined) rows.set(key, row);
+      }
+    }
+    await this.store.fetch([...rows.values()].map((row) => row.id));
+    for (const key of named) {
       if (this.archivable !== undefined && !this.archivable.has(key)) {
         this.counts.skipped += 1;
         this.hooks.omitted?.();
@@ -901,6 +930,16 @@ export class Rows {
           `unhinted:${key}`,
           `${key} was named for archiving by a run for what deliveries named, which did not read it, so it was not archived`,
         );
+        continue;
+      }
+      const row = rows.get(key);
+      if (row === undefined) {
+        this.hooks.archived?.(this.kind.type, key, true);
+        continue;
+      }
+      if (row.type !== this.kind.type) {
+        this.counts.skipped += 1;
+        this.hooks.omitted?.();
         continue;
       }
       this.reached.add(row.id);
@@ -921,6 +960,7 @@ export class Rows {
       }
       if (row.state === "archived") {
         this.counts.unchanged += 1;
+        this.hooks.archived?.(this.kind.type, key);
         continue;
       }
       this.checkStopped();
@@ -938,6 +978,7 @@ export class Rows {
           stateAt: archived.updated_at,
         });
         this.counts.archived += 1;
+        this.hooks.archived?.(this.kind.type, key);
       } catch (error) {
         await this.absorb(error, key);
       }
@@ -1254,6 +1295,10 @@ export class Rows {
       created.source_id,
       true,
       entry,
+      false,
+      // Existing-row property refusals carry the resolved row's id. Hidden
+      // or retyped rows fail their authority/type gate before validation.
+      result.error?.code === "invalid_properties" && result.id === undefined,
     );
   }
 
@@ -1267,6 +1312,7 @@ export class Rows {
     creating = false,
     entry?: Entry,
     singleton = false,
+    refusedInsert = false,
   ): Promise<void> {
     if (!(error instanceof Refusal) || causeOf(error) !== "refused") {
       throw error;
@@ -1282,8 +1328,9 @@ export class Rows {
     }
     const captured = entry === undefined ? undefined : this.attempts.get(entry);
     const parked =
-      captured !== undefined &&
-      this.hooks.upsertRefused?.(captured, error, singleton) === true;
+      captured === undefined
+        ? false
+        : this.hooks.upsertRefused?.(captured, error, singleton, refusedInsert);
     if (!parked) this.hooks.inboundRefused?.();
     this.counts.skipped += 1;
     if (raced.has(error.code)) {
@@ -1293,12 +1340,16 @@ export class Rows {
     this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
     if (unmendable.has(error.code)) return;
     this.held += 1;
+    if (parked === "retained") {
+      this.batch.tried -= 1;
+      return;
+    }
     this.batch.refused += 1;
     this.batch.codes.set(error.code, error);
   }
 
-  /** Every row a call wrote refused with one code is no row's own fault, such
-   *  as a shape every write fails, so the run fails rather than hold them all. */
+  /** Refusals already acknowledged with this intent and context are contained.
+   *  If every other write fails with one code, fail the run as systemic. */
   private judge(): void {
     const { tried, refused, codes } = this.batch;
     const [only] = codes.values();
