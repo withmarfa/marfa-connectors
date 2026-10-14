@@ -681,7 +681,7 @@ export async function runOnce<E extends EnvDeclaration>(
       error: Refusal,
       singleton: boolean,
       refusedInsert: boolean,
-    ): boolean => {
+    ): false | "new" | "retained" => {
       const scope = activeScope;
       if (
         scope?.retry === undefined ||
@@ -720,7 +720,17 @@ export async function runOnce<E extends EnvDeclaration>(
           scope.blocked = "row-refused";
           return false;
         }
-        return true;
+        const retained = (acknowledged.inbound ?? []).some(
+          (saved) =>
+            identityKey(saved.identity.type, saved.identity.sourceId) === key &&
+            saved.identity.link === identity.link &&
+            saved.scope === scope.name &&
+            saved.mode === scope.retry?.mode &&
+            saved.fingerprint === fingerprint &&
+            saved.context === context &&
+            saved.code === error.code,
+        );
+        return retained ? "retained" : "new";
       } catch {
         return false;
       }

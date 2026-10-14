@@ -233,7 +233,7 @@ export interface Hooks {
     error: Refusal,
     singleton: boolean,
     refusedInsert: boolean,
-  ): boolean;
+  ): false | "new" | "retained";
   upserted?(type: string, entry: Entry): void;
   archivePending?(type: string, key: string): boolean;
   archived?(type: string, key: string, absent?: boolean): void;
@@ -1328,9 +1328,9 @@ export class Rows {
     }
     const captured = entry === undefined ? undefined : this.attempts.get(entry);
     const parked =
-      captured !== undefined &&
-      this.hooks.upsertRefused?.(captured, error, singleton, refusedInsert) ===
-        true;
+      captured === undefined
+        ? false
+        : this.hooks.upsertRefused?.(captured, error, singleton, refusedInsert);
     if (!parked) this.hooks.inboundRefused?.();
     this.counts.skipped += 1;
     if (raced.has(error.code)) {
@@ -1340,12 +1340,16 @@ export class Rows {
     this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
     if (unmendable.has(error.code)) return;
     this.held += 1;
+    if (parked === "retained") {
+      this.batch.tried -= 1;
+      return;
+    }
     this.batch.refused += 1;
     this.batch.codes.set(error.code, error);
   }
 
-  /** Every row a call wrote refused with one code is no row's own fault, such
-   *  as a shape every write fails, so the run fails rather than hold them all. */
+  /** Refusals already acknowledged with this intent and context are contained.
+   *  If every other write fails with one code, fail the run as systemic. */
   private judge(): void {
     const { tried, refused, codes } = this.batch;
     const [only] = codes.values();
