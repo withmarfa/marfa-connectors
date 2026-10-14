@@ -235,6 +235,37 @@ describe("Readwise process on the kit", () => {
     expect(marfa.rows).toHaveLength(4);
     expect(marfa.edges).toHaveLength(2);
   });
+  it("keeps permanently refused source retries from blocking unrelated highlights", async () => {
+    const bad = source(1);
+    const first = bad.highlights[0];
+    if (first === undefined) throw new Error("missing fixture");
+    bad.highlights.push({ ...first, id: 3 });
+    pages = [{ count: 3, nextPageCursor: null, results: [bad, source(2)] }];
+    for (const id of [1, 3])
+      marfa.entryRefusals.set(`primary:highlight:${String(id)}`, {
+        status: 400,
+        code: "invalid_properties",
+        message: "bad",
+      });
+    expect((await once()).code).toBe(0);
+    expect(pending()).toHaveLength(2);
+    due();
+    const page = pages[0];
+    if (page === undefined) throw new Error("missing fixture");
+    page.results.push(source(4));
+    asked = [];
+    const retry = await once();
+    expect(retry.code, retry.output).toBe(0);
+    expect(marfa.row("primary:highlight:4").properties["text"]).toBe(
+      "Full passage 漢字\n",
+    );
+    expect(pending()).toHaveLength(2);
+    expect(
+      asked.some(
+        (url) => url.pathname === "/export/" && !url.searchParams.has("ids"),
+      ),
+    ).toBe(true);
+  });
   it("settles a rejected highlight only when its explicit tombstone arrives", async () => {
     marfa.entryRefusals.set("primary:highlight:1", {
       status: 400,
