@@ -43,7 +43,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Every action is pinned by commit with its tag in a comment, and the Dockerfile's base image by digest; Dependabot keeps them current and `scripts/test/tree.test.ts` refuses one that is not.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
-- TypeScript, strict, on Node 22 or later. The transport is `@withmarfa/client` and nothing else.
+- TypeScript, strict, on Node 22 or later. The transport to Marfa is `@withmarfa/client` and nothing else. Telemetry export is a separate, optional channel to the endpoint the OpenTelemetry settings name, and its code is loaded only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
 ## Code Review Rules
 

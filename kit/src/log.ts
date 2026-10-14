@@ -11,8 +11,14 @@ function spelledAs(secret: string): string[] {
   return [secret, encoded, lowered(encoded), form, lowered(form)];
 }
 
+export type Level = "info" | "warn" | "error";
+
+/** Takes each line the log writes, redacted, without its timestamp. */
+export type LineSink = (level: Level, message: string, at: Date) => void;
+
 export class Logger {
   private secrets: string[] = [];
+  private sink: LineSink | undefined;
 
   constructor(
     private readonly write: (line: string) => void,
@@ -39,6 +45,11 @@ export class Logger {
     );
   }
 
+  /** Hands every later line to `sink` as well. */
+  tee(sink: LineSink): void {
+    this.sink = sink;
+  }
+
   redact(text: string): string {
     let out = text;
     for (const secret of this.secrets)
@@ -58,10 +69,11 @@ export class Logger {
     this.line("error", message);
   }
 
-  private line(level: string, message: string): void {
-    this.write(
-      `${this.clock.now().toISOString()} ${level} ${this.redact(message)}`,
-    );
+  private line(level: Level, message: string): void {
+    const at = this.clock.now();
+    const said = this.redact(message);
+    this.write(`${at.toISOString()} ${level} ${said}`);
+    this.sink?.(level, said, at);
   }
 }
 

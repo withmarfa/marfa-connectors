@@ -103,6 +103,9 @@ export interface RunResult {
   readonly retryAfterMs: number | undefined;
   readonly cursor: string | undefined;
   readonly settled: boolean;
+  /** What failed a run reported as failed: absent for one that succeeded,
+   *  was stopped or never started. */
+  readonly failure?: unknown;
 }
 
 const createKey = "@create";
@@ -2363,7 +2366,8 @@ export async function runOnce<E extends EnvDeclaration>(
   const finishedAt = clock.now();
   const counts = tallied(processed);
   // The contract knows only succeeded and failed; a stop is neither.
-  if (failure !== undefined && setup.stopping?.() === true) {
+  const stopped = failure !== undefined && setup.stopping?.() === true;
+  if (stopped) {
     logger.info(
       `run stopped before it finished, so it is not reported: ${counts}`,
     );
@@ -2393,6 +2397,7 @@ export async function runOnce<E extends EnvDeclaration>(
     retryAfterMs: failure === undefined ? undefined : retryAfterOf(failure),
     settled,
     cursor: pastLog && saved ? read?.cursor : acknowledged.cursor,
+    ...(failure !== undefined && !stopped && { failure }),
   };
 }
 
