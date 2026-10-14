@@ -10,6 +10,7 @@ import {
 } from "./check.js";
 import { witnessTypeAnswers } from "./connector.js";
 import { proveAdoption } from "./adoption.js";
+import { proveRetryArchive } from "./retry-archive.js";
 import { proveInboundRetry } from "./inbound-retry.js";
 import { proveWatchCheckpoint } from "./watch-checkpoint.js";
 import { proveCheckpoint } from "./checkpoint.js";
@@ -22,7 +23,7 @@ import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
-const statements = 129;
+const statements = 130;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -104,6 +105,7 @@ try {
   await proveCheckpoint(marfa, booted.url);
   await proveWatchCheckpoint(marfa, booted.url);
   await proveInboundRetry(booted.url, marfa);
+  await proveRetryArchive(marfa, booted.url);
   if (statementsHeld() !== statements) {
     throw new Error(
       `${String(statementsHeld())} statements held, where the proof expects ${String(statements)}; the count is the literal \`statements\` in scripts/proof/main.ts, so update it when a statement is added or removed`,

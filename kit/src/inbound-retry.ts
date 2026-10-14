@@ -129,6 +129,12 @@ export function readJournal(value: unknown): PendingInbound[] {
       !["refetch", "replay"].includes(String(record["mode"]))
     )
       throw new Error("invalid inbound retry record");
+    if (
+      record["refusedInsert"] !== undefined &&
+      (record["refusedInsert"] !== true ||
+        record["code"] !== "invalid_properties")
+    )
+      throw new Error("invalid inbound insert evidence");
     const key = identityKey(identity["type"], identity["sourceId"]);
     if (identities.has(key))
       throw new Error("duplicate inbound retry identity");

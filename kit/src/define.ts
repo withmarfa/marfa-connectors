@@ -133,6 +133,8 @@ export type PendingInbound = {
   identity: { type: string; sourceId: string; link?: string };
   scope: string;
   operation: "upsert";
+  /** An individual invalid-properties refusal resolved no existing item. */
+  refusedInsert?: true;
   fingerprint: string;
   context: string;
   code: "invalid_properties" | "request_too_large";

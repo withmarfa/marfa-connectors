@@ -605,6 +605,19 @@ export async function runOnce<E extends EnvDeclaration>(
     retryOwners.set(key, scope);
     return true;
   };
+  const archiveRetries = (type: string, key: string): PendingInbound[] => {
+    const scope = activeScope;
+    if (scope?.retry === undefined) return [];
+    return journalFor(scope).filter(
+      (record) =>
+        record.identity.type === type &&
+        (specs.get(type)?.link !== undefined
+          ? record.identity.link
+          : record.identity.sourceId) === key &&
+        record.scope === scope.name &&
+        record.mode === scope.retry?.mode,
+    );
+  };
   const hooks = {
     narrowed: () =>
       (narrowed ??= setup.marfa.narrower(
@@ -667,6 +680,7 @@ export async function runOnce<E extends EnvDeclaration>(
       captured: UpsertAttempt,
       error: Refusal,
       singleton: boolean,
+      refusedInsert: boolean,
     ): boolean => {
       const scope = activeScope;
       if (
@@ -685,6 +699,7 @@ export async function runOnce<E extends EnvDeclaration>(
           identity,
           scope: scope.name,
           operation: "upsert",
+          ...(refusedInsert && { refusedInsert: true }),
           fingerprint,
           context,
           code: error.code,
@@ -723,6 +738,17 @@ export async function runOnce<E extends EnvDeclaration>(
         return;
       }
       if (ownRetry(scope, key)) scope.journal.set(key, null);
+    },
+    archivePending: (type: string, key: string): boolean =>
+      archiveRetries(type, key).length > 0,
+    archived: (type: string, key: string, absent = false): void => {
+      const scope = activeScope;
+      if (scope === undefined) return;
+      for (const record of archiveRetries(type, key)) {
+        if (absent && record.refusedInsert !== true) continue;
+        const identity = identityKey(type, record.identity.sourceId);
+        if (ownRetry(scope, identity)) scope.journal.set(identity, null);
+      }
     },
     inboundRefused: () => {
       if (activeScope !== undefined) activeScope.blocked = "row-refused";
