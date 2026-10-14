@@ -36,6 +36,14 @@ import {
   type Trigger,
 } from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
+import {
+  headerSecrets,
+  noTelemetry,
+  readTelemetry,
+  startTelemetry,
+  type Telemetry,
+  type TelemetrySettings,
+} from "./telemetry.js";
 import { setUp, workingTreeOf } from "./setup.js";
 import {
   backoff,
@@ -383,6 +391,7 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
     "  MARFA_API_URL (the address of the Marfa server)",
     `  MARFA_API_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
+    "  OTEL_EXPORTER_OTLP_ENDPOINT (optional: where to send logs, traces and errors over OTLP; nothing is sent while it is unset)",
   ];
 }
 
@@ -425,6 +434,7 @@ interface Shared<E extends EnvDeclaration> {
   readonly clock: Runtime["clock"];
   readonly random: () => number;
   readonly stop: AbortController;
+  readonly telemetry: Telemetry;
 }
 
 export async function start<E extends EnvDeclaration>(
@@ -437,6 +447,7 @@ export async function start<E extends EnvDeclaration>(
   };
   let schedule: Schedule;
   let environment;
+  let telemetrySettings: TelemetrySettings | undefined;
   try {
     checkDefinition(connector);
     schedule = readSchedule(runtime.argv);
@@ -467,6 +478,7 @@ export async function start<E extends EnvDeclaration>(
       runtime.env,
       schedule.mode === "setup",
     );
+    telemetrySettings = readTelemetry(runtime.env);
     // Without a link, a row made in Marfa cannot be told to the vendor,
     // nor a purge found there.
     const unlinked = [
@@ -496,6 +508,48 @@ export async function start<E extends EnvDeclaration>(
     return 2;
   }
   const logger = new Logger(write, clock, environment.secrets);
+  if (telemetrySettings === undefined) {
+    return started(
+      connector,
+      runtime,
+      environment,
+      schedule,
+      logger,
+      noTelemetry,
+    );
+  }
+  logger.keep(headerSecrets(telemetrySettings));
+  const telemetry = await startTelemetry(
+    telemetrySettings,
+    connector.name,
+    logger,
+    clock,
+    runtime.random,
+  );
+  try {
+    return await started(
+      connector,
+      runtime,
+      environment,
+      schedule,
+      logger,
+      telemetry,
+    );
+  } finally {
+    await telemetry.shutdown();
+  }
+}
+
+/** The start, once the settings are read. */
+async function started<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  runtime: Runtime,
+  environment: Environment,
+  schedule: Exclude<Schedule, { mode: "help" }>,
+  logger: Logger,
+  telemetry: Telemetry,
+): Promise<number> {
+  const { clock } = runtime;
   try {
     if (schedule.mode !== "setup") {
       await connector.checkEnv?.(environment.values as EnvValues<E>);
@@ -526,6 +580,7 @@ export async function start<E extends EnvDeclaration>(
     clock,
     random: runtime.random,
     stop,
+    telemetry,
   };
   let lostAt: number | undefined;
   for (;;) {
@@ -563,6 +618,7 @@ async function serve<E extends EnvDeclaration>(
     clock,
     random,
     stop,
+    telemetry,
   } = shared;
   const stopped = (): boolean => stop.signal.aborted;
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
@@ -750,14 +806,16 @@ async function serve<E extends EnvDeclaration>(
       heldUntil = taken.until;
       return undefined;
     }
-    const ran = await runOnce(
-      {
-        ...setup,
-        marfa: marfa.scoped(hold.signal),
-        signal: AbortSignal.any([lasting, hold.signal]),
-        fenced: () => hold.check(),
-      },
-      trigger,
+    const ran = await telemetry.run(trigger, () =>
+      runOnce(
+        {
+          ...setup,
+          marfa: marfa.scoped(hold.signal),
+          signal: AbortSignal.any([lasting, hold.signal]),
+          fenced: () => hold.check(),
+        },
+        trigger,
+      ),
     );
     // A run fenced for want of an answer to its renewals failed on Marfa.
     const run =
