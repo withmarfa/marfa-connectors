@@ -83,11 +83,14 @@ export function parsePage(value: unknown): ExportPage {
     page["count"] < 0
   )
     invalid("count");
-  if (
-    page["nextPageCursor"] !== null &&
-    (typeof page["nextPageCursor"] !== "string" ||
-      page["nextPageCursor"].length === 0)
-  )
+  const rawCursor = page["nextPageCursor"];
+  const cursor =
+    typeof rawCursor === "number" &&
+    Number.isSafeInteger(rawCursor) &&
+    rawCursor > 0
+      ? String(rawCursor)
+      : rawCursor;
+  if (cursor !== null && (typeof cursor !== "string" || cursor.length === 0))
     invalid("nextPageCursor");
   if (!Array.isArray(page["results"])) invalid("results");
   for (const value of page["results"]) {
@@ -149,5 +152,5 @@ export function parsePage(value: unknown): ExportPage {
       tags(highlight["tags"]);
     }
   }
-  return value as ExportPage;
+  return { ...page, nextPageCursor: cursor } as unknown as ExportPage;
 }
