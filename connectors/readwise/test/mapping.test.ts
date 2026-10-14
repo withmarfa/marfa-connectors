@@ -168,10 +168,23 @@ describe("Readwise export validation", () => {
       parsePage({ count: 0, nextPageCursor: null, results: [] }).results,
     ).toEqual([]);
   });
+  it("normalizes the live API's safe numeric page cursor without losing precision", () => {
+    expect(
+      parsePage({ count: 509, nextPageCursor: 61520441, results: [source] })
+        .nextPageCursor,
+    ).toBe("61520441");
+    expect(() =>
+      parsePage({
+        count: 1,
+        nextPageCursor: Number.MAX_SAFE_INTEGER + 1,
+        results: [source],
+      }),
+    ).toThrow("nextPageCursor");
+  });
   it.each([
     {},
     { results: [] },
-    { count: 0, results: [], nextPageCursor: 4 },
+    { count: 0, results: [], nextPageCursor: 1.5 },
     page([null]),
     page([{ ...source, user_book_id: 1.5 }]),
     page([{ ...source, highlights: [{ id: 4 }] }]),

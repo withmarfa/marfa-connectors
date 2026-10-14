@@ -170,7 +170,7 @@ marfa keys create --label <name> --source <name> --type-permission <type>=write 
 
 - `--source <name>`: the connector's source, which every row it writes carries.
 - `--type-permission <type>=write`, once for each type the connector writes: reach on its own types and on nothing else.
-- `--edge-permission <connection>=write`, once for each connection type, and `--metadata-permission edge_types=write`, for a connector that registers connection types of its own, which needs write on each id and any reverse name in its edge map; `attached-to` and `in-thread` are the instance's and need only the first.
+- `--edge-permission <connection>=write`, once for each connection type, and `--metadata-permission edge_types=write`, for a connector that registers connection types of its own, which needs write on each id and any reverse name in its edge map; `attached-to`, `in-thread`, and `references` are the instance's and need only the first.
 - `--metadata-permission types=write`: lets it register its type on its first start, and again should the type be deleted from the instance, and lets it keep the type current, adding a field a later version of the connector declares, as [When the connector's type changes](#when-the-connectors-type-changes) says. Its type map bounds it to the connector's own types.
 - `--default-tier feed`: the tier of a write under the key that names none. The kit names `feed` itself on every row it creates and does not read this setting, so a key minted without it still writes the feed; a write made another way with the key would land in the library.
 

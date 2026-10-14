@@ -17,13 +17,14 @@ import { proveCheckpoint } from "./checkpoint.js";
 import { proveGitHub } from "./github.js";
 import { proveInbound } from "./inbound.js";
 import { proveKeys } from "./keys.js";
+import { proveReadwise } from "./readwise.js";
 import { proveRss } from "./rss.js";
 import { proveTodoist } from "./todoist.js";
 import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
-const statements = 130;
+const statements = 136;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -95,6 +96,7 @@ try {
     server.mintKey(body),
   );
   await proveRss(marfa, booted.url, manager);
+  await proveReadwise(marfa, booted.url);
   await proveTodoist(marfa, booted.url, manager);
   await proveInbound(marfa, booted.url, manager);
   await proveKeys(marfa, booted.url, manager, (id, body) =>
