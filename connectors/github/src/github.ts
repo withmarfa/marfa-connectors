@@ -191,8 +191,7 @@ export class ClockSkew extends Error {
 }
 
 interface Signer {
-  /** Installation tokens, kept for their hour across runs, as GitHub
-   *  answers 304 only to the token that was answered the ETag. */
+  /** Installation tokens, kept for their hour across runs. */
   readonly cache: TokenCache;
   /** Seconds GitHub's clock runs ahead of ours, as its answers showed. */
   skew: number;
