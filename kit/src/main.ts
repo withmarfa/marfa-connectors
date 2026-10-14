@@ -82,8 +82,8 @@ function startBackoff(intervalMs: number, attempts: number): number {
 
 /** Shipped connection types a connector may write between its own rows,
  *  narrowed itself and never registered: a file attaching to its item, a
- *  message in its thread. */
-const shippedConnections = new Set(["attached-to", "in-thread"]);
+ *  message in its thread, a highlight referencing its source. */
+const shippedConnections = new Set(["attached-to", "in-thread", "references"]);
 
 /** Where an owner is told to mint the connector's key. */
 function keyGuide(connector: Pick<Connector, "readme">): string {
