@@ -68,6 +68,7 @@ export async function proveGitHub(
   mintKey: ProofServer["mintKey"],
 ): Promise<void> {
   const github = await new GitHubStub().start();
+  github.appPem = appKey();
   try {
     const repository = github.addRepository("someone/tracker");
     const parent = github.addIssue(repository, {
@@ -84,7 +85,7 @@ export async function proveGitHub(
     let key = { id: "", key: "" };
     const env = {
       GITHUB_APP_ID: "12345",
-      GITHUB_PRIVATE_KEY: appKey(),
+      GITHUB_PRIVATE_KEY: github.appPem,
       GITHUB_WEBHOOK_SECRET: "github-proof-webhook-secret",
       GITHUB_API_URL: github.url,
     };
@@ -825,6 +826,7 @@ export async function proveGitHubCoverage(
         GITHUB_READ_ONLY: String(readOnly),
       });
     const privateKey = appKey();
+    github.appPem = privateKey;
     const run = async () => {
       const result = await runner().once();
       if (result.code !== 0)
@@ -841,6 +843,17 @@ export async function proveGitHubCoverage(
       if (data === undefined)
         throw new Error(`coverage state refused: ${JSON.stringify(error)}`);
       return { ...(data.state as CoverageEnvelope), problems: data.problems };
+    };
+    // The first installation's REST budget runs out as a repository's issues
+    // are listed, the way GitHub's does once a client has spent its hour.
+    const spendAtListing = (name: string): void => {
+      github.onAsked = (request) => {
+        if (request.path === `/repos/${name}/issues`) github.exhaust("core", 1);
+      };
+    };
+    const spared = (): void => {
+      github.onAsked = undefined;
+      github.refill("core", 1);
     };
     const disabled = (envelope: CoverageEnvelope, node: string): boolean =>
       envelope.problems?.[`issues-off:${node}`] !== undefined;
@@ -961,14 +974,14 @@ export async function proveGitHubCoverage(
         await run();
         a.issuesOff = false;
         b.issuesOff = false;
-        github.longResetRepository = a.name;
+        spendAtListing("someone/coverage-a");
         github.readFailure = b.name;
         github.asked.length = 0;
         let failed;
         try {
           failed = await runner().once();
         } finally {
-          github.longResetRepository = undefined;
+          spared();
           github.readFailure = undefined;
         }
         const limited = github.asked.some(
@@ -996,13 +1009,13 @@ export async function proveGitHubCoverage(
             `failed retention wrong (rate limit reached: ${String(limited)}, independent failure reached: ${String(refused)}): ${JSON.stringify(retained)}; ${JSON.stringify(report)}; ${failed.output}`,
           );
         }
-        github.longResetRepository = a.name;
+        spendAtListing("someone/coverage-a");
         github.asked.length = 0;
         let waiting;
         try {
           waiting = await run();
         } finally {
-          github.longResetRepository = undefined;
+          spared();
         }
         const recovered = await lastRun(manager, key.id);
         if (
@@ -1132,12 +1145,12 @@ export async function proveGitHubCoverage(
             missing.node,
           ],
         });
-        github.metadataLimitedInstallation = 1;
+        github.exhaust("core", 1);
         github.asked.length = 0;
         try {
           await run();
         } finally {
-          github.metadataLimitedInstallation = undefined;
+          github.refill("core", 1);
         }
         const blockers = (
           await targets(own, referringRow, "github.blocked-by")

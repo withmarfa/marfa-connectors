@@ -34,6 +34,7 @@ beforeEach(async () => {
     metadata_permissions: { types: "write", edge_types: "write" },
   };
   github = await new GitHubStub().start();
+  github.appPem = key;
 });
 
 afterEach(async () => {
@@ -232,7 +233,7 @@ describe("a run for deliveries", () => {
     github.installations.push({ id: 2, login: "another" });
     const second = github.addRepository("another/second", { installation: 2 });
     const issue = github.addIssue(second, { title: "Before" });
-    github.graphqlRemainingByInstallation.set(1, 100);
+    github.budget("graphql", 1).remaining = 100;
     await watching(async () => {
       github.edit(issue, { title: "After" });
       deliver("issues", { action: "edited", issue: { node_id: issue.node } });
@@ -259,7 +260,7 @@ describe("a run for deliveries", () => {
         node = issue.node;
         const installation = github.installations[0];
         if (installation === undefined) throw new Error("missing installation");
-        if (unavailable === "limit") github.metadataLimitedInstallation = 1;
+        if (unavailable === "limit") github.exhaust("core", 1);
         else if (unavailable === "suspended") installation.suspended = true;
         else installation.lost = true;
         deliver("issues", { action: "opened", issue: { node_id: node } });
@@ -270,7 +271,7 @@ describe("a run for deliveries", () => {
         expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
         expect(marfa.runs.at(-1)?.outcome).toBe("failed");
       });
-      github.metadataLimitedInstallation = undefined;
+      github.refill("core", 1);
       const installation = github.installations[0];
       if (installation === undefined) throw new Error("missing installation");
       installation.suspended = false;
@@ -293,11 +294,10 @@ describe("a run for deliveries", () => {
         installation: 2,
       });
       const secondIssue = github.addIssue(second, { title: "B before" });
-      if (limited === "budget")
-        github.graphqlRemainingByInstallation.set(1, 100);
+      if (limited === "budget") github.budget("graphql", 1).remaining = 100;
       let healthyUpdatedAt: string | undefined;
       await watching(async () => {
-        if (limited === "metadata") github.metadataLimitedInstallation = 1;
+        if (limited === "metadata") github.exhaust("core", 1);
         github.edit(firstIssue, { title: "A after" });
         github.edit(secondIssue, { title: "B after" });
         deliver("issues", {
@@ -318,8 +318,8 @@ describe("a run for deliveries", () => {
         ).toBe(true);
         expect(marfa.runs.at(-1)?.outcome).toBe("failed");
       });
-      github.graphqlRemainingByInstallation.set(1, 4999);
-      github.metadataLimitedInstallation = undefined;
+      github.refill("graphql", 1);
+      github.refill("core", 1);
       await once();
       expect(row(firstIssue.node).properties["title"]).toBe("A after");
       expect(row(secondIssue.node).updated_at).toBe(healthyUpdatedAt);
