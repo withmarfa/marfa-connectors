@@ -135,8 +135,8 @@ describe("--every", () => {
     ]);
   });
 
-  it("retries a server it cannot reach at start, a minute first, doubling", async () => {
-    harness.server.refuseNext("POST /connectors", 503, "unavailable");
+  it("retries a registration the server refuses at start, a minute first, doubling", async () => {
+    harness.server.refuseNext("POST /connectors", 503, "write_contention");
     harness.server.refuseNext("POST /connectors", 429, "rate_limited");
     const held = vendor([one]);
     const exit = every(held, "24h");
