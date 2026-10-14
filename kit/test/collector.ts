@@ -3,7 +3,8 @@ import {
   type IncomingHttpHeaders,
   type ServerResponse,
 } from "node:http";
-import type { AddressInfo } from "node:net";
+import { spawn } from "node:child_process";
+import { connect, type AddressInfo, type Socket } from "node:net";
 import { gunzipSync } from "node:zlib";
 
 interface OtlpValue {
@@ -178,4 +179,64 @@ export async function closedAddress(): Promise<string> {
     });
   });
   return `http://127.0.0.1:${String(port)}`;
+}
+
+export interface BlackHole {
+  /** An OTLP endpoint whose connections never complete. */
+  readonly url: string;
+  close(): void;
+}
+
+/** Whether a connection to the address is still opening after a while. */
+async function staysOpening(host: string, port: number): Promise<boolean> {
+  const socket = connect({ host, port });
+  socket.on("error", () => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  const opening = socket.connecting && !socket.destroyed;
+  socket.destroy();
+  return opening;
+}
+
+/**
+ * An address where a connection is never completed, as at a collector
+ * behind a firewall that drops packets. A non-routable address does that
+ * on most networks; where it is refused instead, a listener that has
+ * stopped accepting, with its queue full, does it on Linux, which drops
+ * the connection's opening packets rather than refusing them.
+ */
+export async function blackHole(): Promise<BlackHole> {
+  if (await staysOpening("10.255.255.1", 4318)) {
+    return { url: "http://10.255.255.1:4318", close: () => undefined };
+  }
+  const listener = spawn(
+    process.execPath,
+    [
+      "-e",
+      'const s = require("node:net").createServer(); s.listen({ port: 0, host: "127.0.0.1", backlog: 1 }, () => console.log(s.address().port));',
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const port = await new Promise<number>((resolve) => {
+    listener.stdout.once("data", (data: Buffer) => {
+      resolve(Number(data.toString("utf8").trim()));
+    });
+  });
+  listener.kill("SIGSTOP");
+  const filling: Socket[] = [];
+  for (let tries = 0; tries < 16; tries += 1) {
+    const socket = connect({ host: "127.0.0.1", port });
+    socket.on("error", () => undefined);
+    filling.push(socket);
+  }
+  const close = (): void => {
+    for (const socket of filling) socket.destroy();
+    listener.kill("SIGKILL");
+  };
+  if (!(await staysOpening("127.0.0.1", port))) {
+    close();
+    throw new Error(
+      "no address here leaves a connection opening, so a collector that drops packets cannot be stood in for",
+    );
+  }
+  return { url: `http://127.0.0.1:${String(port)}`, close };
 }

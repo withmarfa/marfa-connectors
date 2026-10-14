@@ -1,9 +1,19 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { start } from "../src/main.js";
 import { telemetryBoundMs } from "../src/telemetry.js";
-import { closedAddress, startCollector, type Collector } from "./collector.js";
+import {
+  blackHole,
+  closedAddress,
+  startCollector,
+  type Collector,
+} from "./collector.js";
 import { Harness, testConnector, vendor } from "./harness.js";
 
 // Counts each load of the module that holds every OpenTelemetry import.
@@ -314,6 +324,58 @@ describe("a collector that cannot be reached", () => {
       await hung.close();
     }
   });
+});
+
+/** Runs a connector on the built kit as its own process, as launchd or a
+ *  container does, and answers how long the process took to end. */
+async function processLasts(env: Record<string, string>): Promise<number> {
+  const place = await mkdtemp(join(tmpdir(), "telemetry-process-"));
+  const kit = pathToFileURL(resolve(import.meta.dirname, "../dist/index.js"));
+  const script = join(place, "connector.mjs");
+  await writeFile(
+    script,
+    `import { defineConnector, main } from ${JSON.stringify(kit.href)};
+await main(defineConnector({
+  name: "probe",
+  source: "probe",
+  types: [{ type: { id: "probe.entry", label: "Entry", description: "An entry.", fields: { title: { type: "string", required: true } } }, fields: ["title"] }],
+  async run() {},
+}));
+`,
+  );
+  const began = Date.now();
+  try {
+    await new Promise<void>((done) => {
+      execFile(
+        process.execPath,
+        [script, "--once"],
+        { env: { PATH: process.env["PATH"] ?? "", ...env }, timeout: 20_000 },
+        () => {
+          done();
+        },
+      );
+    });
+    return Date.now() - began;
+  } finally {
+    await rm(place, { recursive: true, force: true });
+  }
+}
+
+describe("a collector that drops what is sent to it", () => {
+  it("never keeps the process from ending past the bound", async () => {
+    const hole = await blackHole();
+    try {
+      const lasted = await processLasts({
+        MARFA_API_URL: await closedAddress(),
+        MARFA_API_KEY: "marfa-key-value-123456",
+        OTEL_EXPORTER_OTLP_ENDPOINT: hole.url,
+      });
+      // Starting Node and loading the kit take a second or so of their own.
+      expect(lasted).toBeLessThan(telemetryBoundMs + 3000);
+    } finally {
+      hole.close();
+    }
+  }, 30_000);
 });
 
 describe("a setting that cannot be used", () => {

@@ -262,6 +262,9 @@ export function exporting(
               url: settings.tracesEndpoint,
               headers: { ...settings.tracesHeaders },
               timeoutMillis: exportTimeoutMs,
+              // The request timeout starts only once the socket connects; the
+              // socket timeout also bounds a connect that never completes.
+              httpAgentOptions: { timeout: exportTimeoutMs },
             }),
             (span) => redactSpan(span, redact),
             failed,
@@ -282,6 +285,9 @@ export function exporting(
             url: settings.logsEndpoint,
             headers: { ...settings.logsHeaders },
             timeoutMillis: exportTimeoutMs,
+            // The request timeout starts only once the socket connects; the
+            // socket timeout also bounds a connect that never completes.
+            httpAgentOptions: { timeout: exportTimeoutMs },
           }),
           (record) => redactLogRecord(record, redact),
           failed,
