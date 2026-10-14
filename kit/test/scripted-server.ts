@@ -86,8 +86,8 @@ interface Refusal {
 
 /**
  * What a version held, written when a write leaves the version, at that
- * write's moment; a transition writes one of its own version too, without
- * moving it, as the real server does.
+ * write's moment. A move between states, a trash or a restore moves no
+ * version and writes none (`versions/state-keeps-history`).
  */
 interface Snapshot {
   version: number;
@@ -475,7 +475,6 @@ export class ScriptedServer {
 
   transition(id: string, state: Row["state"]): Row {
     const row = this.byId(id);
-    this.snapshot(row);
     row.state = state;
     if (state !== "trashed") this.leaveBin(row);
     row.updated_at = this.now();
@@ -517,7 +516,6 @@ export class ScriptedServer {
 
   restore(id: string): Row {
     const row = this.byId(id);
-    this.snapshot(row);
     row.state = "active";
     this.leaveBin(row);
     row.updated_at = this.now();
@@ -1588,12 +1586,20 @@ export class ScriptedServer {
     refuse(404, "not_found", `no scripted door for ${route}`);
   }
 
+  /** A type filter names the type, every type whose identifier begins with
+   *  it and a dot, and every type whose chain of parents reaches it
+   *  (`types/listing-subtree`). */
   private ofType(row: Row, type: string | null): boolean {
-    return (
-      type === null ||
-      row.type === type ||
-      this.types.get(row.type)?.["parent"] === type
-    );
+    if (type === null || row.type === type) return true;
+    if (row.type.startsWith(`${type}.`)) return true;
+    const seen = new Set([row.type]);
+    let parent = this.types.get(row.type)?.["parent"];
+    while (typeof parent === "string" && !seen.has(parent)) {
+      if (parent === type) return true;
+      seen.add(parent);
+      parent = this.types.get(parent)?.["parent"];
+    }
+    return false;
   }
 
   private listItems(query: URLSearchParams, send: Send): void {
@@ -2144,19 +2150,17 @@ export class ScriptedServer {
     }
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
     const occurredAt = input["occurred_at"];
-    const holder = this.linkHolder(
-      row.type,
-      input["properties_mode"] === "replace"
-        ? properties
-        : { ...row.properties, ...properties },
-      row.id,
-    );
-    if (holder !== undefined) {
+    // The link is judged on the properties the write leaves the row with, as
+    // the server judges it (`items/link-every-write`): a stale write leaves
+    // the merge of what it changed over what the row holds now, not its body.
+    const linkTaken = (left: Record<string, unknown>): boolean => {
+      const holder = this.linkHolder(row.type, left, row.id);
+      if (holder === undefined) return false;
       refuse(409, "link_taken", "another item holds the link", {
         existing_id: holder.id,
       });
-      return;
-    }
+      return true;
+    };
     const sourceId = input["source_id"];
     if (
       typeof sourceId === "string" &&
@@ -2215,15 +2219,19 @@ export class ScriptedServer {
         if (Object.hasOwn(properties, key)) merged[key] = properties[key];
         else Reflect.deleteProperty(merged, key);
       }
+      if (linkTaken(merged)) return;
       if (typeof sourceId === "string") row.source_id = sourceId;
       this.write(row, merged, movesTime ? occurredAt : undefined);
     } else {
+      const left =
+        input["properties_mode"] === "replace"
+          ? properties
+          : { ...row.properties, ...properties };
+      if (linkTaken(left)) return;
       if (typeof sourceId === "string") row.source_id = sourceId;
       this.write(
         row,
-        input["properties_mode"] === "replace"
-          ? properties
-          : { ...row.properties, ...properties },
+        left,
         typeof occurredAt === "string" ? occurredAt : undefined,
       );
     }

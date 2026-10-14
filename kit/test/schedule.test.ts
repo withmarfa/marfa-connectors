@@ -5,7 +5,13 @@ import {
 } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
-import { Harness, testConnector, vendor, type Vendor } from "./harness.js";
+import {
+  Harness,
+  closedUrl,
+  testConnector,
+  vendor,
+  type Vendor,
+} from "./harness.js";
 
 let harness: Harness;
 beforeEach(async () => {
@@ -17,14 +23,6 @@ afterEach(async () => {
 
 const one = { source_id: "a:1", properties: { title: "One" } };
 const minute = 60_000;
-
-async function closedPort(): Promise<number> {
-  const server = createNetServer();
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const { port } = server.address() as AddressInfo;
-  await new Promise((done) => server.close(done));
-  return port;
-}
 
 async function silentServer(): Promise<{
   url: string;
@@ -137,8 +135,8 @@ describe("--every", () => {
     ]);
   });
 
-  it("retries a server it cannot reach at start, a minute first, doubling", async () => {
-    harness.server.refuseNext("POST /connectors", 503, "unavailable");
+  it("retries a registration the server refuses at start, a minute first, doubling", async () => {
+    harness.server.refuseNext("POST /connectors", 503, "write_contention");
     harness.server.refuseNext("POST /connectors", 429, "rate_limited");
     const held = vendor([one]);
     const exit = every(held, "24h");
@@ -152,7 +150,7 @@ describe("--every", () => {
   });
 
   it("retries a server nothing answers at start, where --once gives up", async () => {
-    const closed = `http://127.0.0.1:${String(await closedPort())}`;
+    const closed = await closedUrl();
     const held = vendor([one]);
     const exit = start(
       testConnector(held),
