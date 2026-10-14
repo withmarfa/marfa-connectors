@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { createServer, type AddressInfo } from "node:net";
 import {
   defineConnector,
   type Change,
@@ -15,6 +16,15 @@ import { Declined, Refused, Unreachable } from "../src/rows.js";
 import { verifyHmac } from "../src/verify.js";
 import type { Clock, Runtime } from "../src/runtime.js";
 import { ScriptedServer } from "./scripted-server.js";
+
+/** An address nothing listens on: a port that was free a moment ago. */
+export async function closedUrl(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address() as AddressInfo;
+  await new Promise((done) => server.close(done));
+  return `http://127.0.0.1:${String(port)}`;
+}
 
 interface Sleep {
   ms: number;

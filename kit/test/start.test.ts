@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
 import {
   Harness,
+  closedUrl,
   secretToken,
   testConnector,
   testFields,
@@ -652,8 +653,23 @@ describe("--once", () => {
     expect(harness.lastRun().outcome).toBe("failed");
   });
 
-  it("answers 1 when the server cannot be reached, having written nothing", async () => {
-    harness.server.refuseNext("POST /connectors", 503, "unavailable");
+  it("answers 1 when nothing answers at the server's address, having asked and written nothing", async () => {
+    const closed = await closedUrl();
+    expect(await harness.once(vendor([entry]), { MARFA_API_URL: closed })).toBe(
+      1,
+    );
+    expect(harness.lines.at(-1)).toContain(
+      `could not start: the server at MARFA_API_URL (${closed}) did not answer`,
+    );
+    expect(harness.server.requests).toEqual([]);
+
+    // The witness: at the address that answers, the same run writes its row.
+    expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.server.rows).toHaveLength(1);
+  });
+
+  it("answers 1 when the server answers the registration 503 write_contention, having written nothing", async () => {
+    harness.server.refuseNext("POST /connectors", 503, "write_contention");
     expect(await harness.once(vendor([entry]))).toBe(1);
     expect(harness.server.rows).toEqual([]);
   });
