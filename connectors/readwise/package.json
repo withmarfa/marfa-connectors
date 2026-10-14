@@ -1,0 +1,11 @@
+{
+  "name": "readwise",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@withmarfa/connector": "workspace:*"
+  }
+}
