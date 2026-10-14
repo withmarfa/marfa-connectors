@@ -78,14 +78,14 @@ export function mapSource(account: string, source: Source): Entry {
   };
 }
 const colors = new Set(["yellow", "blue", "green", "pink", "orange", "purple"]);
-const locators: Record<string, string> = {
-  offset: "offset",
-  page: "page",
-  time_offset: "time",
-  order: "order",
-  none: "none",
-  cfi: "cfi",
-};
+const locators = new Map([
+  ["offset", "offset"],
+  ["page", "page"],
+  ["time_offset", "time"],
+  ["order", "order"],
+  ["none", "none"],
+  ["cfi", "cfi"],
+]);
 export function mapHighlight(
   account: string,
   sourceId: number,
@@ -111,7 +111,7 @@ export function mapHighlight(
           : undefined,
       readwise_color: highlight.color,
       locator_type: highlight.location_type
-        ? locators[highlight.location_type]
+        ? locators.get(highlight.location_type)
         : undefined,
       start_location:
         highlight.location == null ? undefined : String(highlight.location),

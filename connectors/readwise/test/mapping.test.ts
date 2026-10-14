@@ -112,6 +112,19 @@ describe("Readwise mapping", () => {
       }).properties,
     ).toMatchObject({ text: long, note: long });
   });
+  it.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+    "retains unknown locator %s without mapping inherited properties",
+    (location_type) => {
+      const parsed = first(
+        parsePage(
+          page([{ ...source, highlights: [{ ...highlight, location_type }] }]),
+        ).results,
+      );
+      const entry = mapHighlight("one", 42, first(parsed.highlights));
+      expect(entry.properties["location_type"]).toBe(location_type);
+      expect(entry.properties["locator_type"]).toBeUndefined();
+    },
+  );
   it("retains vendor values without claiming unsupported core enums or invalid URLs/dates", () => {
     const parsed = first(
       parsePage(
