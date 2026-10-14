@@ -63,6 +63,12 @@ importers:
         specifier: ^2.2.2
         version: 2.2.2
 
+  connectors/readwise:
+    dependencies:
+      '@withmarfa/connector':
+        specifier: workspace:*
+        version: link:../../kit
+
   connectors/rss:
     dependencies:
       '@withmarfa/connector':

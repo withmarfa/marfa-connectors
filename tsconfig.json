@@ -6,6 +6,7 @@
     { "path": "connectors/rss" },
     { "path": "connectors/github" },
     { "path": "connectors/todoist" },
+    { "path": "connectors/readwise" },
     { "path": "scripts" }
   ]
 }
