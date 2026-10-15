@@ -32,6 +32,33 @@ function row(
 }
 
 describe("merge", () => {
+  it("holds ambiguous first-adoption divergence without inventing outbound intent", () => {
+    const input = {
+      fields,
+      readOnly: never,
+      firstHold: true,
+      agreement: undefined,
+      row: row({ ...base, title: "Existing export title" }),
+      entry: {
+        source_id: "one",
+        properties: { ...base, title: "Reader title" },
+      },
+    };
+    const first = merge(input);
+    expect(first.properties["title"]).toBe("Existing export title");
+    expect(changedInMarfa(first.agreement, fields, first.properties)).toEqual(
+      [],
+    );
+    expect(first.agreement.waiting).toBeUndefined();
+    const again = merge({ ...input, agreement: first.agreement });
+    expect(again.properties).toEqual(first.properties);
+    expect(
+      changedInMarfa(again.agreement, fields, {
+        ...first.properties,
+        title: "Explicit new edit",
+      }),
+    ).toEqual(["title"]);
+  });
   it("keeps a change made in Marfa to a field the vendor did not change, and writes the vendor's change to another", () => {
     const merged = merge({
       fields,

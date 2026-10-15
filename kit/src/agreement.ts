@@ -122,6 +122,7 @@ export interface MergeInput {
   readonly readOnly: (field: string) => boolean;
   readonly observe?: (field: string) => boolean;
   readonly preserveFirst?: boolean;
+  readonly firstHold?: boolean;
   readonly agreement: Agreement | undefined;
   readonly row: Row;
   readonly entry: Entry;
@@ -167,6 +168,13 @@ export function merge(input: MergeInput): Merged {
     const marfaNow = mark(held(properties, field));
     const observing = input.observe?.(field) === true;
     if (agreement === undefined) {
+      if (
+        (input.firstHold === true && !readOnly(field)) ||
+        (input.firstHold === true && observing)
+      ) {
+        if (marfaNow !== "") marfa[field] = marfaNow;
+        continue;
+      }
       if (
         vendorNow !== marfaNow &&
         (observing || (input.preserveFirst === true && !readOnly(field)))

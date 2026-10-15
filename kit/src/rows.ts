@@ -108,7 +108,7 @@ export interface Spec {
   readonly policy?: import("./define.js").Kind["policy"];
   readonly owned?: boolean;
   readonly observed?: ReadonlySet<string>;
-  readonly firstAgreement?: "preserve";
+  readonly firstAgreement?: "preserve" | "hold";
   readonly type: string;
   readonly source: string;
   readonly link: string | undefined;
@@ -758,6 +758,7 @@ export class Rows {
       readOnly: (field) => kind.readOnly.has(field),
       observe: (field) => kind.observed?.has(field) === true,
       preserveFirst: kind.firstAgreement === "preserve",
+      firstHold: kind.firstAgreement === "hold",
       agreement,
       row: {
         properties: row.properties,

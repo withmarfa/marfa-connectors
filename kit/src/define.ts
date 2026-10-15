@@ -19,7 +19,8 @@ export interface RowPolicy {
    * without carrying them or scheduling work for them. */
   readonly fields?: Readonly<Record<string, FieldPolicy>>;
   /** Preserve divergent sync fields when this connector first adopts a row. */
-  readonly firstAgreement?: "preserve";
+  /** Preserve schedules divergent mutable values; hold keeps both initial baselines without inventing an outbound edit. */
+  readonly firstAgreement?: "preserve" | "hold";
 }
 
 /** Nothing cascades, so a trash in Marfa never takes a vendor's row with it. */
