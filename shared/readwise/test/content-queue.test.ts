@@ -500,9 +500,52 @@ it("retains content work when a direct answer has an inconsistent count", async 
   expect(contentQueue(f.checkpoint)).toHaveLength(1);
 });
 
-it.each([false, true])(
-  "preserves the retained overflow text of an export highlight; deleted=%s",
-  async (deleted) => {
+it.each([
+  {
+    label: "active",
+    deleted: false,
+    externalId: "hi",
+    exportId: 42,
+    accepted: true,
+  },
+  {
+    label: "deleted",
+    deleted: true,
+    externalId: "hi",
+    exportId: 42,
+    accepted: true,
+  },
+  {
+    label: "deleted without Reader ID",
+    deleted: true,
+    externalId: undefined,
+    exportId: 42,
+    accepted: true,
+  },
+  {
+    label: "wrong Reader ID",
+    deleted: true,
+    externalId: "other",
+    exportId: 42,
+    accepted: false,
+  },
+  {
+    label: "wrong export ID",
+    deleted: true,
+    externalId: "hi",
+    exportId: 99,
+    accepted: false,
+  },
+  {
+    label: "active without Reader ID",
+    deleted: false,
+    externalId: undefined,
+    exportId: 42,
+    accepted: false,
+  },
+])(
+  "preserves export overflow only with verified evidence: $label",
+  async ({ deleted, externalId, exportId, accepted }) => {
     const f = fixture();
     const canonical = "sample:reader-highlight:hi";
     const original = f.rows.get(f.canonical);
@@ -544,7 +587,14 @@ it.each([false, true])(
                 source: "reader",
                 external_id: "doc",
                 highlights: [
-                  { id: 42, external_id: "hi", text, is_deleted: deleted },
+                  {
+                    id: exportId,
+                    ...(externalId !== undefined && {
+                      external_id: externalId,
+                    }),
+                    text,
+                    is_deleted: deleted,
+                  },
                 ],
               },
             ],
@@ -552,6 +602,11 @@ it.each([false, true])(
         sourceForHighlight: () => Promise.resolve(undefined),
       },
     });
+    if (!accepted) {
+      expect(contentQueue(f.checkpoint)).toHaveLength(1);
+      expect(f.files.size).toBe(0);
+      return;
+    }
     expect(contentQueue(f.checkpoint)).toEqual([]);
     const retained = [...f.files].find(([key]) =>
       key.includes(":text:readwise_text:"),

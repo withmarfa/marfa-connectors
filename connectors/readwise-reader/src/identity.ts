@@ -5,6 +5,7 @@ import {
   identity,
   InvalidCursor,
   readerIdentity,
+  readerExportPassage,
   mapSource,
   mapHighlight,
   parsePage,
@@ -112,7 +113,6 @@ export class ReaderIdentities {
     string,
     Readonly<Record<string, unknown>>
   >();
-  private readonly exportPassages = new Map<string, string>();
   private readonly exportSources = new Map<number, readonly Source[]>();
   private client?: ExportClient;
   private bridge: Bridge;
@@ -288,6 +288,7 @@ export class ReaderIdentities {
     this.client = client;
     if (refresh && this.bridge.complete) {
       this.bridge = { ...this.bridge, cursor: null, seen: [], complete: false };
+      this.exportSources.clear();
       await this.save();
     }
     if (this.bridge.complete) {
@@ -295,6 +296,8 @@ export class ReaderIdentities {
       return true;
     }
     let restarted = false;
+    let fromStart = this.bridge.cursor === null;
+    const collected = new Map<number, Source[]>();
     for (let at = 0; at < maxPages; at++) {
       let page;
       try {
@@ -312,12 +315,18 @@ export class ReaderIdentities {
           throw error;
         this.bridge.cursor = null;
         this.bridge.seen = [];
+        fromStart = true;
+        collected.clear();
+        this.exportSources.clear();
         await this.save();
         restarted = true;
         at--;
         continue;
       }
       for (const source of page.results) {
+        const held = collected.get(source.user_book_id) ?? [];
+        held.push(source);
+        collected.set(source.user_book_id, held);
         if (source.source !== "reader" || !source.external_id) continue;
         const parent = readerIdentity(
           this.account,
@@ -339,8 +348,6 @@ export class ReaderIdentities {
             "highlight",
             highlight.external_id,
           );
-          if (typeof highlight.text === "string")
-            this.exportPassages.set(key, highlight.text);
           this.alias(
             key,
             {
@@ -370,6 +377,9 @@ export class ReaderIdentities {
       this.bridge.complete = page.nextPageCursor === null;
       await this.save();
       if (this.bridge.complete) {
+        if (fromStart)
+          for (const [id, sources] of collected)
+            this.exportSources.set(id, sources);
         await this.save();
         return true;
       }
@@ -426,11 +436,8 @@ export class ReaderIdentities {
       throw new Error(
         "Reader identity conflict: export parent differs from Reader parent",
       );
-    if (
-      kind === "highlight" &&
-      alias?.sourceId !== undefined &&
-      !this.exportPassages.has(canonical)
-    ) {
+    let exportText: string | undefined;
+    if (kind === "highlight" && alias?.sourceId !== undefined) {
       if (this.client === undefined)
         throw new Error("Reader export client is unavailable");
       let sources = this.exportSources.get(alias.sourceId);
@@ -462,47 +469,13 @@ export class ReaderIdentities {
           );
         sources = fetched;
       }
-      let deleted = false;
-      let text: string | undefined;
-      for (const source of sources) {
-        if (
-          source.user_book_id !== alias.sourceId ||
-          source.external_id !== document.parent_id ||
-          source.source !== "reader" ||
-          source.is_deleted
-        )
-          throw new Error(
-            "Reader export source identity differs from the saved alias",
-          );
-        for (const highlight of source.highlights) {
-          if (
-            (highlight.external_id === document.id &&
-              String(highlight.id) !== alias.readwiseId) ||
-            (String(highlight.id) === alias.readwiseId &&
-              highlight.external_id != null &&
-              highlight.external_id !== document.id)
-          )
-            throw new Error(
-              "Reader export highlight identity differs from the saved alias",
-            );
-          if (String(highlight.id) !== alias.readwiseId) continue;
-          deleted ||= highlight.is_deleted === true;
-          if (
-            (highlight.external_id !== document.id && !highlight.is_deleted) ||
-            typeof highlight.text !== "string"
-          )
-            continue;
-          if (text !== undefined && text !== highlight.text)
-            throw new Error("Reader export passage lookup is ambiguous");
-          text = highlight.text;
-        }
-      }
+      exportText = readerExportPassage(sources, {
+        sourceId: alias.sourceId,
+        highlightId: Number(alias.readwiseId),
+        readerId: document.id,
+        parentId: document.parent_id,
+      });
       this.exportSources.set(alias.sourceId, sources);
-      if (text !== undefined) this.exportPassages.set(canonical, text);
-      else if (!deleted)
-        throw new Error(
-          "Reader export passage remains unavailable; metadata is retained",
-        );
     }
     const linked = await this.context.inspect(type, { links: [canonical] });
     const naturals = [
@@ -538,9 +511,7 @@ export class ReaderIdentities {
     const properties = {
       ...this.enriched.get(canonical),
       ...row?.properties,
-      ...(this.exportPassages.has(canonical)
-        ? { readwise_text: this.exportPassages.get(canonical) }
-        : {}),
+      ...(exportText !== undefined ? { readwise_text: exportText } : {}),
       ...(alias
         ? {
             readwise_id: alias.readwiseId,

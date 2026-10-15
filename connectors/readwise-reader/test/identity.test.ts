@@ -332,24 +332,25 @@ it.each([false, true])(
   },
 );
 
-it.each([
-  "source",
-  "parent",
-  "highlight",
-  "external",
-  "absent",
-  "malformed",
-  "missing-external",
-  "source-deleted",
-  "source-kind",
-  "ambiguous",
-])(
-  "keeps Reader admission blocked when export evidence is %s",
-  async (kind) => {
+it.each(
+  [
+    "source",
+    "parent",
+    "highlight",
+    "external",
+    "absent",
+    "malformed",
+    "missing-external",
+    "source-deleted",
+    "source-kind",
+    "ambiguous",
+  ].flatMap((kind) => [false, true].map((complete) => ({ kind, complete }))),
+)(
+  "keeps Reader admission blocked for $kind; restarted=$complete",
+  async ({ kind, complete }) => {
     const f = fixture();
-    f.saved.set(
-      "identities",
-      cache({
+    f.saved.set("identities", {
+      ...cache({
         "one:reader-highlight:hi": [
           {
             natural: "one:highlight:42",
@@ -359,7 +360,8 @@ it.each([
           },
         ],
       }),
-    );
+      complete,
+    });
     const source = f.sources[0];
     if (source === undefined) throw new Error("missing export fixture");
     source.highlights = [{ id: 42, external_id: "hi", is_deleted: true }];
@@ -386,15 +388,17 @@ it.each([
           text: "Different passage",
         },
       ];
-    const identities = await f.load();
-    await identities.prepare(f.client, 5);
     await expect(
-      identities.resolve({
-        id: "hi",
-        category: "highlight",
-        parent_id: "doc",
-        content: "Reader passage",
-      }),
+      (async () => {
+        const identities = await f.load();
+        await identities.prepare(f.client, 5);
+        return identities.resolve({
+          id: "hi",
+          category: "highlight",
+          parent_id: "doc",
+          content: "Reader passage",
+        });
+      })(),
     ).rejects.toThrow(/identity|unavailable|invalid|ambiguous/);
   },
 );
@@ -494,5 +498,45 @@ it.each(["links", "source_ids"] as const)(
     await expect(
       identities.resolve({ id: "doc", category: "article" }),
     ).rejects.toThrow(/identity conflict/);
+  },
+);
+
+it.each(["source-deleted", "ambiguous"])(
+  "rejects %s passage evidence during a cold identity walk",
+  async (kind) => {
+    const f = fixture();
+    const source = f.sources[0];
+    if (source === undefined) throw new Error("missing export fixture");
+    source.highlights = [
+      { id: 42, external_id: "hi", is_deleted: true, text: "First passage" },
+    ];
+    if (kind === "source-deleted") source.is_deleted = true;
+    else
+      source.highlights.push({
+        id: 42,
+        external_id: "hi",
+        is_deleted: true,
+        text: "Different passage",
+      });
+    const cold = await f.load();
+    await cold.prepare(f.client, 5);
+    await expect(
+      cold.resolve({
+        id: "hi",
+        category: "highlight",
+        parent_id: "doc",
+        content: "Reader passage",
+      }),
+    ).rejects.toThrow(/identity|ambiguous/);
+    const resumed = await f.load();
+    await resumed.prepare(f.client, 5);
+    await expect(
+      resumed.resolve({
+        id: "hi",
+        category: "highlight",
+        parent_id: "doc",
+        content: "Reader passage",
+      }),
+    ).rejects.toThrow(/identity|ambiguous/);
   },
 );

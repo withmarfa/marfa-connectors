@@ -17,6 +17,7 @@ import {
   type ContentJob,
   type Resource,
 } from "./content.js";
+import { parsePage, readerExportPassage, type Source } from "./export.js";
 import { ReadwiseThrottleError, ReadwiseAuthorizationError } from "./http.js";
 import { readerFileType } from "./content-types.js";
 import {
@@ -156,31 +157,16 @@ async function preserve(
       );
     let cursor: string | undefined;
     const seen = new Set<string>();
-    let text: string | undefined;
+    const sources: Source[] = [];
     let complete = false;
     for (let at = 0; at < 50; at++) {
-      const page = await options.exportClient.page({
-        sourceId: job.exportSourceId,
-        ...(cursor !== undefined && { cursor }),
-      });
-      for (const source of page.results) {
-        if (
-          source.user_book_id !== job.exportSourceId ||
-          source.external_id !== row.parent_id
-        )
-          throw new Error("Reader export-text source identity changed");
-        for (const highlight of source.highlights)
-          if (
-            highlight.id === job.exportHighlightId &&
-            highlight.external_id === row.id &&
-            typeof highlight.text === "string" &&
-            !source.is_deleted
-          ) {
-            if (text !== undefined && text !== highlight.text)
-              throw new Error("Reader export-text lookup is ambiguous");
-            text = highlight.text;
-          }
-      }
+      const page = parsePage(
+        await options.exportClient.page({
+          sourceId: job.exportSourceId,
+          ...(cursor !== undefined && { cursor }),
+        }),
+      );
+      sources.push(...page.results);
       if (page.nextPageCursor === null) {
         complete = true;
         break;
@@ -190,10 +176,18 @@ async function preserve(
       seen.add(page.nextPageCursor);
       cursor = page.nextPageCursor;
     }
-    if (!complete || text === undefined)
+    if (!complete)
       throw new Error(
         "Reader export-text lookup did not establish a complete matching passage",
       );
+    const text = readerExportPassage(sources, {
+      sourceId: job.exportSourceId,
+      highlightId: job.exportHighlightId,
+      readerId: row.id,
+      parentId: row.parent_id,
+    });
+    if (text === undefined)
+      throw new Error("Reader export overflow passage remains unavailable");
     enrichment["readwise_text"] = text;
   }
   const mapped = mapper(String(parent.properties["account"]), row, {
