@@ -92,6 +92,184 @@ function client(row: ReaderDocument) {
 }
 
 describe("independent Reader content recovery", () => {
+  it.each([false, true])(
+    "accounts for an empty original without changing prior bytes: prior=%s",
+    async (prior) => {
+      const f = fixture();
+      const job = {
+        id: "one",
+        canonical: f.canonical,
+        type: "readwise.source",
+        revision: "old",
+      };
+      if (prior) {
+        await enqueueContent(f.checkpoint, [job]);
+        await drainContent(f.context, client(document), f.checkpoint, {
+          fetch: () => Promise.resolve(new Response("%PDF-1.7 last good")),
+        });
+      }
+      const original = structuredClone(
+        f.files.get(`${f.canonical}:content:original`),
+      );
+      const originalRow = structuredClone(
+        f.rows.get(`${f.canonical}:content:original`),
+      );
+      const changed = {
+        ...document,
+        updated_at: "2026-01-02T00:00:00Z",
+        html_content: "fresh HTML",
+      };
+      const fetcher = vi.fn<typeof fetch>(() =>
+        Promise.resolve(new Response("")),
+      );
+      await enqueueContent(f.checkpoint, [{ ...job, revision: "new" }]);
+      await drainContent(f.context, client(changed), f.checkpoint, {
+        fetch: fetcher,
+      });
+      expect(contentQueue(f.checkpoint)).toEqual([]);
+      expect(f.files.get(`${f.canonical}:content:original`)).toEqual(original);
+      expect(f.rows.get(`${f.canonical}:content:original`)).toEqual(
+        originalRow,
+      );
+      expect(
+        new TextDecoder().decode(
+          f.files.get(`${f.canonical}:content:html`)?.bytes,
+        ),
+      ).toBe("fresh HTML");
+      expect(
+        f.rows.get(`${f.canonical}:content:manifest`)?.properties[
+          "preservation"
+        ],
+      ).toBe("accounted");
+      const manifest = JSON.parse(
+        new TextDecoder().decode(
+          f.files.get(`${f.canonical}:content:manifest`)?.bytes,
+        ),
+      ) as { resources: { id: string; status: string; reason?: string }[] };
+      expect(
+        manifest.resources.find((resource) => resource.id === "original"),
+      ).toMatchObject({
+        status: "unavailable",
+        reason: "provider-returned-empty-content",
+      });
+      await enqueueContent(f.checkpoint, [{ ...job, revision: "new" }]);
+      await drainContent(
+        f.context,
+        {
+          page: () => Promise.reject(new Error("must not refetch")),
+          document: () => Promise.reject(new Error("must not refetch")),
+        },
+        f.checkpoint,
+        { fetch: fetcher },
+      );
+      expect(contentQueue(f.checkpoint)).toEqual([]);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    "malformed",
+    "truncated",
+    "broken-stream",
+    "network",
+    "503",
+    "404",
+    "401",
+    "206",
+  ])(
+    "keeps %s failures pending and lets healthy jobs finish",
+    async (failure) => {
+      const f = fixture();
+      const job = {
+        id: "one",
+        canonical: f.canonical,
+        type: "readwise.source",
+        revision: "old",
+      };
+      await enqueueContent(f.checkpoint, [job]);
+      await drainContent(f.context, client(document), f.checkpoint, {
+        fetch: () => Promise.resolve(new Response("%PDF-1.7 last good")),
+      });
+      const original = structuredClone(
+        f.files.get(`${f.canonical}:content:original`),
+      );
+      const canonical = "sample:reader-document:two";
+      const parent = f.rows.get(f.canonical);
+      if (!parent) throw new Error("fixture parent is missing");
+      f.rows.set(canonical, {
+        ...parent,
+        id: "two",
+        source_id: canonical,
+      });
+      await enqueueContent(f.checkpoint, [
+        { ...job, revision: "new" },
+        { ...job, id: "two", canonical, revision: "new" },
+      ]);
+      await drainContent(
+        f.context,
+        {
+          page: (query) =>
+            Promise.resolve({
+              count: 1,
+              nextPageCursor: null,
+              results: [
+                {
+                  ...document,
+                  id: query?.id ?? "one",
+                  updated_at: "2026-01-02T00:00:00Z",
+                  raw_source_url: `https://readwise-assets.s3.amazonaws.com/${query?.id ?? "one"}.pdf`,
+                },
+              ],
+            }),
+          document: () => Promise.resolve(document),
+        },
+        f.checkpoint,
+        {
+          fetch: (input) => {
+            if (input instanceof URL && input.pathname === "/two.pdf")
+              return Promise.resolve(new Response("%PDF-1.7 healthy"));
+            if (failure === "network")
+              return Promise.reject(new Error("network failed"));
+            if (failure === "broken-stream")
+              return Promise.resolve(
+                new Response(
+                  new ReadableStream({
+                    start(controller) {
+                      controller.error(new Error("stream failed"));
+                    },
+                  }),
+                ),
+              );
+            if (failure === "malformed")
+              return Promise.resolve(
+                new Response("", { headers: { "content-length": "invalid" } }),
+              );
+            if (failure === "truncated")
+              return Promise.resolve(
+                new Response("", { headers: { "content-length": "20" } }),
+              );
+            return Promise.resolve(
+              new Response("", { status: Number(failure) }),
+            );
+          },
+        },
+      );
+      expect(contentQueue(f.checkpoint).map((pending) => pending.id)).toEqual([
+        "one",
+      ]);
+      expect(f.files.get(`${f.canonical}:content:original`)).toEqual(original);
+      expect(
+        f.rows.get(`${f.canonical}:content:manifest`)?.properties[
+          "preservation"
+        ],
+      ).toBe("pending");
+      expect(
+        new TextDecoder().decode(
+          f.files.get(`${canonical}:content:original`)?.bytes,
+        ),
+      ).toBe("%PDF-1.7 healthy");
+    },
+  );
   it("keeps last good bytes on failure and makes healthy HTML available", async () => {
     const f = fixture();
     const job = {

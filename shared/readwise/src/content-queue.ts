@@ -12,6 +12,7 @@ import {
   digest,
   download,
   saveContentQueue,
+  StorageEmpty,
   StorageUnavailable,
   type ContentJob,
   type Resource,
@@ -293,6 +294,11 @@ async function preserve(
       )
         throw error;
       context.signal.throwIfAborted();
+      if (error instanceof StorageEmpty) {
+        resource.status = "unavailable";
+        resource.reason = "provider-returned-empty-content";
+        continue;
+      }
       resource.status = "pending";
       resource.reason = "download-or-storage-not-acknowledged";
       context.log.condition(

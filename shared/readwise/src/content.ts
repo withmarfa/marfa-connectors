@@ -28,6 +28,11 @@ export class StorageUnavailable extends Error {
     super(`Readwise storage returned HTTP ${String(status)}`);
   }
 }
+export class StorageEmpty extends Error {
+  constructor() {
+    super("Readwise storage returned empty content");
+  }
+}
 function mime(bytes: Uint8Array, declared: string | null): string {
   const start = Buffer.from(bytes).subarray(0, 256);
   if (start.subarray(0, 5).toString() === "%PDF-") return "application/pdf";
@@ -102,7 +107,12 @@ export async function download(
     await response.body?.cancel();
     throw new Error("Readwise content exceeds the byte limit");
   }
-  if (!response.body) throw new Error("Readwise storage returned no content");
+  const emptyIsComplete =
+    response.status === 200 && (length === null || Number(length) === 0);
+  if (!response.body) {
+    if (emptyIsComplete) throw new StorageEmpty();
+    throw new Error("Readwise storage returned no content");
+  }
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   const prefix: Uint8Array[] = [];
   let total = 0;
@@ -127,6 +137,7 @@ export async function download(
   }
   if (total === 0) {
     await reader.cancel();
+    if (emptyIsComplete) throw new StorageEmpty();
     throw new Error("Readwise storage returned empty content");
   }
   const contentType = mime(

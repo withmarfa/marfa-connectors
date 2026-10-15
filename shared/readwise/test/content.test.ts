@@ -5,6 +5,7 @@ import {
   contentPlan,
   digest,
   enqueueContent,
+  StorageEmpty,
 } from "../src/content.js";
 
 const allowed =
@@ -12,6 +13,22 @@ const allowed =
 const signal = new AbortController().signal;
 
 describe("Reader content boundaries", () => {
+  it.each(["body", "no-body", "declared-zero"])(
+    "identifies a completed empty HTTP 200 response: %s",
+    async (kind) => {
+      await expect(
+        download(allowed, signal, {
+          fetch: () =>
+            Promise.resolve(
+              new Response(kind === "no-body" ? null : "", {
+                headers:
+                  kind === "declared-zero" ? { "content-length": "0" } : {},
+              }),
+            ),
+        }),
+      ).rejects.toBeInstanceOf(StorageEmpty);
+    },
+  );
   it("accepts only the verified HTTPS bucket without user info or an unusual port", () => {
     expect(storageUrl(allowed).hostname).toBe(
       "readwise-assets.s3.amazonaws.com",
