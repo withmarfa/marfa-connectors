@@ -961,3 +961,67 @@ it.each([false, true])(
     expect(harness.server.row("one").properties["title"]).toBe("Newer");
   },
 );
+it("allows an already elapsed durable watch retry deadline", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+  let resumed = false;
+  f.send(async (_change, context) => {
+    await context.waitUntil(harness.clock.now().toISOString());
+    resumed = true;
+  });
+  await f.once();
+  expect(resumed).toBe(true);
+});
+it.each([false, true])(
+  "retains an acknowledged watch wait through interruption=%s",
+  async (interrupted) => {
+    const f = fixture();
+    await f.once();
+    harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+    const retryAt = new Date(
+      harness.clock.now().getTime() + 1000,
+    ).toISOString();
+    let calls = 0;
+    let resumed = 0;
+    f.send(async (_change, context) => {
+      calls++;
+      await context.waitUntil(retryAt);
+      resumed++;
+    });
+    const running = f.once();
+    await harness.clock.sleeping(1000);
+    expect(harness.kept()["outboundRetryAt"]).toBe(retryAt);
+    expect(resumed).toBe(0);
+    if (interrupted) {
+      harness.stop();
+      await running;
+      await f.once();
+      expect(calls).toBe(1);
+      expect(resumed).toBe(0);
+      harness.clock.advance(1000);
+      await f.once();
+      expect(calls).toBe(2);
+    } else {
+      await harness.clock.wake(1000);
+      expect(await running).toBe(0);
+    }
+    expect(resumed).toBe(1);
+    expect(harness.kept()["outboundRetryAt"]).toBeUndefined();
+  },
+);
+it("does not resume a vendor wait after its deadline acknowledgement is lost", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+  const retryAt = new Date(harness.clock.now().getTime() + 1000).toISOString();
+  let resumed = false;
+  f.send(async (_change, context) => {
+    harness.server.loseStateAnswer = true;
+    await context.waitUntil(retryAt);
+    resumed = true;
+  });
+  await f.once();
+  expect(resumed).toBe(false);
+  expect(harness.kept()["outboundRetryAt"]).toBe(retryAt);
+});

@@ -406,6 +406,8 @@ export interface WatchContext<E extends EnvDeclaration> {
   readonly signal: AbortSignal;
   readonly state: State;
   readonly outbound: OutboundJournal;
+  /** Acknowledges a vendor retry deadline before waiting; restart honours it. */
+  readonly waitUntil: (retryAt: string) => Promise<void>;
   readonly log: Log;
   readonly secret: Secret;
   /**

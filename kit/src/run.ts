@@ -1081,6 +1081,20 @@ export async function runOnce<E extends EnvDeclaration>(
     env,
     signal: setup.signal,
     state,
+    waitUntil: async (retryAt) => {
+      check();
+      const delay = new Unreachable("vendor rate limit", { retryAt });
+      await keepVendorRetry(delay);
+      while (outboundRetryAt !== undefined) {
+        check();
+        const left = Date.parse(outboundRetryAt) - clock.now().getTime();
+        if (left <= 0) break;
+        await clock.sleep(left, setup.signal);
+      }
+      check();
+      outboundRetryAt = undefined;
+      await saveOutbound();
+    },
     outbound: {
       get: (id) => {
         const record = outbound.get(id);
