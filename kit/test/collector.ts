@@ -88,10 +88,11 @@ interface Body {
 /**
  * A local HTTP server that takes OTLP/HTTP posts as a collector does and
  * keeps each one whole. `hang` holds every post open without an answer, as
- * a collector that has stopped responding does.
+ * a collector that has stopped responding does, and `refuse` answers each
+ * with a 503.
  */
 export async function startCollector(
-  mode: "answer" | "hang" = "answer",
+  mode: "answer" | "hang" | "refuse" = "answer",
 ): Promise<Collector> {
   const posts: Post[] = [];
   const held: ServerResponse[] = [];
@@ -112,7 +113,9 @@ export async function startCollector(
         held.push(response);
         return;
       }
-      response.writeHead(200, { "Content-Type": "application/json" });
+      response.writeHead(mode === "refuse" ? 503 : 200, {
+        "Content-Type": "application/json",
+      });
       response.end("{}");
     })();
   });
