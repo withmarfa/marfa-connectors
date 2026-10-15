@@ -1186,6 +1186,8 @@ it.each(["resume", "checkpoint failure", "cancellation"] as const)(
     }));
     let throttled = false;
     const http = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.setHeader("X-Content-Type-Options", "nosniff");
       const url = new URL(request.url ?? "", "http://example.com");
       paths.push(url.pathname + url.search);
       const id = url.searchParams.get("id");

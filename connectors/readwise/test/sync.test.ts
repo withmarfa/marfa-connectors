@@ -402,6 +402,8 @@ it.each(["refresh", "source", "export"] as const)(
           }
         : forScope(name, options);
     const http = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.setHeader("X-Content-Type-Options", "nosniff");
       const path = request.url ?? "";
       requests.push(path);
       if (mode === "export" || path.includes("/api/v3/")) {
