@@ -12,7 +12,7 @@ import { witnessTypeAnswers } from "./connector.js";
 import { proveAdoption } from "./adoption.js";
 import { proveRetryArchive } from "./retry-archive.js";
 import { proveInboundRetry } from "./inbound-retry.js";
-import { proveWatchCheckpoint } from "./watch-checkpoint.js";
+import { proveWatchCheckpoint, proveOutbound } from "./watch-checkpoint.js";
 import { proveCheckpoint } from "./checkpoint.js";
 import { proveGitHub } from "./github.js";
 import { proveInbound } from "./inbound.js";
@@ -24,7 +24,7 @@ import { proveTracker } from "./tracker.js";
 import { ProofServer, type Booted } from "./server.js";
 
 // Guards against a statement dropped silently; it is not read from the contract.
-const statements = 136;
+const statements = 137;
 
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
@@ -106,6 +106,7 @@ try {
   await proveGitHub(marfa, booted.url, manager, (body) => server.mintKey(body));
   await proveCheckpoint(marfa, booted.url);
   await proveWatchCheckpoint(marfa, booted.url);
+  await proveOutbound(marfa, booted.url);
   await proveInboundRetry(booted.url, marfa);
   await proveRetryArchive(marfa, booted.url);
   if (statementsHeld() !== statements) {

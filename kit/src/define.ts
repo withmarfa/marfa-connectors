@@ -8,6 +8,19 @@ import type { components } from "@withmarfa/client";
 export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 
 export type Item = components["schemas"]["Item"];
+export type Tombstone = components["schemas"]["Tombstone"];
+
+export type FieldPolicy = "mirror" | "sync" | "observe";
+
+export interface RowPolicy {
+  /** False leaves the row and its agreement alone. */
+  readonly owned?: boolean;
+  /** Mirror puts local edits back; sync carries them; observe preserves them
+   * without carrying them or scheduling work for them. */
+  readonly fields?: Readonly<Record<string, FieldPolicy>>;
+  /** Preserve schedules divergent mutable values; hold keeps both initial baselines without inventing an outbound edit. */
+  readonly firstAgreement?: "preserve" | "hold";
+}
 
 /** Nothing cascades, so a trash in Marfa never takes a vendor's row with it. */
 export type ConnectionDefinition = components["schemas"]["EdgeTypeRequest"];
@@ -187,6 +200,10 @@ export interface Log {
 export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
+  /** Acknowledges a vendor retry deadline before waiting; restart honors it. */
+  readonly waitUntil: (retryAt: string) => Promise<void>;
+  /** Detached snapshots of unresolved writes. Definitively rejected requests do not block inbound reconciliation. */
+  readonly pendingOutbound: () => readonly OutboundIntent[];
   readonly env: EnvValues<E>;
   /**
    * Aborts when the process is told to stop or the run's hold can no longer
@@ -258,7 +275,21 @@ export interface RunContext<E extends EnvDeclaration> {
    * holds, so a connector whose vendor's listing leaves out what it no
    * longer holds can ask about each row it left out.
    */
-  readonly held: (type: string) => Promise<Item[]>;
+  /** With state:any, also includes same-source rows without a link, including
+   * archived and trashed identities that predate a type's link field.
+   * includeUnlinked also returns visible rows from other sources without a link
+   * or natural key, for checking explicit local requests before importing. */
+  readonly held: (
+    type: string,
+    options?: { state: "any" | "active"; includeUnlinked?: boolean },
+  ) => Promise<Item[]>;
+  /** Fresh identity evidence, without an agreement requirement. Includes every
+   * item state and purge tombstones. source_ids use the connector's item source.
+   * A failed read throws; it never proves absence. */
+  readonly inspect: (
+    type: string,
+    by: { links: readonly string[] } | { source_ids: readonly string[] },
+  ) => Promise<{ items: Item[]; tombstones: Tombstone[] }>;
   /**
    * The fields of the type the kit writes now: the `fields` the connector declares for it, less any
    * the key may not add to the server's type, which the kit leaves out until
@@ -330,6 +361,39 @@ export interface Change {
   readonly placement?: Readonly<Record<string, readonly Item[]>>;
 }
 
+export interface OutboundIntent {
+  readonly token: string;
+  readonly change: Change;
+  readonly request: JsonValue;
+  readonly baseline: JsonValue;
+  readonly acknowledged: boolean;
+  /** The last rejected request is proven not to have applied; consume before retrying. */
+  readonly requestNotApplied?: true;
+}
+
+export interface OutboundJournal {
+  /** A detached snapshot; changing it cannot change the durable intent. */
+  get(itemId: string): OutboundIntent | undefined;
+  /** Await the durable acknowledgment before sending the exact request. A
+   * pending intent cannot be replaced by a newer edit or request. */
+  save(
+    change: Change,
+    intent: { request: JsonValue; baseline: JsonValue },
+  ): Promise<OutboundIntent>;
+  /** After proving a step complete, durably replace it with the next exact request. The captured change stays fixed. */
+  advance(
+    itemId: string,
+    token: string,
+    intent: { request: JsonValue; baseline: JsonValue },
+  ): Promise<OutboundIntent>;
+  /** Durably consume known-no-apply evidence before retrying the exact request. */
+  prepareRetry(itemId: string, token: string): Promise<void>;
+  /** Keep confirmed success before returning. Recovery settles the captured
+   * change without repeating HTTP; omission of answer uses captured values.
+   * The kit removes the record only after its agreement is acknowledged. */
+  acknowledge(itemId: string, token: string, answer?: Entry): Promise<void>;
+}
+
 export interface WatchContext<E extends EnvDeclaration> {
   readonly env: EnvValues<E>;
   /**
@@ -342,6 +406,9 @@ export interface WatchContext<E extends EnvDeclaration> {
    */
   readonly signal: AbortSignal;
   readonly state: State;
+  readonly outbound: OutboundJournal;
+  /** Acknowledges a vendor retry deadline before waiting; restart honors it. */
+  readonly waitUntil: (retryAt: string) => Promise<void>;
   readonly log: Log;
   readonly secret: Secret;
   /**
@@ -428,6 +495,12 @@ export interface Inbound<E extends EnvDeclaration> {
 }
 
 export interface Kind {
+  /** Synchronous row ownership and field rules, evaluated again on each fresh
+   * concurrency retry. entry is present for inbound writes, including creates;
+   * item is absent for a new row. Unspecified rules keep the type defaults.
+   * The link always remains mirrored. */
+  readonly policy?:
+    ((item: Item | undefined, entry?: Entry) => RowPolicy) | undefined;
   /**
    * Its `link_field`, where it names one, holds the vendor's own id for a
    * row: every row of the type is then the connector's, whoever created it,
@@ -504,6 +577,14 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
     context: SetupContext<E>,
   ) => Promise<Readonly<Record<string, string>>>;
   run(context: RunContext<E>): Promise<void>;
+  /** Runs before any outbound callback, with every pending purge, including
+   * not-due retries and cascade observations. Read the vendor as necessary
+   * and throw to block the complete batch. An incomplete watch never enters
+   * this hook or an outbound callback. This hook must not mutate the vendor. */
+  preflight?(
+    inventory: { readonly purges: readonly Change[] },
+    context: WatchContext<E>,
+  ): Promise<void>;
   /**
    * Carries a change made in Marfa to the vendor, once per row: a `created`
    * change before `run` reads the vendor, the rest after. It may answer the

@@ -172,7 +172,11 @@ export class Watch {
         connected: every,
         cursor,
         resync: true,
-        incomplete,
+        incomplete:
+          incomplete ??
+          (cursor === undefined
+            ? "the watch head was not acknowledged"
+            : undefined),
       };
     }
     // The furthest of the marker's position, the last frame read and
@@ -182,7 +186,11 @@ export class Watch {
       connected,
       cursor: furthest(live, last, this.cursor),
       resync: false,
-      incomplete,
+      incomplete:
+        incomplete ??
+        (live === undefined
+          ? "the watch completion marker was not received"
+          : undefined),
     };
   }
 

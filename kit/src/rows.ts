@@ -10,6 +10,7 @@ import {
   type Agreement,
   type Merged,
 } from "./agreement.js";
+import { retryDeadline } from "./outbound.js";
 import type { UpsertAttempt } from "./inbound-retry.js";
 import type { Entry, Item, Target } from "./define.js";
 import {
@@ -62,10 +63,20 @@ export class LinkTaken extends Error {
 export class Unreachable extends Error {
   override name = "Unreachable";
   readonly scope: string | undefined;
+  /** Pause all vendor callbacks until this durable deadline, including after restart. */
+  readonly retryAt: string | undefined;
+  readonly requestNotApplied: true | undefined;
 
-  constructor(message: string, options?: { scope?: string }) {
+  constructor(
+    message: string,
+    options?: { scope?: string; retryAt?: string; requestNotApplied?: true },
+  ) {
     super(message);
     this.scope = options?.scope;
+    this.retryAt = retryDeadline(options?.retryAt);
+    this.requestNotApplied = options?.requestNotApplied;
+    if (this.requestNotApplied && this.retryAt === undefined)
+      throw new Error("known-no-apply evidence requires a retry deadline");
   }
 }
 
@@ -94,6 +105,10 @@ export class Declined extends Error {
 }
 
 export interface Spec {
+  readonly policy?: import("./define.js").Kind["policy"];
+  readonly owned?: boolean;
+  readonly observed?: ReadonlySet<string>;
+  readonly firstAgreement?: "preserve" | "hold";
   readonly type: string;
   readonly source: string;
   readonly link: string | undefined;
@@ -107,6 +122,44 @@ export interface Spec {
   readonly twoWay: boolean;
   readonly revive: boolean;
   readonly connections: ReadonlySet<string>;
+}
+
+export function forRow(
+  kind: Spec,
+  item: Item | undefined,
+  entry?: Entry,
+): Spec {
+  const policy = kind.policy?.(item, entry);
+  if (policy === undefined) return kind;
+  const readOnly = new Set(kind.readOnly);
+  const observed = new Set<string>();
+  for (const [field, mode] of Object.entries(policy.fields ?? {})) {
+    if (kind.omitted.has(field)) continue;
+    if (!kind.fields.includes(field))
+      throw new Error(`undeclared policy field ${field}`);
+    if (field === kind.link) continue;
+    if (mode === "mirror") readOnly.add(field);
+    else if (mode === "sync") {
+      if (kind.twoWay) readOnly.delete(field);
+    } else {
+      readOnly.delete(field);
+      observed.add(field);
+    }
+  }
+  return {
+    ...kind,
+    readOnly,
+    observed,
+    ...(policy.owned !== undefined && { owned: policy.owned }),
+    ...(policy.firstAgreement !== undefined && {
+      firstAgreement: policy.firstAgreement,
+    }),
+    twoWay: kind.twoWay && policy.owned !== false,
+  };
+}
+
+export function watchedFields(kind: Spec): string[] {
+  return kind.fields.filter((field) => !kind.observed?.has(field));
 }
 
 export function cascaded(item: Item): boolean {
@@ -268,7 +321,7 @@ export class Rows {
   >();
   readonly connecting = new Map<
     string,
-    Readonly<Record<string, readonly Target[]>>
+    Entry & { connections: Readonly<Record<string, readonly Target[]>> }
   >();
   /** On a run for what deliveries named, the keys it may archive: the
    *  rest of the vendor was not read, so its silence says nothing. */
@@ -405,6 +458,11 @@ export class Rows {
         this.held += 1;
         continue;
       }
+      if (forRow(this.kind, row, entry).owned === false) {
+        this.counts.skipped += 1;
+        this.hooks.omitted?.();
+        continue;
+      }
       if (row !== undefined) {
         matched.push([entry, row]);
         continue;
@@ -522,6 +580,10 @@ export class Rows {
   }
 
   private async apply(given: Entry, found: Item): Promise<void> {
+    if (forRow(this.kind, found, given).owned === false) {
+      this.hooks.omitted?.();
+      return;
+    }
     this.reached.add(found.id);
     let agreement = this.store.get(found.id);
     const agreed = this.agreedFile(given, agreement);
@@ -547,7 +609,9 @@ export class Rows {
       this.checkStopped();
       this.batch.tried += 1;
       try {
-        row = await this.marfa.transition(found.id, "active");
+        const revived = await this.transition(found, "active", entry);
+        if (revived === undefined) return;
+        row = revived;
       } catch (error) {
         await this.absorb(error, entry.source_id, false, entry);
         return;
@@ -619,6 +683,10 @@ export class Rows {
       };
     }
     for (let attempt = 0; ; attempt += 1) {
+      if (forRow(this.kind, row, entry).owned === false) {
+        this.hooks.omitted?.();
+        return;
+      }
       const merged = this.merged(entry, row, agreement);
       const rekey =
         this.kind.link === undefined && row.source_id !== entry.source_id
@@ -640,6 +708,7 @@ export class Rows {
           merged.properties,
           merged.occurredAt,
           rekey,
+          this.kind.policy !== undefined,
         );
         this.index(written);
         this.agree(row.id, merged.agreement, entry);
@@ -686,9 +755,13 @@ export class Rows {
     row: Item,
     agreement: Agreement | undefined,
   ): Merged {
+    const kind = forRow(this.kind, row, entry);
     const merged = merge({
-      fields: this.kind.fields,
-      readOnly: (field) => this.kind.readOnly.has(field),
+      fields: kind.fields,
+      readOnly: (field) => kind.readOnly.has(field),
+      observe: (field) => kind.observed?.has(field) === true,
+      preserveFirst: kind.firstAgreement === "preserve",
+      firstHold: kind.firstAgreement === "hold",
       agreement,
       row: {
         properties: row.properties,
@@ -744,7 +817,12 @@ export class Rows {
     });
     if (carriable(agreement.waiting)) this.marked.add(id);
     if (entry.connections !== undefined) {
-      this.connecting.set(id, entry.connections);
+      const { file, ...content } = entry;
+      this.connecting.set(id, {
+        ...structuredClone(content),
+        connections: structuredClone(entry.connections),
+        ...(file !== undefined && { file: { ...file } }),
+      });
     }
   }
 
@@ -842,6 +920,10 @@ export class Rows {
     });
     await this.store.fetch(rows.map((row) => row.id));
     for (const row of rows) {
+      if (forRow(this.kind, row).owned === false) {
+        this.hooks.omitted?.();
+        continue;
+      }
       const changed = fields.filter(
         (field) =>
           mark(held(row.properties, field)) !== mark(held(values, field)),
@@ -858,7 +940,14 @@ export class Rows {
       this.checkStopped();
       try {
         this.index(
-          await this.marfa.update(row.id, row.version, properties, undefined),
+          await this.marfa.update(
+            row.id,
+            row.version,
+            properties,
+            undefined,
+            undefined,
+            this.kind.policy !== undefined,
+          ),
         );
       } catch (error) {
         await this.absorb(error, row.source_id ?? row.id);
@@ -942,6 +1031,10 @@ export class Rows {
         this.hooks.omitted?.();
         continue;
       }
+      if (forRow(this.kind, row).owned === false) {
+        this.hooks.omitted?.();
+        continue;
+      }
       this.reached.add(row.id);
       if (row.state === "trashed") {
         this.counts.skipped += 1;
@@ -966,9 +1059,10 @@ export class Rows {
       this.checkStopped();
       this.batch.tried += 1;
       try {
-        const archived = await this.marfa.transition(row.id, "archived");
+        const archived = await this.transition(row, "archived");
+        if (archived === undefined) continue;
         this.index(archived);
-        const side = sideOf(this.kind.fields, row.properties);
+        const side = sideOf(this.kind.fields, archived.properties);
         this.store.set(row.id, {
           vendor: side,
           marfa: side,
@@ -986,37 +1080,112 @@ export class Rows {
     this.judge();
   }
 
-  async putBack(id: string, fields: readonly string[]): Promise<string[]> {
-    const row = this.byId.get(id);
+  private async transition(
+    given: Item,
+    state: "active" | "archived",
+    entry?: Entry,
+  ): Promise<Item | undefined> {
+    if (this.kind.policy === undefined)
+      return this.marfa.transition(given.id, state);
+    let row = given;
+    for (let attempt = 0; ; attempt += 1) {
+      if (
+        row.type !== this.kind.type ||
+        forRow(this.kind, row, entry).owned === false
+      ) {
+        this.hooks.omitted?.();
+        return undefined;
+      }
+      try {
+        return await this.marfa.transition(row.id, state, row.version);
+      } catch (error) {
+        if (
+          attempt > 0 ||
+          !(error instanceof Refusal) ||
+          error.code !== "version_conflict"
+        )
+          throw error;
+        const found = await this.marfa.lookup(this.kind.type, {
+          ids: [row.id],
+        });
+        const fresh = found.data[0];
+        if (fresh === undefined) {
+          this.hooks.omitted?.();
+          return undefined;
+        }
+        this.index(fresh);
+        row = fresh;
+      }
+    }
+  }
+
+  async putBack(
+    id: string,
+    fields: readonly string[],
+    mirroredOnly = false,
+  ): Promise<string[]> {
     const agreement = this.store.get(id);
-    if (row === undefined || agreement === undefined) return [];
+    if (agreement === undefined) return [];
     const versions = [...(await this.marfa.versions(id))].reverse();
-    const properties: Record<string, unknown> = { ...cleaned(row.properties) };
-    const found: string[] = [];
-    for (const field of fields) {
-      const wanted = agreement.marfa[field] ?? "";
-      const holding = versions.find(
-        (version) => mark(held(version.properties, field)) === wanted,
-      );
-      if (holding === undefined) continue;
-      const value = held(holding.properties, field);
-      if (value === undefined || value === null) {
-        Reflect.deleteProperty(properties, field);
-      } else properties[field] = value;
-      found.push(field);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const row =
+        attempt === 0 && this.kind.policy === undefined
+          ? this.byId.get(id)
+          : await this.marfa.item(id);
+      if (row?.type !== this.kind.type || row.state === "trashed") return [];
+      this.index(row);
+      const kind = forRow(this.kind, row);
+      if (kind.owned === false) return [];
+      const properties: Record<string, unknown> = {
+        ...cleaned(row.properties),
+      };
+      const found: string[] = [];
+      for (const field of fields) {
+        if (
+          kind.observed?.has(field) ||
+          (mirroredOnly && !kind.readOnly.has(field))
+        )
+          continue;
+        const wanted = agreement.marfa[field] ?? "";
+        if (mark(held(row.properties, field)) === wanted) continue;
+        const holding = versions.find(
+          (version) => mark(held(version.properties, field)) === wanted,
+        );
+        if (holding === undefined) continue;
+        const value = held(holding.properties, field);
+        if (value === undefined || value === null)
+          Reflect.deleteProperty(properties, field);
+        else properties[field] = value;
+        found.push(field);
+      }
+      if (found.length === 0) return [];
+      this.checkStopped();
+      try {
+        this.index(
+          await this.marfa.update(
+            row.id,
+            row.version,
+            properties,
+            undefined,
+            undefined,
+            this.kind.policy !== undefined,
+          ),
+        );
+      } catch (error) {
+        if (
+          attempt === 0 &&
+          this.kind.policy !== undefined &&
+          error instanceof Refusal &&
+          error.code === "version_conflict"
+        )
+          continue;
+        await this.absorb(error, row.source_id ?? row.id);
+        return [];
+      }
+      this.counts.updated += 1;
+      return found;
     }
-    if (found.length === 0) return [];
-    this.checkStopped();
-    try {
-      this.index(
-        await this.marfa.update(row.id, row.version, properties, undefined),
-      );
-    } catch (error) {
-      await this.absorb(error, row.source_id ?? row.id);
-      return [];
-    }
-    this.counts.updated += 1;
-    return found;
+    return [];
   }
 
   /** The vendor has been told about a row once the connector agreed on it
@@ -1044,6 +1213,7 @@ export class Rows {
     id: string,
     answered: Entry,
     sent: ReadonlySet<string>,
+    captured?: Item,
   ): Promise<void> {
     const said = cleaned(answered.properties);
     const agreed = this.store.get(id)?.marfa ?? {};
@@ -1056,12 +1226,32 @@ export class Rows {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const row = attempt === 0 ? this.known(id) : await this.marfa.item(id);
       if (row === undefined || row.state === "trashed") return;
-      const differing = fields.filter(
+      const kind = forRow(this.kind, row);
+      if (kind.owned === false) return;
+      const eligible = fields.filter(
+        (field) =>
+          captured === undefined ||
+          mark(held(row.properties, field)) ===
+            mark(held(captured.properties, field)) ||
+          mark(held(row.properties, field)) === mark(held(said, field)),
+      );
+      // Recovery may see an answer already applied before an agreement ACK was lost.
+      if (captured !== undefined) {
+        const agreement = this.store.get(id);
+        if (agreement !== undefined) {
+          const marfa = { ...agreement.marfa };
+          for (const field of eligible)
+            if (mark(held(row.properties, field)) === mark(held(said, field)))
+              marfa[field] = mark(held(said, field));
+          this.store.set(id, { ...agreement, marfa });
+        }
+      }
+      const differing = eligible.filter(
         (field) =>
           mark(held(said, field)) !== mark(held(row.properties, field)) &&
           // A change a person made since is theirs, still to carry, but a
           // read-only field mirrors the vendor whatever a person wrote.
-          (this.kind.readOnly.has(field) ||
+          (kind.readOnly.has(field) ||
             mark(held(row.properties, field)) === (agreed[field] ?? "")),
       );
       if (differing.length === 0) return;
@@ -1078,6 +1268,8 @@ export class Rows {
           row.version,
           properties,
           undefined,
+          undefined,
+          this.kind.policy !== undefined,
         );
         this.index(written);
         this.counts.updated += 1;
@@ -1121,6 +1313,11 @@ export class Rows {
   }
 
   async setLink(item: Item, value: string): Promise<void> {
+    const assertOwned = (row: Item): void => {
+      if (forRow(this.kind, row).owned === false)
+        throw new Error("row ownership changed before linking");
+    };
+    assertOwned(item);
     const link = this.kind.link;
     if (link === undefined) {
       throw new Error("the connector declares no link property to write");
@@ -1137,9 +1334,14 @@ export class Rows {
       );
     };
     try {
-      written = await this.marfa.merge(item.id, item.version, {
-        [link]: value,
-      });
+      written = await this.marfa.merge(
+        item.id,
+        item.version,
+        {
+          [link]: value,
+        },
+        this.kind.policy !== undefined,
+      );
     } catch (error) {
       if (
         !(error instanceof Refusal) ||
@@ -1152,10 +1354,16 @@ export class Rows {
       if (current === undefined) {
         throw new Refusal(404, "item_not_found", `${item.id} is gone`);
       }
+      assertOwned(current);
       try {
-        written = await this.marfa.merge(current.id, current.version, {
-          [link]: value,
-        });
+        written = await this.marfa.merge(
+          current.id,
+          current.version,
+          {
+            [link]: value,
+          },
+          this.kind.policy !== undefined,
+        );
       } catch (again) {
         throw taken(again);
       }

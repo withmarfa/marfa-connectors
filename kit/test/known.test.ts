@@ -120,3 +120,154 @@ it("propagates a refused identity lookup instead of reporting absence", async ()
   });
   expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
 });
+
+it("inspects unagreed identities in every state and tombstones by link and natural key", async () => {
+  let checking = false;
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      if (!checking) {
+        await context.upsert(
+          linkedType.id,
+          ["active", "archived", "trashed", "purged"].map((key) => ({
+            source_id: key,
+            properties: { title: key, vendor_id: `vendor:${key}` },
+          })),
+        );
+        return;
+      }
+      for (const reader of [context, context.forScope("inspect")]) {
+        for (const by of [
+          {
+            source_ids: [
+              "active",
+              "archived",
+              "trashed",
+              "purged",
+              "manual",
+              "missing",
+            ],
+          },
+          {
+            links: [
+              "vendor:active",
+              "vendor:archived",
+              "vendor:trashed",
+              "vendor:purged",
+              "manual",
+              "missing",
+            ],
+          },
+        ]) {
+          const result = await reader.inspect(linkedType.id, by);
+          expect(result.items.map((item) => item.source_id).sort()).toEqual([
+            "active",
+            "archived",
+            "manual",
+            "trashed",
+          ]);
+          expect(result.tombstones).toHaveLength(1);
+          expect(result.tombstones[0]?.key).toBe(
+            "links" in by ? "vendor:purged" : "purged",
+          );
+          const first = result.items[0];
+          if (first === undefined) throw new Error("expected a row");
+          first.properties["title"] = "Detached";
+          const again = await reader.inspect(linkedType.id, by);
+          expect(again.items[0]?.properties["title"]).not.toBe("Detached");
+        }
+      }
+      harness.server.refuseNext("POST /items/lookup", 403, "forbidden");
+      await expect(
+        context.inspect(linkedType.id, { links: ["missing"] }),
+      ).rejects.toThrow();
+    },
+  });
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+  harness.server.transition(harness.server.row("archived").id, "archived");
+  harness.server.trash(harness.server.row("trashed").id);
+  harness.server.purge("purged");
+  harness.server.insert(
+    "manual",
+    { title: "Manual", vendor_id: "manual" },
+    linkedType.id,
+  );
+  checking = true;
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+});
+
+it("enumerates legacy same-source rows in every retained state", async () => {
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      const rows = await context.held(linkedType.id, { state: "any" });
+      expect(rows.map((row) => row.source_id).sort()).toEqual([
+        "active",
+        "archived",
+        "trashed",
+      ]);
+      expect(await context.held(linkedType.id)).toEqual([]);
+    },
+  });
+  for (const key of ["active", "archived", "trashed"])
+    harness.server.insert(key, { title: key }, linkedType.id);
+  harness.server.transition(harness.server.row("archived").id, "archived");
+  harness.server.trash(harness.server.row("trashed").id);
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+});
+
+it("explicitly includes visible unlinked rows from other sources without natural keys", async () => {
+  const inserted = ["active", "archived", "trashed"].map((state) => {
+    const row = harness.server.insert(
+      undefined,
+      { title: state },
+      linkedType.id,
+      "another-app",
+    );
+    if (state === "archived") harness.server.transition(row.id, "archived");
+    if (state === "trashed") harness.server.trash(row.id);
+    return row;
+  });
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      for (const reader of [context, context.forScope("inventory")]) {
+        expect(await reader.held(linkedType.id, { state: "any" })).toEqual([]);
+        const rows = await reader.held(linkedType.id, {
+          state: "any",
+          includeUnlinked: true,
+        });
+        expect(rows.map((row) => row.id).sort()).toEqual(
+          inserted.map((row) => row.id).sort(),
+        );
+        expect(rows.every((row) => row.source_id == null)).toBe(true);
+        const first = rows[0];
+        if (first === undefined) throw new Error("held inventory is empty");
+        first.properties["title"] = "Detached";
+        const active = await reader.held(linkedType.id, {
+          state: "active",
+          includeUnlinked: true,
+        });
+        expect(active).toHaveLength(1);
+        expect(active[0]?.properties["title"]).toBe("active");
+      }
+      harness.server.refuseNext("GET /items", 403, "permission_denied");
+      await expect(
+        context.held(linkedType.id, {
+          state: "any",
+          includeUnlinked: true,
+        }),
+      ).rejects.toThrow();
+    },
+  });
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+});

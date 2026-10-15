@@ -515,6 +515,22 @@ export class Marfa {
     return results;
   }
 
+  async connectExact(item: Item, type: string, target: string): Promise<void> {
+    const { data, error, response } = await this.client.POST("/edges", {
+      body: { source_id: item.id, target_id: target, edge_type: type },
+      querySerializer: () => `source_version=${String(item.version)}`,
+    });
+    if (data === undefined) {
+      const failed = refusal(response, error);
+      if (
+        failed.code === "edge_constraint_violation" &&
+        failed.details["constraint"] === "duplicate"
+      )
+        return;
+      throw failed;
+    }
+  }
+
   /** Makes a webhook endpoint, answering its path in full this once. */
   async createEndpoint(
     id: string,
@@ -559,9 +575,12 @@ export class Marfa {
   }
 
   /** Removes an edge; one already gone is as good. */
-  async disconnect(id: string): Promise<void> {
+  async disconnect(id: string, sourceVersion?: number): Promise<void> {
     const { error, response } = await this.client.DELETE("/edges/{id}", {
       params: { path: { id } },
+      ...(sourceVersion !== undefined && {
+        querySerializer: () => `source_version=${String(sourceVersion)}`,
+      }),
     });
     if (response.ok || response.status === 404) return;
     throw refusal(response, error);
@@ -673,10 +692,20 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
-  async transition(id: string, state: "active" | "archived"): Promise<Item> {
+  async transition(
+    id: string,
+    state: "active" | "archived",
+    version?: number,
+  ): Promise<Item> {
     const { data, error, response } = await this.client.POST(
       "/items/{id}/transition",
-      { params: { path: { id } }, body: { state } },
+      {
+        params: { path: { id } },
+        body: { state },
+        ...(version !== undefined && {
+          querySerializer: () => `version=${String(version)}`,
+        }),
+      },
     );
     if (data === undefined) throw refusal(response, error);
     return data.item;
@@ -706,10 +735,11 @@ export class Marfa {
     id: string,
     version: number,
     properties: Record<string, unknown>,
+    exact = false,
   ): Promise<Item> {
     const { data, error, response } = await this.client.PATCH("/items/{id}", {
       params: { path: { id } },
-      body: { version, properties },
+      body: { version, properties, ...(exact && { version_match: "exact" }) },
     });
     if (data === undefined) throw refusal(response, error);
     return data.item;
@@ -770,6 +800,7 @@ export class Marfa {
     properties: Record<string, unknown>,
     occurredAt: string | undefined,
     sourceId?: string,
+    exact = false,
   ): Promise<Item> {
     const { data, error, response } = await this.client.PATCH("/items/{id}", {
       params: { path: { id } },
@@ -777,6 +808,7 @@ export class Marfa {
         version,
         properties,
         properties_mode: "replace",
+        ...(exact && { version_match: "exact" }),
         ...(occurredAt !== undefined && { occurred_at: occurredAt }),
         ...(sourceId !== undefined && { source_id: sourceId }),
       },

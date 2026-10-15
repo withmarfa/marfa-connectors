@@ -1420,6 +1420,27 @@ export class ScriptedServer {
       send(201, { edge_type: stored });
       return;
     }
+    if (method === "POST" && url.pathname === "/edges") {
+      const source = this.rows.find((row) => row.id === input["source_id"]);
+      if (source === undefined) {
+        refuse(404, "item_not_found");
+        return;
+      }
+      if (
+        url.searchParams.has("source_version") &&
+        Number(url.searchParams.get("source_version")) !== source.version
+      ) {
+        refuse(409, "version_conflict");
+        return;
+      }
+      const result = this.upsertEdge(input as Record<string, string>, 0);
+      if (result.outcome === "errored") {
+        refuse(400, result.error?.code ?? "unknown");
+        return;
+      }
+      send(201, { edge: this.edges.find((edge) => edge.id === result.id) });
+      return;
+    }
     if (method === "POST" && url.pathname === "/edges/bulk") {
       const entries = (input["edges"] ?? []) as Record<string, string>[];
       const results = entries.map((entry, index) =>
@@ -1440,6 +1461,14 @@ export class ScriptedServer {
       const edge = this.edges.find((candidate) => candidate.id === parts[1]);
       if (edge === undefined) {
         refuse(404, "edge_not_found");
+        return;
+      }
+      if (
+        url.searchParams.has("source_version") &&
+        Number(url.searchParams.get("source_version")) !==
+          this.byId(edge.source_id).version
+      ) {
+        refuse(409, "version_conflict");
         return;
       }
       this.removeEdge(edge.id);
@@ -1568,6 +1597,13 @@ export class ScriptedServer {
       if (method === "POST" && parts[2] === "transition") {
         if (row === undefined) {
           refuse(404, "item_not_found");
+          return;
+        }
+        if (
+          url.searchParams.has("version") &&
+          Number(url.searchParams.get("version")) !== row.version
+        ) {
+          refuse(409, "version_conflict");
           return;
         }
         const state = input["state"] as Row["state"];
@@ -2172,6 +2208,10 @@ export class ScriptedServer {
       )
     ) {
       refuse(409, "source_id_conflict");
+      return;
+    }
+    if (input["version_match"] === "exact" && version !== row.version) {
+      refuse(409, "version_conflict");
       return;
     }
     if (version !== row.version) {

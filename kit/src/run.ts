@@ -40,6 +40,8 @@ import {
 } from "./marfa.js";
 import {
   carriable,
+  forRow,
+  watchedFields,
   cascaded,
   connectKey,
   Declined,
@@ -75,6 +77,14 @@ import {
   type UpsertAttempt,
 } from "./inbound-retry.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
+import { checkedJson, intentOf as checkedEntry } from "./inbound-retry.js";
+import {
+  captureChange,
+  restoreChange,
+  publicIntent,
+  outboundToken,
+  type OutboundRecord,
+} from "./outbound.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
   connector: Connector<E>;
@@ -237,6 +247,7 @@ export function specsOf<E extends EnvDeclaration>(
       return [
         kind.type.id,
         {
+          policy: kind.policy,
           type: kind.type.id,
           source: connector.source,
           link,
@@ -272,16 +283,19 @@ export function observe(
   let stateAt = agreement.stateAt;
   let own = 0;
   for (const { item } of seen.frames) {
+    const policy = forRow(kind, item);
+    if (policy.owned === false) continue;
+    const fieldsToWatch = watchedFields(policy);
     if (
       item.state === state &&
-      changedInMarfa(agreement, kind.fields, item.properties).length === 0
+      changedInMarfa(agreement, fieldsToWatch, item.properties).length === 0
     ) {
       own += 1;
     }
     const fields =
       noteWaiting(
         { ...agreement, waiting },
-        kind.fields,
+        fieldsToWatch,
         item.properties,
         item.updated_at,
       ) ?? {};
@@ -306,7 +320,7 @@ export function observe(
       stateBy = undefined;
     }
     stateSince =
-      kind.twoWay && item.state !== state
+      policy.twoWay && item.state !== state
         ? (stateSince ?? item.updated_at)
         : undefined;
   }
@@ -549,6 +563,27 @@ export async function runOnce<E extends EnvDeclaration>(
   const stored = loaded ?? { state: {}, conditions: {} };
   let acknowledged: Kept = structuredClone(stored);
   const draft = structuredClone(stored.state);
+  const outbound = new Map(
+    (stored.outbound ?? []).map((record) => [record.change.item.id, record]),
+  );
+  let activeOutbound:
+    | { change: Change; operation: "change" | "remake"; moved?: Carried }
+    | undefined;
+  let outboundBusy = false;
+  let outboundRetryAt = stored.outboundRetryAt;
+  const checkVendorRetry = (): void => {
+    if (outboundRetryAt === undefined) return;
+    if (Date.parse(outboundRetryAt) > clock.now().getTime())
+      throw new Unreachable(`vendor requests wait until ${outboundRetryAt}`, {
+        retryAt: outboundRetryAt,
+      });
+    outboundRetryAt = undefined;
+  };
+  const recovered = new Set<string>();
+  const refusedOutbound = new Map<
+    string,
+    { change: Change; reason?: string }
+  >();
   let narrowed: Promise<string[]> | undefined;
   const retryOwners = new Map<string, Scope>();
   const retryContext = (scope: Scope): string =>
@@ -804,7 +839,7 @@ export async function runOnce<E extends EnvDeclaration>(
   ): { item: Item; spec: Spec; rows: Rows } | undefined => {
     for (const { spec, rows } of lanes.values()) {
       const item = rows.known(id);
-      if (item !== undefined) return { item, spec, rows };
+      if (item !== undefined) return { item, spec: forRow(spec, item), rows };
     }
     return undefined;
   };
@@ -824,7 +859,14 @@ export async function runOnce<E extends EnvDeclaration>(
     id: string,
   ): Promise<{ item: Item; spec: Spec; rows: Rows } | undefined> => {
     await fetchRows([id]);
-    return inLane(id);
+    const found = inLane(id);
+    if (found?.spec.policy !== undefined) {
+      const fresh = await setup.marfa.item(id);
+      if (fresh?.type !== found.spec.type) return undefined;
+      found.rows.adopt(fresh);
+      return inLane(id);
+    }
+    return found;
   };
   const settlePurge = async (
     kind: Spec,
@@ -874,7 +916,50 @@ export async function runOnce<E extends EnvDeclaration>(
   const written: RunContext<E>["written"] = (type) => [
     ...lane(type).spec.fields,
   ];
+  const pendingOutbound: RunContext<E>["pendingOutbound"] = () =>
+    [...outbound.values()]
+      .filter((record) => record.rejected === undefined)
+      .map(publicIntent);
+  const waitUntil: RunContext<E>["waitUntil"] = async (retryAt) => {
+    check();
+    const delay = new Unreachable("vendor rate limit", { retryAt });
+    rememberVendorRetry(delay);
+    phase.rootInFlight += 1;
+    try {
+      await unscoped(saveOutbound);
+      for (;;) {
+        check();
+        if (acknowledged.outboundRetryAt !== outboundRetryAt) {
+          await unscoped(saveOutbound);
+          continue;
+        }
+        const left =
+          outboundRetryAt === undefined
+            ? 0
+            : Date.parse(outboundRetryAt) - clock.now().getTime();
+        if (left > 0) {
+          await clock.sleep(left, setup.signal);
+          continue;
+        }
+        const cleared = await unscoped(async () => {
+          if (
+            outboundRetryAt !== undefined &&
+            Date.parse(outboundRetryAt) > clock.now().getTime()
+          )
+            return false;
+          outboundRetryAt = undefined;
+          await saveOutbound();
+          return true;
+        });
+        if (cleared && outboundRetryAt === undefined) return;
+      }
+    } finally {
+      phase.rootInFlight -= 1;
+    }
+  };
   const context: RunContext<E> = {
+    waitUntil,
+    pendingOutbound,
     env,
     signal: setup.signal,
     state,
@@ -909,6 +994,8 @@ export async function runOnce<E extends EnvDeclaration>(
       };
       scopes.set(name, scope);
       const scoped: ScopedRunContext<E> = {
+        waitUntil,
+        pendingOutbound,
         refusals: {
           pending: () =>
             (acknowledged.inbound ?? [])
@@ -941,7 +1028,8 @@ export async function runOnce<E extends EnvDeclaration>(
           serial(scope, () => lane(type).rows.derive(keys, values)),
         linked: (...args) => serial(scope, () => linked(...args)),
         known: (type, keys) => serial(scope, () => known(type, keys)),
-        held: (type) => serial(scope, () => heldRows(type)),
+        held: (type, options) => serial(scope, () => heldRows(type, options)),
+        inspect: (type, by) => serial(scope, () => inspect(type, by)),
         written,
       };
       return scoped;
@@ -952,8 +1040,17 @@ export async function runOnce<E extends EnvDeclaration>(
       unscoped(() => lane(type).rows.derive(keys, values)),
     linked: (...args) => unscoped(() => linked(...args)),
     known: (type, keys) => unscoped(() => known(type, keys)),
-    held: (type) => unscoped(() => heldRows(type)),
+    held: (type, options) => unscoped(() => heldRows(type, options)),
+    inspect: (type, by) => unscoped(() => inspect(type, by)),
     written,
+  };
+  const inspect: RunContext<E>["inspect"] = async (type, by) => {
+    const { spec } = lane(type);
+    const found = await setup.marfa.lookup(
+      type,
+      "links" in by ? by : { source: spec.source, source_ids: by.source_ids },
+    );
+    return structuredClone({ items: found.data, tombstones: found.tombstones });
   };
   const known: RunContext<E>["known"] = async (type, keys) => {
     const { rows } = lane(type);
@@ -978,7 +1075,7 @@ export async function runOnce<E extends EnvDeclaration>(
       .filter((row) => {
         if (!told.has(row.id)) return false;
         const named =
-          rows.connecting.get(row.id)?.[connection] ??
+          rows.connecting.get(row.id)?.connections[connection] ??
           answeredConnections.get(row.id)?.[connection];
         return (
           named === undefined ||
@@ -990,27 +1087,172 @@ export async function runOnce<E extends EnvDeclaration>(
         return structuredClone(row);
       });
   };
-  const heldRows: RunContext<E>["held"] = async (type) => {
+  const heldRows: RunContext<E>["held"] = async (type, options) => {
     const { rows, spec } = lane(type);
-    const found = await setup.marfa.ownRows(type, "active");
+    const state = options?.state ?? "active";
+    const found = await setup.marfa.ownRows(type, state);
     return found
       .filter(
         (row) =>
           row.type === type &&
-          row.state === "active" &&
-          (spec.link === undefined
-            ? row.source === spec.source
-            : rows.linkOf(row.properties) !== undefined),
+          (state === "any" || row.state === "active") &&
+          (options?.includeUnlinked === true ||
+            (spec.link === undefined ||
+            (state === "any" && row.source === spec.source)
+              ? row.source === spec.source
+              : rows.linkOf(row.properties) !== undefined)),
       )
       .map((row) => {
         rows.adopt(row);
         return structuredClone(row);
       });
   };
+  const callChange = (change: Change) => {
+    if (connector.onChange === undefined)
+      throw new Error("no outbound handler");
+    return connector.onChange(change, watchContext);
+  };
+  const callRemake = (change: Change) => {
+    if (connector.remake === undefined) throw new Error("no remake handler");
+    return connector.remake(change, watchContext);
+  };
   const watchContext: WatchContext<E> = {
     env,
     signal: setup.signal,
     state,
+    waitUntil,
+    outbound: {
+      get: (id) => {
+        const record = outbound.get(id);
+        return record === undefined ? undefined : publicIntent(record);
+      },
+      save: async (change, intent) => {
+        check();
+        if (
+          activeOutbound === undefined ||
+          digest(captureChange(change)) !==
+            digest(captureChange(activeOutbound.change))
+        )
+          throw new Error("outbound intent must capture the active change");
+        if (outboundBusy)
+          throw new Error("outbound journal operations must be awaited");
+        const agreement = store.get(change.item.id);
+        const content = checkedJson({
+          change: captureChange(activeOutbound.change),
+          request: intent.request,
+          baseline: intent.baseline,
+          operation: activeOutbound.operation,
+          ...(agreement !== undefined && { agreement }),
+          ...(activeOutbound.moved !== undefined && {
+            moved: activeOutbound.moved,
+          }),
+        }) as Omit<
+          OutboundRecord,
+          | "token"
+          | "acknowledged"
+          | "answer"
+          | "confirmationAgreement"
+          | "rejected"
+        >;
+        const token = outboundToken(content);
+        const held = outbound.get(change.item.id);
+        if (held !== undefined) {
+          if (held.token !== token)
+            throw new Error("a pending outbound intent cannot be replaced");
+          return publicIntent(held);
+        }
+        const record: OutboundRecord = {
+          ...content,
+          token,
+          acknowledged: false,
+        };
+        outbound.set(change.item.id, record);
+        await saveOutbound();
+        return publicIntent(record);
+      },
+      advance: async (id, token, intent) => {
+        check();
+        const held = outbound.get(id);
+        if (
+          activeOutbound?.change.item.id !== id ||
+          outboundBusy ||
+          held?.token !== token ||
+          held.acknowledged
+        )
+          throw new Error("advance requires the active unacknowledged intent");
+        const content = checkedJson({
+          change: held.change,
+          operation: held.operation,
+          ...(held.agreement !== undefined && { agreement: held.agreement }),
+          ...(held.moved !== undefined && { moved: held.moved }),
+          request: intent.request,
+          baseline: intent.baseline,
+        }) as Omit<
+          OutboundRecord,
+          | "token"
+          | "acknowledged"
+          | "answer"
+          | "confirmationAgreement"
+          | "rejected"
+          | "requestNotApplied"
+        >;
+        const record: OutboundRecord = {
+          ...content,
+          token: outboundToken(content),
+          acknowledged: false,
+        };
+        outbound.set(id, record);
+        await saveOutbound();
+        return publicIntent(record);
+      },
+      prepareRetry: async (id, token) => {
+        check();
+        const held = outbound.get(id);
+        if (
+          activeOutbound?.change.item.id !== id ||
+          outboundBusy ||
+          held?.token !== token ||
+          held.acknowledged ||
+          held.requestNotApplied !== true
+        )
+          throw new Error(
+            "retry requires the active intent and known-no-apply evidence",
+          );
+        const next = { ...held };
+        Reflect.deleteProperty(next, "requestNotApplied");
+        outbound.set(id, next);
+        await saveOutbound();
+      },
+      acknowledge: async (id, token, answer) => {
+        check();
+        if (activeOutbound?.change.item.id !== id || outboundBusy)
+          throw new Error(
+            "outbound acknowledgment must belong to the active change and be awaited",
+          );
+        const held = outbound.get(id);
+        if (held?.token !== token)
+          throw new Error("outbound intent token does not match");
+        const entry =
+          answer === undefined
+            ? undefined
+            : checkedEntry(held.change.item.type, answer).entry;
+        if (held.acknowledged) {
+          if (digest(held.answer ?? null) !== digest(entry ?? null))
+            throw new Error("outbound acknowledgment cannot be replaced");
+          return;
+        }
+        const confirmationAgreement = store.get(id);
+        outbound.set(id, {
+          ...held,
+          acknowledged: true,
+          ...(entry !== undefined && { answer: entry }),
+          ...(confirmationAgreement !== undefined && {
+            confirmationAgreement: structuredClone(confirmationAgreement),
+          }),
+        });
+        await saveOutbound();
+      },
+    },
     log,
     secret,
     setLink: (item, value) => lane(item.type).rows.setLink(item, value),
@@ -1047,6 +1289,7 @@ export async function runOnce<E extends EnvDeclaration>(
   // gives them up, once the run has asked the vendor for every one; a save
   // before that keeps the same list and leaves them to be carried.
   const keepPurges = (final = false): Purge[] => {
+    if (connector.preflight !== undefined) return [...purged.values()];
     const ranked = [...purged.values()].sort(
       (a, b) => refusals(a) - refusals(b),
     );
@@ -1077,6 +1320,8 @@ export async function runOnce<E extends EnvDeclaration>(
     vendorState: Record<string, unknown>,
     inbound = acknowledged.inbound ?? [],
   ): Kept => ({
+    ...(outboundRetryAt !== undefined && { outboundRetryAt }),
+    ...(outbound.size > 0 && { outbound: [...outbound.values()] }),
     ...(purged.size > 0 && { purges: keepPurges() }),
     ...(inbound.length > 0 && { inbound }),
     state: vendorState,
@@ -1107,6 +1352,114 @@ export async function runOnce<E extends EnvDeclaration>(
       },
     }),
   });
+  const saveOutbound = async (): Promise<void> => {
+    check();
+    if (outboundBusy)
+      throw new Error("outbound journal operations must be awaited");
+    outboundBusy = true;
+    try {
+      const snapshot = envelope(acknowledged.state);
+      await store.save(snapshot);
+      check();
+      acknowledged = structuredClone(snapshot);
+    } catch (error) {
+      phase.uncertainState = true;
+      throw error;
+    } finally {
+      outboundBusy = false;
+    }
+  };
+  const rememberVendorRetry = (error: Unreachable, itemId?: string): void => {
+    if (error.retryAt === undefined) return;
+    if (
+      outboundRetryAt === undefined ||
+      Date.parse(error.retryAt) > Date.parse(outboundRetryAt)
+    )
+      outboundRetryAt = error.retryAt;
+    if (error.requestNotApplied === true && itemId !== undefined) {
+      const held = outbound.get(itemId);
+      if (held !== undefined && !held.acknowledged)
+        outbound.set(itemId, { ...held, requestNotApplied: true });
+    }
+  };
+  const keepVendorRetry = async (
+    error: unknown,
+    itemId?: string,
+  ): Promise<void> => {
+    if (!(error instanceof Unreachable) || error.retryAt === undefined) return;
+    rememberVendorRetry(error, itemId);
+    await saveOutbound();
+  };
+  const invoke = async <T>(
+    change: Change,
+    operation: "change" | "remake",
+    callback: () => Promise<T>,
+    moved?: Carried,
+  ): Promise<T> => {
+    check();
+    checkVendorRetry();
+    activeOutbound = {
+      change: structuredClone(change),
+      operation,
+      ...(moved !== undefined && { moved }),
+    };
+    try {
+      const result = await callback();
+      checkDurability();
+      if (outboundBusy || phase.rootInFlight > 0) {
+        phase.unfinishedOperations = true;
+        throw new Error("outbound journal operations were not awaited");
+      }
+      const pending = outbound.get(change.item.id);
+      if (pending !== undefined && !pending.acknowledged)
+        throw new Error("outbound success requires a durable acknowledgment");
+      return result;
+    } catch (error) {
+      if (error instanceof Refused && change.kind !== "purged") {
+        const held = outbound.get(change.item.id);
+        if (held !== undefined && !held.acknowledged) {
+          outbound.set(change.item.id, {
+            ...held,
+            rejected: capBytes(logger.redact(error.message), reasonBytes),
+          });
+          await saveOutbound();
+        }
+      }
+      await keepVendorRetry(error, change.item.id);
+      throw error;
+    } finally {
+      activeOutbound = undefined;
+    }
+  };
+  const finishOutbound = async (id: string): Promise<void> => {
+    if (!outbound.has(id)) return;
+    check();
+    try {
+      await store.flush([id], check);
+    } catch (error) {
+      phase.failedPrerequisite = true;
+      throw error;
+    }
+    outbound.delete(id);
+    await saveOutbound();
+  };
+  const releaseRefused = async (change: Change): Promise<boolean> => {
+    const held = refusedOutbound.get(change.item.id);
+    if (held === undefined) return true;
+    const refused = held.change;
+    const changed = new Set([...refused.changed, ...change.changed]);
+    const current = { ...change, kind: refused.kind, changed };
+    Reflect.deleteProperty(current, "was");
+    if (refused.was !== undefined) Object.assign(current, { was: refused.was });
+    // A confirmed create may now be an update; its link alone is no new edit.
+    if (sending(current) === sending({ ...refused, changed })) {
+      refusedOf(change.item.id, refused.kind, held.reason);
+      return false;
+    }
+    await finishOutbound(change.item.id);
+    refusedOutbound.delete(change.item.id);
+    return true;
+  };
   const overlaps = (scope: Scope): boolean =>
     [...scope.ids].some((id) => {
       const ownership = owners.get(id);
@@ -1156,19 +1509,21 @@ export async function runOnce<E extends EnvDeclaration>(
     if (overlaps(scope)) return { committed: false, reason: "scope-overlap" };
     check();
     const named = new Map<string, Record<string, readonly Target[]>>();
+    const incoming = new Map<string, Entry>();
     const captured: {
       rows: Rows;
       id: string;
-      said: Record<string, readonly Target[]>;
+      entry: Entry;
     }[] = [];
     for (const { rows } of lanes.values()) {
-      for (const [id, said] of rows.connecting) {
+      for (const [id, entry] of rows.connecting) {
         if (!scope.ids.has(id)) continue;
-        named.set(id, said);
-        captured.push({ rows, id, said });
+        named.set(id, entry.connections);
+        incoming.set(id, entry);
+        captured.push({ rows, id, entry });
       }
     }
-    await connections.connect(named, []);
+    await connections.connect(named, [], incoming);
     const connectionRefusal = blocked(scope);
     if (connectionRefusal !== undefined) return connectionRefusal;
     if (overlaps(scope)) return { committed: false, reason: "scope-overlap" };
@@ -1180,8 +1535,8 @@ export async function runOnce<E extends EnvDeclaration>(
         return { committed: false, reason: error.reason };
       throw error;
     }
-    for (const { rows, id, said } of captured) {
-      if (rows.connecting.get(id) === said) rows.connecting.delete(id);
+    for (const { rows, id, entry } of captured) {
+      if (rows.connecting.get(id) === entry) rows.connecting.delete(id);
     }
     check();
     if (!fitsState()) return { committed: false, reason: "state-oversized" };
@@ -1296,6 +1651,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (
       agreement?.waiting === undefined ||
       found === undefined ||
+      found.spec.owned === false ||
       found.item.state === "trashed"
     ) {
       return;
@@ -1331,7 +1687,7 @@ export async function runOnce<E extends EnvDeclaration>(
       ),
       current.properties,
     );
-    const back = stale.length === 0 ? [] : await rows.putBack(id, stale);
+    const back = stale.length === 0 ? [] : await rows.putBack(id, stale, true);
     if (back.length > 0) {
       raised.set(
         `put-back:${id}`,
@@ -1452,8 +1808,17 @@ export async function runOnce<E extends EnvDeclaration>(
     item: Item,
     agreement: Agreement,
   ): Promise<"unplaced" | undefined> => {
+    if (recovered.has(item.id)) return;
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
-    const { spec: kind, rows } = lane(item.type);
+    const { spec, rows } = lane(item.type);
+    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
+      const fresh = await setup.marfa.item(item.id);
+      if (fresh?.type !== item.type) return;
+      rows.adopt(fresh);
+      item = fresh;
+    }
+    const kind = forRow(spec, item);
+    if (kind.owned === false) return;
     if (connector.onChange === undefined || !kind.twoWay) return;
     keepAgreedLink(kind, item, agreement);
     // What changed before another row's trash took it waits for its restore.
@@ -1468,7 +1833,9 @@ export async function runOnce<E extends EnvDeclaration>(
       });
       return;
     }
-    const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
+    const carriable = watchedFields(kind).filter(
+      (field) => !kind.readOnly.has(field),
+    );
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
@@ -1517,6 +1884,14 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     const connected = Object.keys(moved?.connections ?? {}).length > 0;
     if (changeKind === "updated" && changed.length === 0 && !connected) {
+      if (
+        !(await releaseRefused({
+          kind: changeKind,
+          item: current,
+          changed: new Set(),
+        }))
+      )
+        return;
       const binned =
         current.state === "trashed" &&
         connections
@@ -1572,6 +1947,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (unagreed !== undefined) Object.assign(change, { unagreed });
     const placement = await connections.placementOf(current, kind, agreement);
     if (placement !== undefined) Object.assign(change, { placement });
+    if (!(await releaseRefused(change))) return;
     if (refusedBefore(current.id, agreement, change)) return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
@@ -1585,7 +1961,12 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     let answered: Entry | undefined;
     try {
-      answered = await connector.onChange(change, watchContext);
+      answered = await invoke(
+        change,
+        "change",
+        () => callChange(change),
+        moved,
+      );
     } catch (error) {
       if (error instanceof Declined) {
         await decline(kind, current, changed, error);
@@ -1601,11 +1982,17 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       throw error;
     }
+    const intent = outbound.get(current.id);
+    if (intent !== undefined) {
+      await completeIntent(intent);
+      return;
+    }
     settle(kind, current, changeKind, changed, answered, moved);
     // A carried field keeps its value over the answer's.
     if (answered !== undefined && current.state !== "trashed") {
       await rows.adoptAnswer(current.id, answered, new Set(changed));
     }
+    await finishOutbound(current.id);
   };
   const settledConnections = (
     agreement: Agreement,
@@ -1638,6 +2025,7 @@ export async function runOnce<E extends EnvDeclaration>(
     changed: readonly string[],
     answered: Entry | undefined,
     moved: Carried | undefined,
+    capturedBase?: Agreement,
   ): void => {
     pushed += 1;
     if (answered?.connections !== undefined && item.state !== "trashed") {
@@ -1650,7 +2038,7 @@ export async function runOnce<E extends EnvDeclaration>(
         ),
       );
     }
-    const base = store.get(item.id);
+    const base = capturedBase ?? store.get(item.id);
     // A vendor makes a row live; a state beside the create is carried next.
     const later = changeKind === "created" && item.state !== "active";
     const next = carried({
@@ -1706,8 +2094,78 @@ export async function runOnce<E extends EnvDeclaration>(
     );
   };
 
+  const completeIntent = async (record: OutboundRecord): Promise<void> => {
+    const change = restoreChange(record.change);
+    const id = change.item.id;
+    const { spec, rows } = lane(change.item.type);
+    const kind = forRow(spec, change.item);
+    if (change.kind === "purged") {
+      await settlePurge(kind, change.item, record.answer);
+      purged.delete(id);
+      pushed += 1;
+    } else {
+      let live = await setup.marfa.item(id);
+      if (live !== undefined) {
+        rows.adopt(live);
+        // The create's link is confirmed separately from the captured values.
+        const linked =
+          record.confirmationAgreement?.link ?? store.get(id)?.link;
+        const base: Agreement = {
+          vendor: {},
+          marfa: {},
+          state: "active",
+          ...record.agreement,
+          ...(linked !== undefined && { link: linked }),
+        };
+        if (kind.link !== undefined && linked !== undefined) {
+          base.vendor = { ...base.vendor, [kind.link]: mark(linked) };
+          base.marfa = { ...base.marfa, [kind.link]: mark(linked) };
+        }
+        settle(
+          kind,
+          change.item,
+          change.kind,
+          record.operation === "remake"
+            ? watchedFields(kind)
+            : [...change.changed],
+          record.answer,
+          record.moved,
+          base,
+        );
+        if (record.answer !== undefined && live.state !== "trashed") {
+          await rows.adoptAnswer(
+            id,
+            record.answer,
+            record.operation === "remake"
+              ? new Set(watchedFields(kind))
+              : change.changed,
+            change.item,
+          );
+          live = rows.known(id) ?? live;
+        }
+        const agreed = store.get(id);
+        if (agreed === undefined)
+          throw new Error("outbound settlement has no agreement");
+        const waiting =
+          noteWaiting(
+            agreed,
+            watchedFields(kind),
+            live.properties,
+            live.updated_at,
+          ) ?? {};
+        if (live.state !== agreed.state) waiting[stateKey] = live.updated_at;
+        store.set(id, {
+          ...agreed,
+          ...(Object.keys(waiting).length > 0 && { waiting }),
+        });
+      }
+    }
+    await finishOutbound(id);
+  };
+
   try {
     if (loaded === undefined) throw failure;
+    checkVendorRetry();
     const inbound = connector.inbound;
     if (inbound !== undefined) {
       collected = await bookkeeping(
@@ -1795,6 +2253,16 @@ export async function runOnce<E extends EnvDeclaration>(
     if (read.incomplete !== undefined) {
       logger.warn(`${read.incomplete}; the rest of the log is read next run`);
     }
+    if (
+      twoWay &&
+      (read.incomplete !== undefined ||
+        (connector.preflight !== undefined &&
+          read.resync &&
+          stored.cursor !== undefined))
+    )
+      throw new Error(
+        "outbound mutations are blocked because the complete watch inventory is unavailable",
+      );
     if (read.resync && read.incomplete === undefined) {
       // Every row of the connector's types is in hand: one not among them
       // was purged unseen, and each still relinked is found again below.
@@ -1807,7 +2275,16 @@ export async function runOnce<E extends EnvDeclaration>(
       ...read.rows.keys(),
       ...read.connected.keys(),
       ...waitingIds,
+      ...outbound.keys(),
     ]);
+    for (const record of outbound.values()) {
+      const change = restoreChange(record.change);
+      if (record.rejected !== undefined)
+        refusedOutbound.set(change.item.id, {
+          change,
+          reason: record.rejected,
+        });
+    }
     await fetchRows([
       ...read.connected.keys(),
       ...[...read.rows].filter(([, seen]) => !seen.purged).map(([id]) => id),
@@ -1817,7 +2294,9 @@ export async function runOnce<E extends EnvDeclaration>(
     for (const [id, seen] of read.rows) {
       const last = seen.frames.at(-1)?.item;
       if (last === undefined) continue;
-      const { spec: kind, rows } = lane(last.type);
+      const { spec, rows } = lane(last.type);
+      const kind = forRow(spec, last);
+      if (kind.owned === false) continue;
       const agreement = store.get(id);
       if (seen.purged) {
         // The instance drops a purged row's agreement and keeps its
@@ -1840,7 +2319,12 @@ export async function runOnce<E extends EnvDeclaration>(
           } else {
             const refused = purged.get(id)?.refused;
             purged.set(id, {
-              ...purgeOf(last, kind.link, link),
+              ...purgeOf(
+                last,
+                kind.link,
+                link,
+                kind.policy !== undefined || connector.preflight !== undefined,
+              ),
               ...(refused !== undefined && { refused }),
             });
           }
@@ -1870,7 +2354,7 @@ export async function runOnce<E extends EnvDeclaration>(
       if (kind.twoWay && rows.linkOf(last.properties) !== agreement.link) {
         keepAgreedLink(kind, last, agreement);
       }
-      const observed = observe(kind, seen, agreement);
+      const observed = observe(spec, seen, agreement);
       own += observed.own;
       const next = observed.next;
       // A remake's first try holds only while its restore does.
@@ -1894,6 +2378,11 @@ export async function runOnce<E extends EnvDeclaration>(
       const found = edges.get(id);
       if (
         found !== undefined &&
+        forRow(lane(found.item.type).spec, found.item).owned === false
+      )
+        continue;
+      if (
+        found !== undefined &&
         !(await connections.differ(found.item, agreement, found.edges))
       ) {
         continue;
@@ -1913,12 +2402,119 @@ export async function runOnce<E extends EnvDeclaration>(
     if (unagreed > 0) {
       raised.set(
         "unagreed",
-        `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} the log named ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor yet, so nothing is carried for ${unagreed === 1 ? "it" : "them"} until the vendor next sends ${unagreed === 1 ? "it" : "them"}, whose values ${unagreed === 1 ? "it takes" : "they take"} where they differ`,
+        `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} the log named ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor yet, so nothing is carried for ${unagreed === 1 ? "it" : "them"} until the vendor next sends ${unagreed === 1 ? "it" : "them"}`,
       );
     }
     // Everything the log named is noted; the cursor passes it once the final
     // flush keeps that on the instance.
+    if (connector.preflight !== undefined) {
+      const inventory = new Map<string, Change>();
+      for (const purge of purged.values()) {
+        const item = { ...purge };
+        Reflect.deleteProperty(item, "refused");
+        inventory.set(item.id, { kind: "purged", item, changed: new Set() });
+      }
+      for (const seen of read.rows.values()) {
+        const item = seen.frames.at(-1)?.item;
+        if (seen.purged && item !== undefined)
+          inventory.set(item.id, { kind: "purged", item, changed: new Set() });
+      }
+      for (const pending of outbound.values())
+        if (pending.change.kind === "purged")
+          inventory.set(pending.change.item.id, restoreChange(pending.change));
+      check();
+      try {
+        await connector.preflight(
+          { purges: structuredClone([...inventory.values()]) },
+          watchContext,
+        );
+      } catch (error) {
+        await keepVendorRetry(error);
+        throw error;
+      }
+      check();
+      await saveOutbound();
+    }
     recorded = true;
+    for (const record of [...outbound.values()]) {
+      const change = restoreChange(record.change);
+      const id = change.item.id;
+      recovered.add(id);
+      const declared = specs.get(change.item.type);
+      if (declared === undefined || connector.onChange === undefined)
+        throw new Error("a pending outbound intent has no declared handler");
+      if (refusedOutbound.has(id)) {
+        const live = await setup.marfa.item(id);
+        if (live?.type === change.item.type) {
+          lane(live.type).rows.adopt(live);
+          recovered.delete(id);
+          order.add(id);
+        }
+        continue;
+      }
+      const refusal = purged.get(id)?.refused;
+      if (
+        !record.acknowledged &&
+        change.kind === "purged" &&
+        refusal !== undefined &&
+        ((refusal.count ?? 0) >= purgeRefusalLimit ||
+          clock.now().getTime() - Date.parse(refusal.at) < purgeAgainMs)
+      ) {
+        purgeRefusedOf(id, refusal.reason);
+        continue;
+      }
+      const kind = forRow(declared, change.item);
+      if (!kind.twoWay || kind.owned === false)
+        throw new Error(
+          "a pending outbound intent no longer has write authority",
+        );
+      try {
+        if (!record.acknowledged) {
+          const live = await setup.marfa.item(id);
+          if (live !== undefined && forRow(declared, live).owned === false)
+            throw new Error("a pending outbound intent no longer owns its row");
+          if (record.operation === "remake") {
+            if (connector.remake === undefined)
+              throw new Error("a pending remake has no handler");
+            await invoke(change, "remake", () => callRemake(change));
+          } else {
+            await invoke(
+              change,
+              "change",
+              () => callChange(change),
+              record.moved,
+            );
+          }
+        }
+      } catch (error) {
+        check();
+        if (error instanceof Unreachable) {
+          unreached(id, error);
+          continue;
+        }
+        if (error instanceof Refused && change.kind !== "purged")
+          refuse(id, change, error);
+        if (error instanceof Refused && change.kind === "purged") {
+          purged.set(id, {
+            ...change.item,
+            refused: {
+              at: clock.now().toISOString(),
+              reason: capBytes(logger.redact(error.message), reasonBytes),
+              count: (refusal?.count ?? 0) + 1,
+            },
+          });
+        }
+        if (error instanceof Refused || error instanceof Declined) {
+          raised.set(`outbound-pending:${id}`, error.message);
+          continue;
+        }
+        throw error;
+      }
+      const confirmed = outbound.get(id);
+      if (confirmed === undefined)
+        throw new Error("pending outbound intent disappeared");
+      await completeIntent(confirmed);
+    }
     for (const id of order) await putBack(id);
     if (hints !== undefined) hints = await withWaiting(hints, order);
 
@@ -1928,13 +2524,17 @@ export async function runOnce<E extends EnvDeclaration>(
       // the vendor is read, so failing before it links makes no twin.
       const unplaced: string[] = [];
       for (const id of order) {
+        if (recovered.has(id)) continue;
         const agreement = store.get(id);
         const found = await find(id);
         if (agreement === undefined || found === undefined) continue;
         const { spec: kind } = found;
         if (!kind.twoWay) continue;
         const item = byAgreedLink(kind, found.item, agreement);
-        if (agreement.waiting?.[createKey] !== undefined) {
+        if (
+          agreement.waiting?.[createKey] !== undefined &&
+          (!refusedOutbound.has(id) || agreement.link === undefined)
+        ) {
           if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
           done.add(id);
           continue;
@@ -1984,7 +2584,9 @@ export async function runOnce<E extends EnvDeclaration>(
             changed: new Set(
               changedInMarfa(
                 agreement,
-                kind.fields.filter((field) => !kind.readOnly.has(field)),
+                watchedFields(kind).filter(
+                  (field) => !kind.readOnly.has(field),
+                ),
                 item.properties,
               ),
             ),
@@ -2010,6 +2612,10 @@ export async function runOnce<E extends EnvDeclaration>(
             done.add(id);
             continue;
           }
+          if (!(await releaseRefused(change))) {
+            done.add(id);
+            continue;
+          }
           if (refusedBefore(id, agreement, change)) {
             done.add(id);
             continue;
@@ -2021,13 +2627,19 @@ export async function runOnce<E extends EnvDeclaration>(
           await store.flush([id]);
           let remade: boolean;
           try {
-            remade = await connector.remake(change, watchContext);
+            remade = await invoke(change, "remake", () => callRemake(change));
           } catch (error) {
             if (error instanceof Declined) {
               await decline(kind, item, [...change.changed], error);
             } else if (error instanceof Unreachable) unreached(id, error);
             else if (error instanceof Refused) refuse(id, change, error);
             else throw error;
+            done.add(id);
+            continue;
+          }
+          const pending = outbound.get(id);
+          if (pending !== undefined) {
+            await completeIntent(pending);
             done.add(id);
             continue;
           }
@@ -2064,6 +2676,7 @@ export async function runOnce<E extends EnvDeclaration>(
             });
             done.add(id);
           }
+          await finishOutbound(id);
         }
       }
       // Again while any lands, for a create naming a row made after it.
@@ -2093,9 +2706,13 @@ export async function runOnce<E extends EnvDeclaration>(
       phase.failedPrerequisite = true;
       throw error;
     }
+    checkVendorRetry();
     phase.reading = true;
     try {
       await connector.run(context);
+    } catch (error) {
+      await keepVendorRetry(error);
+      throw error;
     } finally {
       phase.reading = false;
       phase.unfinishedOperations = phase.mutating || phase.rootInFlight > 0;
@@ -2105,9 +2722,11 @@ export async function runOnce<E extends EnvDeclaration>(
     // An answer from before the run gives way, type by type, to the
     // vendor's entry since.
     const named = new Map(answeredConnections);
+    const incoming = new Map<string, Entry>();
     for (const { rows } of lanes.values()) {
-      for (const [id, said] of rows.connecting) {
-        named.set(id, { ...named.get(id), ...said });
+      for (const [id, entry] of rows.connecting) {
+        named.set(id, { ...named.get(id), ...entry.connections });
+        incoming.set(id, entry);
       }
     }
     answeredConnections.clear();
@@ -2116,6 +2735,7 @@ export async function runOnce<E extends EnvDeclaration>(
       waitingIds.filter(
         (id) => store.get(id)?.waiting?.[connectKey] !== undefined,
       ),
+      incoming,
     );
     if (twoWay) {
       for (const { rows } of lanes.values()) {
@@ -2125,11 +2745,19 @@ export async function runOnce<E extends EnvDeclaration>(
         if (done.has(id)) continue;
         const agreement = store.get(id);
         const found = await find(id);
-        if (agreement?.waiting === undefined || found === undefined) continue;
+        if (
+          agreement === undefined ||
+          found === undefined ||
+          (agreement.waiting === undefined && !refusedOutbound.has(id))
+        )
+          continue;
         if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
       }
       await answeredBack();
       for (const { refused, ...item } of purged.values()) {
+        if (recovered.has(item.id)) continue;
+        const spec = specs.get(item.type);
+        if (spec !== undefined && forRow(spec, item).owned === false) continue;
         if (setup.fenced?.() === true || setup.signal.aborted) {
           throw new Stopped();
         }
@@ -2150,10 +2778,8 @@ export async function runOnce<E extends EnvDeclaration>(
         }
         let answered: Entry | undefined;
         try {
-          answered = await connector.onChange?.(
-            { kind: "purged", item, changed: new Set() },
-            watchContext,
-          );
+          const change: Change = { kind: "purged", item, changed: new Set() };
+          answered = await invoke(change, "change", () => callChange(change));
         } catch (error) {
           if (error instanceof Declined) {
             raised.set(`declined:${item.id}`, error.message);
@@ -2168,7 +2794,7 @@ export async function runOnce<E extends EnvDeclaration>(
             const said = logger.redact(error.message);
             const count =
               (refused === undefined ? 0 : (refused.count ?? 1)) + 1;
-            if (count >= purgeRefusalLimit) {
+            if (count >= purgeRefusalLimit && !outbound.has(item.id)) {
               purged.delete(item.id);
               raised.set(
                 `purge-given-up:${item.id}`,
@@ -2188,9 +2814,15 @@ export async function runOnce<E extends EnvDeclaration>(
           } else throw error;
           continue;
         }
+        const intent = outbound.get(item.id);
+        if (intent !== undefined) {
+          await completeIntent(intent);
+          continue;
+        }
         pushed += 1;
         await settlePurge(lane(item.type).spec, item, answered);
         purged.delete(item.id);
+        await finishOutbound(item.id);
       }
     }
   } catch (error) {
@@ -2342,6 +2974,8 @@ export async function runOnce<E extends EnvDeclaration>(
   ) {
     try {
       await store.save({
+        ...(outboundRetryAt !== undefined && { outboundRetryAt }),
+        ...(outbound.size > 0 && { outbound: [...outbound.values()] }),
         ...(acknowledged.inbound !== undefined && {
           inbound: acknowledged.inbound,
         }),
@@ -2430,7 +3064,12 @@ export async function runOnce<E extends EnvDeclaration>(
   return {
     succeeded: failure === undefined,
     cause: failure === undefined ? undefined : causeOf(failure),
-    retryAfterMs: failure === undefined ? undefined : retryAfterOf(failure),
+    retryAfterMs:
+      outboundRetryAt !== undefined
+        ? Math.max(0, Date.parse(outboundRetryAt) - clock.now().getTime())
+        : failure === undefined
+          ? undefined
+          : retryAfterOf(failure),
     settled,
     cursor: pastLog && saved ? read?.cursor : acknowledged.cursor,
     ...(failure !== undefined && !stopped && { failure }),
@@ -2461,8 +3100,10 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   await store.fetch([...read.rows.keys(), ...read.connected.keys()]);
   const waiting = [...read.rows].some(([id, seen]) => {
     const last = seen.frames.at(-1)?.item;
-    const spec = last === undefined ? undefined : specs.get(last.type);
-    if (last === undefined || spec === undefined) return false;
+    const declared = last === undefined ? undefined : specs.get(last.type);
+    if (last === undefined || declared === undefined) return false;
+    const spec = forRow(declared, last);
+    if (spec.owned === false) return false;
     if (seen.purged) {
       if (!spec.twoWay) return false;
       const link =
@@ -2494,7 +3135,8 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   const added: [string, string][] = [];
   const removed: string[] = [];
   for (const { item, edges } of connected.values()) {
-    const spec = specs.get(item.type);
+    const declared = specs.get(item.type);
+    const spec = declared === undefined ? undefined : forRow(declared, item);
     if (spec?.twoWay !== true) continue;
     const agreed = store.get(item.id)?.connections ?? {};
     for (const type of spec.connections) {

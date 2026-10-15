@@ -5,8 +5,10 @@ import {
 } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start } from "../src/main.js";
+import { defineConnector } from "../src/define.js";
 import {
   Harness,
+  linkedType,
   closedUrl,
   testConnector,
   vendor,
@@ -289,4 +291,51 @@ describe("--once", () => {
     ).toHaveLength(1);
     expect(harness.server.runs).toHaveLength(1);
   });
+});
+
+it("renews a short hold and heartbeats while an outbound callback waits across several windows", async () => {
+  harness.server.holdMs = 45_000;
+  let seeded = false;
+  let sending = false;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "note", "vendor_id"] }],
+    async run(context) {
+      if (!seeded) {
+        await context.upsert(linkedType.id, [
+          {
+            source_id: "one",
+            properties: { title: "Original", vendor_id: "vendor-one" },
+          },
+        ]);
+        seeded = true;
+      }
+    },
+    async onChange(_change, context) {
+      sending = true;
+      await waiting;
+      expect(context.signal.aborted).toBe(false);
+    },
+  });
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+  harness.server.edit(harness.server.row("one").id, { title: "Intended" });
+  const exit = start(connector, harness.runtime(["--once"]));
+  await until(() => sending);
+  const holds = harness.server.holds.length;
+  const beats = harness.server.heartbeats;
+  for (let index = 0; index < 8; index++) {
+    await harness.clock.wake(15_000);
+    await until(() => harness.server.holds.length > holds + index);
+  }
+  expect(harness.server.heartbeats).toBeGreaterThan(beats);
+  expect(harness.server.runs).toHaveLength(1);
+  release();
+  expect(await exit).toBe(0);
+  expect(harness.server.runs).toHaveLength(2);
 });
