@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import type { Entry, Item } from "@withmarfa/connector";
+import { afterEach, expect, it, vi } from "vitest";
+import type { Entry, Item, PendingInbound } from "@withmarfa/connector";
 import {
   contentQueue,
   digest,
@@ -12,6 +12,11 @@ import {
   type ReaderReader,
 } from "@withmarfa/readwise";
 import { sync, type ReadContext, type ReadScope } from "../src/sync.js";
+import {
+  sync as readerSync,
+  type ReaderContext,
+} from "../../readwise-reader/src/sync.js";
+afterEach(() => vi.unstubAllGlobals());
 
 function fixture(size: number) {
   const rows = new Map<string, Item>();
@@ -197,6 +202,53 @@ it("preserves every managed source beyond the queue capacity while Reader is sto
   expect(contentQueue(f.scope("reader-content").state)).toEqual([]);
   expect(f.direct()).toBe(0);
   expect(f.lists()).toBe(60);
+});
+
+it("uses the Highlights download limit and retries pending content after the bound rises", async () => {
+  const f = fixture(1);
+  f.context.env = { ...f.context.env, READWISE_CONTENT_MAX_BYTES: "8" };
+  const page = f.reader.page.bind(f.reader);
+  f.reader.page = async (query) => {
+    const answer = await page(query);
+    if (query?.id)
+      answer.results = answer.results.map((row) => ({
+        ...row,
+        raw_source_url: "https://readwise-assets.s3.amazonaws.com/fixture.pdf",
+      }));
+    return answer;
+  };
+  const bytes = "%PDF-1.7 content";
+  const fetcher = vi.fn<typeof fetch>(() =>
+    Promise.resolve(
+      new Response(bytes, {
+        headers: { "content-length": String(bytes.length) },
+      }),
+    ),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  await f.run();
+  const pending = contentQueue(f.scope("reader-content").state)[0];
+  expect(pending?.due).toBeDefined();
+  expect(
+    [...f.conditions.values()].some((message) =>
+      message.includes("READWISE_CONTENT_MAX_BYTES (8 bytes)"),
+    ),
+  ).toBe(true);
+  f.context.env = { ...f.context.env, READWISE_CONTENT_MAX_BYTES: "32" };
+  const due = pending?.due;
+  if (due === undefined) throw new Error("content retry deadline is missing");
+  f.setNow(due - 1);
+  await f.run();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(contentQueue(f.scope("reader-content").state)[0]?.due).toBe(due);
+  f.setNow(due);
+  await f.run();
+  expect(contentQueue(f.scope("reader-content").state)).toEqual([]);
+  expect(
+    new TextDecoder().decode(
+      f.files.get("sample:reader-document:0000:content:original"),
+    ),
+  ).toBe(bytes);
 });
 
 it("keeps text references advanced by a capacity drain before a later row refreshes", async () => {
@@ -399,4 +451,220 @@ it("refreshes only managed identities and their known notes from a validated lis
   expect(f.rows.has("sample:reader-highlight:other-highlight")).toBe(false);
   expect(f.direct()).toBe(0);
   expect(f.lists()).toBe(1);
+});
+
+async function readerPendingFixture(size: number) {
+  const f = fixture(size);
+  let hints: ReaderContext["hints"] = new Map();
+  const context: ReaderContext = {
+    ...f.context,
+    env: {
+      ...f.context.env,
+      READWISE_READER_INCLUDE_FEED: undefined,
+      READWISE_READER_INBOUND_ONLY: undefined,
+      READWISE_READER_PROPAGATE_PURGE: undefined,
+      READWISE_CONTENT_MAX_BYTES: undefined,
+    },
+    get hints() {
+      return hints;
+    },
+    pendingOutbound: () => [],
+    inspect: async (type, query) => {
+      const found = await f.context.inspect(type, query);
+      return { items: [...found.items], tombstones: [...found.tombstones] };
+    },
+    known: (type, keys) => {
+      if (f.context.known === undefined)
+        throw new Error("missing fixture identity lookup");
+      return f.context.known(type, keys);
+    },
+  };
+  const run = () =>
+    readerSync(context, {
+      reader: f.reader,
+      exportClient: {
+        page: () =>
+          Promise.resolve({ count: 0, nextPageCursor: null, results: [] }),
+        sourceForHighlight: () => Promise.resolve(undefined),
+      },
+      now: () => Date.parse("2026-10-15T00:00:00Z"),
+    });
+  await run();
+  const state = f.scope("reader-list").state;
+  await state.checkpoint("listing", {
+    ...(state.get("listing") as Record<string, unknown>),
+    pending: f.documents.map((row) => row.id),
+  });
+  const pending = () => (state.get("listing") as { pending: string[] }).pending;
+  const accounted = () =>
+    [...f.rows.values()].filter(
+      (row) =>
+        row.type === "readwise.file" &&
+        row.properties["preservation"] === "accounted",
+    );
+  return {
+    ...f,
+    context,
+    run,
+    pending,
+    accounted,
+    listing: state,
+    setHints: (value: ReaderContext["hints"]) => {
+      hints = value;
+    },
+  };
+}
+
+it("drains a persistent Reader pending list beyond the bounded content queue", async () => {
+  const f = await readerPendingFixture(140);
+  for (let at = 0; at < 24; at++) await f.run();
+  expect(f.pending()).toEqual([]);
+  expect(f.accounted()).toHaveLength(140);
+  expect(
+    f.rows.get("sample:reader-document:0139:content:manifest")?.properties[
+      "preservation"
+    ],
+  ).toBe("accounted");
+  expect(contentQueue(f.scope("reader-content-queue").state)).toEqual([]);
+});
+
+it.each([false, true])(
+  "keeps Reader pending progress and earlier failures through checkpoint loss=%s",
+  async (lost) => {
+    const f = await readerPendingFixture(140);
+    const read = f.reader.document.bind(f.reader);
+    let unavailable = true;
+    f.reader.document = (id) =>
+      id === "0000" && unavailable
+        ? Promise.reject(new Error("Reader document unavailable"))
+        : read(id);
+    let armed = true;
+    const scoped = f.context.forScope.bind(f.context);
+    f.context.forScope = (name, options) => {
+      const scope = scoped(name, options);
+      return {
+        ...scope,
+        state: {
+          ...scope.state,
+          async checkpoint(key, value) {
+            const pending = (value as { pending?: unknown }).pending;
+            if (
+              name === "reader-list" &&
+              key === "listing" &&
+              armed &&
+              Array.isArray(pending) &&
+              pending.length < 140
+            ) {
+              armed = false;
+              if (lost) {
+                await scope.state.checkpoint(key, value);
+                throw new Error("listing acknowledgment lost");
+              }
+              return { committed: false, reason: "state-oversized" };
+            }
+            return scope.state.checkpoint(key, value);
+          },
+        },
+      };
+    };
+    await expect(f.run()).rejects.toThrow(
+      /listing acknowledgment lost|listing progress was not saved/,
+    );
+    expect(f.pending()).toContain("0000");
+    expect(f.pending().includes("0001")).toBe(!lost);
+    for (let at = 0; at < 24; at++) await f.run();
+    expect(f.pending()).toEqual(["0000"]);
+    expect(f.accounted()).toHaveLength(139);
+    expect(
+      f.rows.get("sample:reader-document:0139:content:manifest")?.properties[
+        "preservation"
+      ],
+    ).toBe("accounted");
+    expect(f.listing.get("listing")).not.toHaveProperty("completed");
+    unavailable = false;
+    await f.run();
+    expect(f.pending()).toEqual([]);
+    expect(f.accounted()).toHaveLength(140);
+  },
+);
+
+it("retains unattempted Reader hints after the content queue fills", async () => {
+  const f = await readerPendingFixture(140);
+  await f.listing.checkpoint("listing", {
+    ...(f.listing.get("listing") as Record<string, unknown>),
+    pending: [],
+  });
+  f.setHints(
+    new Map([
+      [
+        "readwise.source",
+        new Set(f.documents.map((row) => `sample:reader-document:${row.id}`)),
+      ],
+    ]),
+  );
+  await f.run();
+  expect(f.pending()).toHaveLength(12);
+  expect(f.pending()).toContain("0139");
+  f.setHints(new Map());
+  for (let at = 0; at < 24; at++) await f.run();
+  expect(f.pending()).toEqual([]);
+  expect(f.accounted()).toHaveLength(140);
+});
+
+it("checkpoints an accepted Reader refusal before a later refusal fills the queue", async () => {
+  const f = await readerPendingFixture(3);
+  await f.listing.checkpoint("listing", {
+    ...(f.listing.get("listing") as Record<string, unknown>),
+    pending: ["0000"],
+  });
+  await enqueueContent(
+    f.scope("reader-content-queue").state,
+    Array.from({ length: 127 }, (_, index) => ({
+      id: `deferred-${String(index)}`,
+      canonical: `sample:reader-document:deferred-${String(index)}`,
+      type: "readwise.source",
+      revision: "deferred",
+      due: Date.parse("2026-10-16T00:00:00Z"),
+    })),
+  );
+  const read = f.reader.document.bind(f.reader);
+  let first = true;
+  f.reader.document = (id) => {
+    if (id === "0000" && first) {
+      first = false;
+      return Promise.reject(new Error("temporary Reader failure"));
+    }
+    return read(id);
+  };
+  const records = ["0000", "0002"].map(
+    (id): { record: PendingInbound; due: boolean } => ({
+      record: {
+        scope: "reader-list",
+        operation: "upsert",
+        mode: "refetch",
+        identity: {
+          type: "readwise.source",
+          sourceId: `sample:reader-document:${id}`,
+          link: `sample:reader-document:${id}`,
+        },
+        code: "invalid_properties",
+        reason: "Retry source metadata",
+        attemptedAt: "2026-10-15T00:00:00Z",
+        dueAt: "2026-10-15T00:00:00Z",
+        fingerprint: "f".repeat(64),
+        context: "c".repeat(64),
+      },
+      due: true,
+    }),
+  );
+  const scope = f.context.forScope.bind(f.context);
+  f.context.forScope = (name, options) => {
+    const held = scope(name, options);
+    return name === "reader-list"
+      ? { ...held, refusals: { pending: () => records } }
+      : held;
+  };
+  await f.run();
+  expect(f.pending()).toEqual([]);
+  expect(contentQueue(f.scope("reader-content-queue").state)).toHaveLength(128);
 });

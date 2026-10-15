@@ -672,6 +672,7 @@ export async function sync(
         continue;
       }
       if (!(await importDocuments([document]))) return;
+      await checkpoint(scope, saved);
     }
     for (const { record, due } of scope.refusals.pending()) {
       if (!due) continue;
@@ -691,6 +692,7 @@ export async function sync(
         continue;
       }
       if (!(await importDocuments([document]))) return;
+      await checkpoint(scope, saved);
     }
     await checkpoint(scope, saved);
     if (context.hints !== undefined) {
@@ -702,28 +704,34 @@ export async function sync(
           );
         saved.pending.push(id);
       };
-      for (const [type, keys] of context.hints) {
-        if (!["readwise.source", "readwise.highlight"].includes(type)) continue;
-        for (const key of keys) {
-          const id = idFromKey(config.account, key);
-          let document: ReaderDocument | undefined;
-          try {
-            document = await get(id);
-          } catch (error) {
-            contain(error, key);
-            retain(id);
-            continue;
-          }
-          if (document === undefined) {
-            retain(id);
-            context.log.condition(
-              `readwise:reader-retry:${key}`,
-              "Reader retry did not return a document; identity is retained",
-            );
-          } else if (!(await importDocuments([document]))) return;
-        }
-      }
+      const hinted = [...context.hints].flatMap(([type, keys]) =>
+        ["readwise.source", "readwise.highlight"].includes(type)
+          ? [...keys].map((key) => ({
+              key,
+              id: idFromKey(config.account, key),
+            }))
+          : [],
+      );
+      for (const { id } of hinted) retain(id);
       await checkpoint(scope, saved);
+      for (const { key, id } of hinted) {
+        let document: ReaderDocument | undefined;
+        try {
+          document = await get(id);
+        } catch (error) {
+          contain(error, key);
+          continue;
+        }
+        if (document === undefined) {
+          context.log.condition(
+            `readwise:reader-retry:${key}`,
+            "Reader retry did not return a document; identity is retained",
+          );
+          continue;
+        }
+        if (!(await importDocuments([document]))) return;
+        await checkpoint(scope, saved);
+      }
       await content.drain(context, reader, queueScope.state);
       return;
     }
