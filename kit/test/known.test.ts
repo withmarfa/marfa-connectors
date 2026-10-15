@@ -250,7 +250,9 @@ it("explicitly includes visible unlinked rows from other sources without natural
           inserted.map((row) => row.id).sort(),
         );
         expect(rows.every((row) => row.source_id == null)).toBe(true);
-        rows[0]!.properties["title"] = "Detached";
+        const first = rows[0];
+        if (first === undefined) throw new Error("held inventory is empty");
+        first.properties["title"] = "Detached";
         const active = await reader.held(linkedType.id, {
           state: "active",
           includeUnlinked: true,
