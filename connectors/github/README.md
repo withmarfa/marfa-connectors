@@ -1,19 +1,19 @@
 # GitHub
 
-Reads the repositories a GitHub App is installed on, their issues and the issues' comments, with sub-issues and blockers, into `github.repository`, `github.issue` and `github.comment` rows at the feed tier, and carries changes made in Marfa to issues and comments back to GitHub, where they appear under the App's name.
+Reads the repositories a personal access token can reach or a GitHub App is installed on, their issues and the issues' comments, with sub-issues and blockers, into `github.repository`, `github.issue` and `github.comment` rows at the feed tier, and carries changes made in Marfa to issues and comments back to GitHub, where they appear under the App's name. Personal access token runs are always read only.
 
 ## What syncs
 
-- **Repositories**: every repository of every installation of the App, as the person chose them when installing it, or, with `GITHUB_REPOSITORIES`, those of them it names, so the App can see more than is synced. A repository is a `github.repository`, read only. One synced before and left out of `GITHUB_REPOSITORIES` since is paused: nothing of it is read or written and its rows are left as they are, bar `private`, which follows its last known visibility, a change made to them in Marfa waits and is named, and a relation drawn to one of its issues is taken back and named; named again, it is taken up where it stopped. A setting changes nothing on its own, so a typo or a rename on GitHub pauses a repository rather than archiving it. An entry that no installation shows is named in each run.
+- **Repositories**: every repository visible to the personal token, or every repository of every installation of the App, narrowed by `GITHUB_REPOSITORIES` when set, so the App can see more than is synced. A repository is a `github.repository`, read only. One synced before and left out of `GITHUB_REPOSITORIES` since is paused: nothing of it is read or written and its rows are left as they are, bar `private`, which follows its last known visibility, a change made to them in Marfa waits and is named, and a relation drawn to one of its issues is taken back and named; named again, it is taken up where it stopped. A setting changes nothing on its own, so a typo or a rename on GitHub pauses a repository rather than archiving it. An entry the selected authentication method cannot see is named in each run.
 - **Issues**: everything open, and what closed or changed in the last ninety days; an older issue comes in once anything happens to it, or when an issue in the sync names it as its parent or blocker. Each is a `github.issue`, a core task: its title, body, labels and assignees, and its state as the task's status (`pending` while open, `completed` when closed as completed, `canceled` when closed as not planned or a duplicate, with `state_reason` saying which). Pull requests are left out.
 - **Comments** on those issues, each a `github.comment`, a core message from its author, in its issue's thread through Marfa's own `in-thread`.
-- **Relations**, as connections: `github.sub-issue-of` from an issue to its parent, `github.blocked-by` from an issue to each issue blocking it, and `github.in-repository` from each issue and comment to its repository. A parent or blocker in a public repository the connector does not sync, because the App is not installed on it or `GITHUB_REPOSITORIES` leaves it out, is kept as its address, in `parent_url` or `blocked_by_urls`, until it is synced. The connector's tokens reach only the repositories it syncs, so GitHub shows it nothing of a private repository it does not sync, not even as the end of a relation: such a relation is not known at all, whether the App is not installed there, `GITHUB_REPOSITORIES` leaves the repository out, or it is under another installation of the App. A relation to an issue in a repository synced before and left out since stays, as that repository's rows do.
+- **Relations**, as connections: `github.sub-issue-of` from an issue to its parent, `github.blocked-by` from an issue to each issue blocking it, and `github.in-repository` from each issue and comment to its repository. A parent or blocker in a public repository the connector does not sync, because the App is not installed on it or `GITHUB_REPOSITORIES` leaves it out, is kept as its address, in `parent_url` or `blocked_by_urls`, until it is synced. The App's installation tokens reach only the repositories it syncs, so GitHub shows it nothing of a private repository it does not sync, not even as the end of a relation: such a relation is not known at all, whether the App is not installed there, `GITHUB_REPOSITORIES` leaves the repository out, or it is under another installation of the App. A relation to an issue in a repository synced before and left out since stays, as that repository's rows do.
 
 Each row links to GitHub by `github_id`, the GitHub node id of what it is.
 
 ## What travels back
 
-Every `github.issue` and `github.comment` on the instance syncs, whoever made it and under whatever source; something meant to stay in Marfa is a core task or message instead. Repositories are read only. A row made in Marfa is sent as a new issue or comment; one made by hand with a `github_id` of its own is never taken for what GitHub has, so a relation or thread drawn to it waits.
+With a GitHub App, every `github.issue` and `github.comment` on the instance syncs, whoever made it and under whatever source; something meant to stay in Marfa is a core task or message instead. Repositories are read only. A row made in Marfa is sent as a new issue or comment; one made by hand with a `github_id` of its own is never taken for what GitHub has, so a relation or thread drawn to it waits.
 
 Every write finds its target by the node id agreed with GitHub, asking GitHub where that issue or comment is now, never by a row's `repository` or `number`: a repository renamed or an issue transferred between repositories the App reads is followed, and an old name taken by another repository changes nothing. A target in a repository the connector does not sync or has paused is not written: the change waits and is named in the run. One the App can no longer find under any installation, while every synced repository still reads, is not sent and is settled, and the run names it: unlike a change GitHub refuses, which waits until the row changes, there is nowhere left to send it, and the daily check, or a delivery naming it, archives the row. While any synced repository is out of reach, such a change waits instead, as it does where the repository the row sits in, as agreed with GitHub, has its issues turned off, since GitHub does not say whether it still shows them. A relation is the exception: one drawn to an issue the App may not relate to, for any of those reasons, is taken back in Marfa and named, rather than waiting.
 
@@ -51,6 +51,18 @@ Once a day, a scheduled run also asks GitHub about each row it no longer lists. 
 
 ## Setting it up
 
+### Personal access token
+
+Create a fine-grained personal access token for the repositories to sync, with Issues read access and the automatically included Metadata read access. Set it as `GITHUB_PERSONAL_TOKEN` in the secret store and leave `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET` unset. The connector refuses mixed authentication settings.
+
+Set `MARFA_API_URL` and `MARFA_API_KEY` as for the App, then run `node dist/main.js --once` or `node dist/main.js --every 1h`. No App, installation, webhook, or `--setup` is needed. A token `--setup <file>` invocation returns no new secrets, writes an empty JSON object to the requested file, and creates no webhook endpoint; the empty file may be deleted. Repository discovery uses GitHub's [authenticated repository listing](https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user), including repositories owned by the user, collaborator access, and organization membership. `GITHUB_REPOSITORIES` narrows that list.
+
+Personal token runs are always read only, even if the token has write permissions. Edits to imported rows are restored from the agreed GitHub values. Creating or restoring a row never creates anything on GitHub. Changes arrive on the schedule. A rejected token fails the run and keeps existing rows and saved progress. A missing repository permission names the permission GitHub reports and leaves that repository's progress unchanged, while other repositories can finish; if every selected repository refuses permission, the run fails.
+
+GitHub cannot narrow a personal token for one request as it can an installation token. Choose the token's repository access carefully: the read planner imports only the configured repositories, but relation reads can reveal addresses of other repositories the token can reach.
+
+### GitHub App
+
 A GitHub App, registered from the manifest the connector serves:
 
 1. Mint the connector's key, as `template/README.md` says, with `--type-permission` for the three types, `--edge-permission` for `github.in-repository`, `github.sub-issue-of`, `github.blocked-by` and `in-thread`, `--metadata-permission types=write --metadata-permission edge_types=write`, and no `--permission`: `types=write` registers the types and keeps them current, and `edge_types=write` is needed only until its first start has registered the connection types, after which the kit says how to narrow the key.
@@ -61,11 +73,12 @@ Without a public address the App's webhook is off, and the connector notices cha
 
 ## Environment
 
-- `GITHUB_APP_ID`: the App's id.
+- `GITHUB_PERSONAL_TOKEN`: a fine-grained personal access token, a secret. Use it alone, without the three App settings. Runs are always read only.
+- `GITHUB_APP_ID`: the App's id, required only for App runs.
 - `GITHUB_PRIVATE_KEY`: the App's private key, a secret. Installation tokens are made from it for an hour at a time, each reaching only what it is for, as below, and kept out of every log.
 - `GITHUB_WEBHOOK_SECRET`: the secret GitHub signs deliveries with, a secret.
-- `GITHUB_READ_ONLY`: `true` for a read-only connector, optional.
-- `GITHUB_REPOSITORIES`: the repositories to sync, as `owner/repo` or `owner/*`, set apart by commas or spaces, in any case; optional, every repository the App sees otherwise. A malformed entry stops the start.
+- `GITHUB_READ_ONLY`: `true` for every kind, or a comma-separated list of `repository`, `issue`, and `comment`. With an App, a listed kind is read only and its imported rows' local edits are put back; other kinds can still carry changes. Repositories are always read only. `false` or unset keeps App issues and comments two-way. Unknown kinds and empty list members refuse startup. Personal token runs stay read only with any valid setting.
+- `GITHUB_REPOSITORIES`: the repositories to sync, as `owner/repo` or `owner/*`, set apart by commas or spaces, in any case; optional, every repository the selected authentication method sees otherwise. A malformed entry stops the start.
 - `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_APP_NAME`: for the setup, optional. The public address's own path, where the instance sits behind a prefix, is kept before the webhook's.
 - `GITHUB_API_URL`: optional, for a stub of the API; GitHub's otherwise. GitHub Enterprise Server is not tested.
 
@@ -78,10 +91,10 @@ Each installation token the connector asks GitHub for reaches no more than its u
 - One lists which repositories an installation holds, and reads nothing else.
 - One reads the issues and comments of the repositories synced, and of those paused, so their relations stay.
 - One finds where an issue or comment named by a change sits, reading only, across the repositories the connector holds under the installation. Where GitHub will not name one of them, as for a repository taken from the installation since the last scheduled run, or one whose id is not yet recorded, it reaches the whole installation instead; a change is still carried only into a synced repository.
-- One for each change made in Marfa writes issues and comments only in the synced repositories that change touches: its own, and that of the issue at the other end of a relation it draws or removes. A paused repository is never among them. Where GitHub will not mint one, as for a repository gone from the installation since the last scheduled run, only the changes touching that repository wait. A change in a repository whose id is not yet recorded waits for the next scheduled run, which records it, and the run says so. With `GITHUB_READ_ONLY` none is asked for.
+- One for each change made in Marfa writes issues and comments only in the synced repositories that change touches: its own, and that of the issue at the other end of a relation it draws or removes. A paused repository is never among them. Where GitHub will not mint one, as for a repository gone from the installation since the last scheduled run, only the changes touching that repository wait. A change in a repository whose id is not yet recorded waits for the next scheduled run, which records it, and the run says so. With `GITHUB_READ_ONLY=true`, or both `issue` and `comment` listed, no write token is requested.
 
 GitHub names at most 500 repositories to a token, so past that many synced or paused under one installation, the token that reads reaches every repository of it, and the run says so; a token for a change names far fewer.
 
-A token GitHub refuses after it was kept, as when it is revoked, is replaced and the request sent once more.
+An installation token GitHub refuses after it was kept, as when it is revoked, is replaced and the request sent once more. A personal token is never replaced automatically: a 401 fails the run and names `GITHUB_PERSONAL_TOKEN`. Its REST and GraphQL budgets are tracked separately under a hash of the token, without retaining the token in a budget key.
 
 A clock out of step with GitHub's by up to ten minutes is allowed for: what GitHub's answer says of its time is used to sign the App's requests from then on. Past ten minutes the connector asks GitHub nothing, and each run says so until the clock is set right; a change made in Marfa meanwhile waits.

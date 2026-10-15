@@ -1596,7 +1596,9 @@ describe("a personal access token run", () => {
     expect(result.output).not.toContain("wrong_token");
     // Rows must not be archived.
     expect(
-      marfa.rows.filter((r) => r.type === "github.repository" && r.state === "active"),
+      marfa.rows.filter(
+        (r) => r.type === "github.repository" && r.state === "active",
+      ),
     ).toHaveLength(1);
   });
 
@@ -1658,7 +1660,7 @@ describe("a personal access token run", () => {
     await onceWithToken(personalToken);
     // Edit the issue in Marfa; with issue read-only, the edit is put back.
     const issueRow = row(issue.node);
-    marfa.editRow(issueRow.id, { title: "Edited in Marfa" });
+    marfa.edit(issueRow.id, { title: "Edited in Marfa" });
     const result = await onceWithToken(personalToken, {
       GITHUB_READ_ONLY: "issue",
     });
@@ -1666,5 +1668,93 @@ describe("a personal access token run", () => {
     // The issue on GitHub is unchanged.
     expect(issue.title).toBe("Original");
     expect(github.writes()).toHaveLength(0);
+    expect(row(issue.node).properties["title"]).toBe("Original");
+  });
+
+  it("keeps token runs read only without GITHUB_READ_ONLY and uses no App or webhook API", async () => {
+    marfa.endpoints = [];
+    const repository = github.addRepository("someone/tracker", {
+      installation: 99,
+    });
+    const issue = github.addIssue(repository, { title: "Original" });
+    const comment = github.addComment(issue, "Original comment");
+    const first = await onceWithToken(personalToken);
+    expect(first.code, first.output).toBe(0);
+    marfa.edit(row(issue.node).id, { title: "Local edit" });
+    marfa.edit(row(comment.node).id, { body: "Local comment edit" });
+    const second = await onceWithToken(personalToken);
+    expect(second.code, second.output).toBe(0);
+    expect(row(issue.node).properties["title"]).toBe("Original");
+    expect(row(comment.node).properties["body"]).toBe("Original comment");
+    expect(github.writes()).toHaveLength(0);
+    expect(github.asked.some((one) => one.path.startsWith("/app"))).toBe(false);
+    expect(marfa.endpoints).toEqual([]);
+    expect(second.output).not.toContain("no webhook endpoint");
+  });
+
+  it("keeps an unchanged second token run from writing rows", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    await onceWithToken(personalToken);
+    const before = marfa.log.length;
+    const result = await onceWithToken(personalToken);
+    expect(result.code, result.output).toBe(0);
+    expect(
+      marfa.log.slice(before).filter((one) => one.event === "item.updated"),
+    ).toEqual([]);
+  });
+
+  it("does not remake a restored issue that is gone from GitHub under a personal token", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    await onceWithToken(personalToken);
+    marfa.trash(row(issue.node).id);
+    marfa.restore(row(issue.node).id);
+    issue.deleted = true;
+    const result = await onceWithToken(personalToken);
+    expect(result.code, result.output).toBe(0);
+    expect(github.writes()).toHaveLength(0);
+    expect(github.issues).toHaveLength(1);
+  });
+
+  it("fails a token revoked during a repository read without pausing or archiving its rows", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    await onceWithToken(personalToken);
+    const previous = structuredClone(kept());
+    github.onAsked = (asked) => {
+      if (asked.path.endsWith("/issues"))
+        github.personalToken = "replacement-token";
+    };
+    const result = await onceWithToken(personalToken);
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain("GITHUB_PERSONAL_TOKEN");
+    expect(result.output).not.toContain(personalToken);
+    expect(row(issue.node).state).toBe("active");
+    expect(kept()).toEqual(previous);
+  });
+
+  it("names a missing permission and keeps reading a healthy repository", async () => {
+    const first = github.addRepository("someone/denied");
+    const second = github.addRepository("someone/healthy");
+    const held = github.addIssue(first);
+    const healthy = github.addIssue(second);
+    await onceWithToken(personalToken);
+    github.personalDenied = new Map([[first.node, "issues=read"]]);
+    github.edit(healthy, { title: "Changed" });
+    const result = await onceWithToken(personalToken);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("issues=read");
+    expect(row(held.node).state).toBe("active");
+    expect(row(healthy.node).properties["title"]).toBe("Changed");
+  });
+
+  it("fails when every token repository refuses the required permission", async () => {
+    const repository = github.addRepository("someone/denied");
+    github.addIssue(repository);
+    github.personalDenied = new Map([[repository.node, "issues=read"]]);
+    const result = await onceWithToken(personalToken);
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain("issues=read");
   });
 });

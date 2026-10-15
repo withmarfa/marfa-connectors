@@ -71,6 +71,27 @@ async function ok(env: Record<string, string> = {}): Promise<string> {
 
 const bot = "marfa-connectors[bot]";
 
+describe("per-kind read-only App runs", () => {
+  it.each(["issue", "comment"])(
+    "mirrors %s edits while carrying the other kind",
+    async (readOnly) => {
+      const issue = github.addIssue(repository, { title: "Original" });
+      const comment = github.addComment(issue, "Original comment", bot);
+      comment.app = true;
+      await ok();
+      marfa.edit(row(issue.node).id, { title: "New title" });
+      marfa.edit(row(comment.node).id, { body: "New body" });
+      await ok({ GITHUB_READ_ONLY: readOnly });
+      expect(issue.title).toBe(readOnly === "issue" ? "Original" : "New title");
+      expect(comment.body).toBe(
+        readOnly === "comment" ? "Original comment" : "New body",
+      );
+      expect(row(issue.node).properties["title"]).toBe(issue.title);
+      expect(row(comment.node).properties["body"]).toBe(comment.body);
+    },
+  );
+});
+
 function ours(issue: Issue, body: string) {
   const made = github.addComment(issue, body, bot);
   made.app = true;
