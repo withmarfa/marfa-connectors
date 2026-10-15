@@ -6,6 +6,8 @@ export {
   type InboundEntry,
   type JsonValue,
   type PendingInbound,
+  type OutboundIntent,
+  type OutboundJournal,
   type ScopedRunContext,
   type Change,
   type ChangeKind,

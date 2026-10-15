@@ -77,6 +77,14 @@ import {
   type UpsertAttempt,
 } from "./inbound-retry.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
+import { checkedJson, intentOf as checkedEntry } from "./inbound-retry.js";
+import {
+  captureChange,
+  restoreChange,
+  publicIntent,
+  outboundToken,
+  type OutboundRecord,
+} from "./outbound.js";
 
 export interface RunSetup<E extends EnvDeclaration> {
   connector: Connector<E>;
@@ -555,6 +563,14 @@ export async function runOnce<E extends EnvDeclaration>(
   const stored = loaded ?? { state: {}, conditions: {} };
   let acknowledged: Kept = structuredClone(stored);
   const draft = structuredClone(stored.state);
+  const outbound = new Map(
+    (stored.outbound ?? []).map((record) => [record.change.item.id, record]),
+  );
+  let activeOutbound:
+    | { change: Change; operation: "change" | "remake"; moved?: Carried }
+    | undefined;
+  let outboundBusy = false;
+  const recovered = new Set<string>();
   let narrowed: Promise<string[]> | undefined;
   const retryOwners = new Map<string, Scope>();
   const retryContext = (scope: Scope): string =>
@@ -833,8 +849,7 @@ export async function runOnce<E extends EnvDeclaration>(
     const found = inLane(id);
     if (found?.spec.policy !== undefined) {
       const fresh = await setup.marfa.item(id);
-      if (fresh === undefined || fresh.type !== found.spec.type)
-        return undefined;
+      if (fresh?.type !== found.spec.type) return undefined;
       found.rows.adopt(fresh);
       return inLane(id);
     }
@@ -1033,10 +1048,94 @@ export async function runOnce<E extends EnvDeclaration>(
         return structuredClone(row);
       });
   };
+  const callChange = (change: Change) => {
+    if (connector.onChange === undefined)
+      throw new Error("no outbound handler");
+    return connector.onChange(change, watchContext);
+  };
+  const callRemake = (change: Change) => {
+    if (connector.remake === undefined) throw new Error("no remake handler");
+    return connector.remake(change, watchContext);
+  };
   const watchContext: WatchContext<E> = {
     env,
     signal: setup.signal,
     state,
+    outbound: {
+      get: (id) => {
+        const record = outbound.get(id);
+        return record === undefined ? undefined : publicIntent(record);
+      },
+      save: async (change, intent) => {
+        check();
+        if (
+          activeOutbound === undefined ||
+          digest(captureChange(change)) !==
+            digest(captureChange(activeOutbound.change))
+        )
+          throw new Error("outbound intent must capture the active change");
+        if (outboundBusy)
+          throw new Error("outbound journal operations must be awaited");
+        const agreement = store.get(change.item.id);
+        const content = checkedJson({
+          change: captureChange(activeOutbound.change),
+          request: intent.request,
+          baseline: intent.baseline,
+          operation: activeOutbound.operation,
+          ...(agreement !== undefined && { agreement }),
+          ...(activeOutbound.moved !== undefined && {
+            moved: activeOutbound.moved,
+          }),
+        }) as Omit<
+          OutboundRecord,
+          "token" | "acknowledged" | "answer" | "confirmationAgreement"
+        >;
+        const token = outboundToken(content);
+        const held = outbound.get(change.item.id);
+        if (held !== undefined) {
+          if (held.token !== token)
+            throw new Error("a pending outbound intent cannot be replaced");
+          return publicIntent(held);
+        }
+        const record: OutboundRecord = {
+          ...content,
+          token,
+          acknowledged: false,
+        };
+        outbound.set(change.item.id, record);
+        await saveOutbound();
+        return publicIntent(record);
+      },
+      acknowledge: async (id, token, answer) => {
+        check();
+        if (activeOutbound?.change.item.id !== id || outboundBusy)
+          throw new Error(
+            "outbound acknowledgment must belong to the active change and be awaited",
+          );
+        const held = outbound.get(id);
+        if (held?.token !== token)
+          throw new Error("outbound intent token does not match");
+        const entry =
+          answer === undefined
+            ? undefined
+            : checkedEntry(held.change.item.type, answer).entry;
+        if (held.acknowledged) {
+          if (digest(held.answer ?? null) !== digest(entry ?? null))
+            throw new Error("outbound acknowledgment cannot be replaced");
+          return;
+        }
+        const confirmationAgreement = store.get(id);
+        outbound.set(id, {
+          ...held,
+          acknowledged: true,
+          ...(entry !== undefined && { answer: entry }),
+          ...(confirmationAgreement !== undefined && {
+            confirmationAgreement: structuredClone(confirmationAgreement),
+          }),
+        });
+        await saveOutbound();
+      },
+    },
     log,
     secret,
     setLink: (item, value) => lane(item.type).rows.setLink(item, value),
@@ -1073,6 +1172,7 @@ export async function runOnce<E extends EnvDeclaration>(
   // gives them up, once the run has asked the vendor for every one; a save
   // before that keeps the same list and leaves them to be carried.
   const keepPurges = (final = false): Purge[] => {
+    if (connector.preflight !== undefined) return [...purged.values()];
     const ranked = [...purged.values()].sort(
       (a, b) => refusals(a) - refusals(b),
     );
@@ -1103,6 +1203,7 @@ export async function runOnce<E extends EnvDeclaration>(
     vendorState: Record<string, unknown>,
     inbound = acknowledged.inbound ?? [],
   ): Kept => ({
+    ...(outbound.size > 0 && { outbound: [...outbound.values()] }),
     ...(purged.size > 0 && { purges: keepPurges() }),
     ...(inbound.length > 0 && { inbound }),
     state: vendorState,
@@ -1133,6 +1234,62 @@ export async function runOnce<E extends EnvDeclaration>(
       },
     }),
   });
+  const saveOutbound = async (): Promise<void> => {
+    check();
+    if (outboundBusy)
+      throw new Error("outbound journal operations must be awaited");
+    outboundBusy = true;
+    try {
+      const snapshot = envelope(acknowledged.state);
+      await store.save(snapshot);
+      check();
+      acknowledged = structuredClone(snapshot);
+    } catch (error) {
+      phase.uncertainState = true;
+      throw error;
+    } finally {
+      outboundBusy = false;
+    }
+  };
+  const invoke = async <T>(
+    change: Change,
+    operation: "change" | "remake",
+    callback: () => Promise<T>,
+    moved?: Carried,
+  ): Promise<T> => {
+    check();
+    activeOutbound = {
+      change: structuredClone(change),
+      operation,
+      ...(moved !== undefined && { moved }),
+    };
+    try {
+      const result = await callback();
+      checkDurability();
+      if (outboundBusy) {
+        phase.unfinishedOperations = true;
+        throw new Error("outbound journal operations were not awaited");
+      }
+      const pending = outbound.get(change.item.id);
+      if (pending !== undefined && !pending.acknowledged)
+        throw new Error("outbound success requires a durable acknowledgment");
+      return result;
+    } finally {
+      activeOutbound = undefined;
+    }
+  };
+  const finishOutbound = async (id: string): Promise<void> => {
+    if (!outbound.has(id)) return;
+    check();
+    try {
+      await store.flush([id], check);
+    } catch (error) {
+      phase.failedPrerequisite = true;
+      throw error;
+    }
+    outbound.delete(id);
+    await saveOutbound();
+  };
   const overlaps = (scope: Scope): boolean =>
     [...scope.ids].some((id) => {
       const ownership = owners.get(id);
@@ -1479,11 +1636,12 @@ export async function runOnce<E extends EnvDeclaration>(
     item: Item,
     agreement: Agreement,
   ): Promise<"unplaced" | undefined> => {
+    if (recovered.has(item.id)) return;
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec, rows } = lane(item.type);
     if (spec.policy !== undefined) {
       const fresh = await setup.marfa.item(item.id);
-      if (fresh === undefined || fresh.type !== item.type) return;
+      if (fresh?.type !== item.type) return;
       rows.adopt(fresh);
       item = fresh;
     }
@@ -1622,7 +1780,12 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     let answered: Entry | undefined;
     try {
-      answered = await connector.onChange(change, watchContext);
+      answered = await invoke(
+        change,
+        "change",
+        () => callChange(change),
+        moved,
+      );
     } catch (error) {
       if (error instanceof Declined) {
         await decline(kind, current, changed, error);
@@ -1638,11 +1801,17 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       throw error;
     }
+    const intent = outbound.get(current.id);
+    if (intent !== undefined) {
+      await completeIntent(intent);
+      return;
+    }
     settle(kind, current, changeKind, changed, answered, moved);
     // A carried field keeps its value over the answer's.
     if (answered !== undefined && current.state !== "trashed") {
       await rows.adoptAnswer(current.id, answered, new Set(changed));
     }
+    await finishOutbound(current.id);
   };
   const settledConnections = (
     agreement: Agreement,
@@ -1675,6 +1844,7 @@ export async function runOnce<E extends EnvDeclaration>(
     changed: readonly string[],
     answered: Entry | undefined,
     moved: Carried | undefined,
+    capturedBase?: Agreement,
   ): void => {
     pushed += 1;
     if (answered?.connections !== undefined && item.state !== "trashed") {
@@ -1687,7 +1857,7 @@ export async function runOnce<E extends EnvDeclaration>(
         ),
       );
     }
-    const base = store.get(item.id);
+    const base = capturedBase ?? store.get(item.id);
     // A vendor makes a row live; a state beside the create is carried next.
     const later = changeKind === "created" && item.state !== "active";
     const next = carried({
@@ -1741,6 +1911,62 @@ export async function runOnce<E extends EnvDeclaration>(
         moved,
       ),
     );
+  };
+
+  const completeIntent = async (record: OutboundRecord): Promise<void> => {
+    const change = restoreChange(record.change);
+    const id = change.item.id;
+    const kind = forRow(lane(change.item.type).spec, change.item);
+    if (change.kind === "purged") {
+      await settlePurge(kind, change.item, record.answer);
+      purged.delete(id);
+      pushed += 1;
+    } else {
+      const live = await setup.marfa.item(id);
+      if (live !== undefined) {
+        // The create's link is confirmed separately from the captured values.
+        const linked =
+          record.confirmationAgreement?.link ?? store.get(id)?.link;
+        const base: Agreement = {
+          vendor: {},
+          marfa: {},
+          state: "active",
+          ...record.agreement,
+          ...(linked !== undefined && { link: linked }),
+        };
+        if (kind.link !== undefined && linked !== undefined) {
+          base.vendor = { ...base.vendor, [kind.link]: mark(linked) };
+          base.marfa = { ...base.marfa, [kind.link]: mark(linked) };
+        }
+        settle(
+          kind,
+          change.item,
+          change.kind,
+          record.operation === "remake"
+            ? watchedFields(kind)
+            : [...change.changed],
+          record.answer,
+          record.moved,
+          base,
+        );
+        const agreed = store.get(id);
+        if (agreed === undefined)
+          throw new Error("outbound settlement has no agreement");
+        const waiting =
+          noteWaiting(
+            agreed,
+            watchedFields(kind),
+            live.properties,
+            live.updated_at,
+          ) ?? {};
+        if (live.state !== agreed.state) waiting[stateKey] = live.updated_at;
+        store.set(id, {
+          ...agreed,
+          ...(Object.keys(waiting).length > 0 && { waiting }),
+        });
+      }
+    }
+    await finishOutbound(id);
   };
 
   try {
@@ -1832,6 +2058,16 @@ export async function runOnce<E extends EnvDeclaration>(
     if (read.incomplete !== undefined) {
       logger.warn(`${read.incomplete}; the rest of the log is read next run`);
     }
+    if (
+      twoWay &&
+      (read.incomplete !== undefined ||
+        (connector.preflight !== undefined &&
+          read.resync &&
+          stored.cursor !== undefined))
+    )
+      throw new Error(
+        "outbound mutations are blocked because the complete watch inventory is unavailable",
+      );
     if (read.resync && read.incomplete === undefined) {
       // Every row of the connector's types is in hand: one not among them
       // was purged unseen, and each still relinked is found again below.
@@ -1879,7 +2115,12 @@ export async function runOnce<E extends EnvDeclaration>(
           } else {
             const refused = purged.get(id)?.refused;
             purged.set(id, {
-              ...purgeOf(last, kind.link, link, kind.policy !== undefined),
+              ...purgeOf(
+                last,
+                kind.link,
+                link,
+                kind.policy !== undefined || connector.preflight !== undefined,
+              ),
               ...(refused !== undefined && { refused }),
             });
           }
@@ -1962,7 +2203,77 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     // Everything the log named is noted; the cursor passes it once the final
     // flush keeps that on the instance.
+    if (connector.preflight !== undefined) {
+      const inventory = new Map<string, Change>();
+      for (const purge of purged.values()) {
+        const item = { ...purge };
+        Reflect.deleteProperty(item, "refused");
+        inventory.set(item.id, { kind: "purged", item, changed: new Set() });
+      }
+      for (const seen of read.rows.values()) {
+        const item = seen.frames.at(-1)?.item;
+        if (seen.purged && item !== undefined)
+          inventory.set(item.id, { kind: "purged", item, changed: new Set() });
+      }
+      for (const pending of outbound.values())
+        if (pending.change.kind === "purged")
+          inventory.set(pending.change.item.id, restoreChange(pending.change));
+      check();
+      await connector.preflight(
+        { purges: structuredClone([...inventory.values()]) },
+        watchContext,
+      );
+      check();
+      await saveOutbound();
+    }
     recorded = true;
+    for (const record of [...outbound.values()]) {
+      const change = restoreChange(record.change);
+      const id = change.item.id;
+      recovered.add(id);
+      const declared = specs.get(change.item.type);
+      if (declared === undefined || connector.onChange === undefined)
+        throw new Error("a pending outbound intent has no declared handler");
+      const kind = forRow(declared, change.item);
+      if (!kind.twoWay || kind.owned === false)
+        throw new Error(
+          "a pending outbound intent no longer has write authority",
+        );
+      try {
+        if (!record.acknowledged) {
+          const live = await setup.marfa.item(id);
+          if (live !== undefined && forRow(declared, live).owned === false)
+            throw new Error("a pending outbound intent no longer owns its row");
+          if (record.operation === "remake") {
+            if (connector.remake === undefined)
+              throw new Error("a pending remake has no handler");
+            await invoke(change, "remake", () => callRemake(change));
+          } else {
+            await invoke(
+              change,
+              "change",
+              () => callChange(change),
+              record.moved,
+            );
+          }
+        }
+      } catch (error) {
+        check();
+        if (error instanceof Unreachable) {
+          unreached(id, error);
+          continue;
+        }
+        if (error instanceof Refused || error instanceof Declined) {
+          raised.set(`outbound-pending:${id}`, error.message);
+          continue;
+        }
+        throw error;
+      }
+      const confirmed = outbound.get(id);
+      if (confirmed === undefined)
+        throw new Error("pending outbound intent disappeared");
+      await completeIntent(confirmed);
+    }
     for (const id of order) await putBack(id);
     if (hints !== undefined) hints = await withWaiting(hints, order);
 
@@ -1972,6 +2283,7 @@ export async function runOnce<E extends EnvDeclaration>(
       // the vendor is read, so failing before it links makes no twin.
       const unplaced: string[] = [];
       for (const id of order) {
+        if (recovered.has(id)) continue;
         const agreement = store.get(id);
         const found = await find(id);
         if (agreement === undefined || found === undefined) continue;
@@ -2067,13 +2379,19 @@ export async function runOnce<E extends EnvDeclaration>(
           await store.flush([id]);
           let remade: boolean;
           try {
-            remade = await connector.remake(change, watchContext);
+            remade = await invoke(change, "remake", () => callRemake(change));
           } catch (error) {
             if (error instanceof Declined) {
               await decline(kind, item, [...change.changed], error);
             } else if (error instanceof Unreachable) unreached(id, error);
             else if (error instanceof Refused) refuse(id, change, error);
             else throw error;
+            done.add(id);
+            continue;
+          }
+          const pending = outbound.get(id);
+          if (pending !== undefined) {
+            await completeIntent(pending);
             done.add(id);
             continue;
           }
@@ -2110,6 +2428,7 @@ export async function runOnce<E extends EnvDeclaration>(
             });
             done.add(id);
           }
+          await finishOutbound(id);
         }
       }
       // Again while any lands, for a create naming a row made after it.
@@ -2176,6 +2495,7 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       await answeredBack();
       for (const { refused, ...item } of purged.values()) {
+        if (recovered.has(item.id)) continue;
         const spec = specs.get(item.type);
         if (spec !== undefined && forRow(spec, item).owned === false) continue;
         if (setup.fenced?.() === true || setup.signal.aborted) {
@@ -2198,10 +2518,8 @@ export async function runOnce<E extends EnvDeclaration>(
         }
         let answered: Entry | undefined;
         try {
-          answered = await connector.onChange?.(
-            { kind: "purged", item, changed: new Set() },
-            watchContext,
-          );
+          const change: Change = { kind: "purged", item, changed: new Set() };
+          answered = await invoke(change, "change", () => callChange(change));
         } catch (error) {
           if (error instanceof Declined) {
             raised.set(`declined:${item.id}`, error.message);
@@ -2239,6 +2557,7 @@ export async function runOnce<E extends EnvDeclaration>(
         pushed += 1;
         await settlePurge(lane(item.type).spec, item, answered);
         purged.delete(item.id);
+        await finishOutbound(item.id);
       }
     }
   } catch (error) {
@@ -2390,6 +2709,7 @@ export async function runOnce<E extends EnvDeclaration>(
   ) {
     try {
       await store.save({
+        ...(outbound.size > 0 && { outbound: [...outbound.values()] }),
         ...(acknowledged.inbound !== undefined && {
           inbound: acknowledged.inbound,
         }),

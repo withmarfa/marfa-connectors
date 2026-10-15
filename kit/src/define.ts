@@ -355,6 +355,29 @@ export interface Change {
   readonly placement?: Readonly<Record<string, readonly Item[]>>;
 }
 
+export interface OutboundIntent {
+  readonly token: string;
+  readonly change: Change;
+  readonly request: JsonValue;
+  readonly baseline: JsonValue;
+  readonly acknowledged: boolean;
+}
+
+export interface OutboundJournal {
+  /** A detached snapshot; changing it cannot change the durable intent. */
+  get(itemId: string): OutboundIntent | undefined;
+  /** Await the durable acknowledgment before sending the exact request. A
+   * pending intent cannot be replaced by a newer edit or request. */
+  save(
+    change: Change,
+    intent: { request: JsonValue; baseline: JsonValue },
+  ): Promise<OutboundIntent>;
+  /** Keep confirmed success before returning. Recovery settles the captured
+   * change without repeating HTTP; omission of answer uses captured values.
+   * The kit removes the record only after its agreement is acknowledged. */
+  acknowledge(itemId: string, token: string, answer?: Entry): Promise<void>;
+}
+
 export interface WatchContext<E extends EnvDeclaration> {
   readonly env: EnvValues<E>;
   /**
@@ -367,6 +390,7 @@ export interface WatchContext<E extends EnvDeclaration> {
    */
   readonly signal: AbortSignal;
   readonly state: State;
+  readonly outbound: OutboundJournal;
   readonly log: Log;
   readonly secret: Secret;
   /**
@@ -535,6 +559,14 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
     context: SetupContext<E>,
   ) => Promise<Readonly<Record<string, string>>>;
   run(context: RunContext<E>): Promise<void>;
+  /** Runs before any outbound callback, with every pending purge, including
+   * not-due retries and cascade observations. Read the vendor as necessary
+   * and throw to block the complete batch. An incomplete watch never enters
+   * this hook or an outbound callback. This hook must not mutate the vendor. */
+  preflight?(
+    inventory: { readonly purges: readonly Change[] },
+    context: WatchContext<E>,
+  ): Promise<void>;
   /**
    * Carries a change made in Marfa to the vendor, once per row: a `created`
    * change before `run` reads the vendor, the rest after. It may answer the

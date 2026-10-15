@@ -1,5 +1,6 @@
 import type { Agreement } from "./agreement.js";
 import { readJournal } from "./inbound-retry.js";
+import { readOutbound, type OutboundRecord } from "./outbound.js";
 import type { PendingInbound, Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
@@ -44,6 +45,7 @@ export interface Relinked {
 }
 
 export interface Kept {
+  outbound?: OutboundRecord[];
   inbound?: PendingInbound[];
   state: Record<string, unknown>;
   conditions: Record<string, string>;
@@ -95,6 +97,9 @@ function keptOf(value: unknown, problems: unknown): Kept {
   return {
     state,
     conditions,
+    ...(kept["outbound"] !== undefined && {
+      outbound: readOutbound(kept["outbound"]),
+    }),
     ...(kept["inbound"] !== undefined && {
       inbound: readJournal(kept["inbound"]),
     }),
@@ -189,7 +194,9 @@ export class Store {
 
   save(kept: Kept): Promise<void> {
     if (kept.inbound !== undefined) readJournal(kept.inbound);
+    if (kept.outbound !== undefined) readOutbound(kept.outbound);
     const state = {
+      ...(kept.outbound !== undefined && { outbound: kept.outbound }),
       ...(kept.inbound !== undefined && { inbound: kept.inbound }),
       state: kept.state,
       ...(kept.cursor !== undefined && { cursor: kept.cursor }),
@@ -197,10 +204,10 @@ export class Store {
       ...(kept.relinked !== undefined && { relinked: kept.relinked }),
     };
     if (
-      kept.inbound !== undefined &&
+      (kept.inbound !== undefined || kept.outbound !== undefined) &&
       Buffer.byteLength(JSON.stringify(state)) > 512 * 1024
     )
-      throw new Error("inbound retry envelope exceeds 512 KiB");
+      throw new Error("inbound or outbound retry envelope exceeds 512 KiB");
     if (
       Object.keys(kept.conditions).length > 200 ||
       Object.values(kept.conditions).some((message) => message.length > 500) ||

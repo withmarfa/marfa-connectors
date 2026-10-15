@@ -144,6 +144,7 @@ class Fixture {
     admin: MarfaClient,
     url: string,
     source: string,
+    outbound = false,
   ): Promise<Fixture> {
     const minted = await admin.POST("/keys", {
       body: {
@@ -163,7 +164,11 @@ class Fixture {
       "proof-watch",
       fixture.proxy.url,
       key.key,
-      { PROOF_CONTROL_URL: fixture.control.url, PROOF_SOURCE: source },
+      {
+        PROOF_CONTROL_URL: fixture.control.url,
+        PROOF_SOURCE: source,
+        ...(outbound && { PROOF_OUTBOUND: "true" }),
+      },
       entry,
     );
     return fixture;
@@ -230,6 +235,75 @@ async function edit(
     },
   });
   return required(answer.data).item;
+}
+
+export async function proveOutbound(
+  admin: MarfaClient,
+  url: string,
+): Promise<void> {
+  await check(
+    "outbound journal: real saved and confirmed intents survive lost acknowledgments without losing newer edits",
+    async () => {
+      const test = await Fixture.create(admin, url, "proof-outbound", true);
+      try {
+        await test.succeeds();
+        test.control.checkpoint = false;
+        const row = required((await test.rows()).get("one"));
+        await edit(admin, row, "Captured title", "Captured note");
+        test.proxy.after = (request, response) => {
+          const state = request.input["state"] as
+            Record<string, unknown> | undefined;
+          return (
+            states(request) && response.ok && Array.isArray(state?.["outbound"])
+          );
+        };
+        assert.equal((await test.run()).code, 1);
+        assert.equal(test.control.pushes.length, 0);
+        assert.equal(((await test.state())["outbound"] as unknown[]).length, 1);
+        test.proxy.after = (request, response) => {
+          const state = request.input["state"] as
+            Record<string, unknown> | undefined;
+          const records = state?.["outbound"] as
+            { acknowledged: boolean }[] | undefined;
+          return (
+            states(request) &&
+            response.ok &&
+            records?.[0]?.acknowledged === true
+          );
+        };
+        assert.equal((await test.run()).code, 1);
+        assert.equal(test.control.pushes.length, 1);
+        assert.equal(
+          test.control.pushes[0]?.item.properties["title"],
+          "Captured title",
+        );
+        await edit(
+          admin,
+          required((await test.rows()).get("one")),
+          "Newer title",
+          "Newer note",
+        );
+        test.proxy.after = () => false;
+        await test.succeeds();
+        assert.equal(test.control.pushes.length, 1);
+        assert.equal((await test.state())["outbound"], undefined);
+        assert.equal(
+          required((await test.rows()).get("one")).properties["title"],
+          "Newer title",
+        );
+        assert.equal(required((await test.held([row.id]))[0]).waiting, true);
+        await test.succeeds();
+        assert.equal(test.control.pushes.length, 2);
+        assert.equal(
+          test.control.pushes[1]?.item.properties["title"],
+          "Newer title",
+        );
+        return "separate real connector processes; durable save before HTTP; confirmed ACK lost after apply; one captured request, no replay after confirmation, newer edit carried separately";
+      } finally {
+        await test.stop();
+      }
+    },
+  );
 }
 
 export async function proveWatchCheckpoint(

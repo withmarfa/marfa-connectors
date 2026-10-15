@@ -254,7 +254,7 @@ describe("what is carried back", () => {
 });
 
 describe("a read that ends early", () => {
-  it("keeps what it read when the server ends the stream, and continues next run", async () => {
+  it("blocks outbound work when the server ends the stream, and retries the whole batch", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
@@ -263,11 +263,12 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
+    const before = watchState().cursor;
     held.entries = [];
     harness.server.incompleteAfter = 1;
-    await quietRun(held);
-    expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
-    expect(watchState().cursor).toBe(String(harness.server.head - 1));
+    expect(await quietRun(held)).toBe(1);
+    expect(held.changes).toEqual([]);
+    expect(watchState().cursor).toBe(before);
     expect(harness.lines).toContainEqual(
       expect.stringContaining(
         "the server ended the stream: replay_failed; the rest of the log is read next run",
@@ -276,10 +277,13 @@ describe("a read that ends early", () => {
 
     harness.server.incompleteAfter = undefined;
     await quietRun(held);
-    expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
+    expect(held.changes.map((change) => change.item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
   });
 
-  it("keeps what it read when the request times out, and continues next run", async () => {
+  it("blocks outbound work when the request times out, and retries the whole batch", async () => {
     const held = vendor([one, two]);
     await harness.twoWay(held);
     await quietRun(held);
@@ -288,12 +292,13 @@ describe("a read that ends early", () => {
     harness.server.edit(first.id, { title: "One, edited" });
     harness.server.edit(second.id, { title: "Two, edited" });
 
+    const before = watchState().cursor;
     held.entries = [];
     harness.server.stallAfter = 1;
     harness.requestTimeoutMs = 200;
-    await quietRun(held);
-    expect(held.changes.map((change) => change.item.id)).toEqual([first.id]);
-    expect(watchState().cursor).toBe(String(harness.server.head - 1));
+    expect(await quietRun(held)).toBe(1);
+    expect(held.changes).toEqual([]);
+    expect(watchState().cursor).toBe(before);
     expect(harness.lines).toContainEqual(
       expect.stringContaining("the read timed out"),
     );
@@ -301,7 +306,10 @@ describe("a read that ends early", () => {
     harness.server.stallAfter = undefined;
     harness.requestTimeoutMs = 5000;
     await quietRun(held);
-    expect(held.changes.map((change) => change.item.id)).toEqual([second.id]);
+    expect(held.changes.map((change) => change.item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
   });
 
   it("ends at the marker and adopts its cursor, past a frame it was never sent", async () => {
@@ -339,16 +347,17 @@ describe("a read that ends early", () => {
     );
   });
 
-  it("keeps the last id read where the marker names no position", async () => {
+  it("blocks outbound work where the marker names no position", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
     await quietRun(held);
     const row = harness.server.row("a:1");
     harness.server.edit(row.id, { title: "One, by a person" });
+    const before = watchState().cursor;
     harness.server.liveCursorNull = true;
-    expect(await quietRun(held)).toBe(0);
-    expect(held.changes.map((change) => change.item.id)).toEqual([row.id]);
-    expect(watchState().cursor).toBe(String(harness.server.head));
+    expect(await quietRun(held)).toBe(1);
+    expect(held.changes).toEqual([]);
+    expect(watchState().cursor).toBe(before);
   });
 
   it("keeps its cursor where the marker names a position behind it", async () => {
@@ -606,7 +615,7 @@ describe("what was agreed", () => {
     expect(harness.lastRun().summary).toMatch(/own 1/);
   });
 
-  it("carries a person's change back where the read was cut short before showing it", async () => {
+  it("keeps a person's change pending where the read was cut short before showing it", async () => {
     const held = vendor([one]);
     await harness.twoWay(held);
     await quietRun(held);
@@ -637,9 +646,14 @@ describe("what was agreed", () => {
       "One, by a person",
     );
     expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
+      [],
+    );
+    expect(harness.lastRun().outcome).toBe("failed");
+    harness.server.withholdLive = false;
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes.map((change) => [change.kind, change.item.id])).toEqual(
       [["updated", row.id]],
     );
-    expect(harness.lastRun().summary).toMatch(/conflicts 1/);
   });
 
   it("seeds a row from the vendor after the connector's state is cleared, carrying nothing", async () => {
