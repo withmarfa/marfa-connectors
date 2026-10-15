@@ -53,6 +53,16 @@
       "type": "array",
       "items_type": "string",
       "description": "The addresses of the issues blocking this one whose repositories are not synced."
+    },
+    "related_urls": {
+      "type": "array",
+      "items_type": "string",
+      "description": "The addresses of the issues this one relates to whose repositories are not synced."
+    },
+    "duplicate_of_url": {
+      "type": "string",
+      "format": "url",
+      "description": "The address of the canonical issue this one is a duplicate of, where that issue's repository is not synced."
     }
   },
   "display_hints": {

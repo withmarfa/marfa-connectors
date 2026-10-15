@@ -29,6 +29,8 @@ export const commentType = "github.comment";
 export const inRepository = "github.in-repository";
 export const subIssueOf = "github.sub-issue-of";
 export const blockedBy = "github.blocked-by";
+export const relatesTo = "github.relates-to";
+export const duplicateOf = "github.duplicate-of";
 export const inThread = "in-thread";
 
 export interface RestRepository {
