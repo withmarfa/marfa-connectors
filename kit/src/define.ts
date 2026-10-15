@@ -18,7 +18,6 @@ export interface RowPolicy {
   /** Mirror puts local edits back; sync carries them; observe preserves them
    * without carrying them or scheduling work for them. */
   readonly fields?: Readonly<Record<string, FieldPolicy>>;
-  /** Preserve divergent sync fields when this connector first adopts a row. */
   /** Preserve schedules divergent mutable values; hold keeps both initial baselines without inventing an outbound edit. */
   readonly firstAgreement?: "preserve" | "hold";
 }
