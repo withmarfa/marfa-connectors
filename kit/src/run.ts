@@ -570,6 +570,15 @@ export async function runOnce<E extends EnvDeclaration>(
     | { change: Change; operation: "change" | "remake"; moved?: Carried }
     | undefined;
   let outboundBusy = false;
+  let outboundRetryAt = stored.outboundRetryAt;
+  const checkVendorRetry = (): void => {
+    if (outboundRetryAt === undefined) return;
+    if (Date.parse(outboundRetryAt) > clock.now().getTime())
+      throw new Unreachable(`vendor requests wait until ${outboundRetryAt}`, {
+        retryAt: outboundRetryAt,
+      });
+    outboundRetryAt = undefined;
+  };
   const recovered = new Set<string>();
   let narrowed: Promise<string[]> | undefined;
   const retryOwners = new Map<string, Scope>();
@@ -1203,6 +1212,7 @@ export async function runOnce<E extends EnvDeclaration>(
     vendorState: Record<string, unknown>,
     inbound = acknowledged.inbound ?? [],
   ): Kept => ({
+    ...(outboundRetryAt !== undefined && { outboundRetryAt }),
     ...(outbound.size > 0 && { outbound: [...outbound.values()] }),
     ...(purged.size > 0 && { purges: keepPurges() }),
     ...(inbound.length > 0 && { inbound }),
@@ -1251,6 +1261,15 @@ export async function runOnce<E extends EnvDeclaration>(
       outboundBusy = false;
     }
   };
+  const keepVendorRetry = async (error: unknown): Promise<void> => {
+    if (!(error instanceof Unreachable) || error.retryAt === undefined) return;
+    if (
+      outboundRetryAt === undefined ||
+      Date.parse(error.retryAt) > Date.parse(outboundRetryAt)
+    )
+      outboundRetryAt = error.retryAt;
+    await saveOutbound();
+  };
   const invoke = async <T>(
     change: Change,
     operation: "change" | "remake",
@@ -1258,6 +1277,7 @@ export async function runOnce<E extends EnvDeclaration>(
     moved?: Carried,
   ): Promise<T> => {
     check();
+    checkVendorRetry();
     activeOutbound = {
       change: structuredClone(change),
       operation,
@@ -1274,6 +1294,9 @@ export async function runOnce<E extends EnvDeclaration>(
       if (pending !== undefined && !pending.acknowledged)
         throw new Error("outbound success requires a durable acknowledgment");
       return result;
+    } catch (error) {
+      await keepVendorRetry(error);
+      throw error;
     } finally {
       activeOutbound = undefined;
     }
@@ -1916,14 +1939,16 @@ export async function runOnce<E extends EnvDeclaration>(
   const completeIntent = async (record: OutboundRecord): Promise<void> => {
     const change = restoreChange(record.change);
     const id = change.item.id;
-    const kind = forRow(lane(change.item.type).spec, change.item);
+    const { spec, rows } = lane(change.item.type);
+    const kind = forRow(spec, change.item);
     if (change.kind === "purged") {
       await settlePurge(kind, change.item, record.answer);
       purged.delete(id);
       pushed += 1;
     } else {
-      const live = await setup.marfa.item(id);
+      let live = await setup.marfa.item(id);
       if (live !== undefined) {
+        rows.adopt(live);
         // The create's link is confirmed separately from the captured values.
         const linked =
           record.confirmationAgreement?.link ?? store.get(id)?.link;
@@ -1949,6 +1974,17 @@ export async function runOnce<E extends EnvDeclaration>(
           record.moved,
           base,
         );
+        if (record.answer !== undefined && live.state !== "trashed") {
+          await rows.adoptAnswer(
+            id,
+            record.answer,
+            record.operation === "remake"
+              ? new Set(watchedFields(kind))
+              : change.changed,
+            change.item,
+          );
+          live = rows.known(id) ?? live;
+        }
         const agreed = store.get(id);
         if (agreed === undefined)
           throw new Error("outbound settlement has no agreement");
@@ -1971,6 +2007,7 @@ export async function runOnce<E extends EnvDeclaration>(
 
   try {
     if (loaded === undefined) throw failure;
+    checkVendorRetry();
     const inbound = connector.inbound;
     if (inbound !== undefined) {
       collected = await bookkeeping(
@@ -2219,10 +2256,15 @@ export async function runOnce<E extends EnvDeclaration>(
         if (pending.change.kind === "purged")
           inventory.set(pending.change.item.id, restoreChange(pending.change));
       check();
-      await connector.preflight(
-        { purges: structuredClone([...inventory.values()]) },
-        watchContext,
-      );
+      try {
+        await connector.preflight(
+          { purges: structuredClone([...inventory.values()]) },
+          watchContext,
+        );
+      } catch (error) {
+        await keepVendorRetry(error);
+        throw error;
+      }
       check();
       await saveOutbound();
     }
@@ -2234,6 +2276,26 @@ export async function runOnce<E extends EnvDeclaration>(
       const declared = specs.get(change.item.type);
       if (declared === undefined || connector.onChange === undefined)
         throw new Error("a pending outbound intent has no declared handler");
+      await store.fetch([id]);
+      const previous = store.get(id);
+      if (
+        !record.acknowledged &&
+        change.kind !== "purged" &&
+        previous !== undefined &&
+        refusedBefore(id, previous, change)
+      )
+        continue;
+      const refusal = purged.get(id)?.refused;
+      if (
+        !record.acknowledged &&
+        change.kind === "purged" &&
+        refusal !== undefined &&
+        ((refusal.count ?? 0) >= purgeRefusalLimit ||
+          clock.now().getTime() - Date.parse(refusal.at) < purgeAgainMs)
+      ) {
+        purgeRefusedOf(id, refusal.reason);
+        continue;
+      }
       const kind = forRow(declared, change.item);
       if (!kind.twoWay || kind.owned === false)
         throw new Error(
@@ -2262,6 +2324,18 @@ export async function runOnce<E extends EnvDeclaration>(
         if (error instanceof Unreachable) {
           unreached(id, error);
           continue;
+        }
+        if (error instanceof Refused && change.kind !== "purged")
+          refuse(id, change, error);
+        if (error instanceof Refused && change.kind === "purged") {
+          purged.set(id, {
+            ...change.item,
+            refused: {
+              at: clock.now().toISOString(),
+              reason: capBytes(logger.redact(error.message), reasonBytes),
+              count: (refusal?.count ?? 0) + 1,
+            },
+          });
         }
         if (error instanceof Refused || error instanceof Declined) {
           raised.set(`outbound-pending:${id}`, error.message);
@@ -2458,6 +2532,7 @@ export async function runOnce<E extends EnvDeclaration>(
       phase.failedPrerequisite = true;
       throw error;
     }
+    checkVendorRetry();
     phase.reading = true;
     try {
       await connector.run(context);
@@ -2534,7 +2609,7 @@ export async function runOnce<E extends EnvDeclaration>(
             const said = logger.redact(error.message);
             const count =
               (refused === undefined ? 0 : (refused.count ?? 1)) + 1;
-            if (count >= purgeRefusalLimit) {
+            if (count >= purgeRefusalLimit && !outbound.has(item.id)) {
               purged.delete(item.id);
               raised.set(
                 `purge-given-up:${item.id}`,
@@ -2552,6 +2627,11 @@ export async function runOnce<E extends EnvDeclaration>(
               });
             }
           } else throw error;
+          continue;
+        }
+        const intent = outbound.get(item.id);
+        if (intent !== undefined) {
+          await completeIntent(intent);
           continue;
         }
         pushed += 1;
@@ -2709,6 +2789,7 @@ export async function runOnce<E extends EnvDeclaration>(
   ) {
     try {
       await store.save({
+        ...(outboundRetryAt !== undefined && { outboundRetryAt }),
         ...(outbound.size > 0 && { outbound: [...outbound.values()] }),
         ...(acknowledged.inbound !== undefined && {
           inbound: acknowledged.inbound,
@@ -2798,7 +2879,12 @@ export async function runOnce<E extends EnvDeclaration>(
   return {
     succeeded: failure === undefined,
     cause: failure === undefined ? undefined : causeOf(failure),
-    retryAfterMs: failure === undefined ? undefined : retryAfterOf(failure),
+    retryAfterMs:
+      outboundRetryAt !== undefined
+        ? Math.max(0, Date.parse(outboundRetryAt) - clock.now().getTime())
+        : failure === undefined
+          ? undefined
+          : retryAfterOf(failure),
     settled,
     cursor: pastLog && saved ? read?.cursor : acknowledged.cursor,
     ...(failure !== undefined && !stopped && { failure }),

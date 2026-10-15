@@ -28,13 +28,17 @@ function fixture() {
     name: "test",
     source: "test",
     env: {},
-    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    types: [{ type: linkedType, fields: ["title", "note", "vendor_id"] }],
     async run(context) {
       if (seed) {
         await context.upsert(linkedType.id, [
           {
             source_id: "one",
-            properties: { title: "Original", vendor_id: "vendor-one" },
+            properties: {
+              title: "Original",
+              note: "Old note",
+              vendor_id: "vendor-one",
+            },
           },
         ]);
         seed = false;
@@ -321,4 +325,197 @@ it("refuses oversized intents before HTTP and cannot replace a pending request",
     await context.outbound.acknowledge(change.item.id, saved.token);
   });
   expect(await f.once()).toBe(0);
+});
+it.each([false, true])(
+  "adopts unsent readback fields and preserves newer local edits after acknowledgment loss=%s",
+  async (lost) => {
+    let seed = true;
+    let sends = 0;
+    const connector = defineConnector({
+      name: "test",
+      source: "test",
+      env: {},
+      types: [{ type: linkedType, fields: ["title", "note", "vendor_id"] }],
+      async run(context) {
+        if (seed) {
+          await context.upsert(linkedType.id, [
+            {
+              source_id: "one",
+              properties: {
+                title: "Original",
+                note: "Old note",
+                vendor_id: "vendor-one",
+              },
+            },
+          ]);
+          seed = false;
+        }
+      },
+      async onChange(change, context) {
+        sends++;
+        const intent = await context.outbound.save(change, {
+          request: { title: "Sent" },
+          baseline: null,
+        });
+        harness.server.edit(change.item.id, { title: "Newer local title" });
+        harness.server.loseStateAnswer = lost;
+        await context.outbound.acknowledge(change.item.id, intent.token, {
+          source_id: "one",
+          properties: {
+            title: "Sent",
+            note: "Fresh vendor note",
+            vendor_id: "vendor-one",
+          },
+        });
+      },
+    });
+    const once = () => start(connector, harness.runtime(["--once"]));
+    await once();
+    harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+    await once();
+    if (lost) await once();
+    expect(sends).toBe(1);
+    expect(harness.server.row("one").properties).toMatchObject({
+      title: "Newer local title",
+      note: "Fresh vendor note",
+    });
+  },
+);
+it("does not replace a newer unsent local field with recovered readback", async () => {
+  const f = fixture();
+  await f.once();
+  const row = harness.server.row("one");
+  harness.server.edit(row.id, { title: "Sent" });
+  f.send(async (change, context) => {
+    const intent = await context.outbound.save(change, {
+      request: { title: "Sent" },
+      baseline: null,
+    });
+    harness.server.edit(row.id, { note: "Newer local note" });
+    harness.server.loseStateAnswer = true;
+    await context.outbound.acknowledge(row.id, intent.token, {
+      source_id: "one",
+      properties: {
+        title: "Sent",
+        note: "Fresh vendor note",
+        vendor_id: "vendor-one",
+      },
+    });
+  });
+  await f.once();
+  await f.once();
+  expect(harness.server.row("one").properties["note"]).toBe("Newer local note");
+});
+it("honors a journaled purge refusal cooldown while keeping it in preflight", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.purge("one");
+  let calls = 0;
+  f.send(async (change, context) => {
+    await context.outbound.save(change, {
+      request: { delete: "vendor-one" },
+      baseline: null,
+    });
+    calls++;
+    throw new Refused("try later");
+  });
+  await f.once();
+  const inventory: string[][] = [];
+  f.preflight((purges) => {
+    inventory.push(purges.map((p) => p.item.id));
+  });
+  await f.once();
+  expect(calls).toBe(1);
+  expect(inventory[0]).toHaveLength(1);
+});
+it.each([false, true])(
+  "keeps a vendor retry deadline across processes with a pending intent=%s",
+  async (journal) => {
+    const f = fixture();
+    await f.once();
+    harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+    let calls = 0;
+    let checks = 0;
+    f.preflight(() => {
+      checks++;
+    });
+    const retryAt = new Date(
+      harness.clock.now().getTime() + 60000,
+    ).toISOString();
+    f.send(async (change, context) => {
+      const intent = journal
+        ? (context.outbound.get(change.item.id) ??
+          (await context.outbound.save(change, {
+            request: { title: "Sent" },
+            baseline: null,
+          })))
+        : undefined;
+      calls++;
+      if (calls === 1) throw new Unreachable("rate limited", { retryAt });
+      if (intent)
+        await context.outbound.acknowledge(change.item.id, intent.token);
+    });
+    await f.once();
+    expect(harness.kept()["outboundRetryAt"]).toBe(retryAt);
+    await f.once();
+    expect(calls).toBe(1);
+    expect(checks).toBe(1);
+    harness.clock.advance(60000);
+    expect(await f.once()).toBe(0);
+    expect(calls).toBe(2);
+  },
+);
+it("keeps a preflight rate limit without ever reaching a mutation", async () => {
+  const f = fixture();
+  await f.once();
+  let calls = 0;
+  const retryAt = new Date(harness.clock.now().getTime() + 60000).toISOString();
+  f.preflight(() => {
+    calls++;
+    throw new Unreachable("rate limited", { retryAt });
+  });
+  await f.once();
+  await f.once();
+  expect(calls).toBe(1);
+  expect(harness.kept()["outboundRetryAt"]).toBe(retryAt);
+});
+it("uses the durable purge answer when the callback returns no entry", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.purge("one");
+  const changedAt = "2026-10-15T12:00:00.000Z";
+  f.send(async (change, context) => {
+    const intent = await context.outbound.save(change, {
+      request: { delete: "vendor-one" },
+      baseline: null,
+    });
+    await context.outbound.acknowledge(change.item.id, intent.token, {
+      source_id: "one",
+      properties: {},
+      changed_at: changedAt,
+    });
+  });
+  expect(await f.once()).toBe(0);
+  expect(
+    harness.server.tombstones.get(`${linkedType.id}\u0000link:vendor-one`)
+      ?.settled_at,
+  ).toBe(changedAt);
+});
+it("does not replay a definitively refused immutable update", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.edit(harness.server.row("one").id, { title: "Refused" });
+  let calls = 0;
+  f.send(async (change, context) => {
+    await context.outbound.save(change, {
+      request: { title: "Refused" },
+      baseline: null,
+    });
+    calls++;
+    throw new Refused("unsupported value");
+  });
+  await f.once();
+  await f.once();
+  expect(calls).toBe(1);
+  expect(harness.kept()["outbound"]).toHaveLength(1);
 });

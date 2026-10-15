@@ -1,6 +1,10 @@
 import type { Agreement } from "./agreement.js";
 import { readJournal } from "./inbound-retry.js";
-import { readOutbound, type OutboundRecord } from "./outbound.js";
+import {
+  readOutbound,
+  retryDeadline,
+  type OutboundRecord,
+} from "./outbound.js";
 import type { PendingInbound, Item } from "./define.js";
 import type { Marfa } from "./marfa.js";
 
@@ -45,6 +49,7 @@ export interface Relinked {
 }
 
 export interface Kept {
+  outboundRetryAt?: string;
   outbound?: OutboundRecord[];
   inbound?: PendingInbound[];
   state: Record<string, unknown>;
@@ -77,6 +82,7 @@ function keptOf(value: unknown, problems: unknown): Kept {
       )
     : {};
   const cursor = kept["cursor"];
+  const outboundRetryAt = retryDeadline(kept["outboundRetryAt"]);
   const purges = Array.isArray(kept["purges"])
     ? kept["purges"].filter(isRecord).map((purge) => purge as unknown as Purge)
     : [];
@@ -97,6 +103,7 @@ function keptOf(value: unknown, problems: unknown): Kept {
   return {
     state,
     conditions,
+    ...(outboundRetryAt !== undefined && { outboundRetryAt }),
     ...(kept["outbound"] !== undefined && {
       outbound: readOutbound(kept["outbound"]),
     }),
@@ -196,6 +203,9 @@ export class Store {
     if (kept.inbound !== undefined) readJournal(kept.inbound);
     if (kept.outbound !== undefined) readOutbound(kept.outbound);
     const state = {
+      ...(kept.outboundRetryAt !== undefined && {
+        outboundRetryAt: retryDeadline(kept.outboundRetryAt),
+      }),
       ...(kept.outbound !== undefined && { outbound: kept.outbound }),
       ...(kept.inbound !== undefined && { inbound: kept.inbound }),
       state: kept.state,

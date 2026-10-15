@@ -10,6 +10,7 @@ import {
   type Agreement,
   type Merged,
 } from "./agreement.js";
+import { retryDeadline } from "./outbound.js";
 import type { UpsertAttempt } from "./inbound-retry.js";
 import type { Entry, Item, Target } from "./define.js";
 import {
@@ -62,10 +63,13 @@ export class LinkTaken extends Error {
 export class Unreachable extends Error {
   override name = "Unreachable";
   readonly scope: string | undefined;
+  /** Pause all vendor callbacks until this durable deadline, including after restart. */
+  readonly retryAt: string | undefined;
 
-  constructor(message: string, options?: { scope?: string }) {
+  constructor(message: string, options?: { scope?: string; retryAt?: string }) {
     super(message);
     this.scope = options?.scope;
+    this.retryAt = retryDeadline(options?.retryAt);
   }
 }
 
@@ -1153,6 +1157,7 @@ export class Rows {
     id: string,
     answered: Entry,
     sent: ReadonlySet<string>,
+    captured?: Item,
   ): Promise<void> {
     const said = cleaned(answered.properties);
     const agreed = this.store.get(id)?.marfa ?? {};
@@ -1167,7 +1172,25 @@ export class Rows {
       if (row === undefined || row.state === "trashed") return;
       const kind = forRow(this.kind, row);
       if (kind.owned === false) return;
-      const differing = fields.filter(
+      const eligible = fields.filter(
+        (field) =>
+          captured === undefined ||
+          mark(held(row.properties, field)) ===
+            mark(held(captured.properties, field)) ||
+          mark(held(row.properties, field)) === mark(held(said, field)),
+      );
+      // Recovery may see an answer already applied before an agreement ACK was lost.
+      if (captured !== undefined) {
+        const agreement = this.store.get(id);
+        if (agreement !== undefined) {
+          const marfa = { ...agreement.marfa };
+          for (const field of eligible)
+            if (mark(held(row.properties, field)) === mark(held(said, field)))
+              marfa[field] = mark(held(said, field));
+          this.store.set(id, { ...agreement, marfa });
+        }
+      }
+      const differing = eligible.filter(
         (field) =>
           mark(held(said, field)) !== mark(held(row.properties, field)) &&
           // A change a person made since is theirs, still to carry, but a

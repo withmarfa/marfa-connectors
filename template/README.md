@@ -272,3 +272,5 @@ docker build -f template/Dockerfile --build-arg CONNECTOR=<name> -t <name> .
 ```
 
 Pass the environment with `-e`. The container needs no volume: a new one picks up where the last left off, from the state kept on the instance.
+
+When Reader or another vendor returns a retry deadline, throw `new Unreachable(message, { retryAt: deadline })` with an ISO timestamp. The kit persists the deadline before continuing and pauses all vendor callbacks, including preflight and the reader, until it expires. The deadline also works when a baseline read is throttled before an outbound intent exists.

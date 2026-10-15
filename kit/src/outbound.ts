@@ -116,3 +116,10 @@ export function readOutbound(value: unknown): OutboundRecord[] {
   }
   return structuredClone(value) as OutboundRecord[];
 }
+
+export function retryDeadline(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+    throw new Error("invalid outbound retry deadline");
+  return new Date(value).toISOString();
+}

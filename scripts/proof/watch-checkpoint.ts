@@ -60,6 +60,7 @@ class Control {
   checkpoint = true;
   mode: "accept" | "refused" | "unreachable" = "accept";
   pushes: Push[] = [];
+  answerProperties: Record<string, unknown> = {};
   events: Event[] = [];
   observe: (event: Event) => Promise<void> | void = () => undefined;
   error: unknown;
@@ -97,7 +98,10 @@ class Control {
         ),
       );
       if (this.mode === "accept")
-        found.properties = { ...pushed.item.properties };
+        found.properties = {
+          ...pushed.item.properties,
+          ...this.answerProperties,
+        };
       res.end(JSON.stringify(found));
     } else {
       res.statusCode = 404;
@@ -298,7 +302,38 @@ export async function proveOutbound(
           test.control.pushes[1]?.item.properties["title"],
           "Newer title",
         );
-        return "separate real connector processes; durable save before HTTP; confirmed ACK lost after apply; one captured request, no replay after confirmation, newer edit carried separately";
+        test.control.answerProperties = { note: "Unsent readback note" };
+        await edit(
+          admin,
+          required((await test.rows()).get("one")),
+          "Readback title",
+          "Newer note",
+        );
+        test.proxy.after = (request, response) => {
+          const state = request.input["state"] as
+            Record<string, unknown> | undefined;
+          const records = state?.["outbound"] as
+            { acknowledged: boolean }[] | undefined;
+          return (
+            states(request) &&
+            response.ok &&
+            records?.[0]?.acknowledged === true
+          );
+        };
+        assert.equal((await test.run()).code, 1);
+        await edit(
+          admin,
+          required((await test.rows()).get("one")),
+          "Still newer title",
+          "Newer note",
+        );
+        test.proxy.after = () => false;
+        await test.succeeds();
+        const adopted = required((await test.rows()).get("one"));
+        assert.equal(adopted.properties["note"], "Unsent readback note");
+        assert.equal(adopted.properties["title"], "Still newer title");
+        assert.equal(test.control.pushes.length, 3);
+        return "separate real connector processes; durable save before HTTP; confirmed ACK lost after apply; no replay after confirmation; unsent readback adopted and newer local edit retained";
       } finally {
         await test.stop();
       }
