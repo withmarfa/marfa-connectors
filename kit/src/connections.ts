@@ -8,6 +8,7 @@ import type {
 import { causeOf, Refusal, type Edge, type Marfa } from "./marfa.js";
 import {
   connectKey,
+  forRow,
   Stopped,
   type Hooks,
   type Rows,
@@ -74,7 +75,7 @@ export class Connections {
     const edges = await this.edgesOf(ids);
     const plans: Plan[] = [];
     for (const id of ids) {
-      const found = this.rowOf(id);
+      const found = await this.freshOwned(id);
       const agreement = this.store.get(id);
       if (found === undefined || agreement === undefined) continue;
       const said = named.get(id) ?? {};
@@ -116,6 +117,7 @@ export class Connections {
         ?.kept.delete(refused.target);
     }
     for (const plan of plans) {
+      if ((await this.freshOwned(plan.item.id)) === undefined) continue;
       const agreement = this.store.get(plan.item.id);
       if (agreement === undefined) continue;
       const next = this.agreeOn(
@@ -283,6 +285,11 @@ export class Connections {
         kept.delete(target);
       }
       for (const target of gone) kept.delete(target);
+      if (
+        spec.policy !== undefined &&
+        (await this.freshOwned(item.id)) === undefined
+      )
+        return agreement;
       // A target purged meanwhile is let go, which no person changed.
       if (remove.length > 0 || add.length > gone.size) {
         this.putBackCondition(item.id, type);
@@ -459,6 +466,44 @@ export class Connections {
     return undefined;
   }
 
+  private async freshOwned(
+    id: string,
+  ): Promise<{ item: Item; spec: Spec } | undefined> {
+    const found = this.rowOf(id);
+    if (found?.spec.policy === undefined) return found;
+    const item = await this.marfa.item(id);
+    if (
+      item?.type !== found.spec.type ||
+      forRow(found.spec, item).owned === false
+    ) {
+      this.hooks.omitted?.();
+      return undefined;
+    }
+    this.lanes.get(item.type)?.rows.adopt(item);
+    return { item, spec: found.spec };
+  }
+
+  private async guarded(
+    item: Item,
+    write: (fresh: Item) => Promise<void>,
+  ): Promise<boolean> {
+    for (let attempt = 0; ; attempt += 1) {
+      const found = await this.freshOwned(item.id);
+      if (found === undefined) return false;
+      try {
+        await write(found.item);
+        return true;
+      } catch (error) {
+        if (
+          attempt > 0 ||
+          !(error instanceof Refusal) ||
+          error.code !== "version_conflict"
+        )
+          throw error;
+      }
+    }
+  }
+
   private async disconnect(
     edge: string,
     item: Item,
@@ -467,6 +512,11 @@ export class Connections {
   ): Promise<boolean> {
     if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
     try {
+      if (this.rowOf(item.id)?.spec.policy !== undefined) {
+        return await this.guarded(item, (fresh) =>
+          this.marfa.disconnect(edge, fresh.version),
+        );
+      }
       await this.marfa.disconnect(edge);
       return true;
     } catch (error) {
@@ -484,16 +534,41 @@ export class Connections {
   ): Promise<{ id: string; type: string; target: string }[]> {
     if (adds.length === 0) return [];
     if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
+    const refused: { id: string; type: string; target: string }[] = [];
+    const plain = [];
+    for (const add of adds) {
+      if (this.rowOf(add.item.id)?.spec.policy === undefined) {
+        plain.push(add);
+        continue;
+      }
+      try {
+        if (
+          await this.guarded(add.item, (fresh) =>
+            this.marfa.connectExact(fresh, add.type, add.target),
+          )
+        )
+          continue;
+      } catch (error) {
+        if (!(error instanceof Refusal) || causeOf(error) !== "refused")
+          throw error;
+        this.refused(
+          add.item,
+          add.type,
+          add.target,
+          `${error.code}, ${error.detail}`,
+        );
+      }
+      refused.push({ id: add.item.id, type: add.type, target: add.target });
+    }
     const results = await this.marfa.connect(
-      adds.map(({ item, type, target }) => ({
+      plain.map(({ item, type, target }) => ({
         source_id: item.id,
         target_id: target,
         edge_type: type,
       })),
     );
-    const refused: { id: string; type: string; target: string }[] = [];
     for (const result of results) {
-      const add = adds[result.index];
+      const add = plain[result.index];
       if (result.outcome !== "errored" || add === undefined) continue;
       refused.push({ id: add.item.id, type: add.type, target: add.target });
       this.refused(

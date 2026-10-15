@@ -134,6 +134,7 @@ export function forRow(
   const readOnly = new Set(kind.readOnly);
   const observed = new Set<string>();
   for (const [field, mode] of Object.entries(policy.fields ?? {})) {
+    if (kind.omitted.has(field)) continue;
     if (!kind.fields.includes(field))
       throw new Error(`undeclared policy field ${field}`);
     if (field === kind.link) continue;
@@ -608,7 +609,9 @@ export class Rows {
       this.checkStopped();
       this.batch.tried += 1;
       try {
-        row = await this.marfa.transition(found.id, "active");
+        const revived = await this.transition(found, "active", entry);
+        if (revived === undefined) return;
+        row = revived;
       } catch (error) {
         await this.absorb(error, entry.source_id, false, entry);
         return;
@@ -1051,9 +1054,10 @@ export class Rows {
       this.checkStopped();
       this.batch.tried += 1;
       try {
-        const archived = await this.marfa.transition(row.id, "archived");
+        const archived = await this.transition(row, "archived");
+        if (archived === undefined) continue;
         this.index(archived);
-        const side = sideOf(this.kind.fields, row.properties);
+        const side = sideOf(this.kind.fields, archived.properties);
         this.store.set(row.id, {
           vendor: side,
           marfa: side,
@@ -1069,6 +1073,45 @@ export class Rows {
       }
     }
     this.judge();
+  }
+
+  private async transition(
+    given: Item,
+    state: "active" | "archived",
+    entry?: Entry,
+  ): Promise<Item | undefined> {
+    if (this.kind.policy === undefined)
+      return this.marfa.transition(given.id, state);
+    let row = given;
+    for (let attempt = 0; ; attempt += 1) {
+      if (
+        row.type !== this.kind.type ||
+        forRow(this.kind, row, entry).owned === false
+      ) {
+        this.hooks.omitted?.();
+        return undefined;
+      }
+      try {
+        return await this.marfa.transition(row.id, state, row.version);
+      } catch (error) {
+        if (
+          attempt > 0 ||
+          !(error instanceof Refusal) ||
+          error.code !== "version_conflict"
+        )
+          throw error;
+        const found = await this.marfa.lookup(this.kind.type, {
+          ids: [row.id],
+        });
+        const fresh = found.data[0];
+        if (fresh === undefined) {
+          this.hooks.omitted?.();
+          return undefined;
+        }
+        this.index(fresh);
+        row = fresh;
+      }
+    }
   }
 
   async putBack(
