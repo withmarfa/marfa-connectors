@@ -1,0 +1,15 @@
+{
+  "name": "readwise-reader",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@withmarfa/connector": "workspace:*",
+    "@withmarfa/readwise": "workspace:*"
+  },
+  "scripts": {
+    "start": "node dist/main.js"
+  }
+}

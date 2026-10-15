@@ -10,6 +10,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
   - [`github`](./connectors/github/README.md): repositories, issues and comments from a GitHub App, with their relations, and changes carried back to issues and comments.
   - [`todoist`](./connectors/todoist/README.md): a Todoist account's tasks, with changes carried back.
   - [`readwise`](./connectors/readwise/README.md): sources and complete highlights from one Readwise account, read only, with resumable export checkpoints.
+  - [`readwise-reader`](./connectors/readwise-reader/README.md): Reader documents, highlights, retained content, and supported two-way edits, with independent registration and shared identities.
   - [`rss`](./connectors/rss/README.md): the entries of the feeds it is given, read only.
 - [`scripts/`](./scripts): prepares the pinned Marfa server, holds the proof, which boots the pinned server and drives every connector against it, and holds the tests that guard the repository itself.
 

@@ -4,8 +4,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
-import { Client, endpoint, RateLimited, InvalidCursor } from "../src/client.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  Client,
+  endpoint,
+  RateLimited,
+  InvalidCursor,
+} from "@withmarfa/readwise";
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
@@ -166,4 +171,45 @@ describe("Readwise GET client", () => {
       expect(() => endpoint(value)).toThrow();
     expect(endpoint()).toBe("https://readwise.io/api/v2/");
   });
+});
+
+it("resumes the exact export and detail GET after each durable wait", async () => {
+  const requests: string[] = [];
+  const throttled = new Set<string>();
+  const base = await server((request, response) => {
+    const path = request.url ?? "";
+    requests.push(path);
+    if (
+      (path.includes("export/") || path.includes("highlights/21/")) &&
+      !throttled.has(path)
+    ) {
+      throttled.add(path);
+      response.writeHead(429, { "Retry-After": "60" }).end();
+      return;
+    }
+    const id = Number(/highlights\/(\d+)\//.exec(path)?.[1]);
+    response.end(
+      JSON.stringify(Number.isSafeInteger(id) ? { id, book_id: 42 } : empty),
+    );
+  });
+  const waitUntil = vi.fn((until: string) => {
+    expect(until).toBe("1970-01-01T00:01:00.000Z");
+    return Promise.resolve();
+  });
+  const client = new Client(base, "token", signal(), {
+    now: () => 0,
+    waitUntil,
+  });
+  await client.page({ cursor: "opaque+/=", sourceId: 42 });
+  for (let id = 1; id <= 25; id++)
+    expect(await client.sourceForHighlight(id)).toBe(42);
+  expect(requests[0]).toBe(requests[1]);
+  expect(
+    requests.filter((path) => path.endsWith("highlights/21/")),
+  ).toHaveLength(2);
+  expect(requests).toHaveLength(28);
+  expect(waitUntil.mock.calls).toEqual([
+    ["1970-01-01T00:01:00.000Z"],
+    ["1970-01-01T00:01:00.000Z"],
+  ]);
 });

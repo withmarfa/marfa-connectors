@@ -10,7 +10,7 @@ Source notes map to `notes`, summaries to `description`, and valid source and co
 
 A valid highlighting time supplies the item's `occurred_at`; a valid update time supplies the kit's conflict-resolution timestamp. Original timestamp strings remain available in properties. `time_offset` maps to the core `time` locator; page, offset, order, none, and cfi retain their meaning. Original location kinds, numeric locations, and colors are retained even when core enums cannot represent them. Text and annotations are never truncated. Tags from strings or named objects are trimmed and deduplicated without changing case or Unicode.
 
-Both types retain Readwise IDs and external IDs. The source's `external_id`, when `readwise_source` is `reader`, provides a later Reader connector with the upstream identifier. This does not claim cross-API deduplication or import Reader document content.
+Both types retain available export IDs and external IDs. A Reader-only row has no fabricated export ID. Verified Reader identities share the same rows through `canonical_key`; managed Reader content uses the shared preservation implementation.
 
 ## Account identity
 
@@ -34,10 +34,10 @@ pnpm build
 Mint a connector-scoped key using your existing Marfa administrative environment:
 
 ```bash
-marfa keys create --label readwise --source readwise --type-permission readwise.source=write --type-permission readwise.highlight=write --edge-permission references=write --metadata-permission types=write --default-tier feed
+marfa keys create --label readwise --source readwise --type-permission readwise.source=write --type-permission readwise.highlight=write --type-permission readwise.file=write --edge-permission references=write --edge-permission attached-to=write --metadata-permission types=write --default-tier feed
 ```
 
-The built-in `references` definition is not registered or changed. Do not grant `metadata edge_types=write` or unrelated permissions.
+The built-in `references` and `attached-to` definitions are not registered or changed. Do not grant `metadata edge_types=write` or unrelated permissions.
 
 Supply these environment variables through your secret manager or process environment:
 
@@ -78,3 +78,25 @@ pnpm proof
 ```
 
 The mapping follows the [Readwise export API](https://readwise.io/api_deets#highlight-export).
+
+## Use Highlights with Reader
+
+Both installations use the same `READWISE_ACCOUNT` label and write item source `readwise`. They have separate registration keys: `readwise` for Highlights and `readwise-reader` for Reader. Their checkpoints and agreements are independent.
+
+The private `@withmarfa/readwise` workspace package defines both item types, identities, and vendor mappings. Existing export natural keys and item IDs remain unchanged. Reader-only rows use `<account>:reader-document:<ID>` or `<account>:reader-highlight:<ID>`. The `canonical_key` link joins verified Reader identities to existing rows, including archived and trashed rows. Purged identities are not recreated, and conflicting holders produce a condition requiring investigation. An export ID arriving later enriches the existing Reader row.
+
+For verified Reader-managed rows, Highlights refreshes Reader metadata directly, including when no export change is available and the Reader process is stopped. Reader supplies the canonical passage; a differing export passage is retained in `readwise_text`. Highlights observes shared fields without replacing pending local edits or carrying them upstream. Export tombstones do not archive Reader-managed rows. Ordinary export-only rows retain their existing behavior.
+
+Set `READWISE_READER_API_URL` only for controlled testing. Its default is `https://readwise.io/api/v3/`, with the same endpoint restrictions as `READWISE_API_URL`. The token is sent only to the configured API endpoint. A failed Reader lookup never substitutes older export values. Managed Reader content and over-limit text use the shared bounded preservation queue, including when Reader is stopped. The last good row and bytes remain until their replacements are acknowledged. Grant `readwise.file=write` and `attached-to=write` before enabling this content recovery.
+
+## Replace existing schemas
+
+Adding the canonical link and making export IDs optional are structural changes. Normal scoped connector startup deliberately refuses to replace an existing incompatible schema.
+
+1. Stop both connector installations. Keep their registrations, checkpoints, agreements, and stored rows.
+2. Back up the instance and inventory `readwise.source` and `readwise.highlight`, including archived and trashed rows, tombstones, properties, and relationships.
+3. Review the definitions in `shared/readwise/src/readwise.source.json` and `shared/readwise/src/readwise.highlight.json`. Using the existing administrative client, replace those two type definitions through `PUT /types/{id}`. Do not delete or recreate the types or items.
+4. Read the definitions and inventory back. Confirm that item IDs, natural keys, state, properties, tombstones, and relationships are unchanged.
+5. Install builds using the same shared definitions in both connectors before restarting either. Existing canonical links are resolved before further imports; identity conflicts must be investigated without merging or deleting rows automatically.
+
+This operation changes schemas only. It does not migrate item identities, erase stored content, or authorize provider writes.

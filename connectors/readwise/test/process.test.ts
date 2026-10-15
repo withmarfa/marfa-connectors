@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
-import type { ExportPage } from "../src/export.js";
+import type { ExportPage } from "@withmarfa/readwise";
 
 const exec = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
@@ -13,6 +13,7 @@ let marfa: ScriptedServer;
 let vendor: Server;
 let base: string;
 let pages: ExportPage[];
+let readerRows: Record<string, unknown>[];
 let status: number;
 let retryAfter: string | undefined;
 let asked: URL[];
@@ -36,8 +37,8 @@ const source = (id: number) => ({
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("readwise", {
-    types: ["readwise.source", "readwise.highlight"],
-    edges: ["references"],
+    types: ["readwise.source", "readwise.highlight", "readwise.file"],
+    edges: ["references", "attached-to"],
   }).start();
   marfa.advance(Date.now() - Date.parse("2026-09-25T00:00:00.000Z"));
   marfa.types.set("core.media", {
@@ -61,6 +62,24 @@ beforeEach(async () => {
       ].map((name) => [name, { type: "string" }]),
     ),
   });
+  marfa.types.set("core.file", {
+    id: "core.file",
+    fields: {
+      title: { type: "string" },
+      blob_ref: { type: "string" },
+      mime_type: { type: "string" },
+    },
+  });
+  marfa.edgeTypes.set("attached-to", {
+    id: "attached-to",
+    cardinality: "many-to-many",
+    source_type_constraints: ["*"],
+    target_type_constraints: ["*"],
+    cascade_on_delete: "orphan",
+    property_schema: {},
+    written_at: "source",
+    shipped: true,
+  });
   marfa.edgeTypes.set("references", {
     id: "references",
     cardinality: "many-to-many",
@@ -72,6 +91,7 @@ beforeEach(async () => {
     shipped: true,
   });
   pages = [{ count: 2, nextPageCursor: null, results: [source(1), source(2)] }];
+  readerRows = [];
   status = 200;
   retryAfter = undefined;
   asked = [];
@@ -90,6 +110,19 @@ beforeEach(async () => {
       response
         .writeHead(status, retryAfter ? { "Retry-After": retryAfter } : {})
         .end();
+      return;
+    }
+    if (url.pathname === "/list/") {
+      const results = readerRows.filter(
+        (row) => row["id"] === url.searchParams.get("id"),
+      );
+      response.end(
+        JSON.stringify({
+          count: results.length,
+          nextPageCursor: null,
+          results,
+        }),
+      );
       return;
     }
     if (url.pathname.startsWith("/highlights/")) {
@@ -142,6 +175,7 @@ async function once() {
         READWISE_ACCESS_TOKEN: "test-readwise-token",
         READWISE_ACCOUNT: "primary",
         READWISE_API_URL: base,
+        READWISE_READER_API_URL: base,
       },
       timeout: 15_000,
     });
@@ -164,6 +198,32 @@ function due() {
 }
 
 describe("Readwise process on the kit", () => {
+  it("keeps canonical adoption and local notes when an existing Highlights agreement observes Reader", async () => {
+    expect((await once()).code).toBe(0);
+    const original = marfa.row("primary:source:1");
+    marfa.touch("primary:source:1", {
+      canonical_key: "primary:reader-document:reader-1",
+      reader_managed: true,
+      reader_id: "reader-1",
+      notes: "Local pending",
+    });
+    readerRows = [
+      {
+        id: "reader-1",
+        category: "article",
+        title: "Source 1",
+        notes: "Vendor note",
+      },
+    ];
+    const result = await once();
+    expect(result.code, result.output).toBe(0);
+    const current = marfa.row("primary:source:1");
+    expect(current.id).toBe(original.id);
+    expect(current.properties["canonical_key"]).toBe(
+      "primary:reader-document:reader-1",
+    );
+    expect(current.properties["notes"]).toBe("Local pending");
+  });
   it("registers core-derived types, links complete passages, and leaves a repeat unchanged", async () => {
     const first = await once();
     expect(first.code, first.output).toBe(0);
@@ -201,7 +261,7 @@ describe("Readwise process on the kit", () => {
     expect(marfa.rows).toHaveLength(4);
   });
   it("holds progress when references are refused and recovers without duplicate rows", async () => {
-    marfa.refuseNext("POST /edges/bulk", 503, "internal_error");
+    marfa.refuseNext("POST /edges", 503, "internal_error");
     expect((await once()).code).not.toBe(0);
     expect(progress().completed).toBeUndefined();
     const result = await once();

@@ -6,5 +6,12 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "include": ["src", "src/*.json"],
-  "references": [{ "path": "../../kit" }]
+  "references": [
+    {
+      "path": "../../kit"
+    },
+    {
+      "path": "../../shared/readwise"
+    }
+  ]
 }

@@ -54,7 +54,7 @@ export const RULES: readonly (readonly [RegExp, readonly Job[]])[] = [
 
   // The proof runs every connector from what `pnpm build` makes, and the
   // build leaves tests out.
-  [/^(kit|connectors\/[^/]+)\/test\//, ["code"]],
+  [/^(kit|connectors\/[^/]+|shared\/[^/]+)\/test\//, ["code"]],
   [
     /^scripts\/(test\/|no-skipped-tests\.ts$|check-pr-description\.ts$)/,
     ["code"],

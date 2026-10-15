@@ -7,9 +7,13 @@ export const sourceFields = [
   "title",
   "author",
   "description",
+  "language",
+  "published_at",
   "notes",
   "url",
   "image_url",
+  "language",
+  "published_at",
   ...Object.keys(source.fields),
 ];
 export const highlightFields = [
