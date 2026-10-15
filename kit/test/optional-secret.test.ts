@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import type { Connector, EnvValues } from "../src/define.js";
 import { readEnvironment } from "../src/environment.js";
 import { Logger } from "../src/log.js";
+import { systemClock } from "../src/runtime.js";
 
 const env = { TEST_TOKEN: "optional-secret" } as const;
 const connector: Connector<typeof env> = {
@@ -41,11 +42,7 @@ describe("an optional secret", () => {
         setup,
       );
       expect(result.values["TEST_TOKEN"]).toBe(token);
-      const logger = new Logger(
-        () => undefined,
-        () => new Date(),
-        result.secrets,
-      );
+      const logger = new Logger(() => undefined, systemClock, result.secrets);
       expect(logger.redact(`${token} ${encodeURIComponent(token)}`)).toBe(
         "[redacted] [redacted]",
       );
