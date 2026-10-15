@@ -200,6 +200,8 @@ export interface Log {
 export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
+  /** Detached snapshots for withholding inbound identities while outbound work waits. */
+  readonly pendingOutbound: () => readonly OutboundIntent[];
   readonly env: EnvValues<E>;
   /**
    * Aborts when the process is told to stop or the run's hold can no longer
@@ -372,6 +374,12 @@ export interface OutboundJournal {
    * pending intent cannot be replaced by a newer edit or request. */
   save(
     change: Change,
+    intent: { request: JsonValue; baseline: JsonValue },
+  ): Promise<OutboundIntent>;
+  /** After proving a step complete, durably replace it with the next exact request. The captured change stays fixed. */
+  advance(
+    itemId: string,
+    token: string,
     intent: { request: JsonValue; baseline: JsonValue },
   ): Promise<OutboundIntent>;
   /** Durably consume known-no-apply evidence before retrying the exact request. */

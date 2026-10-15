@@ -596,3 +596,47 @@ it("retries the same request after durable known-no-apply evidence is consumed",
   expect(await f.once()).toBe(0);
   expect(calls).toBe(2);
 });
+it.each([false, true])(
+  "advances a proved step without changing the captured edit; replacement ACK lost=%s",
+  async (lost) => {
+    const f = fixture();
+    await f.once();
+    const row = harness.server.row("one");
+    harness.server.edit(row.id, { title: "Captured" });
+    let patches = 0;
+    let steps = 0;
+    f.send(async (change, context) => {
+      let intent =
+        context.outbound.get(change.item.id) ??
+        (await context.outbound.save(change, {
+          request: { phase: "save", url: "https://example.com/item" },
+          baseline: null,
+        }));
+      if ((intent.request as { phase: string }).phase === "save") {
+        steps++;
+        harness.server.edit(row.id, { title: "Newer" });
+        harness.server.loseStateAnswer = lost;
+        intent = await context.outbound.advance(change.item.id, intent.token, {
+          request: {
+            phase: "patch",
+            title: change.item.properties["title"] as string,
+          },
+          baseline: { title: "Readback" },
+        });
+      }
+      expect(intent.change.item.properties["title"]).toBe("Captured");
+      expect(intent.request).toEqual({ phase: "patch", title: "Captured" });
+      expect(intent.baseline).toEqual({ title: "Readback" });
+      patches++;
+      await context.outbound.acknowledge(change.item.id, intent.token);
+    });
+    await f.once();
+    if (lost) {
+      expect(patches).toBe(0);
+      await f.once();
+    }
+    expect(steps).toBe(1);
+    expect(patches).toBe(1);
+    expect(harness.server.row("one").properties["title"]).toBe("Newer");
+  },
+);

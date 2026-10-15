@@ -913,6 +913,7 @@ export async function runOnce<E extends EnvDeclaration>(
     ...lane(type).spec.fields,
   ];
   const context: RunContext<E> = {
+    pendingOutbound: () => [...outbound.values()].map(publicIntent),
     env,
     signal: setup.signal,
     state,
@@ -947,6 +948,7 @@ export async function runOnce<E extends EnvDeclaration>(
       };
       scopes.set(name, scope);
       const scoped: ScopedRunContext<E> = {
+        pendingOutbound: () => [...outbound.values()].map(publicIntent),
         refusals: {
           pending: () =>
             (acknowledged.inbound ?? [])
@@ -1112,6 +1114,40 @@ export async function runOnce<E extends EnvDeclaration>(
           acknowledged: false,
         };
         outbound.set(change.item.id, record);
+        await saveOutbound();
+        return publicIntent(record);
+      },
+      advance: async (id, token, intent) => {
+        check();
+        const held = outbound.get(id);
+        if (
+          activeOutbound?.change.item.id !== id ||
+          outboundBusy ||
+          held?.token !== token ||
+          held.acknowledged
+        )
+          throw new Error("advance requires the active unacknowledged intent");
+        const content = checkedJson({
+          change: held.change,
+          operation: held.operation,
+          ...(held.agreement !== undefined && { agreement: held.agreement }),
+          ...(held.moved !== undefined && { moved: held.moved }),
+          request: intent.request,
+          baseline: intent.baseline,
+        }) as Omit<
+          OutboundRecord,
+          | "token"
+          | "acknowledged"
+          | "answer"
+          | "confirmationAgreement"
+          | "requestNotApplied"
+        >;
+        const record: OutboundRecord = {
+          ...content,
+          token: outboundToken(content),
+          acknowledged: false,
+        };
+        outbound.set(id, record);
         await saveOutbound();
         return publicIntent(record);
       },
