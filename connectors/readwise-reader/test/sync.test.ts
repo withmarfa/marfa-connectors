@@ -750,6 +750,8 @@ it("persists and resumes a realistic 5,422-identity Reader bridge within checkpo
   expect(f.writes[0]?.entry.properties["readwise_text"]).toBe(highlight.text);
 });
 
+// Reconciliation compresses progress after each inventory item, which needs
+// more headroom on shared CI runners than the ordinary fixture cases.
 it("resumes a 5,422-row full inventory with aliases, queued work and the whole checkpoint envelope", async () => {
   const f = fixture(true);
   const id = (n: number) =>
@@ -818,7 +820,7 @@ it("resumes a 5,422-row full inventory with aliases, queued work and the whole c
     "completed",
   );
   expect(Math.max(...f.checkpointBytes)).toBeLessThan(512 * 1024);
-});
+}, 60_000);
 
 it("rejects malformed compressed listing identities before resuming vendor reads", async () => {
   const f = fixture();

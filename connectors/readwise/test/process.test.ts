@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
@@ -9,6 +9,7 @@ import type { ExportPage } from "@withmarfa/readwise";
 
 const exec = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
+const children = new Map<ChildProcess, Promise<unknown>>();
 let marfa: ScriptedServer;
 let vendor: Server;
 let base: string;
@@ -157,6 +158,9 @@ beforeEach(async () => {
   base = `http://127.0.0.1:${String((vendor.address() as AddressInfo).port)}/`;
 });
 afterEach(async () => {
+  for (const child of children.keys()) child.kill("SIGKILL");
+  await Promise.all(children.values());
+  children.clear();
   await marfa.stop();
   vendor.closeAllConnections();
   await new Promise<void>((done) =>
@@ -165,25 +169,32 @@ afterEach(async () => {
     }),
   );
 });
-async function once() {
-  try {
-    const { stderr } = await exec("node", [built, "--once"], {
-      env: {
-        PATH: process.env["PATH"],
-        MARFA_API_URL: marfa.url,
-        MARFA_API_KEY: marfa.key,
-        READWISE_ACCESS_TOKEN: "test-readwise-token",
-        READWISE_ACCOUNT: "primary",
-        READWISE_API_URL: base,
-        READWISE_READER_API_URL: base,
-      },
-      timeout: 15_000,
-    });
-    return { code: 0, output: stderr };
-  } catch (error) {
-    const failed = error as { code: number; stderr: string };
-    return { code: failed.code, output: failed.stderr };
-  }
+function launch() {
+  const running = exec("node", [built, "--once"], {
+    env: {
+      PATH: process.env["PATH"],
+      MARFA_API_URL: marfa.url,
+      MARFA_API_KEY: marfa.key,
+      READWISE_ACCESS_TOKEN: "test-readwise-token",
+      READWISE_ACCOUNT: "primary",
+      READWISE_API_URL: base,
+      READWISE_READER_API_URL: base,
+    },
+    timeout: 15_000,
+  });
+  const result = running.then(
+    ({ stderr }) => ({ code: 0, output: stderr }),
+    (error: unknown) => {
+      const failed = error as { code: number; stderr: string };
+      return { code: failed.code, output: failed.stderr };
+    },
+  );
+  children.set(running.child, result);
+  void result.then(() => children.delete(running.child));
+  return { child: running.child, result };
+}
+function once() {
+  return launch().result;
 }
 const progress = () =>
   ((marfa.connectorState?.["state"] as Record<string, unknown> | undefined)?.[
@@ -379,12 +390,34 @@ describe("Readwise process on the kit", () => {
   it("persists throttle deadlines so a restarted process makes no early request", async () => {
     status = 429;
     retryAfter = "120";
-    const first = await once();
-    expect(first.code, first.output).toBe(0);
+    const first = launch();
+    await expect
+      .poll(() => marfa.connectorState?.["outboundRetryAt"], {
+        timeout: 10_000,
+        interval: 10,
+      })
+      .toBeTypeOf("string");
+    const deadline = String(marfa.connectorState?.["outboundRetryAt"]);
+    expect(Date.parse(deadline)).toBeGreaterThan(Date.now() + 100_000);
+    expect(first.child.exitCode).toBeNull();
     const count = asked.length;
-    expect((await once()).code).toBe(0);
+    expect(count).toBeGreaterThan(0);
+    first.child.kill("SIGTERM");
+    const stopped = await first.result;
+    expect(stopped.code, stopped.output).toBe(0);
+    expect(marfa.connectorState?.["outboundRetryAt"]).toBe(deadline);
+    const restarted = await once();
+    expect(restarted.code, restarted.output).toBe(1);
     expect(asked).toHaveLength(count);
     expect(progress().completed).toBeUndefined();
+    const saved = marfa.connectorState;
+    if (saved === undefined) throw new Error("missing durable retry state");
+    saved["outboundRetryAt"] = "2000-01-01T00:00:00.000Z";
+    status = 200;
+    const due = await once();
+    expect(due.code, due.output).toBe(0);
+    expect(asked.length).toBeGreaterThan(count);
+    expect(progress().completed).toBeDefined();
   });
   it("reports wrong credentials as failure and a valid empty account as completed", async () => {
     status = 401;

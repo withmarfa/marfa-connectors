@@ -33,10 +33,12 @@ describe("Reader content boundaries", () => {
     expect(storageUrl(allowed).hostname).toBe(
       "readwise-assets.s3.amazonaws.com",
     );
+    const credentialed = new URL(allowed);
+    credentialed.username = "user";
     for (const url of [
       "http://readwise-assets.s3.amazonaws.com/a",
       "https://readwise-assets.s3.amazonaws.com.evil.test/a",
-      "https://user@readwise-assets.s3.amazonaws.com/a",
+      credentialed.href,
       "https://readwise-assets.s3.amazonaws.com:8443/a",
       "http://127.0.0.1/a",
     ])
