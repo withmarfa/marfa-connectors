@@ -6,6 +6,7 @@ import type {
 } from "@withmarfa/connector";
 import {
   blockedBy,
+  relatesTo,
   commentEntry,
   commentType,
   inRepository,
@@ -616,21 +617,34 @@ async function syncRepository(
   const at = { node, name: repository.name };
   const hidden = privateIn(options.privacy, node);
 
-  // Relations, which move no issue's time, asked of every issue that
-  // changed, since REST names no parent to an App; and the issues an issue
-  // blocks, whose own list of blockers changed with it.
-  const relations = await relationsOf(
-    octokit,
-    listed.map((issue) => issue.node_id),
-  );
-  const listedNodes = new Set(listed.map((issue) => issue.node_id));
+  // Neutral links need not alter REST data or its ETag. Poll the issues on
+  // unchanged pages too, so installations without webhooks still converge.
+  const unchanged = await issuesByNode(octokit, [
+    ...(
+      await nodesOfNumbers(
+        octokit,
+        owner,
+        name,
+        [...scope].filter((number) => !byNumber.has(number)),
+      )
+    ).values(),
+  ]);
+  // Reverse relationships can name older issues outside the listing window.
+  const relations = await relationsOf(octokit, [
+    ...listed.map((issue) => issue.node_id),
+    ...unchanged.map((one) => one.issue.node),
+  ]);
+  const listedNodes = new Set([
+    ...listed.map((issue) => issue.node_id),
+    ...unchanged.map((one) => one.issue.node),
+  ]);
   // A child detached, or an issue no longer blocked, names nothing on
   // GitHub's side of what changed: ask about those Marfa holds under it.
   const held: string[] = [];
   if (repository.comments !== undefined) {
-    for (const issue of listed) {
-      const under = { type: issueType, id: issue.node_id };
-      for (const connection of [subIssueOf, blockedBy]) {
+    for (const id of listedNodes) {
+      const under = { type: issueType, id };
+      for (const connection of [subIssueOf, blockedBy, relatesTo]) {
         for (const row of await context.linked(issueType, connection, under)) {
           const link = linkOf(row);
           if (link !== undefined) held.push(link);
@@ -646,15 +660,22 @@ async function syncRepository(
       ...(one.parent !== null && options.synced.has(one.parent.repository.id)
         ? [one.parent.id]
         : []),
-      ...one.blockedBy
+      ...[
+        ...one.blockedBy,
+        ...one.relatesTo,
+        ...(one.duplicateOf === null ? [] : [one.duplicateOf]),
+      ]
         .filter((other) => options.synced.has(other.repository.id))
         .map((other) => other.id),
     ]),
   ];
-  const beside = await issuesByNode(
-    octokit,
-    around.filter((id) => !listedNodes.has(id)),
-  );
+  const beside = [
+    ...unchanged,
+    ...(await issuesByNode(
+      octokit,
+      around.filter((id) => !listedNodes.has(id)),
+    )),
+  ];
   const knownTargets = await retainedTargets(
     context,
     [...relations.values(), ...beside.map((one) => one.relations)],
@@ -1035,6 +1056,8 @@ async function retainedTargets(
     .flatMap((one) => [
       ...(one.parent === null ? [] : [one.parent]),
       ...one.blockedBy,
+      ...one.relatesTo,
+      ...(one.duplicateOf === null ? [] : [one.duplicateOf]),
     ])
     .filter((one) => repositories.has(one.repository.id))
     .map((one) => one.id);
@@ -1120,11 +1143,24 @@ async function readNamed(
     }
   };
   await ask([...namedIssues]);
+  const heldRelated: string[] = [];
+  for (const node of namedIssues) {
+    for (const row of await context.linked(issueType, relatesTo, {
+      type: issueType,
+      id: node,
+    })) {
+      const link = linkOf(row);
+      if (link !== undefined) heldRelated.push(link);
+    }
+  }
+  await ask(heldRelated);
   await ask(
     [...issues.values()]
       .flatMap(({ relations }) => [
         ...(relations.parent === null ? [] : [relations.parent]),
         ...relations.blockedBy,
+        ...relations.relatesTo,
+        ...(relations.duplicateOf === null ? [] : [relations.duplicateOf]),
       ])
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),

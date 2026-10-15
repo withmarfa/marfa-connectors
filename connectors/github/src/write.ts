@@ -14,6 +14,7 @@ import {
 } from "@withmarfa/connector";
 import {
   blockedBy,
+  relatesTo,
   commentEntry,
   commentType,
   inThread,
@@ -491,7 +492,7 @@ async function answerIssue(
   const connections: Record<string, readonly Target[]> = {
     ...entry.connections,
   };
-  for (const type of [subIssueOf, blockedBy]) {
+  for (const type of [subIssueOf, blockedBy, relatesTo]) {
     const added = related.added.get(type) ?? new Set<string>();
     const removed = related.removed.get(type) ?? new Set<string>();
     if (added.size === 0 && removed.size === 0) continue;
@@ -521,7 +522,10 @@ async function relations(
   const holds = (type: string, other: string): boolean =>
     type === subIssueOf
       ? now?.relations.parent?.id === other
-      : (now?.relations.blockedBy ?? []).some((one) => one.id === other);
+      : (type === relatesTo
+          ? (now?.relations.relatesTo ?? [])
+          : (now?.relations.blockedBy ?? [])
+        ).some((one) => one.id === other);
   const took = (
     side: Map<string, Set<string>>,
     type: string,
@@ -552,6 +556,8 @@ async function relations(
     [subIssueOf, "added", "addSubIssue", false, "its parent"],
     [blockedBy, "removed", "removeBlockedBy", true, "removing a blocker"],
     [blockedBy, "added", "addBlockedBy", true, "a blocker"],
+    [relatesTo, "removed", "removeRelatesTo", true, "removing a related issue"],
+    [relatesTo, "added", "addRelatesTo", true, "a related issue"],
   ];
   for (const [type, side, mutation, ours, what] of steps) {
     for (const row of change.connections?.[type]?.[side] ?? []) {

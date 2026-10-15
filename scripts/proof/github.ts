@@ -32,6 +32,8 @@ const connections = [
   "github.in-repository",
   "github.sub-issue-of",
   "github.blocked-by",
+  "github.relates-to",
+  "github.duplicate-of",
   "in-thread",
 ];
 
@@ -112,7 +114,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its three types and four connection types, in-thread among them, and the metadata to register them and keep the types current",
+      "github: its key is minted with write on its three types and six connection types, in-thread among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -232,6 +234,61 @@ export async function proveGitHub(
           );
         }
         return `${String(listings.length)} listings, each 304; no row moved`;
+      },
+    );
+
+    await check(
+      "github: related pairs are canonical, duplicate edits are restored, and an unchanged run moves no row",
+      async () => {
+        parent.relates_to = [child.node];
+        child.relates_to = [parent.node];
+        child.duplicate_of = parent.node;
+        // Relation changes do not move updated_at; a changed REST page must still prompt GraphQL.
+        parent.labels = [...parent.labels, "related"];
+        await runOnce();
+        const low = parent.node < child.node ? parent : child;
+        const high = parent.node < child.node ? child : parent;
+        const lowRow = await row(low.node);
+        const highRow = await row(high.node);
+        const forward = await targets(marfa, lowRow, "github.relates-to");
+        const reverse = await targets(marfa, highRow, "github.relates-to");
+        if (forward.join() !== highRow.id || reverse.length !== 0)
+          throw new Error("related pair was not canonical");
+        const childRow = await row(child.node);
+        const canonical = await row(parent.node);
+        const { data } = await marfa.GET("/items/{id}/edges", {
+          params: {
+            path: { id: childRow.id },
+            query: { edge_type: "github.duplicate-of" },
+          },
+        });
+        const duplicate = data?.data[0];
+        if (duplicate?.target_id !== canonical.id)
+          throw new Error("duplicate connection missing");
+        await marfa.DELETE("/edges/{id}", {
+          params: { path: { id: duplicate.id } },
+        });
+        await runOnce();
+        if (
+          (
+            await targets(marfa, await row(child.node), "github.duplicate-of")
+          ).join() !== canonical.id
+        )
+          throw new Error("duplicate removal was not restored");
+        const before = await rows();
+        const written = github.writes().length;
+        await runOnce();
+        if (
+          moved(before, await rows()).length !== 0 ||
+          github.writes().length !== written
+        )
+          throw new Error("unchanged relations caused writes");
+        parent.relates_to = [];
+        child.relates_to = [];
+        child.duplicate_of = null;
+        parent.labels = parent.labels.filter((label) => label !== "related");
+        await runOnce();
+        return "one canonical related connection, read-only duplicate restored, unchanged rows and no vendor writes";
       },
     );
 

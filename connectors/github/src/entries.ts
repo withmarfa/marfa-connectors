@@ -101,6 +101,8 @@ export interface Relations {
    *  installed on, so such a relation is not here at all. */
   parent: Related | null;
   blockedBy: Related[];
+  relatesTo: Related[];
+  duplicateOf: Related | null;
 }
 
 export interface Comment {
@@ -197,6 +199,14 @@ export function issueEntry(
       state_reason: issue.reason,
       github_updated_at: issue.updatedAt,
       parent_url: parent === null || inside(parent) ? null : parent.url,
+      related_urls: relations.relatesTo
+        .filter((one) => !inside(one))
+        .map((one) => one.url)
+        .sort(),
+      duplicate_of_url:
+        relations.duplicateOf === null || inside(relations.duplicateOf)
+          ? null
+          : relations.duplicateOf.url,
       blocked_by_urls: relations.blockedBy
         .filter((one) => !inside(one))
         .map((one) => one.url),
@@ -207,6 +217,13 @@ export function issueEntry(
       [inRepository]: [{ type: repositoryType, id: issue.repository.node }],
       [subIssueOf]: parent !== null && inside(parent) ? [target(parent)] : [],
       [blockedBy]: relations.blockedBy.filter(inside).map(target),
+      [relatesTo]: relations.relatesTo
+        .filter((one) => inside(one) && issue.node < one.id)
+        .map(target),
+      [duplicateOf]:
+        relations.duplicateOf !== null && inside(relations.duplicateOf)
+          ? [target(relations.duplicateOf)]
+          : [],
     },
   };
 }

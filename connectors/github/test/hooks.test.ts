@@ -27,6 +27,8 @@ beforeEach(async () => {
       "github.in-repository",
       "github.sub-issue-of",
       "github.blocked-by",
+      "github.relates-to",
+      "github.duplicate-of",
       "in-thread",
     ],
   }).start();
@@ -190,6 +192,20 @@ describe("a delivery's hints", () => {
     ]);
   });
 
+  it("names both ends of an issue_relates_to event", () => {
+    expect(
+      hints(
+        delivery("issue_relates_to", {
+          issue: { node_id: "I_a" },
+          related_issue: { node_id: "I_b" },
+        }),
+      ),
+    ).toEqual([
+      { type: "github.issue", id: "I_a" },
+      { type: "github.issue", id: "I_b" },
+    ]);
+  });
+
   it("name nothing for a pull request's comment or an event not read", () => {
     expect(
       hints(
@@ -227,6 +243,43 @@ describe("a delivery", () => {
 });
 
 describe("a run for deliveries", () => {
+  it("refreshes both related issues when a cross-repository delivery names only one", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    const a = github.addIssue(first);
+    const b = github.addIssue(second);
+    const low = a.node < b.node ? a : b;
+    const high = a.node < b.node ? b : a;
+    await watching(async () => {
+      a.relates_to = [b.node];
+      b.relates_to = [a.node];
+      deliver("issue_relates_to", {
+        action: "relates_to_added",
+        issue: { node_id: high.node },
+      });
+      await until(
+        () => marfa.deliveries[0]?.outcome === "processed",
+        "the relation add",
+      );
+      expect(marfa.targetsOf(row(low.node).id, "github.relates-to")).toEqual([
+        row(high.node).id,
+      ]);
+      a.relates_to = [];
+      b.relates_to = [];
+      deliver("issue_relates_to", {
+        action: "relates_to_removed",
+        issue: { node_id: high.node },
+      });
+      await until(
+        () => marfa.deliveries[1]?.outcome === "processed",
+        "the relation removal",
+      );
+      expect(marfa.targetsOf(row(low.node).id, "github.relates-to")).toEqual(
+        [],
+      );
+    });
+  });
+
   it("processes healthy hints when the depleted installation has no named changes", async () => {
     const first = github.addRepository("someone/first");
     github.addIssue(first);

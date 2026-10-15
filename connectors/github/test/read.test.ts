@@ -13,6 +13,8 @@ const connections = [
   "github.in-repository",
   "github.sub-issue-of",
   "github.blocked-by",
+  "github.relates-to",
+  "github.duplicate-of",
   "in-thread",
 ];
 
@@ -539,7 +541,7 @@ describe("what a row says of its repository's visibility", () => {
     }
   });
 
-  it("reads again once only where the visibility is unchanged", async () => {
+  it("keeps unchanged visibility while polling relationships", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
     github.addComment(issue, "Words");
@@ -549,7 +551,7 @@ describe("what a row says of its repository's visibility", () => {
     await ok();
     expect(
       github.asked.slice(asked).some((one) => one.path === "/graphql"),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("fills rows read before the field existed, once", async () => {
@@ -670,7 +672,7 @@ describe("a comment cursor", () => {
 });
 
 describe("a run after", () => {
-  it("costs nothing where nothing changed: every listing answers 304, and nothing is written", async () => {
+  it("keeps REST listings conditional and writes nothing while polling relationships", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
     github.addComment(issue, "Hello");
@@ -689,7 +691,7 @@ describe("a run after", () => {
     expect(new Set(listings.map((one) => one.remaining)).size).toBe(1);
     expect(
       github.asked.slice(asked).some((one) => one.path === "/graphql"),
-    ).toBe(false);
+    ).toBe(true);
     expect(marfa.rows.map((one) => one.version)).toEqual(before);
   });
 
