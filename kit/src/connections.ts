@@ -70,7 +70,10 @@ export class Connections {
     retry: readonly string[],
   ): Promise<void> {
     const ids = [...new Set([...named.keys(), ...retry])].filter(
-      (id) => this.rowOf(id)?.item.state !== "trashed",
+      (id) =>
+        this.rowOf(id)?.item.state !== "trashed" &&
+        (Object.keys(named.get(id) ?? {}).length > 0 ||
+          Object.keys(this.store.get(id)?.pending ?? {}).length > 0),
     );
     const edges = await this.edgesOf(ids);
     const plans: Plan[] = [];

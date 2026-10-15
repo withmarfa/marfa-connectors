@@ -9,6 +9,75 @@ beforeEach(async () => {
 afterEach(async () => {
   await harness.close();
 });
+it.each(["none", "empty", "add", "owned-add"] as const)(
+  "checks connection ownership only for declared intent: %s",
+  async (intent) => {
+    harness.server.grants = {
+      type_permissions: { "test.entry": "write" },
+      edge_permissions: { "test.blocks": "write" },
+      metadata_permissions: { types: "write", edge_types: "write" },
+    };
+    let checkpoint: unknown;
+    const definition = defineConnector({
+      name: "test",
+      source: "test",
+      env: {},
+      types: [
+        {
+          type: linkedType,
+          fields: ["title", "note", "vendor_id"],
+          policy: (_item, entry) => ({
+            owned: entry !== undefined || intent === "owned-add",
+            fields: { title: "observe" },
+          }),
+        },
+      ],
+      connections: [
+        {
+          id: "test.blocks",
+          cardinality: "many-to-many",
+          source_type_constraints: [linkedType.id],
+          target_type_constraints: [linkedType.id],
+        },
+      ],
+      async run(context) {
+        const scope = context.forScope("observer");
+        await scope.upsert(linkedType.id, [
+          {
+            source_id: "one",
+            properties: { title: "Source", vendor_id: "one" },
+            connections:
+              intent === "none"
+                ? {}
+                : {
+                    "test.blocks":
+                      intent === "empty"
+                        ? []
+                        : [{ type: linkedType.id, id: "two" }],
+                  },
+          },
+          {
+            source_id: "two",
+            properties: { title: "Target", vendor_id: "two" },
+          },
+        ]);
+        checkpoint = await scope.state.checkpoint("page", 1);
+      },
+    });
+    expect(await start(definition, harness.runtime(["--once"]))).toBe(0);
+    expect(harness.server.row("one").properties["title"]).toBe("Source");
+    const guarded = intent === "add" || intent === "empty";
+    expect(checkpoint).toEqual(
+      guarded
+        ? { committed: false, reason: "row-refused" }
+        : { committed: true },
+    );
+    expect(harness.kept()["state"]).toEqual(guarded ? {} : { page: 1 });
+    expect(
+      harness.server.targetsOf(harness.server.row("one").id, "test.blocks"),
+    ).toEqual(intent === "owned-add" ? [harness.server.row("two").id] : []);
+  },
+);
 it.each([false, true])(
   "archive respects ownership at commit; race=%s",
   async (race) => {
