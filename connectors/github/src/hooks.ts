@@ -1,5 +1,5 @@
 import type { Delivery, Hint } from "@withmarfa/connector";
-import { commentType, issueType } from "./entries.js";
+import { commentType, issueType, pullRequestType } from "./entries.js";
 
 type Payload = Record<string, unknown>;
 
@@ -14,6 +14,14 @@ function named(type: string, ...values: unknown[]): Hint[] {
     const id = nodeOf(value);
     return id === undefined ? [] : [{ type, id }];
   });
+}
+
+/** PR node ids from a check_run or check_suite payload's pull_requests
+ *  array, which GitHub populates for PRs open at the time of the check. */
+function pullRequestsFromCheck(payload: Payload): readonly Hint[] {
+  const prs = payload["pull_requests"];
+  if (!Array.isArray(prs)) return [];
+  return prs.flatMap((pr) => named(pullRequestType, pr));
 }
 
 export function hints(delivery: Delivery): readonly Hint[] | "everything" {
@@ -51,6 +59,17 @@ export function hints(delivery: Delivery): readonly Hint[] | "everything" {
         payload["blocked_issue"],
         payload["blocking_issue"],
       );
+    case "pull_request":
+      return named(pullRequestType, payload["pull_request"]);
+    case "check_run":
+    case "check_suite":
+      // check_run and check_suite payloads carry a pull_requests array with
+      // the PRs open against the checked ref at the time of the event.
+      return pullRequestsFromCheck(payload);
+    case "status":
+      // status payloads carry a sha but no PR node ids; a scheduled run
+      // picks up any check-state change on open PRs.
+      return [];
     default:
       return [];
   }

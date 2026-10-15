@@ -13,6 +13,7 @@ import {
   issueEntry,
   issueOfRest,
   issueType,
+  pullRequestType,
   repositoryEntry,
   repositoryType,
   subIssueOf,
@@ -23,6 +24,11 @@ import {
   type RestIssue,
   type RestRepository,
 } from "./entries.js";
+import {
+  pullRequestsByNode,
+  readPullRequests,
+  type PRContext,
+} from "./pulls.js";
 import {
   asApp,
   asInstallation,
@@ -645,14 +651,16 @@ async function syncRepository(
   );
   const route = "GET /repos/{owner}/{repo}/issues";
   const listing = { owner, repo: name, sort: "created", direction: "asc" };
-  const isIssue = (issue: RestIssue): boolean =>
-    issue.pull_request === undefined;
+  // Keep all items (issues and PRs share the endpoint); split by type after.
+  // This lets PR page ETags and numbers track alongside issues without an
+  // extra API call, and the checkpoint stays backward-safe: old pages with
+  // only issue numbers are re-read fresh on the next run.
   const open = await pagesOf<RestIssue>(
     octokit,
     route,
     { ...listing, state: "open" },
     repository.open,
-    isIssue,
+    () => true,
   );
   const closed = await pagesOf<RestIssue>(
     octokit,
@@ -661,14 +669,18 @@ async function syncRepository(
     repository.closed?.since === windowStart
       ? repository.closed.pages
       : undefined,
-    isIssue,
+    () => true,
   );
-  const listed = [...open.changed, ...closed.changed];
+  const allChanged = [...open.changed, ...closed.changed];
+  const isPR = (item: RestIssue): boolean => item.pull_request !== undefined;
+  const listed = allChanged.filter((item) => !isPR(item));
+  const listedPRs = allChanged.filter(isPR);
   const scope = new Set([...numbersOf(open.pages), ...numbersOf(closed.pages)]);
   const before = new Set([
     ...numbersOf(repository.open),
     ...numbersOf(repository.closed?.pages),
   ]);
+  // byNumber is issue-only so comment lookup does not collide with PR numbers.
   const byNumber = new Map(listed.map((issue) => [issue.number, issue]));
   const at = { node, name: repository.name };
   const hidden = privateIn(options.privacy, node);

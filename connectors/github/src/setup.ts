@@ -34,6 +34,10 @@ export const events = [
   "issue_dependencies",
   "issue_relates_to",
   "repository",
+  "pull_request",
+  "check_run",
+  "check_suite",
+  "status",
 ];
 
 /** The public address's own path, a prefix the instance sits behind, kept
@@ -83,6 +87,9 @@ export function manifest(options: {
     default_permissions: {
       issues: options.readOnly ? "read" : "write",
       metadata: "read",
+      pull_requests: "read",
+      checks: "read",
+      statuses: "read",
     },
     default_events: events,
   };

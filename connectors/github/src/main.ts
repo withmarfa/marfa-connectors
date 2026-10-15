@@ -9,9 +9,12 @@ import {
   relatesTo,
   duplicateOf,
   commentType,
+  githubClosedBy,
+  githubCloses,
   inRepository,
   inThread,
   issueType,
+  pullRequestType,
   repositoryType,
   subIssueOf,
 } from "./entries.js";
@@ -24,6 +27,7 @@ import { readOnly, setUp } from "./setup.js";
 import { carry, remake } from "./write.js";
 import comment from "./github.comment.json" with { type: "json" };
 import issue from "./github.issue.json" with { type: "json" };
+import pullRequest from "./github.pull_request.json" with { type: "json" };
 import repository from "./github.repository.json" with { type: "json" };
 
 const env = {
@@ -100,6 +104,7 @@ const connector = defineConnector<typeof env>({
         "blocked_by_urls",
         "related_urls",
         "duplicate_of_url",
+        "closed_by_url",
       ],
       readOnly: [
         "completed_at",
@@ -117,6 +122,8 @@ const connector = defineConnector<typeof env>({
         "duplicate_of_url",
         inRepository,
         duplicateOf,
+        "closed_by_url",
+        githubClosedBy,
       ],
       derived: ["private", "github_files"],
       revive: true,
@@ -143,6 +150,49 @@ const connector = defineConnector<typeof env>({
       ],
       derived: ["private", "github_files"],
     },
+    {
+      type: pullRequest as TypeDefinition,
+      fields: [
+        "github_id",
+        "title",
+        "body",
+        "status",
+        "completed_at",
+        "url",
+        "number",
+        "repository",
+        "private",
+        "author",
+        "pr_state",
+        "draft",
+        "merged_at",
+        "base_branch",
+        "head_branch",
+        "checks",
+        "github_updated_at",
+      ],
+      readOnly: [
+        "title",
+        "body",
+        "status",
+        "completed_at",
+        "url",
+        "number",
+        "repository",
+        "private",
+        "author",
+        "pr_state",
+        "draft",
+        "merged_at",
+        "base_branch",
+        "head_branch",
+        "checks",
+        "github_updated_at",
+        inRepository,
+        githubCloses,
+      ],
+      derived: ["private"],
+    },
   ],
   connections: [
     filesConnection,
@@ -150,9 +200,9 @@ const connector = defineConnector<typeof env>({
       id: inRepository,
       label: "In repository",
       description:
-        "An issue or comment in the GitHub repository it belongs to.",
+        "An issue, comment or pull request in the GitHub repository it belongs to.",
       cardinality: "many-to-one",
-      source_type_constraints: [issueType, commentType],
+      source_type_constraints: [issueType, commentType, pullRequestType],
       target_type_constraints: [repositoryType],
     },
     {
@@ -192,6 +242,24 @@ const connector = defineConnector<typeof env>({
       cardinality: "many-to-one",
       source_type_constraints: [commentType],
       target_type_constraints: [issueType],
+    },
+    {
+      id: githubCloses,
+      label: "Closes",
+      description:
+        "A GitHub pull request and an issue it closes, from the pull request's closing issues references.",
+      cardinality: "many-to-many",
+      source_type_constraints: [pullRequestType],
+      target_type_constraints: [issueType],
+    },
+    {
+      id: githubClosedBy,
+      label: "Closed by",
+      description:
+        "A GitHub issue and the synced pull request that closed it.",
+      cardinality: "many-to-one",
+      source_type_constraints: [issueType],
+      target_type_constraints: [pullRequestType],
     },
   ],
   env,
