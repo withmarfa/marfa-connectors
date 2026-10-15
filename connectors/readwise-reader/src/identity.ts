@@ -10,6 +10,7 @@ import {
   parsePage,
   type ExportClient,
   type ReaderDocument,
+  type Source,
   type ReaderEnrichment,
 } from "@withmarfa/readwise";
 import type { env } from "./config.js";
@@ -112,6 +113,7 @@ export class ReaderIdentities {
     Readonly<Record<string, unknown>>
   >();
   private readonly exportPassages = new Map<string, string>();
+  private readonly exportSources = new Map<number, readonly Source[]>();
   private client?: ExportClient;
   private bridge: Bridge;
   private constructor(
@@ -337,7 +339,7 @@ export class ReaderIdentities {
             "highlight",
             highlight.external_id,
           );
-          if (!highlight.is_deleted && typeof highlight.text === "string")
+          if (typeof highlight.text === "string")
             this.exportPassages.set(key, highlight.text);
           this.alias(
             key,
@@ -431,56 +433,73 @@ export class ReaderIdentities {
     ) {
       if (this.client === undefined)
         throw new Error("Reader export client is unavailable");
-      let cursor: string | undefined;
-      const seen = new Set<string>();
-      let complete = false;
-      for (let pageIndex = 0; pageIndex < 50; pageIndex++) {
-        const page = parsePage(
-          await this.client.page({
-            sourceId: alias.sourceId,
-            ...(cursor ? { cursor } : {}),
-          }),
-        );
-        for (const source of page.results) {
+      let sources = this.exportSources.get(alias.sourceId);
+      if (sources === undefined) {
+        const fetched: Source[] = [];
+        let cursor: string | undefined;
+        const seen = new Set<string>();
+        let complete = false;
+        for (let pageIndex = 0; pageIndex < 50; pageIndex++) {
+          const page = parsePage(
+            await this.client.page({
+              sourceId: alias.sourceId,
+              ...(cursor ? { cursor } : {}),
+            }),
+          );
+          fetched.push(...page.results);
+          if (page.nextPageCursor === null) {
+            complete = true;
+            break;
+          }
+          if (seen.has(page.nextPageCursor))
+            throw new Error("Reader export preservation repeated a cursor");
+          seen.add(page.nextPageCursor);
+          cursor = page.nextPageCursor;
+        }
+        if (!complete)
+          throw new Error(
+            "Reader export passage remains unavailable; metadata is retained",
+          );
+        sources = fetched;
+      }
+      let deleted = false;
+      let text: string | undefined;
+      for (const source of sources) {
+        if (
+          source.user_book_id !== alias.sourceId ||
+          source.external_id !== document.parent_id ||
+          source.source !== "reader" ||
+          source.is_deleted
+        )
+          throw new Error(
+            "Reader export source identity differs from the saved alias",
+          );
+        for (const highlight of source.highlights) {
           if (
-            source.user_book_id !== alias.sourceId ||
-            source.external_id !== document.parent_id ||
-            source.source !== "reader" ||
-            source.is_deleted
+            (highlight.external_id === document.id &&
+              String(highlight.id) !== alias.readwiseId) ||
+            (String(highlight.id) === alias.readwiseId &&
+              highlight.external_id != null &&
+              highlight.external_id !== document.id)
           )
             throw new Error(
-              "Reader export source identity differs from the saved alias",
+              "Reader export highlight identity differs from the saved alias",
             );
-          for (const highlight of source.highlights) {
-            if (
-              highlight.external_id === document.id &&
-              String(highlight.id) !== alias.readwiseId
-            )
-              throw new Error(
-                "Reader export highlight identity differs from the saved alias",
-              );
-            if (
-              highlight.is_deleted ||
-              !highlight.external_id ||
-              typeof highlight.text !== "string"
-            )
-              continue;
-            this.exportPassages.set(
-              readerIdentity(this.account, "highlight", highlight.external_id),
-              highlight.text,
-            );
-          }
+          if (String(highlight.id) !== alias.readwiseId) continue;
+          deleted ||= highlight.is_deleted === true;
+          if (
+            (highlight.external_id !== document.id && !highlight.is_deleted) ||
+            typeof highlight.text !== "string"
+          )
+            continue;
+          if (text !== undefined && text !== highlight.text)
+            throw new Error("Reader export passage lookup is ambiguous");
+          text = highlight.text;
         }
-        if (page.nextPageCursor === null) {
-          complete = true;
-          break;
-        }
-        if (seen.has(page.nextPageCursor))
-          throw new Error("Reader export preservation repeated a cursor");
-        seen.add(page.nextPageCursor);
-        cursor = page.nextPageCursor;
       }
-      if (!complete || !this.exportPassages.has(canonical))
+      this.exportSources.set(alias.sourceId, sources);
+      if (text !== undefined) this.exportPassages.set(canonical, text);
+      else if (!deleted)
         throw new Error(
           "Reader export passage remains unavailable; metadata is retained",
         );
@@ -498,9 +517,9 @@ export class ReaderIdentities {
     });
     const candidates = new Map(
       [
+        ...(this.existing.get(canonical) ?? []),
         ...linked.items,
         ...keyed.items,
-        ...(this.existing.get(canonical) ?? []),
       ].map((row) => [row.id, row]),
     );
     const purged = linked.tombstones.length > 0 || keyed.tombstones.length > 0;

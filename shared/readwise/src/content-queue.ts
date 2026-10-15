@@ -173,7 +173,7 @@ async function preserve(
           if (
             highlight.id === job.exportHighlightId &&
             highlight.external_id === row.id &&
-            !highlight.is_deleted &&
+            typeof highlight.text === "string" &&
             !source.is_deleted
           ) {
             if (text !== undefined && text !== highlight.text)

@@ -499,3 +499,67 @@ it("retains content work when a direct answer has an inconsistent count", async 
   expect(f.files.size).toBe(0);
   expect(contentQueue(f.checkpoint)).toHaveLength(1);
 });
+
+it.each([false, true])(
+  "preserves the retained overflow text of an export highlight; deleted=%s",
+  async (deleted) => {
+    const f = fixture();
+    const canonical = "sample:reader-highlight:hi";
+    const original = f.rows.get(f.canonical);
+    if (original === undefined) throw new Error("missing parent fixture");
+    f.rows.set(canonical, {
+      ...original,
+      id: "hi",
+      type: "readwise.highlight",
+      source_id: canonical,
+      properties: { account: "sample", reader_managed: true },
+    });
+    const row: ReaderDocument = {
+      id: "hi",
+      category: "highlight",
+      parent_id: "doc",
+      content: "Current Reader passage",
+    };
+    const text = "Retained export passage".repeat(5000);
+    await enqueueContent(f.checkpoint, [
+      {
+        id: "hi",
+        canonical,
+        type: "readwise.highlight",
+        revision: "export-overflow",
+        exportSourceId: 7,
+        exportHighlightId: 42,
+      },
+    ]);
+    await drainContent(f.context, client(row), f.checkpoint, {
+      now: () => 0,
+      exportClient: {
+        page: () =>
+          Promise.resolve({
+            count: 1,
+            nextPageCursor: null,
+            results: [
+              {
+                user_book_id: 7,
+                source: "reader",
+                external_id: "doc",
+                highlights: [
+                  { id: 42, external_id: "hi", text, is_deleted: deleted },
+                ],
+              },
+            ],
+          }),
+        sourceForHighlight: () => Promise.resolve(undefined),
+      },
+    });
+    expect(contentQueue(f.checkpoint)).toEqual([]);
+    const retained = [...f.files].find(([key]) =>
+      key.includes(":text:readwise_text:"),
+    );
+    expect(retained).toBeDefined();
+    expect(Buffer.from(retained?.[1].bytes ?? []).toString()).toBe(text);
+    expect(f.rows.get(canonical)?.properties["text"]).toBe(
+      "Current Reader passage",
+    );
+  },
+);
