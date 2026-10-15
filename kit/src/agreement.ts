@@ -120,6 +120,8 @@ export function agreedState(state: string): AgreedState {
 export interface MergeInput {
   readonly fields: readonly string[];
   readonly readOnly: (field: string) => boolean;
+  readonly observe?: (field: string) => boolean;
+  readonly preserveFirst?: boolean;
   readonly agreement: Agreement | undefined;
   readonly row: Row;
   readonly entry: Entry;
@@ -163,7 +165,17 @@ export function merge(input: MergeInput): Merged {
   for (const field of fields) {
     const vendorNow = mark(held(theirs, field));
     const marfaNow = mark(held(properties, field));
+    const observing = input.observe?.(field) === true;
     if (agreement === undefined) {
+      if (
+        vendorNow !== marfaNow &&
+        (observing || (input.preserveFirst === true && !readOnly(field)))
+      ) {
+        if (vendorNow !== "") marfa[field] = vendorNow;
+        if (!observing && row.updated_at !== undefined)
+          waiting[field] = row.updated_at;
+        continue;
+      }
       if (vendorNow !== marfaNow) {
         seeded.push(field);
         take(field);
@@ -185,6 +197,10 @@ export function merge(input: MergeInput): Merged {
       }
       take(field);
       if (vendorNow !== "") marfa[field] = vendorNow;
+      continue;
+    }
+    if (observing) {
+      keep(field, undefined);
       continue;
     }
     if (readOnly(field)) {

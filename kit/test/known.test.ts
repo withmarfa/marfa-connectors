@@ -120,3 +120,79 @@ it("propagates a refused identity lookup instead of reporting absence", async ()
   });
   expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
 });
+
+it("inspects unagreed identities in every state and tombstones by link and natural key", async () => {
+  let checking = false;
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      if (!checking) {
+        await context.upsert(
+          linkedType.id,
+          ["active", "archived", "trashed", "purged"].map((key) => ({
+            source_id: key,
+            properties: { title: key, vendor_id: `vendor:${key}` },
+          })),
+        );
+        return;
+      }
+      for (const reader of [context, context.forScope("inspect")]) {
+        for (const by of [
+          {
+            source_ids: [
+              "active",
+              "archived",
+              "trashed",
+              "purged",
+              "manual",
+              "missing",
+            ],
+          },
+          {
+            links: [
+              "vendor:active",
+              "vendor:archived",
+              "vendor:trashed",
+              "vendor:purged",
+              "manual",
+              "missing",
+            ],
+          },
+        ]) {
+          const result = await reader.inspect(linkedType.id, by);
+          expect(result.items.map((item) => item.source_id).sort()).toEqual([
+            "active",
+            "archived",
+            "manual",
+            "trashed",
+          ]);
+          expect(result.tombstones).toHaveLength(1);
+          expect(result.tombstones[0]?.key).toBe(
+            "links" in by ? "vendor:purged" : "purged",
+          );
+          result.items[0]!.properties["title"] = "Detached";
+          const again = await reader.inspect(linkedType.id, by);
+          expect(again.items[0]!.properties["title"]).not.toBe("Detached");
+        }
+      }
+      harness.server.refuseNext("POST /items/lookup", 403, "forbidden");
+      await expect(
+        context.inspect(linkedType.id, { links: ["missing"] }),
+      ).rejects.toThrow();
+    },
+  });
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+  harness.server.transition(harness.server.row("archived").id, "archived");
+  harness.server.trash(harness.server.row("trashed").id);
+  harness.server.purge("purged");
+  harness.server.insert(
+    "manual",
+    { title: "Manual", vendor_id: "manual" },
+    linkedType.id,
+  );
+  checking = true;
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+});

@@ -18,9 +18,21 @@ export const purgeRefusalLimit = 7;
 export const purgeBytes = 128 * 1024;
 
 /** What carrying a purge needs: the row's own fields and its link, never the
- *  rest of its properties, edges or extensions. */
-export function purgeOf(item: Item, linkField: string, link: string): Purge {
-  const kept: Purge = { ...item, properties: { [linkField]: link } };
+ *  rest of its properties, edges or extensions, unless a row policy needs
+ *  its properties to decide ownership when the purge is retried. */
+export function purgeOf(
+  item: Item,
+  linkField: string,
+  link: string,
+  keepProperties = false,
+): Purge {
+  const kept: Purge = {
+    ...item,
+    properties: {
+      ...(keepProperties ? item.properties : {}),
+      [linkField]: link,
+    },
+  };
   Reflect.deleteProperty(kept, "edges");
   Reflect.deleteProperty(kept, "extensions");
   return kept;

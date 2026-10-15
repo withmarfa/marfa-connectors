@@ -8,6 +8,19 @@ import type { components } from "@withmarfa/client";
 export type TypeDefinition = components["schemas"]["TypeDefinitionInput"];
 
 export type Item = components["schemas"]["Item"];
+export type Tombstone = components["schemas"]["Tombstone"];
+
+export type FieldPolicy = "mirror" | "sync" | "observe";
+
+export interface RowPolicy {
+  /** False leaves the row and its agreement alone. */
+  readonly owned?: boolean;
+  /** Mirror puts local edits back; sync carries them; observe preserves them
+   * without carrying them or scheduling work for them. */
+  readonly fields?: Readonly<Record<string, FieldPolicy>>;
+  /** Preserve divergent sync fields when this connector first adopts a row. */
+  readonly firstAgreement?: "preserve";
+}
 
 /** Nothing cascades, so a trash in Marfa never takes a vendor's row with it. */
 export type ConnectionDefinition = components["schemas"]["EdgeTypeRequest"];
@@ -259,6 +272,13 @@ export interface RunContext<E extends EnvDeclaration> {
    * longer holds can ask about each row it left out.
    */
   readonly held: (type: string) => Promise<Item[]>;
+  /** Fresh identity evidence, without an agreement requirement. Includes every
+   * item state and purge tombstones. source_ids use the connector's item source.
+   * A failed read throws; it never proves absence. */
+  readonly inspect: (
+    type: string,
+    by: { links: readonly string[] } | { source_ids: readonly string[] },
+  ) => Promise<{ items: Item[]; tombstones: Tombstone[] }>;
   /**
    * The fields of the type the kit writes now: the `fields` the connector declares for it, less any
    * the key may not add to the server's type, which the kit leaves out until
@@ -428,6 +448,12 @@ export interface Inbound<E extends EnvDeclaration> {
 }
 
 export interface Kind {
+  /** Synchronous row ownership and field rules, evaluated again on each fresh
+   * concurrency retry. entry is present for inbound writes, including creates;
+   * item is absent for a new row. Unspecified rules keep the type defaults.
+   * The link always remains mirrored. */
+  readonly policy?:
+    ((item: Item | undefined, entry?: Entry) => RowPolicy) | undefined;
   /**
    * Its `link_field`, where it names one, holds the vendor's own id for a
    * row: every row of the type is then the connector's, whoever created it,

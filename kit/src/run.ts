@@ -40,6 +40,8 @@ import {
 } from "./marfa.js";
 import {
   carriable,
+  forRow,
+  watchedFields,
   cascaded,
   connectKey,
   Declined,
@@ -237,6 +239,7 @@ export function specsOf<E extends EnvDeclaration>(
       return [
         kind.type.id,
         {
+          policy: kind.policy,
           type: kind.type.id,
           source: connector.source,
           link,
@@ -272,16 +275,19 @@ export function observe(
   let stateAt = agreement.stateAt;
   let own = 0;
   for (const { item } of seen.frames) {
+    const policy = forRow(kind, item);
+    if (policy.owned === false) continue;
+    const fieldsToWatch = watchedFields(policy);
     if (
       item.state === state &&
-      changedInMarfa(agreement, kind.fields, item.properties).length === 0
+      changedInMarfa(agreement, fieldsToWatch, item.properties).length === 0
     ) {
       own += 1;
     }
     const fields =
       noteWaiting(
         { ...agreement, waiting },
-        kind.fields,
+        fieldsToWatch,
         item.properties,
         item.updated_at,
       ) ?? {};
@@ -306,7 +312,7 @@ export function observe(
       stateBy = undefined;
     }
     stateSince =
-      kind.twoWay && item.state !== state
+      policy.twoWay && item.state !== state
         ? (stateSince ?? item.updated_at)
         : undefined;
   }
@@ -804,7 +810,7 @@ export async function runOnce<E extends EnvDeclaration>(
   ): { item: Item; spec: Spec; rows: Rows } | undefined => {
     for (const { spec, rows } of lanes.values()) {
       const item = rows.known(id);
-      if (item !== undefined) return { item, spec, rows };
+      if (item !== undefined) return { item, spec: forRow(spec, item), rows };
     }
     return undefined;
   };
@@ -824,7 +830,15 @@ export async function runOnce<E extends EnvDeclaration>(
     id: string,
   ): Promise<{ item: Item; spec: Spec; rows: Rows } | undefined> => {
     await fetchRows([id]);
-    return inLane(id);
+    const found = inLane(id);
+    if (found?.spec.policy !== undefined) {
+      const fresh = await setup.marfa.item(id);
+      if (fresh === undefined || fresh.type !== found.spec.type)
+        return undefined;
+      found.rows.adopt(fresh);
+      return inLane(id);
+    }
+    return found;
   };
   const settlePurge = async (
     kind: Spec,
@@ -942,6 +956,7 @@ export async function runOnce<E extends EnvDeclaration>(
         linked: (...args) => serial(scope, () => linked(...args)),
         known: (type, keys) => serial(scope, () => known(type, keys)),
         held: (type) => serial(scope, () => heldRows(type)),
+        inspect: (type, by) => serial(scope, () => inspect(type, by)),
         written,
       };
       return scoped;
@@ -953,7 +968,16 @@ export async function runOnce<E extends EnvDeclaration>(
     linked: (...args) => unscoped(() => linked(...args)),
     known: (type, keys) => unscoped(() => known(type, keys)),
     held: (type) => unscoped(() => heldRows(type)),
+    inspect: (type, by) => unscoped(() => inspect(type, by)),
     written,
+  };
+  const inspect: RunContext<E>["inspect"] = async (type, by) => {
+    const { spec } = lane(type);
+    const found = await setup.marfa.lookup(
+      type,
+      "links" in by ? by : { source: spec.source, source_ids: by.source_ids },
+    );
+    return structuredClone({ items: found.data, tombstones: found.tombstones });
   };
   const known: RunContext<E>["known"] = async (type, keys) => {
     const { rows } = lane(type);
@@ -1296,6 +1320,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (
       agreement?.waiting === undefined ||
       found === undefined ||
+      found.spec.owned === false ||
       found.item.state === "trashed"
     ) {
       return;
@@ -1331,7 +1356,7 @@ export async function runOnce<E extends EnvDeclaration>(
       ),
       current.properties,
     );
-    const back = stale.length === 0 ? [] : await rows.putBack(id, stale);
+    const back = stale.length === 0 ? [] : await rows.putBack(id, stale, true);
     if (back.length > 0) {
       raised.set(
         `put-back:${id}`,
@@ -1453,7 +1478,15 @@ export async function runOnce<E extends EnvDeclaration>(
     agreement: Agreement,
   ): Promise<"unplaced" | undefined> => {
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
-    const { spec: kind, rows } = lane(item.type);
+    const { spec, rows } = lane(item.type);
+    if (spec.policy !== undefined) {
+      const fresh = await setup.marfa.item(item.id);
+      if (fresh === undefined || fresh.type !== item.type) return;
+      rows.adopt(fresh);
+      item = fresh;
+    }
+    const kind = forRow(spec, item);
+    if (kind.owned === false) return;
     if (connector.onChange === undefined || !kind.twoWay) return;
     keepAgreedLink(kind, item, agreement);
     // What changed before another row's trash took it waits for its restore.
@@ -1468,7 +1501,9 @@ export async function runOnce<E extends EnvDeclaration>(
       });
       return;
     }
-    const carriable = kind.fields.filter((field) => !kind.readOnly.has(field));
+    const carriable = watchedFields(kind).filter(
+      (field) => !kind.readOnly.has(field),
+    );
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
@@ -1817,7 +1852,9 @@ export async function runOnce<E extends EnvDeclaration>(
     for (const [id, seen] of read.rows) {
       const last = seen.frames.at(-1)?.item;
       if (last === undefined) continue;
-      const { spec: kind, rows } = lane(last.type);
+      const { spec, rows } = lane(last.type);
+      const kind = forRow(spec, last);
+      if (kind.owned === false) continue;
       const agreement = store.get(id);
       if (seen.purged) {
         // The instance drops a purged row's agreement and keeps its
@@ -1840,7 +1877,7 @@ export async function runOnce<E extends EnvDeclaration>(
           } else {
             const refused = purged.get(id)?.refused;
             purged.set(id, {
-              ...purgeOf(last, kind.link, link),
+              ...purgeOf(last, kind.link, link, kind.policy !== undefined),
               ...(refused !== undefined && { refused }),
             });
           }
@@ -1870,7 +1907,7 @@ export async function runOnce<E extends EnvDeclaration>(
       if (kind.twoWay && rows.linkOf(last.properties) !== agreement.link) {
         keepAgreedLink(kind, last, agreement);
       }
-      const observed = observe(kind, seen, agreement);
+      const observed = observe(spec, seen, agreement);
       own += observed.own;
       const next = observed.next;
       // A remake's first try holds only while its restore does.
@@ -1894,6 +1931,11 @@ export async function runOnce<E extends EnvDeclaration>(
       const found = edges.get(id);
       if (
         found !== undefined &&
+        forRow(lane(found.item.type).spec, found.item).owned === false
+      )
+        continue;
+      if (
+        found !== undefined &&
         !(await connections.differ(found.item, agreement, found.edges))
       ) {
         continue;
@@ -1913,7 +1955,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (unagreed > 0) {
       raised.set(
         "unagreed",
-        `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} the log named ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor yet, so nothing is carried for ${unagreed === 1 ? "it" : "them"} until the vendor next sends ${unagreed === 1 ? "it" : "them"}, whose values ${unagreed === 1 ? "it takes" : "they take"} where they differ`,
+        `${String(unagreed)} ${unagreed === 1 ? "row" : "rows"} the log named ${unagreed === 1 ? "has" : "have"} nothing agreed with the vendor yet, so nothing is carried for ${unagreed === 1 ? "it" : "them"} until the vendor next sends ${unagreed === 1 ? "it" : "them"}`,
       );
     }
     // Everything the log named is noted; the cursor passes it once the final
@@ -1984,7 +2026,9 @@ export async function runOnce<E extends EnvDeclaration>(
             changed: new Set(
               changedInMarfa(
                 agreement,
-                kind.fields.filter((field) => !kind.readOnly.has(field)),
+                watchedFields(kind).filter(
+                  (field) => !kind.readOnly.has(field),
+                ),
                 item.properties,
               ),
             ),
@@ -2130,6 +2174,8 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       await answeredBack();
       for (const { refused, ...item } of purged.values()) {
+        const spec = specs.get(item.type);
+        if (spec !== undefined && forRow(spec, item).owned === false) continue;
         if (setup.fenced?.() === true || setup.signal.aborted) {
           throw new Stopped();
         }
@@ -2461,8 +2507,10 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   await store.fetch([...read.rows.keys(), ...read.connected.keys()]);
   const waiting = [...read.rows].some(([id, seen]) => {
     const last = seen.frames.at(-1)?.item;
-    const spec = last === undefined ? undefined : specs.get(last.type);
-    if (last === undefined || spec === undefined) return false;
+    const declared = last === undefined ? undefined : specs.get(last.type);
+    if (last === undefined || declared === undefined) return false;
+    const spec = forRow(declared, last);
+    if (spec.owned === false) return false;
     if (seen.purged) {
       if (!spec.twoWay) return false;
       const link =
@@ -2494,7 +2542,8 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   const added: [string, string][] = [];
   const removed: string[] = [];
   for (const { item, edges } of connected.values()) {
-    const spec = specs.get(item.type);
+    const declared = specs.get(item.type);
+    const spec = declared === undefined ? undefined : forRow(declared, item);
     if (spec?.twoWay !== true) continue;
     const agreed = store.get(item.id)?.connections ?? {};
     for (const type of spec.connections) {
