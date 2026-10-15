@@ -9,7 +9,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await harness.close();
 });
-it.each(["none", "empty", "add", "owned-add"] as const)(
+it.each(["none", "empty", "add", "owned-add", "adopted-add"] as const)(
   "checks connection ownership only for declared intent: %s",
   async (intent) => {
     harness.server.grants = {
@@ -26,8 +26,10 @@ it.each(["none", "empty", "add", "owned-add"] as const)(
         {
           type: linkedType,
           fields: ["title", "note", "vendor_id"],
-          policy: (_item, entry) => ({
-            owned: entry !== undefined || intent === "owned-add",
+          policy: (item, entry) => ({
+            owned:
+              item?.properties["note"] !== "other" &&
+              (entry !== undefined || intent === "owned-add"),
             fields: { title: "observe" },
           }),
         },
@@ -61,12 +63,14 @@ it.each(["none", "empty", "add", "owned-add"] as const)(
             properties: { title: "Target", vendor_id: "two" },
           },
         ]);
+        if (intent === "adopted-add")
+          harness.server.touch("one", { note: "other" });
         checkpoint = await scope.state.checkpoint("page", 1);
       },
     });
     expect(await start(definition, harness.runtime(["--once"]))).toBe(0);
     expect(harness.server.row("one").properties["title"]).toBe("Source");
-    const guarded = intent === "add" || intent === "empty";
+    const guarded = intent === "adopted-add";
     expect(checkpoint).toEqual(
       guarded
         ? { committed: false, reason: "row-refused" }
@@ -75,7 +79,11 @@ it.each(["none", "empty", "add", "owned-add"] as const)(
     expect(harness.kept()["state"]).toEqual(guarded ? {} : { page: 1 });
     expect(
       harness.server.targetsOf(harness.server.row("one").id, "test.blocks"),
-    ).toEqual(intent === "owned-add" ? [harness.server.row("two").id] : []);
+    ).toEqual(
+      intent === "owned-add" || intent === "add"
+        ? [harness.server.row("two").id]
+        : [],
+    );
   },
 );
 it.each([false, true])(

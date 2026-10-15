@@ -2,6 +2,7 @@ import type { Agreement } from "./agreement.js";
 import type {
   Connected,
   ConnectionDefinition,
+  Entry,
   Item,
   Target,
 } from "./define.js";
@@ -68,6 +69,7 @@ export class Connections {
   async connect(
     named: ReadonlyMap<string, Readonly<Record<string, readonly Target[]>>>,
     retry: readonly string[],
+    incoming: ReadonlyMap<string, Entry> = new Map(),
   ): Promise<void> {
     const ids = [...new Set([...named.keys(), ...retry])].filter(
       (id) =>
@@ -78,27 +80,43 @@ export class Connections {
     const edges = await this.edgesOf(ids);
     const plans: Plan[] = [];
     for (const id of ids) {
-      const found = await this.freshOwned(id);
       const agreement = this.store.get(id);
-      if (found === undefined || agreement === undefined) continue;
+      if (agreement === undefined) continue;
       const said = named.get(id) ?? {};
       for (const type of new Set([
         ...Object.keys(said),
         ...Object.keys(agreement.pending ?? {}),
       ])) {
+        const candidate = incoming.get(id);
+        const entry =
+          said[type] !== undefined &&
+          candidate?.connections?.[type] !== undefined
+            ? candidate
+            : undefined;
+        const found = await this.freshOwned(id, entry);
+        if (found === undefined) continue;
         const plan = await this.plan(
           found,
           agreement,
           type,
           said[type],
           edges.get(id)?.edges ?? [],
+          entry,
         );
         if (plan !== undefined) plans.push(plan);
       }
     }
     for (const plan of plans) {
       for (const [target, edge] of plan.remove) {
-        if (!(await this.disconnect(edge, plan.item, plan.type, target))) {
+        if (
+          !(await this.disconnect(
+            edge,
+            plan.item,
+            plan.type,
+            target,
+            plan.entry,
+          ))
+        ) {
           plan.kept.add(target);
         }
       }
@@ -111,6 +129,7 @@ export class Connections {
         item: plan.item,
         type: plan.type,
         target,
+        ...(plan.entry !== undefined && { entry: plan.entry }),
       })),
     )) {
       plans
@@ -120,7 +139,8 @@ export class Connections {
         ?.kept.delete(refused.target);
     }
     for (const plan of plans) {
-      if ((await this.freshOwned(plan.item.id)) === undefined) continue;
+      if ((await this.freshOwned(plan.item.id, plan.entry)) === undefined)
+        continue;
       const agreement = this.store.get(plan.item.id);
       if (agreement === undefined) continue;
       const next = this.agreeOn(
@@ -148,6 +168,7 @@ export class Connections {
     type: string,
     said: readonly Target[] | undefined,
     edges: readonly Edge[],
+    entry?: Entry,
   ): Promise<Plan | undefined> {
     const { item, spec } = found;
     const kind = this.kinds.get(type);
@@ -192,6 +213,7 @@ export class Connections {
       [...agreed].some((target) => wanted.has(target) && !current.has(target));
     return {
       item,
+      ...(entry !== undefined && { entry }),
       type,
       add,
       remove,
@@ -471,13 +493,14 @@ export class Connections {
 
   private async freshOwned(
     id: string,
+    entry?: Entry,
   ): Promise<{ item: Item; spec: Spec } | undefined> {
     const found = this.rowOf(id);
     if (found?.spec.policy === undefined) return found;
     const item = await this.marfa.item(id);
     if (
       item?.type !== found.spec.type ||
-      forRow(found.spec, item).owned === false
+      forRow(found.spec, item, entry).owned === false
     ) {
       this.hooks.omitted?.();
       return undefined;
@@ -489,9 +512,10 @@ export class Connections {
   private async guarded(
     item: Item,
     write: (fresh: Item) => Promise<void>,
+    entry?: Entry,
   ): Promise<boolean> {
     for (let attempt = 0; ; attempt += 1) {
-      const found = await this.freshOwned(item.id);
+      const found = await this.freshOwned(item.id, entry);
       if (found === undefined) return false;
       try {
         await write(found.item);
@@ -512,12 +536,15 @@ export class Connections {
     item: Item,
     type: string,
     target: string,
+    entry?: Entry,
   ): Promise<boolean> {
     if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
     try {
       if (this.rowOf(item.id)?.spec.policy !== undefined) {
-        return await this.guarded(item, (fresh) =>
-          this.marfa.disconnect(edge, fresh.version),
+        return await this.guarded(
+          item,
+          (fresh) => this.marfa.disconnect(edge, fresh.version),
+          entry,
         );
       }
       await this.marfa.disconnect(edge);
@@ -533,7 +560,12 @@ export class Connections {
   }
 
   private async link(
-    adds: readonly { item: Item; type: string; target: string }[],
+    adds: readonly {
+      item: Item;
+      type: string;
+      target: string;
+      entry?: Entry;
+    }[],
   ): Promise<{ id: string; type: string; target: string }[]> {
     if (adds.length === 0) return [];
     if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
@@ -546,8 +578,10 @@ export class Connections {
       }
       try {
         if (
-          await this.guarded(add.item, (fresh) =>
-            this.marfa.connectExact(fresh, add.type, add.target),
+          await this.guarded(
+            add.item,
+            (fresh) => this.marfa.connectExact(fresh, add.type, add.target),
+            add.entry,
           )
         )
           continue;
@@ -594,6 +628,7 @@ export class Connections {
 
 interface Plan {
   readonly item: Item;
+  readonly entry?: Entry;
   readonly type: string;
   readonly add: readonly string[];
   readonly remove: readonly [string, string][];

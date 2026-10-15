@@ -1036,7 +1036,7 @@ export async function runOnce<E extends EnvDeclaration>(
       .filter((row) => {
         if (!told.has(row.id)) return false;
         const named =
-          rows.connecting.get(row.id)?.[connection] ??
+          rows.connecting.get(row.id)?.connections[connection] ??
           answeredConnections.get(row.id)?.[connection];
         return (
           named === undefined ||
@@ -1479,19 +1479,21 @@ export async function runOnce<E extends EnvDeclaration>(
     if (overlaps(scope)) return { committed: false, reason: "scope-overlap" };
     check();
     const named = new Map<string, Record<string, readonly Target[]>>();
+    const incoming = new Map<string, Entry>();
     const captured: {
       rows: Rows;
       id: string;
-      said: Record<string, readonly Target[]>;
+      entry: Entry;
     }[] = [];
     for (const { rows } of lanes.values()) {
-      for (const [id, said] of rows.connecting) {
+      for (const [id, entry] of rows.connecting) {
         if (!scope.ids.has(id)) continue;
-        named.set(id, said);
-        captured.push({ rows, id, said });
+        named.set(id, entry.connections);
+        incoming.set(id, entry);
+        captured.push({ rows, id, entry });
       }
     }
-    await connections.connect(named, []);
+    await connections.connect(named, [], incoming);
     const connectionRefusal = blocked(scope);
     if (connectionRefusal !== undefined) return connectionRefusal;
     if (overlaps(scope)) return { committed: false, reason: "scope-overlap" };
@@ -1503,8 +1505,8 @@ export async function runOnce<E extends EnvDeclaration>(
         return { committed: false, reason: error.reason };
       throw error;
     }
-    for (const { rows, id, said } of captured) {
-      if (rows.connecting.get(id) === said) rows.connecting.delete(id);
+    for (const { rows, id, entry } of captured) {
+      if (rows.connecting.get(id) === entry) rows.connecting.delete(id);
     }
     check();
     if (!fitsState()) return { committed: false, reason: "state-oversized" };
@@ -2690,9 +2692,11 @@ export async function runOnce<E extends EnvDeclaration>(
     // An answer from before the run gives way, type by type, to the
     // vendor's entry since.
     const named = new Map(answeredConnections);
+    const incoming = new Map<string, Entry>();
     for (const { rows } of lanes.values()) {
-      for (const [id, said] of rows.connecting) {
-        named.set(id, { ...named.get(id), ...said });
+      for (const [id, entry] of rows.connecting) {
+        named.set(id, { ...named.get(id), ...entry.connections });
+        incoming.set(id, entry);
       }
     }
     answeredConnections.clear();
@@ -2701,6 +2705,7 @@ export async function runOnce<E extends EnvDeclaration>(
       waitingIds.filter(
         (id) => store.get(id)?.waiting?.[connectKey] !== undefined,
       ),
+      incoming,
     );
     if (twoWay) {
       for (const { rows } of lanes.values()) {

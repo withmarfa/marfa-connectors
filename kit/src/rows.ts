@@ -321,7 +321,7 @@ export class Rows {
   >();
   readonly connecting = new Map<
     string,
-    Readonly<Record<string, readonly Target[]>>
+    Entry & { connections: Readonly<Record<string, readonly Target[]>> }
   >();
   /** On a run for what deliveries named, the keys it may archive: the
    *  rest of the vendor was not read, so its silence says nothing. */
@@ -817,7 +817,12 @@ export class Rows {
     });
     if (carriable(agreement.waiting)) this.marked.add(id);
     if (entry.connections !== undefined) {
-      this.connecting.set(id, entry.connections);
+      const { file, ...content } = entry;
+      this.connecting.set(id, {
+        ...structuredClone(content),
+        connections: structuredClone(entry.connections),
+        ...(file !== undefined && { file: { ...file } }),
+      });
     }
   }
 
