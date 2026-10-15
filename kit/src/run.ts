@@ -2599,6 +2599,9 @@ export async function runOnce<E extends EnvDeclaration>(
     phase.reading = true;
     try {
       await connector.run(context);
+    } catch (error) {
+      await keepVendorRetry(error);
+      throw error;
     } finally {
       phase.reading = false;
       phase.unfinishedOperations = phase.mutating || phase.rootInFlight > 0;
