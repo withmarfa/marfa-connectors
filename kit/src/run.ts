@@ -916,8 +916,12 @@ export async function runOnce<E extends EnvDeclaration>(
   const written: RunContext<E>["written"] = (type) => [
     ...lane(type).spec.fields,
   ];
+  const pendingOutbound: RunContext<E>["pendingOutbound"] = () =>
+    [...outbound.values()]
+      .filter((record) => record.rejected === undefined)
+      .map(publicIntent);
   const context: RunContext<E> = {
-    pendingOutbound: () => [...outbound.values()].map(publicIntent),
+    pendingOutbound,
     env,
     signal: setup.signal,
     state,
@@ -952,7 +956,7 @@ export async function runOnce<E extends EnvDeclaration>(
       };
       scopes.set(name, scope);
       const scoped: ScopedRunContext<E> = {
-        pendingOutbound: () => [...outbound.values()].map(publicIntent),
+        pendingOutbound,
         refusals: {
           pending: () =>
             (acknowledged.inbound ?? [])
@@ -2481,7 +2485,10 @@ export async function runOnce<E extends EnvDeclaration>(
         const { spec: kind } = found;
         if (!kind.twoWay) continue;
         const item = byAgreedLink(kind, found.item, agreement);
-        if (agreement.waiting?.[createKey] !== undefined) {
+        if (
+          agreement.waiting?.[createKey] !== undefined &&
+          (!refusedOutbound.has(id) || agreement.link === undefined)
+        ) {
           if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
           done.add(id);
           continue;
@@ -2624,9 +2631,6 @@ export async function runOnce<E extends EnvDeclaration>(
             done.add(id);
           }
           await finishOutbound(id);
-        } else if (refusedOutbound.has(id)) {
-          if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
-          done.add(id);
         }
       }
       // Again while any lands, for a create naming a row made after it.
@@ -2692,7 +2696,12 @@ export async function runOnce<E extends EnvDeclaration>(
         if (done.has(id)) continue;
         const agreement = store.get(id);
         const found = await find(id);
-        if (agreement?.waiting === undefined || found === undefined) continue;
+        if (
+          agreement === undefined ||
+          found === undefined ||
+          (agreement.waiting === undefined && !refusedOutbound.has(id))
+        )
+          continue;
         if ((await carry(found.item, agreement)) === "unplaced") heldBack(id);
       }
       await answeredBack();

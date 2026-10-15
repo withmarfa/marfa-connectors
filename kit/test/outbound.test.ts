@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import {
   defineConnector,
   type Change,
+  type Entry,
   type WatchContext,
 } from "../src/define.js";
 import { start } from "../src/main.js";
@@ -654,6 +655,100 @@ it("keeps an uncertain intent across repeated newer local changes", async () => 
   expect(harness.kept()["outbound"]).toHaveLength(1);
   expect(harness.server.row("one").properties["title"]).toBe("Newest");
 });
+it("keeps uncertain requests visible to scoped and unscoped inbound readers", async () => {
+  const pending: number[] = [];
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    run(context) {
+      pending.push(context.pendingOutbound().length);
+      expect(context.forScope("reader").pendingOutbound()).toEqual(
+        context.pendingOutbound(),
+      );
+      return Promise.resolve();
+    },
+    async onChange(change, context) {
+      await context.outbound.save(change, {
+        request: { title: "Sent" },
+        baseline: null,
+      });
+      throw new Unreachable("lost response");
+    },
+  });
+  const once = () => start(connector, harness.runtime(["--once"]));
+  await once();
+  harness.server.insert("manual", { title: "Sent" }, linkedType.id);
+  await once();
+  expect(pending).toEqual([0, 1]);
+  expect(harness.kept()["outbound"]).toHaveLength(1);
+});
+it.each([
+  { refused: false, newer: false },
+  { refused: false, newer: true },
+  { refused: true, newer: false },
+  { refused: true, newer: true },
+])(
+  "merges vendor changes before a local correction; refused=$refused newer=$newer",
+  async ({ refused, newer }) => {
+    let remote: Entry = {
+      source_id: "one",
+      properties: { title: "Original", vendor_id: "vendor-one" },
+    };
+    const sent: string[] = [];
+    const connector = defineConnector({
+      name: "test",
+      source: "test",
+      env: {},
+      types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+      async run(context) {
+        const scope = context.forScope("reader");
+        expect(scope.pendingOutbound()).toEqual(context.pendingOutbound());
+        if (scope.pendingOutbound().length === 0)
+          await scope.upsert(linkedType.id, [remote]);
+      },
+      async onChange(change, context) {
+        const title = change.item.properties["title"] as string;
+        const intent = await context.outbound.save(change, {
+          request: { title },
+          baseline: null,
+        });
+        sent.push(title);
+        if (title === "Bad") throw new Refused("unsupported value");
+        remote = { ...remote, properties: { ...remote.properties, title } };
+        await context.outbound.acknowledge(change.item.id, intent.token);
+        return undefined;
+      },
+    });
+    const once = () => start(connector, harness.runtime(["--once"]));
+    expect(await once()).toBe(0);
+    const row = harness.server.row("one");
+    if (refused) {
+      harness.server.edit(row.id, { title: "Bad" });
+      expect(await once()).toBe(0);
+    }
+    const edited = harness.server.edit(row.id, { title: "Good" });
+    if (newer)
+      remote = {
+        ...remote,
+        properties: { ...remote.properties, title: "Newer remote" },
+        changed_at: new Date(
+          Date.parse(edited.updated_at) + 60_000,
+        ).toISOString(),
+      };
+    expect(await once()).toBe(0);
+    expect(remote.properties["title"]).toBe(newer ? "Newer remote" : "Good");
+    expect(harness.server.row("one").properties["title"]).toBe(
+      newer ? "Newer remote" : "Good",
+    );
+    expect(sent).toEqual([
+      ...(refused ? ["Bad"] : []),
+      ...(newer ? [] : ["Good"]),
+    ]);
+    expect(harness.kept()["outbound"]).toBeUndefined();
+  },
+);
 it("keeps a confirmed create link when its later refused step is corrected", async () => {
   const f = fixture();
   await f.once();
@@ -689,6 +784,61 @@ it("keeps a confirmed create link when its later refused step is corrected", asy
   expect(harness.server.row("manual").properties["vendor_id"]).toBe(
     "created-id",
   );
+});
+it("merges a newer vendor edit after a confirmed create's later step was refused", async () => {
+  let remote: Entry | undefined;
+  let creates = 0;
+  const sent: string[] = [];
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      if (remote !== undefined) await context.upsert(linkedType.id, [remote]);
+    },
+    async onChange(change, context) {
+      let intent = await context.outbound.save(change, {
+        request: { phase: change.kind === "created" ? "create" : "patch" },
+        baseline: null,
+      });
+      if (change.kind === "created") {
+        creates++;
+        await context.setLink(change.item, "created-id");
+        remote = {
+          source_id: "manual",
+          properties: { title: "Original", vendor_id: "created-id" },
+        };
+        intent = await context.outbound.advance(change.item.id, intent.token, {
+          request: { phase: "patch" },
+          baseline: { created: "created-id" },
+        });
+      }
+      sent.push(change.item.properties["title"] as string);
+      if (change.item.properties["title"] === "Bad")
+        throw new Refused("unsupported title");
+      await context.outbound.acknowledge(change.item.id, intent.token);
+      return undefined;
+    },
+  });
+  const once = () => start(connector, harness.runtime(["--once"]));
+  expect(await once()).toBe(0);
+  const row = harness.server.insert("manual", { title: "Bad" }, linkedType.id);
+  await once();
+  const edited = harness.server.edit(row.id, { title: "Good" });
+  remote = {
+    source_id: "manual",
+    properties: { title: "Newer remote", vendor_id: "created-id" },
+    changed_at: new Date(Date.parse(edited.updated_at) + 60_000).toISOString(),
+  };
+  expect(await once()).toBe(0);
+  expect(creates).toBe(1);
+  expect(sent).toEqual(["Bad"]);
+  expect(harness.server.row("manual").properties).toMatchObject({
+    title: "Newer remote",
+    vendor_id: "created-id",
+  });
+  expect(harness.kept()["outbound"]).toBeUndefined();
 });
 it("durably consumes known-no-apply evidence before retrying, including a lost reset acknowledgment", async () => {
   const f = fixture();

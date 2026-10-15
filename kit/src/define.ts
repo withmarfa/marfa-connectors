@@ -201,7 +201,7 @@ export interface Log {
 export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
-  /** Detached snapshots for withholding inbound identities while outbound work waits. */
+  /** Detached snapshots of unresolved writes. Definitively rejected requests do not block inbound reconciliation. */
   readonly pendingOutbound: () => readonly OutboundIntent[];
   readonly env: EnvValues<E>;
   /**
