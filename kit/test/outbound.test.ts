@@ -587,6 +587,47 @@ it("releases a refused intent when its carried edit is reverted", async () => {
   expect(calls).toBe(1);
   expect(harness.kept()["outbound"]).toBeUndefined();
 });
+it("does not replay rejected work when reverted retirement storage fails", async () => {
+  const f = fixture();
+  await f.once();
+  const row = harness.server.row("one");
+  harness.server.edit(row.id, { title: "Bad" });
+  const sent: string[] = [];
+  f.send(async (change, context) => {
+    const intent =
+      context.outbound.get(change.item.id) ??
+      (await context.outbound.save(change, {
+        request: { title: "Bad" },
+        baseline: null,
+      }));
+    expect(intent.request).toEqual({ title: "Bad" });
+    sent.push(change.item.properties["title"] as string);
+    throw new Refused("unsupported value");
+  });
+  await f.once();
+  harness.server.edit(row.id, { title: "Original" });
+  harness.server.beforeAnswer = (request) => {
+    const body = request.body as { state?: { outbound?: unknown } };
+    if (
+      request.method === "PUT" &&
+      request.path.endsWith("/state") &&
+      body.state !== undefined &&
+      body.state.outbound === undefined
+    ) {
+      harness.server.refuseNext(
+        "PUT /connectors/connector-1/state",
+        503,
+        "internal_error",
+      );
+      harness.server.beforeAnswer = undefined;
+    }
+  };
+  expect(await f.once()).toBe(1);
+  await f.once();
+  expect(sent).toEqual(["Bad"]);
+  expect(harness.server.row("one").properties["title"]).toBe("Original");
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
 it("keeps an uncertain intent across repeated newer local changes", async () => {
   const f = fixture();
   await f.once();

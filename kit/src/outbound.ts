@@ -17,6 +17,7 @@ export interface OutboundRecord {
   moved?: Carried;
   operation: "change" | "remake";
   acknowledged: boolean;
+  rejected?: string;
   requestNotApplied?: true;
   answer?: Entry;
   confirmationAgreement?: Agreement;
@@ -60,6 +61,7 @@ export function outboundToken(
     | "acknowledged"
     | "answer"
     | "confirmationAgreement"
+    | "rejected"
     | "requestNotApplied"
   >,
 ): string {
@@ -82,15 +84,22 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       record !== null && typeof record === "object"
         ? Reflect.get(record, "requestNotApplied")
         : undefined;
+    const rejected: unknown =
+      record !== null && typeof record === "object"
+        ? Reflect.get(record, "rejected")
+        : undefined;
     if (
       record === null ||
       typeof record !== "object" ||
       typeof record.token !== "string" ||
       typeof record.acknowledged !== "boolean" ||
+      (rejected !== undefined &&
+        (typeof rejected !== "string" || record.acknowledged)) ||
       (requestNotApplied !== undefined && requestNotApplied !== true) ||
       !["change", "remake"].includes(record.operation) ||
       !isObject(record.change) ||
       !isObject(record.change.item) ||
+      (rejected !== undefined && record.change.kind === "purged") ||
       ![
         "created",
         "updated",
@@ -116,6 +125,7 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       "acknowledged",
       "answer",
       "confirmationAgreement",
+      "rejected",
       "requestNotApplied",
     ])
       Reflect.deleteProperty(intent, field);

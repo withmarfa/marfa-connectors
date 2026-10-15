@@ -1104,7 +1104,11 @@ export async function runOnce<E extends EnvDeclaration>(
           }),
         }) as Omit<
           OutboundRecord,
-          "token" | "acknowledged" | "answer" | "confirmationAgreement"
+          | "token"
+          | "acknowledged"
+          | "answer"
+          | "confirmationAgreement"
+          | "rejected"
         >;
         const token = outboundToken(content);
         const held = outbound.get(change.item.id);
@@ -1145,6 +1149,7 @@ export async function runOnce<E extends EnvDeclaration>(
           | "acknowledged"
           | "answer"
           | "confirmationAgreement"
+          | "rejected"
           | "requestNotApplied"
         >;
         const record: OutboundRecord = {
@@ -1362,6 +1367,16 @@ export async function runOnce<E extends EnvDeclaration>(
         throw new Error("outbound success requires a durable acknowledgment");
       return result;
     } catch (error) {
+      if (error instanceof Refused && change.kind !== "purged") {
+        const held = outbound.get(change.item.id);
+        if (held !== undefined && !held.acknowledged) {
+          outbound.set(change.item.id, {
+            ...held,
+            rejected: capBytes(logger.redact(error.message), reasonBytes),
+          });
+          await saveOutbound();
+        }
+      }
       await keepVendorRetry(error, change.item.id);
       throw error;
     } finally {
@@ -2212,18 +2227,12 @@ export async function runOnce<E extends EnvDeclaration>(
       ...waitingIds,
       ...outbound.keys(),
     ]);
-    // Observation can clear a refusal when an edit returns to its baseline.
     for (const record of outbound.values()) {
       const change = restoreChange(record.change);
-      const refusal = store.get(change.item.id)?.refused;
-      if (
-        !record.acknowledged &&
-        change.kind !== "purged" &&
-        refusal?.change === sending(change)
-      )
+      if (record.rejected !== undefined)
         refusedOutbound.set(change.item.id, {
           change,
-          ...(refusal.reason !== undefined && { reason: refusal.reason }),
+          reason: record.rejected,
         });
     }
     await fetchRows([
