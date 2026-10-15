@@ -52,7 +52,7 @@ export async function proveReadwise(
   try {
     let key = "";
     await check(
-      "readwise: its key writes only its two types, references and type metadata",
+      "readwise: its key writes only its data types, connections and type metadata",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -62,8 +62,9 @@ export async function proveReadwise(
             type_permissions: {
               "readwise.source": "write",
               "readwise.highlight": "write",
+              "readwise.file": "write",
             },
-            edge_permissions: { references: "write" },
+            edge_permissions: { references: "write", "attached-to": "write" },
             metadata_permissions: { types: "write" },
           },
         });
@@ -74,7 +75,8 @@ export async function proveReadwise(
           data.source !== "readwise" ||
           data.default_tier !== "feed" ||
           Object.keys(data.metadata_permissions).join() !== "types" ||
-          Object.keys(data.edge_permissions).join() !== "references"
+          Object.keys(data.edge_permissions).sort().join() !==
+            "attached-to,references"
         )
           throw new Error(
             "Readwise key permissions differ from the requested scope",

@@ -3,3 +3,4 @@ packages:
   - "template/connector"
   - "connectors/*"
   - "scripts"
+  - "shared/*"

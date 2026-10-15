@@ -1,12 +1,14 @@
-import type { Entry, PendingInbound } from "@withmarfa/connector";
-import { describe, expect, it } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { Entry, PendingInbound, Item } from "@withmarfa/connector";
+import { describe, expect, it, vi } from "vitest";
 import {
   InvalidCursor,
   RateLimited,
   type ExportClient,
   type Query,
-} from "../src/client.js";
-import type { ExportPage } from "../src/export.js";
+} from "@withmarfa/readwise";
+import type { ExportPage } from "@withmarfa/readwise";
 import { sync, type ReadContext, type ReadScope } from "../src/sync.js";
 
 const start = Date.parse("2026-10-14T00:00:00Z");
@@ -76,10 +78,24 @@ function fixture() {
       READWISE_ACCOUNT: "primary",
       READWISE_ACCESS_TOKEN: "token",
       READWISE_API_URL: undefined,
+      READWISE_CONTENT_MAX_BYTES: undefined,
+      READWISE_READER_API_URL: undefined,
     },
     signal: new AbortController().signal,
+    waitUntil: () => Promise.resolve(),
     hints: undefined,
-    forScope: () => scope,
+    inspect: () => Promise.resolve({ items: [], tombstones: [] }),
+    held: () => Promise.resolve([]),
+    forScope: (name) =>
+      name === "reader-refresh"
+        ? {
+            ...scope,
+            state: {
+              get: () => undefined,
+              checkpoint: () => Promise.resolve({ committed: true }),
+            },
+          }
+        : scope,
     written: () => ["text", "title"],
     log: {
       info: () => undefined,
@@ -132,6 +148,15 @@ function fixture() {
 }
 
 describe("Readwise export checkpoints", () => {
+  it.each(["0", "1073741825", "not-a-number"])(
+    "rejects invalid content limit %s before contacting the provider",
+    async (maximum) => {
+      const f = fixture();
+      f.context.env = { ...f.context.env, READWISE_CONTENT_MAX_BYTES: maximum };
+      await expect(f.run()).rejects.toThrow("READWISE_CONTENT_MAX_BYTES");
+      expect(f.requests).toEqual([]);
+    },
+  );
   it("resumes a multi-page walk from its original start and commits only after rows", async () => {
     const f = fixture();
     f.setAnswer((query) =>
@@ -341,3 +366,108 @@ describe("Readwise export checkpoints", () => {
     await expect(f.run()).rejects.toThrow("account or endpoint");
   });
 });
+
+it.each(["refresh", "source", "export"] as const)(
+  "keeps a rejected durable wait global during Highlights %s",
+  async (mode) => {
+    const f = fixture();
+    const requests: string[] = [];
+    const refreshCheckpoints: unknown[] = [];
+    const managed: Item = {
+      id: "held",
+      source_id: "primary:source:7",
+      source: "readwise",
+      type: "readwise.source",
+      state: "active",
+      version: 1,
+      schema_version: 1,
+      occurred_at: "2026-01-01T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      properties: {
+        account: "primary",
+        canonical_key: "primary:reader-document:doc",
+        reader_id: "doc",
+        reader_managed: true,
+      },
+    };
+    f.context.held = (type) =>
+      Promise.resolve(
+        mode === "refresh" && type === managed.type ? [managed] : [],
+      );
+    f.context.inspect = () =>
+      Promise.resolve({ items: [managed], tombstones: [] });
+    const forScope = f.context.forScope;
+    f.context.forScope = (name, options) =>
+      name === "reader-refresh"
+        ? {
+            ...f.scope,
+            state: {
+              get: () => undefined,
+              checkpoint: (_key, value) => {
+                refreshCheckpoints.push(value);
+                return Promise.resolve({ committed: true });
+              },
+            },
+          }
+        : forScope(name, options);
+    const http = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      const path = request.url ?? "";
+      requests.push(path);
+      if (mode === "export" || path.includes("/api/v3/")) {
+        response.writeHead(429, { "Retry-After": "60" }).end();
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          count: 1,
+          nextPageCursor: null,
+          results: [
+            {
+              user_book_id: 7,
+              source: "reader",
+              external_id: "doc",
+              highlights: [],
+            },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${String((http.address() as AddressInfo).port)}`;
+    Object.assign(f.context.env, {
+      READWISE_API_URL: `${base}/api/v2/`,
+      READWISE_READER_API_URL: `${base}/api/v3/`,
+      READWISE_ACCESS_TOKEN: `failed-wait-${mode}`,
+    });
+    f.context.waitUntil = vi.fn(() =>
+      Promise.reject(new Error("checkpoint ACK lost")),
+    );
+    try {
+      await expect(sync(f.context, { now: () => start })).rejects.toThrow(
+        "wait failed",
+      );
+      expect(f.context.waitUntil).toHaveBeenCalledOnce();
+      expect(f.written).toEqual([]);
+      expect(
+        f.checkpoints.some(
+          (value) =>
+            typeof value === "object" && value !== null && "completed" in value,
+        ),
+      ).toBe(false);
+      expect(refreshCheckpoints).toEqual(
+        mode === "refresh" ? [] : [null, new Date(start).toISOString()],
+      );
+      expect(requests).toHaveLength(mode === "source" ? 2 : 1);
+    } finally {
+      http.closeAllConnections();
+      await new Promise<void>((resolve) =>
+        http.close(() => {
+          resolve();
+        }),
+      );
+    }
+  },
+);

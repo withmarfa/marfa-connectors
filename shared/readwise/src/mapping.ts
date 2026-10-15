@@ -14,7 +14,7 @@ export function identity(
     throw new Error("Readwise ID must be a positive safe integer");
   return `${account}:${kind}:${String(id)}`;
 }
-function normalizedTags(tags: Tag[] | undefined): string[] {
+export function normalizedTags(tags: Tag[] | undefined): string[] {
   return [
     ...new Set(
       (tags ?? [])
@@ -23,14 +23,16 @@ function normalizedTags(tags: Tag[] | undefined): string[] {
     ),
   ];
 }
-function properties(values: Record<string, unknown>): Record<string, unknown> {
+export function properties(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(values).filter(
       ([, value]) => value !== undefined && value !== null,
     ),
   );
 }
-function webUrl(value: string | null | undefined): string | undefined {
+export function webUrl(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);
@@ -39,7 +41,7 @@ function webUrl(value: string | null | undefined): string | undefined {
     return undefined;
   }
 }
-function date(value: string | null | undefined): string | undefined {
+export function date(value: string | null | undefined): string | undefined {
   return value &&
     /^\d{4}-\d\d-\d\dT/.test(value) &&
     Number.isFinite(Date.parse(value))
@@ -52,6 +54,7 @@ export function mapSource(account: string, source: Source): Entry {
   return {
     source_id: identity(account, "source", source.user_book_id),
     properties: properties({
+      canonical_key: identity(account, "source", source.user_book_id),
       readwise_id: String(source.user_book_id),
       account,
       title: source.title?.trim()
@@ -100,6 +103,7 @@ export function mapHighlight(
     occurred_at: date(highlight.highlighted_at),
     changed_at: date(highlight.updated_at),
     properties: properties({
+      canonical_key: identity(account, "highlight", highlight.id),
       readwise_id: String(highlight.id),
       account,
       readwise_source_id: String(sourceId),

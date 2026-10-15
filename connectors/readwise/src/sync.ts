@@ -9,31 +9,47 @@ import {
   endpoint,
   InvalidCursor,
   RateLimited,
+  ReadwiseThrottleError,
+  ReadwiseAuthorizationError,
   type ExportClient,
   type Query,
-} from "./client.js";
-import type { ExportPage } from "./export.js";
-import { identity, mapHighlight, mapSource } from "./mapping.js";
-import { sourceType, highlightType } from "./types.js";
+  drainContent,
+  enqueueContent,
+  isAccountedContent,
+  readerFileType,
+  contentMaxBytes,
+} from "@withmarfa/readwise";
+import type { ExportPage } from "@withmarfa/readwise";
+import { identity, ReaderClient, type ReaderReader } from "@withmarfa/readwise";
+import {
+  PreservationQueueFull,
+  SharedRows,
+  type SharedContext,
+} from "./coexistence.js";
+import { sourceType, highlightType } from "@withmarfa/readwise";
 
 export const env = {
   READWISE_ACCOUNT: "required",
   READWISE_ACCESS_TOKEN: "secret",
   READWISE_API_URL: "optional",
+  READWISE_CONTENT_MAX_BYTES: "optional",
+  READWISE_READER_API_URL: "optional",
 } as const;
 export type ReadScope = Pick<
   ScopedRunContext<typeof env>,
   "state" | "upsert" | "archive" | "refusals"
 >;
-export interface ReadContext {
+export interface ReadContext extends SharedContext {
   env: EnvValues<typeof env>;
   signal: AbortSignal;
+  waitUntil: RunContext<typeof env>["waitUntil"];
   hints: RunContext<typeof env>["hints"];
   log: RunContext<typeof env>["log"];
   written: RunContext<typeof env>["written"];
+  known?: RunContext<typeof env>["known"];
   forScope: (
     name: string,
-    options: { retry: { mode: "refetch"; context: string } },
+    options?: { retry: { mode: "refetch"; context: string } },
   ) => ReadScope;
 }
 interface Walk {
@@ -51,6 +67,7 @@ interface Progress {
   fullAt?: string;
   retryUntil?: string;
   walk?: Walk;
+  pendingSources?: number[];
 }
 const stateKey = "export";
 const fullEvery = 24 * 60 * 60 * 1000;
@@ -80,6 +97,12 @@ function progress(
     )
   )
     throw new Error("Readwise saved progress is invalid");
+  if (
+    saved.pendingSources !== undefined &&
+    (!Array.isArray(saved.pendingSources) ||
+      saved.pendingSources.some((id) => !Number.isSafeInteger(id) || id <= 0))
+  )
+    throw new Error("Readwise saved pending sources are invalid");
   const walk = saved.walk as unknown;
   if (walk !== undefined) {
     if (typeof walk !== "object" || walk === null)
@@ -110,32 +133,69 @@ async function write(
   scope: ReadScope,
   page: ExportPage,
   account: string,
+  shared: SharedRows,
+  saved: Progress,
+  context: ReadContext,
 ): Promise<void> {
-  const sources = page.results.filter((source) => source.is_deleted !== true);
-  const highlights = page.results.flatMap((source) =>
-    source.highlights
-      .filter((highlight) => highlight.is_deleted !== true)
-      .map((highlight) =>
-        mapHighlight(account, source.user_book_id, highlight),
-      ),
-  );
-  if (sources.length > 0)
-    await scope.upsert(
-      sourceType.id,
-      sources.map((source) => mapSource(account, source)),
+  const pending = new Set(saved.pendingSources ?? []);
+  for (const source of page.results) {
+    const failures: unknown[] = [];
+    async function prepare<T>(
+      operation: () => Promise<T>,
+    ): Promise<T | undefined> {
+      try {
+        return await operation();
+      } catch (error) {
+        if (
+          error instanceof ReadwiseThrottleError ||
+          error instanceof ReadwiseAuthorizationError
+        )
+          throw error;
+        context.signal.throwIfAborted();
+        failures.push(error);
+        context.log.condition(
+          `readwise:coexistence:${String(source.user_book_id)}`,
+          error instanceof Error
+            ? error.message
+            : "Readwise identity reconciliation failed",
+        );
+        return undefined;
+      }
+    }
+    if (source.is_deleted === true) {
+      const key = await prepare(() =>
+        shared.deletion(
+          sourceType.id,
+          identity(account, "source", source.user_book_id),
+        ),
+      );
+      if (key !== undefined) await scope.archive(sourceType.id, [key]);
+    } else {
+      const entry = await prepare(() => shared.source(source));
+      if (entry !== undefined) await scope.upsert(sourceType.id, [entry]);
+    }
+    for (const highlight of source.highlights) {
+      if (highlight.is_deleted === true) {
+        const key = await prepare(() =>
+          shared.deletion(
+            highlightType.id,
+            identity(account, "highlight", highlight.id),
+          ),
+        );
+        if (key !== undefined) await scope.archive(highlightType.id, [key]);
+      } else {
+        const entry = await prepare(() => shared.highlight(source, highlight));
+        if (entry !== undefined) await scope.upsert(highlightType.id, [entry]);
+      }
+    }
+    if (failures.length > 0) pending.add(source.user_book_id);
+    else pending.delete(source.user_book_id);
+  }
+  if (pending.size > 1000)
+    throw new Error(
+      "Readwise pending identity reconciliation is full; page progress is retained",
     );
-  if (highlights.length > 0) await scope.upsert(highlightType.id, highlights);
-  const goneSources = page.results
-    .filter((source) => source.is_deleted === true)
-    .map((source) => identity(account, "source", source.user_book_id));
-  const goneHighlights = page.results.flatMap((source) =>
-    source.highlights
-      .filter((highlight) => highlight.is_deleted === true)
-      .map((highlight) => identity(account, "highlight", highlight.id)),
-  );
-  if (goneSources.length > 0) await scope.archive(sourceType.id, goneSources);
-  if (goneHighlights.length > 0)
-    await scope.archive(highlightType.id, goneHighlights);
+  saved.pendingSources = [...pending];
 }
 function nextSeen(seen: string[], cursor: string | null): string[] {
   if (cursor === null) return seen;
@@ -165,13 +225,18 @@ async function refetch(
   client: ExportClient,
   saved: Progress,
   context: ReadContext,
+  shared: SharedRows,
 ): Promise<void> {
-  const sources = new Set<number>();
+  const sources = new Set<number>(saved.pendingSources ?? []);
   for (const { record, due } of scope.refusals.pending()) {
     if (!due) {
       context.log.unreached({
         keys: [`readwise:retry-missing:${record.identity.sourceId}`],
       });
+      continue;
+    }
+    if (record.identity.sourceId.startsWith(`${saved.account}:reader-`)) {
+      await shared.retry(scope, record.identity.type, record.identity.sourceId);
       continue;
     }
     if (record.identity.type === sourceType.id)
@@ -199,7 +264,7 @@ async function refetch(
       if (page.results.some((source) => source.user_book_id !== sourceId))
         throw new Error("Readwise source refetch returned an unrelated source");
       seen = nextSeen(seen, page.nextPageCursor);
-      await write(scope, page, saved.account);
+      await write(scope, page, saved.account, shared, saved, context);
       await checkpoint(scope, saved);
       cursor = page.nextPageCursor ?? undefined;
     } while (cursor !== undefined);
@@ -209,6 +274,7 @@ export async function sync(
   context: ReadContext,
   options: {
     client?: ExportClient;
+    reader?: ReaderReader;
     now?: () => number;
     maxPages?: number;
   } = {},
@@ -219,9 +285,44 @@ export async function sync(
   }
   const now = options.now ?? Date.now;
   const account = context.env.READWISE_ACCOUNT;
+  const maximumContentBytes = contentMaxBytes(
+    context.env.READWISE_CONTENT_MAX_BYTES,
+  );
   identity(account, "source", 1);
   const base = endpoint(context.env.READWISE_API_URL);
+  const readerBase = endpoint(
+    context.env.READWISE_READER_API_URL ?? "https://readwise.io/api/v3/",
+  );
+  const reader =
+    options.reader ??
+    new ReaderClient(
+      readerBase,
+      context.env.READWISE_ACCESS_TOKEN,
+      context.signal,
+      { now, waitUntil: (until) => context.waitUntil(until) },
+    );
+  const content = context.forScope("reader-content");
+  const shared = new SharedRows(
+    account,
+    context,
+    reader,
+    context.known === undefined
+      ? undefined
+      : async (job) => {
+          const manifest = await context.inspect(readerFileType.id, {
+            links: [`${job.canonical}:content:manifest`],
+          });
+          if (isAccountedContent(manifest.items[0], job)) return;
+          if (await enqueueContent(content.state, [job])) return;
+          await preserve();
+          if (!(await enqueueContent(content.state, [job])))
+            throw new PreservationQueueFull(
+              "Reader preservation queue is full; metadata waits for acknowledged content work",
+            );
+        },
+  );
   const shape = hash([
+    readerBase,
     sourceType,
     highlightType,
     [...context.written(sourceType.id)].sort(),
@@ -243,13 +344,35 @@ export async function sync(
     options.client ??
     new Client(base, context.env.READWISE_ACCESS_TOKEN, context.signal, {
       now,
+      waitUntil: (until) => context.waitUntil(until),
     });
+  const preserve = async () => {
+    if (context.known !== undefined)
+      await drainContent(
+        { ...context, known: context.known },
+        reader,
+        content.state,
+        { now, exportClient: client, maxBytes: maximumContentBytes },
+      );
+  };
   try {
+    await preserve();
     if (saved.retryUntil !== undefined) {
       delete saved.retryUntil;
       await checkpoint(scope, saved);
     }
-    await refetch(scope, client, saved, context);
+    await refetch(scope, client, saved, context, shared);
+    const refreshScope = context.forScope("reader-refresh", {
+      retry: { mode: "refetch", context: hash([account, readerBase, shape]) },
+    });
+    if (await shared.refresh(refreshScope)) {
+      const refreshed = await refreshScope.state.checkpoint(
+        "refresh",
+        new Date(now()).toISOString(),
+      );
+      if (!refreshed.committed)
+        throw new Error(`Reader refresh was not saved: ${refreshed.reason}`);
+    }
     if (saved.shape !== shape) {
       saved = { ...saved, shape };
       delete saved.walk;
@@ -297,7 +420,7 @@ export async function sync(
         continue;
       }
       const seen = nextSeen(walk.seen, page.nextPageCursor);
-      await write(scope, page, account);
+      await write(scope, page, account, shared, saved, context);
       const next: Progress = { ...saved };
       if (page.nextPageCursor === null) {
         next.completed = walk.start;
@@ -306,7 +429,10 @@ export async function sync(
       } else next.walk = { ...walk, cursor: page.nextPageCursor, seen };
       await checkpoint(scope, next);
       saved = next;
-      if (saved.walk === undefined) return;
+      if (saved.walk === undefined) {
+        await preserve();
+        return;
+      }
     }
     context.log.condition(
       "readwise:unfinished",
@@ -314,7 +440,7 @@ export async function sync(
     );
   } catch (error) {
     if (!(error instanceof RateLimited)) throw error;
-    // No page writes occur before a GET can throttle. Save only acknowledged progress.
+    // Per-record GETs can throttle after writes; retain only acknowledged progress.
     const acknowledged = progress(
       scope.state.get(stateKey),
       account,

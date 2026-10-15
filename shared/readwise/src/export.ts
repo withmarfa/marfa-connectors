@@ -154,3 +154,58 @@ export function parsePage(value: unknown): ExportPage {
   }
   return { ...page, nextPageCursor: cursor } as unknown as ExportPage;
 }
+
+/** Metadata and overflow writes must use the same export identity evidence. */
+export function readerExportPassage(
+  sources: readonly Source[],
+  expected: {
+    sourceId: number;
+    highlightId: number;
+    readerId: string;
+    parentId: string | null | undefined;
+  },
+): string | undefined {
+  if (typeof expected.parentId !== "string" || expected.parentId.length === 0)
+    throw new Error("Reader export source identity lacks its verified parent");
+  let deleted = false;
+  let text: string | undefined;
+  for (const source of sources) {
+    if (
+      source.user_book_id !== expected.sourceId ||
+      source.external_id !== expected.parentId ||
+      source.source !== "reader" ||
+      source.is_deleted
+    )
+      throw new Error(
+        "Reader export source identity differs from the saved alias",
+      );
+    for (const highlight of source.highlights) {
+      if (
+        (highlight.external_id === expected.readerId &&
+          highlight.id !== expected.highlightId) ||
+        (highlight.id === expected.highlightId &&
+          highlight.external_id != null &&
+          highlight.external_id !== expected.readerId)
+      )
+        throw new Error(
+          "Reader export highlight identity differs from the saved alias",
+        );
+      if (highlight.id !== expected.highlightId) continue;
+      deleted ||= highlight.is_deleted === true;
+      if (
+        (highlight.external_id !== expected.readerId &&
+          !highlight.is_deleted) ||
+        typeof highlight.text !== "string"
+      )
+        continue;
+      if (text !== undefined && text !== highlight.text)
+        throw new Error("Reader export passage lookup is ambiguous");
+      text = highlight.text;
+    }
+  }
+  if (text === undefined && !deleted)
+    throw new Error(
+      "Reader export passage remains unavailable; metadata is retained",
+    );
+  return text;
+}

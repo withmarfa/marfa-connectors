@@ -6,7 +6,8 @@
     "dist"
   ],
   "dependencies": {
-    "@withmarfa/connector": "workspace:*"
+    "@withmarfa/connector": "workspace:*",
+    "@withmarfa/readwise": "workspace:*"
   },
   "scripts": {
     "start": "node dist/main.js"
