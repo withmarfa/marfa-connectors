@@ -519,3 +519,80 @@ it("does not replay a definitively refused immutable update", async () => {
   expect(calls).toBe(1);
   expect(harness.kept()["outbound"]).toHaveLength(1);
 });
+it("durably consumes known-no-apply evidence before retrying, including a lost reset acknowledgment", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+  let calls = 0;
+  const retryAt = new Date(harness.clock.now().getTime() + 60000).toISOString();
+  f.send(async (change, context) => {
+    const pending =
+      context.outbound.get(change.item.id) ??
+      (await context.outbound.save(change, {
+        request: { create: "Sent" },
+        baseline: null,
+      }));
+    if (calls === 0) {
+      calls++;
+      throw new Unreachable("rate limited", {
+        retryAt,
+        requestNotApplied: true,
+      });
+    }
+    if (pending.requestNotApplied !== true)
+      throw new Refused("uncertain create needs readback");
+    harness.server.loseStateAnswer = true;
+    await context.outbound.prepareRetry(change.item.id, pending.token);
+    calls++;
+  });
+  await f.once();
+  expect(
+    (harness.kept()["outbound"] as { requestNotApplied?: true }[])[0]
+      ?.requestNotApplied,
+  ).toBe(true);
+  harness.clock.advance(60000);
+  await f.once();
+  expect(calls).toBe(1);
+  expect(
+    (harness.kept()["outbound"] as { requestNotApplied?: true }[])[0]
+      ?.requestNotApplied,
+  ).toBeUndefined();
+  await f.once();
+  expect(calls).toBe(1);
+});
+it("retries the same request after durable known-no-apply evidence is consumed", async () => {
+  const f = fixture();
+  await f.once();
+  harness.server.edit(harness.server.row("one").id, { title: "Sent" });
+  let calls = 0;
+  const retryAt = new Date(harness.clock.now().getTime() + 60000).toISOString();
+  f.send(async (change, context) => {
+    const pending =
+      context.outbound.get(change.item.id) ??
+      (await context.outbound.save(change, {
+        request: { create: "Sent" },
+        baseline: null,
+      }));
+    if (calls === 0) {
+      calls++;
+      throw new Unreachable("rate limited", {
+        retryAt,
+        requestNotApplied: true,
+      });
+    }
+    expect(pending.requestNotApplied).toBe(true);
+    await context.outbound.prepareRetry(change.item.id, pending.token);
+    expect(
+      context.outbound.get(change.item.id)?.requestNotApplied,
+    ).toBeUndefined();
+    expect(context.outbound.get(change.item.id)?.request).toEqual({
+      create: "Sent",
+    });
+    calls++;
+    await context.outbound.acknowledge(change.item.id, pending.token);
+  });
+  await f.once();
+  harness.clock.advance(60000);
+  expect(await f.once()).toBe(0);
+  expect(calls).toBe(2);
+});

@@ -65,11 +65,18 @@ export class Unreachable extends Error {
   readonly scope: string | undefined;
   /** Pause all vendor callbacks until this durable deadline, including after restart. */
   readonly retryAt: string | undefined;
+  readonly requestNotApplied: true | undefined;
 
-  constructor(message: string, options?: { scope?: string; retryAt?: string }) {
+  constructor(
+    message: string,
+    options?: { scope?: string; retryAt?: string; requestNotApplied?: true },
+  ) {
     super(message);
     this.scope = options?.scope;
     this.retryAt = retryDeadline(options?.retryAt);
+    this.requestNotApplied = options?.requestNotApplied;
+    if (this.requestNotApplied && this.retryAt === undefined)
+      throw new Error("known-no-apply evidence requires a retry deadline");
   }
 }
 

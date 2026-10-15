@@ -274,3 +274,5 @@ docker build -f template/Dockerfile --build-arg CONNECTOR=<name> -t <name> .
 Pass the environment with `-e`. The container needs no volume: a new one picks up where the last left off, from the state kept on the instance.
 
 When Reader or another vendor returns a retry deadline, throw `new Unreachable(message, { retryAt: deadline })` with an ISO timestamp. The kit persists the deadline before continuing and pauses all vendor callbacks, including preflight and the reader, until it expires. The deadline also works when a baseline read is throttled before an outbound intent exists.
+
+Only when the vendor response proves the request did not apply, such as a documented HTTP 429 rejection, add `requestNotApplied: true` to that `Unreachable` error. Recovery exposes this evidence on the saved intent. Before retrying the exact request, await `context.outbound.prepareRetry(itemId, token)` to consume the evidence durably. A crash or lost acknowledgment after this reset leaves the request uncertain again. A timeout or a throttled readback provides no such evidence.

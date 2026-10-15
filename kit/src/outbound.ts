@@ -17,6 +17,7 @@ export interface OutboundRecord {
   moved?: Carried;
   operation: "change" | "remake";
   acknowledged: boolean;
+  requestNotApplied?: true;
   answer?: Entry;
   confirmationAgreement?: Agreement;
 }
@@ -48,13 +49,18 @@ export function publicIntent(record: OutboundRecord): OutboundIntent {
     request: structuredClone(record.request),
     baseline: structuredClone(record.baseline),
     acknowledged: record.acknowledged,
+    ...(record.requestNotApplied === true && { requestNotApplied: true }),
   };
 }
 
 export function outboundToken(
   record: Omit<
     OutboundRecord,
-    "token" | "acknowledged" | "answer" | "confirmationAgreement"
+    | "token"
+    | "acknowledged"
+    | "answer"
+    | "confirmationAgreement"
+    | "requestNotApplied"
   >,
 ): string {
   return digest(record);
@@ -72,11 +78,16 @@ export function readOutbound(value: unknown): OutboundRecord[] {
   const ids = new Set<string>();
   for (const raw of value) {
     const record = raw as OutboundRecord | null;
+    const requestNotApplied: unknown =
+      record !== null && typeof record === "object"
+        ? Reflect.get(record, "requestNotApplied")
+        : undefined;
     if (
       record === null ||
       typeof record !== "object" ||
       typeof record.token !== "string" ||
       typeof record.acknowledged !== "boolean" ||
+      (requestNotApplied !== undefined && requestNotApplied !== true) ||
       !["change", "remake"].includes(record.operation) ||
       !isObject(record.change) ||
       !isObject(record.change.item) ||
@@ -105,6 +116,7 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       "acknowledged",
       "answer",
       "confirmationAgreement",
+      "requestNotApplied",
     ])
       Reflect.deleteProperty(intent, field);
     if (

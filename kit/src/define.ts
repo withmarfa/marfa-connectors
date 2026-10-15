@@ -361,6 +361,8 @@ export interface OutboundIntent {
   readonly request: JsonValue;
   readonly baseline: JsonValue;
   readonly acknowledged: boolean;
+  /** The last rejected request is proven not to have applied; consume before retrying. */
+  readonly requestNotApplied?: true;
 }
 
 export interface OutboundJournal {
@@ -372,6 +374,8 @@ export interface OutboundJournal {
     change: Change,
     intent: { request: JsonValue; baseline: JsonValue },
   ): Promise<OutboundIntent>;
+  /** Durably consume known-no-apply evidence before retrying the exact request. */
+  prepareRetry(itemId: string, token: string): Promise<void>;
   /** Keep confirmed success before returning. Recovery settles the captured
    * change without repeating HTTP; omission of answer uses captured values.
    * The kit removes the record only after its agreement is acknowledged. */

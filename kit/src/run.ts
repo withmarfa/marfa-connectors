@@ -1115,6 +1115,24 @@ export async function runOnce<E extends EnvDeclaration>(
         await saveOutbound();
         return publicIntent(record);
       },
+      prepareRetry: async (id, token) => {
+        check();
+        const held = outbound.get(id);
+        if (
+          activeOutbound?.change.item.id !== id ||
+          outboundBusy ||
+          held?.token !== token ||
+          held.acknowledged ||
+          held.requestNotApplied !== true
+        )
+          throw new Error(
+            "retry requires the active intent and known-no-apply evidence",
+          );
+        const next = { ...held };
+        Reflect.deleteProperty(next, "requestNotApplied");
+        outbound.set(id, next);
+        await saveOutbound();
+      },
       acknowledge: async (id, token, answer) => {
         check();
         if (activeOutbound?.change.item.id !== id || outboundBusy)
@@ -1261,13 +1279,21 @@ export async function runOnce<E extends EnvDeclaration>(
       outboundBusy = false;
     }
   };
-  const keepVendorRetry = async (error: unknown): Promise<void> => {
+  const keepVendorRetry = async (
+    error: unknown,
+    itemId?: string,
+  ): Promise<void> => {
     if (!(error instanceof Unreachable) || error.retryAt === undefined) return;
     if (
       outboundRetryAt === undefined ||
       Date.parse(error.retryAt) > Date.parse(outboundRetryAt)
     )
       outboundRetryAt = error.retryAt;
+    if (error.requestNotApplied === true && itemId !== undefined) {
+      const held = outbound.get(itemId);
+      if (held !== undefined && !held.acknowledged)
+        outbound.set(itemId, { ...held, requestNotApplied: true });
+    }
     await saveOutbound();
   };
   const invoke = async <T>(
@@ -1295,7 +1321,7 @@ export async function runOnce<E extends EnvDeclaration>(
         throw new Error("outbound success requires a durable acknowledgment");
       return result;
     } catch (error) {
-      await keepVendorRetry(error);
+      await keepVendorRetry(error, change.item.id);
       throw error;
     } finally {
       activeOutbound = undefined;
