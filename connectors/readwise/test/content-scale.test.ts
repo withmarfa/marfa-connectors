@@ -198,6 +198,49 @@ it("preserves every managed source beyond the queue capacity while Reader is sto
   expect(f.lists()).toBe(60);
 });
 
+it("keeps text references advanced by a capacity drain before a later row refreshes", async () => {
+  const f = fixture(140);
+  const document = f.documents[20];
+  if (!document) throw new Error("fixture document is missing");
+  document.notes = "x".repeat(100001);
+  const key = "sample:reader-document:0020";
+  const held = f.rows.get(key);
+  if (!held) throw new Error("fixture row is missing");
+  held.properties = {
+    ...held.properties,
+    notes: "old note",
+    reader_text_files: ["old text reference"],
+  };
+  await enqueueContent(
+    f.scope("reader-content").state,
+    f.documents.slice(12).map((row) => ({
+      id: row.id,
+      canonical: `sample:reader-document:${row.id}`,
+      type: "readwise.source",
+      revision: readerContentRevision(
+        row,
+        [],
+        mapReaderSource("sample", row).textFiles,
+      ),
+    })),
+  );
+  await f.run();
+  const textFiles = mapReaderSource("sample", document).textFiles;
+  expect(
+    f.rows.get(`${key}:content:manifest`)?.properties["preservation"],
+  ).toBe("accounted");
+  expect(f.rows.get(key)?.properties["reader_text_files"]).toEqual(
+    textFiles.map((file) => file.key),
+  );
+  expect(f.rows.get(key)?.properties["notes"]).not.toBe("old note");
+  for (const file of textFiles)
+    expect(new TextDecoder().decode(f.files.get(file.key))).toBe(file.text);
+  await f.run();
+  expect(f.rows.get(key)?.properties["reader_text_files"]).toEqual(
+    textFiles.map((file) => file.key),
+  );
+});
+
 it("uses direct managed lookups when an unrelated feed would cost more listing pages", async () => {
   const f = fixture(21);
   f.documents.push(

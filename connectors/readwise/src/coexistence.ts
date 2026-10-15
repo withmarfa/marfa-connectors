@@ -227,12 +227,31 @@ export class SharedRows {
     }
     return mapped.entry;
   }
+  private async currentRow(type: string, held: Item): Promise<Item> {
+    const found = await this.context.inspect(type, {
+      links: [String(held.properties["canonical_key"])],
+    });
+    const current = found.items[0];
+    if (
+      found.items.length !== 1 ||
+      found.tombstones.length > 0 ||
+      current?.id !== held.id ||
+      current.source_id !== held.source_id ||
+      current.properties["reader_id"] !== held.properties["reader_id"] ||
+      !isReaderManaged(type, current.properties, this.account)
+    )
+      throw new Error(
+        "Reader managed identity changed during refresh; the row waits for retry",
+      );
+    return current;
+  }
   private async managed(
     type: string,
     held: Item,
     exportEntry?: Entry,
   ): Promise<Entry> {
-    const id = held.properties["reader_id"];
+    const current = await this.currentRow(type, held);
+    const id = current.properties["reader_id"];
     if (typeof id !== "string")
       throw new Error("Readwise managed row has no Reader ID");
     const document = await this.document(id);
@@ -241,7 +260,7 @@ export class SharedRows {
         "Reader did not return the managed row; only Reader's complete reconciliation can confirm deletion",
       );
     const notes: ReaderDocument[] = [];
-    const priorNotes = held.properties["reader_notes"];
+    const priorNotes = current.properties["reader_notes"];
     if (
       priorNotes !== null &&
       typeof priorNotes === "object" &&
@@ -258,8 +277,8 @@ export class SharedRows {
       }
     const enrichment = {
       notes,
-      ...(held.source_id ? { sourceId: held.source_id } : {}),
-      properties: { ...held.properties, ...exportEntry?.properties },
+      ...(current.source_id ? { sourceId: current.source_id } : {}),
+      properties: { ...current.properties, ...exportEntry?.properties },
     };
     // An export key and passage never replace Reader's established canonical fields.
     if (type === "readwise.highlight" && exportEntry !== undefined)
@@ -298,7 +317,10 @@ export class SharedRows {
         ...(needsExport && { exportSourceId, exportHighlightId }),
       });
     }
-    const result = this.result(mapped, held);
+    const result = this.result(
+      mapped,
+      mapped.textFiles.length ? await this.currentRow(type, current) : current,
+    );
     this.refreshed.add(held.id);
     return result;
   }
@@ -424,11 +446,14 @@ export class SharedRows {
         }
       }
       if (entry !== undefined) await scope.upsert(type, [entry]);
-      const saved = await scope.state?.checkpoint("cursor", row.id);
-      if (saved !== undefined && !saved.committed)
-        throw new Error(
-          `Reader refresh progress was not saved: ${saved.reason ?? "unknown"}`,
-        );
+      // Later healthy rows can land, but a restart must replay the failed prefix.
+      if (complete) {
+        const saved = await scope.state?.checkpoint("cursor", row.id);
+        if (saved !== undefined && !saved.committed)
+          throw new Error(
+            `Reader refresh progress was not saved: ${saved.reason ?? "unknown"}`,
+          );
+      }
     }
     const saved = await scope.state?.checkpoint("cursor", null);
     if (saved !== undefined && !saved.committed)

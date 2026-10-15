@@ -6,7 +6,11 @@ import {
   type ReaderReader,
   type ContentJob,
 } from "@withmarfa/readwise";
-import { SharedRows, highlightsPolicy } from "../src/coexistence.js";
+import {
+  PreservationQueueFull,
+  SharedRows,
+  highlightsPolicy,
+} from "../src/coexistence.js";
 const row = (sourceId = "one:source:7"): Item => ({
   id: "held",
   source_id: sourceId,
@@ -63,6 +67,7 @@ function setup(
   };
   return {
     shared: new SharedRows("one", context, reader, preserve),
+    context,
     reader,
     writes,
     scope: {
@@ -74,6 +79,76 @@ function setup(
   };
 }
 describe("Highlights coexistence", () => {
+  it("replays an earlier missing row after a later capacity stop and restart", async () => {
+    const items = Array.from({ length: 21 }, (_, index) => {
+      const id = String(index).padStart(4, "0");
+      const canonical = readerIdentity("one", "document", id);
+      return {
+        ...row(canonical),
+        id: canonical,
+        properties: {
+          ...row().properties,
+          canonical_key: canonical,
+          reader_id: id,
+        },
+      };
+    });
+    let full = true;
+    const preserve = (job: ContentJob) => {
+      if (full && job.id === "0002")
+        throw new PreservationQueueFull("queue is full");
+      return Promise.resolve();
+    };
+    const f = setup(items, preserve);
+    const documents = items.map((item) => ({
+      id: item.properties.reader_id,
+      category: "article",
+      title: "Current Reader title",
+    }));
+    f.reader.page = () =>
+      Promise.resolve({
+        count: 20,
+        nextPageCursor: null,
+        results: documents.slice(1),
+      });
+    const kept = new Map<string, unknown>();
+    const scope = {
+      ...f.scope,
+      state: {
+        get: (key: string) => kept.get(key),
+        checkpoint: (key: string, value: unknown) => {
+          kept.set(key, value);
+          return Promise.resolve({ committed: true });
+        },
+      },
+    };
+    expect(await f.shared.refresh(scope)).toBe(false);
+    const interruptedCursor = kept.get("cursor");
+    full = false;
+    const restarted = new SharedRows("one", f.context, f.reader, preserve);
+    expect(await restarted.refresh(scope)).toBe(false);
+    expect(interruptedCursor).toBeUndefined();
+    expect(
+      f.writes
+        .flatMap(({ entries }) => entries)
+        .some((entry) => entry.source_id === "one:reader-document:0020"),
+    ).toBe(true);
+    expect(
+      f.writes
+        .flatMap(({ entries }) => entries)
+        .some((entry) => entry.source_id === "one:reader-document:0000"),
+    ).toBe(false);
+    f.reader.page = () =>
+      Promise.resolve({ count: 21, nextPageCursor: null, results: documents });
+    expect(
+      await new SharedRows("one", f.context, f.reader, preserve).refresh(scope),
+    ).toBe(true);
+    expect(
+      f.writes
+        .flatMap(({ entries }) => entries)
+        .some((entry) => entry.source_id === "one:reader-document:0000"),
+    ).toBe(true);
+  });
   it.each([false, true])(
     "refreshes a cleared annotation when its old record is absent: %s",
     async (present) => {
