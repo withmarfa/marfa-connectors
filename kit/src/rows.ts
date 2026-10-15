@@ -1104,6 +1104,7 @@ export class Rows {
       } catch (error) {
         if (
           attempt === 0 &&
+          this.kind.policy !== undefined &&
           error instanceof Refusal &&
           error.code === "version_conflict"
         )
