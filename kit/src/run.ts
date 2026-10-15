@@ -1049,10 +1049,11 @@ export async function runOnce<E extends EnvDeclaration>(
         (row) =>
           row.type === type &&
           (state === "any" || row.state === "active") &&
-          (spec.link === undefined ||
-          (state === "any" && row.source === spec.source)
-            ? row.source === spec.source
-            : rows.linkOf(row.properties) !== undefined),
+          (options?.includeUnlinked === true ||
+            (spec.link === undefined ||
+            (state === "any" && row.source === spec.source)
+              ? row.source === spec.source
+              : rows.linkOf(row.properties) !== undefined)),
       )
       .map((row) => {
         rows.adopt(row);

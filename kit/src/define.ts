@@ -275,10 +275,12 @@ export interface RunContext<E extends EnvDeclaration> {
    * longer holds can ask about each row it left out.
    */
   /** With state:any, also includes same-source rows without a link, including
-   * archived and trashed identities that predate a type's link field. */
+   * archived and trashed identities that predate a type's link field.
+   * includeUnlinked also returns visible rows from other sources without a link
+   * or natural key, for checking explicit local requests before importing. */
   readonly held: (
     type: string,
-    options?: { state: "any" | "active" },
+    options?: { state: "any" | "active"; includeUnlinked?: boolean },
   ) => Promise<Item[]>;
   /** Fresh identity evidence, without an agreement requirement. Includes every
    * item state and purge tombstones. source_ids use the connector's item source.

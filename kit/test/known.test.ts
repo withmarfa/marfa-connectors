@@ -221,3 +221,51 @@ it("enumerates legacy same-source rows in every retained state", async () => {
   harness.server.trash(harness.server.row("trashed").id);
   expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
 });
+
+it("explicitly includes visible unlinked rows from other sources without natural keys", async () => {
+  const inserted = ["active", "archived", "trashed"].map((state) => {
+    const row = harness.server.insert(
+      undefined,
+      { title: state },
+      linkedType.id,
+      "another-app",
+    );
+    if (state === "archived") harness.server.transition(row.id, "archived");
+    if (state === "trashed") harness.server.trash(row.id);
+    return row;
+  });
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      for (const reader of [context, context.forScope("inventory")]) {
+        expect(await reader.held(linkedType.id, { state: "any" })).toEqual([]);
+        const rows = await reader.held(linkedType.id, {
+          state: "any",
+          includeUnlinked: true,
+        });
+        expect(rows.map((row) => row.id).sort()).toEqual(
+          inserted.map((row) => row.id).sort(),
+        );
+        expect(rows.every((row) => row.source_id == null)).toBe(true);
+        rows[0]!.properties["title"] = "Detached";
+        const active = await reader.held(linkedType.id, {
+          state: "active",
+          includeUnlinked: true,
+        });
+        expect(active).toHaveLength(1);
+        expect(active[0]?.properties["title"]).toBe("active");
+      }
+      harness.server.refuseNext("GET /items", 403, "permission_denied");
+      await expect(
+        context.held(linkedType.id, {
+          state: "any",
+          includeUnlinked: true,
+        }),
+      ).rejects.toThrow();
+    },
+  });
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+});
