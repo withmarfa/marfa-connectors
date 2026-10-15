@@ -47,6 +47,14 @@ export function readerFilePolicy(
     return { owned: false };
   const properties = entry?.properties ?? item?.properties;
   return {
+    // Both connectors retain these files. Only a fresh preservation write can
+    // replace them; a watch must not replay its own older agreement.
+    fields: Object.fromEntries(
+      readerFileFields.map((field) => [
+        field,
+        entry === undefined ? "observe" : "mirror",
+      ]),
+    ),
     owned:
       properties?.["account"] === account &&
       typeof properties["document_key"] === "string" &&
