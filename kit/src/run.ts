@@ -580,6 +580,10 @@ export async function runOnce<E extends EnvDeclaration>(
     outboundRetryAt = undefined;
   };
   const recovered = new Set<string>();
+  const refusedOutbound = new Map<
+    string,
+    { change: Change; reason?: string }
+  >();
   let narrowed: Promise<string[]> | undefined;
   const retryOwners = new Map<string, Scope>();
   const retryContext = (scope: Scope): string =>
@@ -1376,6 +1380,23 @@ export async function runOnce<E extends EnvDeclaration>(
     outbound.delete(id);
     await saveOutbound();
   };
+  const releaseRefused = async (change: Change): Promise<boolean> => {
+    const held = refusedOutbound.get(change.item.id);
+    if (held === undefined) return true;
+    const refused = held.change;
+    const changed = new Set([...refused.changed, ...change.changed]);
+    const current = { ...change, kind: refused.kind, changed };
+    Reflect.deleteProperty(current, "was");
+    if (refused.was !== undefined) Object.assign(current, { was: refused.was });
+    // A confirmed create may now be an update; its link alone is no new edit.
+    if (sending(current) === sending({ ...refused, changed })) {
+      refusedOf(change.item.id, refused.kind, held.reason);
+      return false;
+    }
+    await finishOutbound(change.item.id);
+    refusedOutbound.delete(change.item.id);
+    return true;
+  };
   const overlaps = (scope: Scope): boolean =>
     [...scope.ids].some((id) => {
       const ownership = owners.get(id);
@@ -1725,7 +1746,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (recovered.has(item.id)) return;
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec, rows } = lane(item.type);
-    if (spec.policy !== undefined) {
+    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
       const fresh = await setup.marfa.item(item.id);
       if (fresh?.type !== item.type) return;
       rows.adopt(fresh);
@@ -1798,6 +1819,14 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     const connected = Object.keys(moved?.connections ?? {}).length > 0;
     if (changeKind === "updated" && changed.length === 0 && !connected) {
+      if (
+        !(await releaseRefused({
+          kind: changeKind,
+          item: current,
+          changed: new Set(),
+        }))
+      )
+        return;
       const binned =
         current.state === "trashed" &&
         connections
@@ -1853,6 +1882,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (unagreed !== undefined) Object.assign(change, { unagreed });
     const placement = await connections.placementOf(current, kind, agreement);
     if (placement !== undefined) Object.assign(change, { placement });
+    if (!(await releaseRefused(change))) return;
     if (refusedBefore(current.id, agreement, change)) return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
@@ -2180,7 +2210,22 @@ export async function runOnce<E extends EnvDeclaration>(
       ...read.rows.keys(),
       ...read.connected.keys(),
       ...waitingIds,
+      ...outbound.keys(),
     ]);
+    // Observation can clear a refusal when an edit returns to its baseline.
+    for (const record of outbound.values()) {
+      const change = restoreChange(record.change);
+      const refusal = store.get(change.item.id)?.refused;
+      if (
+        !record.acknowledged &&
+        change.kind !== "purged" &&
+        refusal?.change === sending(change)
+      )
+        refusedOutbound.set(change.item.id, {
+          change,
+          ...(refusal.reason !== undefined && { reason: refusal.reason }),
+        });
+    }
     await fetchRows([
       ...read.connected.keys(),
       ...[...read.rows].filter(([, seen]) => !seen.purged).map(([id]) => id),
@@ -2339,15 +2384,15 @@ export async function runOnce<E extends EnvDeclaration>(
       const declared = specs.get(change.item.type);
       if (declared === undefined || connector.onChange === undefined)
         throw new Error("a pending outbound intent has no declared handler");
-      await store.fetch([id]);
-      const previous = store.get(id);
-      if (
-        !record.acknowledged &&
-        change.kind !== "purged" &&
-        previous !== undefined &&
-        refusedBefore(id, previous, change)
-      )
+      if (refusedOutbound.has(id)) {
+        const live = await setup.marfa.item(id);
+        if (live?.type === change.item.type) {
+          lane(live.type).rows.adopt(live);
+          recovered.delete(id);
+          order.add(id);
+        }
         continue;
+      }
       const refusal = purged.get(id)?.refused;
       if (
         !record.acknowledged &&
@@ -2505,6 +2550,10 @@ export async function runOnce<E extends EnvDeclaration>(
             done.add(id);
             continue;
           }
+          if (!(await releaseRefused(change))) {
+            done.add(id);
+            continue;
+          }
           if (refusedBefore(id, agreement, change)) {
             done.add(id);
             continue;
@@ -2566,6 +2615,9 @@ export async function runOnce<E extends EnvDeclaration>(
             done.add(id);
           }
           await finishOutbound(id);
+        } else if (refusedOutbound.has(id)) {
+          if ((await carry(item, agreement)) === "unplaced") unplaced.push(id);
+          done.add(id);
         }
       }
       // Again while any lands, for a create naming a row made after it.

@@ -519,6 +519,136 @@ it("does not replay a definitively refused immutable update", async () => {
   expect(calls).toBe(1);
   expect(harness.kept()["outbound"]).toHaveLength(1);
 });
+it.each([false, true])(
+  "releases a definitively refused intent for a fresh corrected change; lost retirement acknowledgment=%s",
+  async (lost) => {
+    const f = fixture();
+    await f.once();
+    const row = harness.server.row("one");
+    harness.server.edit(row.id, { title: "Bad" });
+    const sent: string[] = [];
+    f.send(async (change, context) => {
+      const intent = await context.outbound.save(change, {
+        request: { title: change.item.properties["title"] as string },
+        baseline: null,
+      });
+      sent.push(change.item.properties["title"] as string);
+      if (sent.length === 1) throw new Refused("unsupported value");
+      await context.outbound.acknowledge(change.item.id, intent.token);
+    });
+    await f.once();
+    await f.once();
+    expect(sent).toEqual(["Bad"]);
+    harness.server.edit(row.id, { vendor_id: "untrusted-link" });
+    await f.once();
+    expect(sent).toEqual(["Bad"]);
+    expect(harness.kept()["outbound"]).toHaveLength(1);
+    harness.server.edit(row.id, { title: "Good" });
+    if (lost)
+      harness.server.beforeAnswer = (request) => {
+        const body = request.body as { state?: { outbound?: unknown } };
+        if (
+          request.method === "PUT" &&
+          request.path.endsWith("/state") &&
+          body.state !== undefined &&
+          body.state.outbound === undefined
+        ) {
+          harness.server.loseStateAnswer = true;
+          harness.server.beforeAnswer = undefined;
+        }
+      };
+    if (lost) {
+      expect(await f.once()).toBe(1);
+      expect(sent).toEqual(["Bad"]);
+    }
+    expect(await f.once()).toBe(0);
+    expect(sent).toEqual(["Bad", "Good"]);
+    expect(harness.kept()["outbound"]).toBeUndefined();
+  },
+);
+it("releases a refused intent when its carried edit is reverted", async () => {
+  const f = fixture();
+  await f.once();
+  const row = harness.server.row("one");
+  harness.server.edit(row.id, { title: "Bad" });
+  let calls = 0;
+  f.send(async (change, context) => {
+    await context.outbound.save(change, {
+      request: { title: "Bad" },
+      baseline: null,
+    });
+    calls++;
+    throw new Refused("unsupported value");
+  });
+  await f.once();
+  harness.server.edit(row.id, { title: "Original" });
+  await f.once();
+  await f.once();
+  expect(calls).toBe(1);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
+it("keeps an uncertain intent across repeated newer local changes", async () => {
+  const f = fixture();
+  await f.once();
+  const row = harness.server.row("one");
+  harness.server.edit(row.id, { title: "Sent" });
+  const requests: string[] = [];
+  f.send(async (change, context) => {
+    const intent =
+      context.outbound.get(change.item.id) ??
+      (await context.outbound.save(change, {
+        request: { title: change.item.properties["title"] as string },
+        baseline: null,
+      }));
+    expect(intent.request).toEqual({ title: "Sent" });
+    requests.push(change.item.properties["title"] as string);
+    throw new Unreachable("lost response");
+  });
+  await f.once();
+  harness.server.edit(row.id, { title: "Newer" });
+  await f.once();
+  harness.server.edit(row.id, { title: "Newest" });
+  await f.once();
+  expect(requests).toEqual(["Sent", "Sent", "Sent"]);
+  expect(harness.kept()["outbound"]).toHaveLength(1);
+  expect(harness.server.row("one").properties["title"]).toBe("Newest");
+});
+it("keeps a confirmed create link when its later refused step is corrected", async () => {
+  const f = fixture();
+  await f.once();
+  const row = harness.server.insert("manual", { title: "Bad" }, linkedType.id);
+  let creates = 0;
+  const patches: string[] = [];
+  f.send(async (change, context) => {
+    let intent = await context.outbound.save(change, {
+      request: { phase: change.kind === "created" ? "create" : "patch" },
+      baseline: null,
+    });
+    if (change.kind === "created") {
+      creates++;
+      await context.setLink(change.item, "created-id");
+      intent = await context.outbound.advance(change.item.id, intent.token, {
+        request: { phase: "patch" },
+        baseline: { created: "created-id" },
+      });
+    }
+    patches.push(change.item.properties["title"] as string);
+    if (patches.length === 1) throw new Refused("unsupported title");
+    expect(change.item.properties["vendor_id"]).toBe("created-id");
+    await context.outbound.acknowledge(change.item.id, intent.token);
+  });
+  await f.once();
+  await f.once();
+  expect(creates).toBe(1);
+  expect(patches).toEqual(["Bad"]);
+  harness.server.edit(row.id, { title: "Good" });
+  expect(await f.once()).toBe(0);
+  expect(creates).toBe(1);
+  expect(patches).toEqual(["Bad", "Good"]);
+  expect(harness.server.row("manual").properties["vendor_id"]).toBe(
+    "created-id",
+  );
+});
 it("durably consumes known-no-apply evidence before retrying, including a lost reset acknowledgment", async () => {
   const f = fixture();
   await f.once();
