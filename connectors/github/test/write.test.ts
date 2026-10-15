@@ -37,6 +37,7 @@ beforeEach(async () => {
     metadata_permissions: { types: "write", edge_types: "write" },
   };
   github = await new GitHubStub().start();
+  github.appPem = key;
   repository = github.addRepository("someone/tracker");
 });
 
@@ -121,12 +122,12 @@ describe("an issue changed in Marfa", () => {
     marfa.edit(row(issue.node).id, { title: "After" });
     const other = github.addRepository("someone/other");
     github.addIssue(other);
-    github.graphqlRemaining = 100;
+    github.budget("graphql").remaining = 100;
     const output = await ok();
     expect(output).toContain("rate limit ran out");
     expect(issue.title).toBe("Before");
     expect(row(issue.node).properties["title"]).toBe("After");
-    github.graphqlRemaining = 4999;
+    github.refill("graphql");
     await ok();
     expect(issue.title).toBe("After");
   });

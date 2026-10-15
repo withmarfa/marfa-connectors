@@ -5,6 +5,7 @@ import {
   asInstallation,
   ClockSkew,
   RateLimitWaiting,
+  rateLimited,
   type App,
 } from "../src/github.js";
 
@@ -18,6 +19,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
   github = await new GitHubStub().start();
+  github.appPem = key;
   // One per test: the process keeps a signer, and its clock, per App.
   app = { appId: "12345", privateKey: key, base: github.url };
 });
@@ -48,9 +50,9 @@ function reader(signal = new AbortController().signal) {
 describe("an installation token", () => {
   it("preserves GraphQL errors with malformed budget headers", async () => {
     const { octokit } = reader();
-    github.graphqlRemaining = Number.NaN;
-    github.rateReset = Number.NaN;
-    github.graphqlLimitedInstallations.add(1);
+    const budget = github.budget("graphql");
+    budget.remaining = Number.NaN;
+    budget.reset = Number.NaN;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const before = github.asked.filter(
         (one) => one.path === "/graphql",
@@ -68,9 +70,7 @@ describe("an installation token", () => {
   });
   it("counts plain GraphQL throttling errors before another request", async () => {
     const { octokit } = reader();
-    github.graphqlRemaining = 0;
-    github.rateReset = Math.ceil(Date.now() / 1000) + 3600;
-    github.graphqlLimitedInstallations.add(1);
+    github.exhaust("graphql");
     await expect(
       octokit.graphql(
         "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
@@ -90,9 +90,8 @@ describe("an installation token", () => {
 
   it("shares the REST reserve with metadata tokens and retries only after the real reset", async () => {
     const { octokit } = reader();
-    github.rateRemaining = 100;
     const reset = Math.floor(Date.now() / 1000) + 2;
-    github.rateReset = reset;
+    Object.assign(github.budget("core"), { remaining: 100, reset });
     await octokit.request("GET /repos/{owner}/{repo}", {
       owner: "someone",
       repo: "tracker",
@@ -117,6 +116,39 @@ describe("an installation token", () => {
     expect(response.status).toBe(200);
     expect(
       github.asked.filter((one) => one.path === "/installation/repositories"),
+    ).toHaveLength(1);
+  });
+
+  it("waits out a primary limit that resets within a minute, then asks again", async () => {
+    const { octokit } = reader();
+    Object.assign(github.budget("core"), {
+      remaining: 0,
+      reset: Math.floor(Date.now() / 1000) + 2,
+    });
+    const answer = await octokit.request("GET /repos/{owner}/{repo}", {
+      owner: "someone",
+      repo: "tracker",
+    });
+    expect(answer.status).toBe(200);
+    expect(
+      github.asked
+        .filter((one) => one.path === "/repos/someone/tracker")
+        .map((one) => one.status),
+    ).toEqual([403, 200]);
+  });
+
+  it("does not wait out a primary limit that resets in an hour", async () => {
+    const { octokit } = reader();
+    github.exhaust("core");
+    const error = await octokit
+      .request("GET /repos/{owner}/{repo}", {
+        owner: "someone",
+        repo: "tracker",
+      })
+      .catch((caught: unknown) => caught);
+    expect(rateLimited(error)).toBe(true);
+    expect(
+      github.asked.filter((one) => one.path === "/repos/someone/tracker"),
     ).toHaveLength(1);
   });
 

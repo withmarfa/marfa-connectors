@@ -1,4 +1,9 @@
-import { createHash, generateKeyPairSync } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  createVerify,
+  generateKeyPairSync,
+} from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -84,13 +89,27 @@ interface Grant {
   permissions: Record<string, Access>;
 }
 
-interface Asked {
+export type Resource = "core" | "graphql";
+
+/** One hourly budget, as GitHub keeps one for each installation and API. */
+export interface Budget {
+  limit: number;
+  remaining: number;
+  /** UTC epoch seconds at which the window ends and the budget is whole. */
+  reset: number;
+}
+
+export interface Asked {
   method: string;
   path: string;
   query: string;
   body?: unknown;
   status: number;
   version: string | undefined;
+  /** What the answer said was left of the budget it counted against. */
+  remaining?: number;
+  /** Whether the answer refused the request for a rate limit. */
+  limited?: boolean;
 }
 
 // The clock moves a second at every write, so `updated_at` orders them.
@@ -102,19 +121,17 @@ export class GitHubStub {
   comments: Comment[] = [];
   asked: Asked[] = [];
   manifestCode: string | undefined = "manifest-code";
+  /** The App's private key. GitHub holds its public half to check the App's
+   *  JWT, and refuses every JWT until a test names the key. */
   appPem = "";
   appWebhookSecret: string | null = "stub-webhook-secret-from-github";
   echoCredentials = false;
-  rateRemaining = 4999;
-  rateLimited = false;
   readFailure: string | undefined;
-  graphqlRemaining = 4999;
-  graphqlRemainingByInstallation = new Map<number, number>();
-  graphqlLimitedInstallations = new Set<number>();
-  rateReset: number | undefined;
-  metadataLimitedInstallation: number | undefined;
-  longResetRepository: string | undefined;
+  /** Runs as each request arrives, before it is counted or answered, so a
+   *  test can change the world, such as a budget, at a chosen request. */
+  onAsked: ((asked: Asked) => void) | undefined;
   appId = 12345;
+  appClientId = "Iv1.test";
   appSlug = "marfa-connectors";
   loseNextCreate = false;
   // With `loseNextCreate`, what the create made is missing from the next
@@ -142,6 +159,7 @@ export class GitHubStub {
   /** Requests the tokens answer before GitHub revokes every one of them. */
   revokeAfter: number | undefined;
   private grants = new Map<string, Grant>();
+  private budgets = new Map<string, Budget>();
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
   private ids = 1000;
@@ -183,6 +201,34 @@ export class GitHubStub {
     return new Date(this.clock - days * 86_400_000)
       .toISOString()
       .replace(/\.\d{3}Z$/, "Z");
+  }
+
+  /** The budget an installation has for an API (installation 0 is the App
+   *  itself, which signs with a JWT), whole until requests spend it. */
+  budget(resource: Resource, installation = 1): Budget {
+    const key = `${String(installation)} ${resource}`;
+    let held = this.budgets.get(key);
+    if (held === undefined) {
+      held = { limit: 5000, remaining: 5000, reset: this.windowEnd() };
+      this.budgets.set(key, held);
+    }
+    return held;
+  }
+
+  /** Spends the budget, as GitHub does when a client has used it all. */
+  exhaust(resource: Resource, installation = 1): void {
+    this.budget(resource, installation).remaining = 0;
+  }
+
+  /** Makes the budget whole again, in a fresh hour. */
+  refill(resource: Resource, installation = 1): void {
+    const held = this.budget(resource, installation);
+    held.remaining = held.limit;
+    held.reset = this.windowEnd();
+  }
+
+  private windowEnd(): number {
+    return Math.floor(Date.now() / 1000) + 3600;
   }
 
   addRepository(name: string, fields: Partial<Repository> = {}): Repository {
@@ -381,7 +427,9 @@ export class GitHubStub {
   }
 
   private grantOf(req: IncomingMessage): Grant | undefined {
-    const token = /^token (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
+    const token = /^(?:token|bearer) (\S+)$/i.exec(
+      req.headers.authorization ?? "",
+    )?.[1];
     return token === undefined ? undefined : this.grants.get(token);
   }
 
@@ -399,22 +447,50 @@ export class GitHubStub {
     return held === "write" || held === wanted;
   }
 
-  /** Why GitHub would refuse the App's JWT, if it would: it judges the
-   *  claims by its own clock. */
+  /** Why GitHub would refuse the App's JWT, if it would: it checks the
+   *  signature against the App's public key, then judges the claims by its
+   *  own clock. */
   private jwtRefusal(req: IncomingMessage): string | undefined {
+    const undecodable = "A JSON web token could not be decoded";
     const jwt = /^bearer (\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
-    if (jwt === undefined) return "A JSON web token could not be decoded";
-    const claims = JSON.parse(
-      Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"),
-    ) as { iat?: number; exp?: number };
+    const [head, body, signature, ...rest] = (jwt ?? "").split(".");
+    if (
+      head === undefined ||
+      body === undefined ||
+      signature === undefined ||
+      rest.length > 0
+    ) {
+      return undecodable;
+    }
+    let header: { alg?: unknown };
+    let claims: { iss?: unknown; iat?: unknown; exp?: unknown };
+    try {
+      header = JSON.parse(
+        Buffer.from(head, "base64url").toString("utf8"),
+      ) as typeof header;
+      claims = JSON.parse(
+        Buffer.from(body, "base64url").toString("utf8"),
+      ) as typeof claims;
+      const signed = createVerify("RSA-SHA256")
+        .update(`${head}.${body}`)
+        .verify(createPublicKey(this.appPem), signature, "base64url");
+      if (header.alg !== "RS256" || !signed) return undecodable;
+    } catch {
+      return undecodable;
+    }
+    if (![String(this.appId), this.appClientId].includes(String(claims.iss))) {
+      return undecodable;
+    }
     const now = Math.floor(Date.now() / 1000) + this.clockAhead;
-    if ((claims.exp ?? 0) <= now) {
+    const exp = typeof claims.exp === "number" ? claims.exp : 0;
+    const iat = typeof claims.iat === "number" ? claims.iat : 0;
+    if (exp <= now) {
       return "'Expiration time' claim ('exp') must be a numeric value representing the future time at which the assertion expires";
     }
-    if ((claims.iat ?? 0) > now + 60) {
+    if (iat > now + 60) {
       return "'Issued at' claim ('iat') must be an Integer representing the time that the assertion was issued";
     }
-    if ((claims.exp ?? 0) > now + 600 + 60) {
+    if (exp > now + 600) {
       return "'Expiration time' claim ('exp') is too far in the future";
     }
     return undefined;
@@ -514,36 +590,93 @@ export class GitHubStub {
       version: req.headers["x-github-api-version"] as string | undefined,
     };
     this.asked.push(asked);
+    this.onAsked?.(asked);
+    const method = req.method ?? "GET";
+    const path = url.pathname;
+    const resource: Resource = path === "/graphql" ? "graphql" : "core";
+    const asApp = path === "/app" || path.startsWith("/app/");
+    // The App signs with a JWT and has a budget of its own.
+    const budget = this.budget(
+      resource,
+      asApp ? 0 : (this.installationOf(req)?.id ?? 0),
+    );
+    if (Date.now() / 1000 >= budget.reset) {
+      budget.remaining = budget.limit;
+      budget.reset = this.windowEnd();
+    }
     const send = (
       status: number,
       data?: unknown,
       headers: Record<string, string> = {},
     ): void => {
       asked.status = status;
+      asked.remaining = budget.remaining;
       res.writeHead(status, {
         "content-type": "application/json",
         date: new Date(this.clock + this.clockAhead * 1000).toUTCString(),
-        "x-ratelimit-remaining": String(
-          path === "/graphql"
-            ? (this.graphqlRemainingByInstallation.get(
-                this.installationOf(req)?.id ?? -1,
-              ) ?? this.graphqlRemaining)
-            : this.rateRemaining,
-        ),
-        "x-ratelimit-resource": path === "/graphql" ? "graphql" : "core",
-        ...(this.rateReset !== undefined && {
-          "x-ratelimit-reset": String(this.rateReset),
-        }),
+        "x-ratelimit-limit": String(budget.limit),
+        "x-ratelimit-remaining": String(budget.remaining),
+        "x-ratelimit-used": String(budget.limit - budget.remaining),
+        "x-ratelimit-reset": String(budget.reset),
+        "x-ratelimit-resource": resource,
         ...headers,
       });
       res.end(data === undefined ? undefined : JSON.stringify(data));
+    };
+    // GitHub's primary limit is a 403 on REST and an error under a 200 on
+    // GraphQL, and a secondary limit comes with the seconds to wait. The
+    // documentation does not name the GraphQL error's type; the connector
+    // reads `RATE_LIMITED`.
+    const limit = (secondary: boolean, status: 403 | 429 = 403): void => {
+      asked.limited = true;
+      const headers = secondary ? { "retry-after": "1" } : {};
+      if (resource === "graphql") {
+        send(
+          200,
+          {
+            data: null,
+            errors: [
+              { type: "RATE_LIMITED", message: "API rate limit exceeded" },
+            ],
+          },
+          headers,
+        );
+      } else {
+        send(
+          status,
+          {
+            message: secondary
+              ? status === 403
+                ? "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+                : "API rate limit exceeded"
+              : "API rate limit exceeded for installation",
+          },
+          headers,
+        );
+      }
     };
     const page = (all: unknown[]): void => {
       const size = Number(url.searchParams.get("per_page") ?? "30");
       const at = Number(url.searchParams.get("page") ?? "1");
       const slice = all.slice((at - 1) * size, at * size);
-      const etag = `W/"${createHash("sha1").update(JSON.stringify(slice)).digest("hex")}"`;
-      if (req.headers["if-none-match"] === etag) {
+      // The page and the media type change GitHub's ETag as its documentation
+      // says. A probe with user tokens, not installation tokens, showed that
+      // the scheme word changes it too and that the token does not.
+      const etag = `"${createHash("sha256")
+        .update(
+          JSON.stringify([
+            req.headers.authorization?.split(" ")[0],
+            req.headers.accept,
+            slice,
+          ]),
+        )
+        .digest("hex")}"`;
+      const held = (req.headers["if-none-match"] ?? "")
+        .split(",")
+        .map((one) => one.trim().replace(/^W\//, ""));
+      if (held.includes("*") || held.includes(etag)) {
+        // An authorized request answered 304 costs nothing against the limit.
+        if (req.headers.authorization !== undefined) budget.remaining += 1;
         send(304, undefined, { etag });
         return;
       }
@@ -555,10 +688,8 @@ export class GitHubStub {
         }),
       });
     };
-    const method = req.method ?? "GET";
-    const path = url.pathname;
     let match: RegExpExecArray | null;
-    if (/^token /i.test(req.headers.authorization ?? "")) {
+    if (!asApp && req.headers.authorization !== undefined) {
       const grant = this.grantOf(req);
       if (grant === undefined) {
         send(401, { message: "Bad credentials" });
@@ -598,13 +729,19 @@ export class GitHubStub {
         return;
       }
     }
-    if (path.startsWith("/app/") || path === "/app") {
+    if (asApp) {
       const refusal = this.jwtRefusal(req);
       if (refusal !== undefined) {
         send(401, { message: refusal });
         return;
       }
     }
+    // A refused request is not counted, and a spent budget refuses the rest.
+    if (!(budget.remaining > 0)) {
+      limit(false);
+      return;
+    }
+    budget.remaining -= 1;
     if (
       this.listingsFailing > 0 &&
       method === "GET" &&
@@ -614,15 +751,6 @@ export class GitHubStub {
       send(404, { message: "Not Found" });
       return;
     }
-    if (this.rateLimited && path.startsWith("/repos/")) {
-      send(
-        403,
-        { message: "API rate limit exceeded for installation" },
-        { "x-ratelimit-remaining": "0" },
-      );
-      return;
-    }
-
     if (method === "GET" && path === "/app") {
       send(200, { id: this.appId, slug: this.appSlug });
       return;
@@ -670,12 +798,12 @@ export class GitHubStub {
       }
       this.manifestCode = undefined;
       send(201, {
-        id: 424242,
+        id: this.appId,
         slug: "marfa-sync-test",
         html_url: "https://github.com/apps/marfa-sync-test",
         pem: this.appPem,
         webhook_secret: this.appWebhookSecret,
-        client_id: "Iv1.test",
+        client_id: this.appClientId,
         client_secret: "client-secret-value",
       });
       return;
@@ -691,17 +819,6 @@ export class GitHubStub {
         send(401, { message: "Bad credentials" });
         return;
       }
-      if (installation.id === this.metadataLimitedInstallation) {
-        send(
-          403,
-          { message: "API rate limit exceeded for installation" },
-          {
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": String(Math.ceil(Date.now() / 1000) + 3600),
-          },
-        );
-        return;
-      }
       const repositories = this.repositories
         .filter((one) => this.reaches(req, one))
         .map((one) => this.restRepository(one));
@@ -713,6 +830,7 @@ export class GitHubStub {
         req,
         body as { query: string; variables: Record<string, unknown> },
         send,
+        limit,
       );
       return;
     }
@@ -736,6 +854,9 @@ export class GitHubStub {
       }
       const since = url.searchParams.get("since");
       const sort = url.searchParams.get("sort") ?? "created";
+      // Observed against GitHub, which honors direction though its
+      // documentation says it is ignored without sort.
+      const direction = url.searchParams.get("direction") === "desc" ? -1 : 1;
       const all = this.comments
         .filter((one) => {
           const issue = this.issue(one.issue);
@@ -745,10 +866,12 @@ export class GitHubStub {
             (since === null || one.updated_at >= since)
           );
         })
-        .sort((a, b) =>
-          sort === "updated"
-            ? a.updated_at.localeCompare(b.updated_at) || a.id - b.id
-            : a.id - b.id,
+        .sort(
+          (a, b) =>
+            direction *
+            (sort === "updated"
+              ? a.updated_at.localeCompare(b.updated_at) || a.id - b.id
+              : a.id - b.id),
         )
         .map((one) => this.restComment(one));
       page(all);
@@ -815,20 +938,6 @@ export class GitHubStub {
     ) {
       const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
       if (
-        repository?.name === this.longResetRepository &&
-        this.longResetRepository !== undefined
-      ) {
-        send(
-          403,
-          { message: "API rate limit exceeded for installation" },
-          {
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": String(Math.ceil(Date.now() / 1000) + 3600),
-          },
-        );
-        return;
-      }
-      if (
         repository?.name === this.readFailure &&
         this.readFailure !== undefined
       ) {
@@ -871,16 +980,7 @@ export class GitHubStub {
       path.startsWith("/repos/")
     ) {
       limited.left -= 1;
-      send(
-        limited.status,
-        {
-          message:
-            limited.status === 403
-              ? "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
-              : "API rate limit exceeded",
-        },
-        { "retry-after": "1" },
-      );
+      limit(true, limited.status);
       return;
     }
     if (this.write(req, method, path, body, send)) return;
@@ -1012,6 +1112,7 @@ export class GitHubStub {
     operation: string | undefined,
     variables: Record<string, unknown>,
     send: (status: number, data?: unknown) => void,
+    limit: (secondary: boolean) => void,
   ): boolean {
     const issue = (key: string): Issue | undefined => {
       const found = this.issue(String(variables[key]));
@@ -1029,10 +1130,7 @@ export class GitHubStub {
     }
     if (this.mutationsLimited > 0) {
       this.mutationsLimited -= 1;
-      send(200, {
-        data: null,
-        errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
-      });
+      limit(true);
       return true;
     }
     const one = issue("issueId");
@@ -1189,19 +1287,11 @@ export class GitHubStub {
     req: IncomingMessage,
     body: { query: string; variables: Record<string, unknown> },
     send: (status: number, data?: unknown) => void,
+    limit: (secondary: boolean) => void,
   ): void {
     const operation = /^\s*(query|mutation)\s+(\w+)/.exec(body.query)?.[2];
     if (this.installationOf(req) === undefined) {
       send(401, { message: "Bad credentials" });
-      return;
-    }
-    if (
-      this.graphqlLimitedInstallations.has(this.installationOf(req)?.id ?? -1)
-    ) {
-      send(200, {
-        data: null,
-        errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
-      });
       return;
     }
     const errors: { type: string; message: string }[] = [];
@@ -1313,7 +1403,7 @@ export class GitHubStub {
       });
       return;
     }
-    if (this.mutate(req, operation, body.variables, send)) return;
+    if (this.mutate(req, operation, body.variables, send, limit)) return;
     send(200, {
       errors: [{ type: "UNKNOWN", message: `no ${String(operation)}` }],
     });

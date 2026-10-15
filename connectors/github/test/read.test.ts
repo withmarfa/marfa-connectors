@@ -33,6 +33,7 @@ beforeEach(async () => {
     metadata_permissions: { types: "write", edge_types: "write" },
   };
   github = await new GitHubStub().start();
+  github.appPem = key;
 });
 
 afterEach(async () => {
@@ -100,6 +101,14 @@ function forgetPrivate(): void {
   }
   for (const one of Object.values(kept()))
     Reflect.deleteProperty(one, "private");
+}
+
+/** GitHub's hour is spent by the first repository's read, though the
+ *  installation's repositories were listed before it. */
+function spendAtRead(): void {
+  github.onAsked = (one) => {
+    if (one.path.startsWith("/repos/")) github.exhaust("core");
+  };
 }
 
 function checkDue(): void {
@@ -178,56 +187,107 @@ describe("a first sync", () => {
     const second = github.addRepository("someone/second");
     github.addIssue(first);
     github.addIssue(second);
-    github.longResetRepository = second.name;
+    github.onAsked = (one) => {
+      if (one.path === "/repos/someone/second/issues") github.exhaust("core");
+    };
     const result = await once();
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain("someone/second waits for the next run");
     expect(kept()[first.node]?.["comments"]).toBeDefined();
     expect(kept()[second.node]).toBeUndefined();
-    github.longResetRepository = undefined;
+    github.onAsked = undefined;
+    github.refill("core");
     await ok();
     expect(kept()[second.node]?.["comments"]).toBeDefined();
   });
 
-  it("checks the REST reserve before the next page and retains earlier repositories", async () => {
+  it.each([
+    [500, "goes on to the next request", true],
+    [499, "stops before the next request", false],
+  ])("with %i REST requests left, %s", async (left, _title, continues) => {
     const first = github.addRepository("someone/first");
     const second = github.addRepository("someone/second");
     github.addIssue(first);
     github.addIssue(second);
-    Object.defineProperty(github, "rateRemaining", {
-      get: () =>
-        github.asked.some((one) => one.path === "/repos/someone/second/issues")
-          ? 100
-          : 4999,
-      configurable: true,
-    });
-    await ok();
+    let reported = -1;
+    github.onAsked = (one) => {
+      if (reported < 0) {
+        if (one.path !== "/repos/someone/second/issues") return;
+        reported = github.asked.indexOf(one);
+      }
+      // From the second repository's listing on, each request is counted
+      // and its answer says `left`.
+      github.budget("core").remaining = left + 1;
+    };
+    const output = await ok();
+    const later = github.asked
+      .slice(reported + 1)
+      .filter((one) => !one.path.startsWith("/app") && one.path !== "/graphql");
+    expect(reported).toBeGreaterThan(-1);
+    expect(github.asked[reported]?.remaining).toBe(left);
+    // GitHub never refused a request, so nothing but the reserve can have
+    // stopped the run, and it stopped with the budget still in hand.
+    expect(github.asked.filter((one) => one.limited)).toEqual([]);
+    expect(later.length > 0).toBe(continues);
+    expect(output.includes("someone/second waits")).toBe(!continues);
     expect(kept()[first.node]?.["comments"]).toBeDefined();
-    expect(kept()[second.node]).toBeUndefined();
-    expect(
-      github.asked.filter((one) => one.path === "/repos/someone/second/issues"),
-    ).toHaveLength(1);
+    expect(kept()[second.node]?.["comments"] !== undefined).toBe(continues);
+    if (!continues) {
+      expect(github.budget("core").remaining).toBe(left);
+      github.onAsked = undefined;
+      github.refill("core");
+      await ok();
+      expect(kept()[second.node]?.["comments"]).toBeDefined();
+    }
   });
 
-  it("uses separate GraphQL and REST budgets and lets an independent repository finish", async () => {
+  it("stops a run that began with a little over the reserve at the reserve, not at zero, and finishes it next run", async () => {
     const first = github.addRepository("someone/first");
     const second = github.addRepository("someone/second");
-    const empty = github.addRepository("someone/empty");
     github.addIssue(first);
     github.addIssue(second);
-    github.graphqlRemaining = 100;
+    github.budget("core").remaining = 503;
     const output = await ok();
-    expect(output).toContain("someone/second waits for the next run");
-    expect(kept()[first.node]?.["comments"]).toBeDefined();
-    expect(kept()[second.node]).toBeUndefined();
-    expect(kept()[empty.node]?.["comments"]).toBeDefined();
-    expect(github.asked.filter((one) => one.path === "/graphql")).toHaveLength(
-      1,
-    );
+    expect(output).toContain("wait for the next run");
+    expect(github.asked.filter((one) => one.limited)).toEqual([]);
+    expect(github.budget("core").remaining).toBe(499);
+    expect(Object.keys(kept()).length).toBeLessThan(2);
+    github.refill("core");
+    await ok();
     expect(
-      github.asked.filter((one) => one.path === "/repos/someone/second/issues"),
+      marfa.rows.filter((one) => one.type === "github.issue"),
     ).toHaveLength(2);
+    expect(Object.keys(kept())).toHaveLength(2);
   });
+
+  it.each([
+    [500, true],
+    [499, false],
+  ])(
+    "counts GraphQL apart from REST: with %i GraphQL points left, more GraphQL is asked: %s, and an independent repository finishes",
+    async (left, continues) => {
+      const first = github.addRepository("someone/first");
+      const second = github.addRepository("someone/second");
+      const empty = github.addRepository("someone/empty");
+      github.addIssue(first);
+      github.addIssue(second);
+      // The first GraphQL request is counted, so its answer says `left`.
+      github.budget("graphql").remaining = left + 1;
+      const output = await ok();
+      const queries = github.asked.filter((one) => one.path === "/graphql");
+      expect(github.asked.filter((one) => one.limited)).toEqual([]);
+      expect(queries.length > 1).toBe(continues);
+      expect(output.includes("someone/second waits")).toBe(!continues);
+      expect(kept()[first.node]?.["comments"]).toBeDefined();
+      expect(kept()[second.node]?.["comments"] !== undefined).toBe(continues);
+      expect(kept()[empty.node]?.["comments"]).toBeDefined();
+      expect(github.budget("core").remaining).toBeGreaterThan(4000);
+      if (!continues) {
+        expect(queries).toHaveLength(1);
+        expect(github.budget("graphql").remaining).toBe(left);
+      }
+    },
+  );
 
   it("keeps saved repositories and their warnings when metadata is rate limited while another installation finishes", async () => {
     const first = github.addRepository("someone/first");
@@ -242,7 +302,7 @@ describe("a first sync", () => {
     github.installations.push({ id: 2, login: "another" });
     const second = github.addRepository("another/second", { installation: 2 });
     github.addIssue(second);
-    github.metadataLimitedInstallation = 1;
+    github.exhaust("core", 1);
     const output = await ok();
     expect(output).toContain("someone's repositories");
     expect(kept()[first.node]).toEqual(before);
@@ -291,7 +351,7 @@ describe("a first sync", () => {
       const unseen = github.addIssue(first);
       blocked.blocked_by.push(unseen.node);
       blocked.parent = unseen.node;
-      github.metadataLimitedInstallation = 1;
+      github.exhaust("core", 1);
       github.edit(blocked, { title: "Changed" });
       github.edit(child, { title: "Changed child" });
       github.asked = [];
@@ -624,6 +684,9 @@ describe("a run after", () => {
       .filter((one) => one.path.startsWith("/repos/"));
     expect(listings.length).toBeGreaterThan(0);
     expect(listings.every((one) => one.status === 304)).toBe(true);
+    expect(listings.length).toBeGreaterThan(1);
+    // A 304 to an authorized request spends none of the hour's budget.
+    expect(new Set(listings.map((one) => one.remaining)).size).toBe(1);
     expect(
       github.asked.slice(asked).some((one) => one.path === "/graphql"),
     ).toBe(false);
@@ -845,7 +908,7 @@ describe("read check coverage", () => {
           repository.node,
         ];
       }
-      if (skip === "reserve") github.rateRemaining = 100;
+      if (skip === "reserve") github.budget("core").remaining = 100;
       github.asked = [];
       const result = await once(
         skip === "paused" ? { GITHUB_REPOSITORIES: "someone/other" } : {},
@@ -943,7 +1006,7 @@ describe("read check coverage", () => {
       [`issues-off:${repository.node}`]: "metadata problem",
       [`repository-unreadable:${repository.node}`]: "body problem",
     });
-    github.rateLimited = true;
+    spendAtRead();
     const result = await once();
     expect(result.code, result.output).toBe(0);
     expect(conditions()).not.toHaveProperty(`issues-off:${repository.node}`);
@@ -1286,27 +1349,11 @@ describe("what the adversarial review found", () => {
     const repository = github.addRepository("someone/tracker");
     github.addIssue(repository);
     await ok();
-    github.rateLimited = true;
+    spendAtRead();
     const { code, output } = await once();
     expect(code, output).toBe(0);
     expect(output).toContain("waits for the next run");
     expect(output).not.toContain("so its rows are left as they are");
-  });
-
-  it("leaves repositories for the next run once the hourly limit runs low, keeping what it did", async () => {
-    const first = github.addRepository("someone/first");
-    const second = github.addRepository("someone/second");
-    github.addIssue(first);
-    github.addIssue(second);
-    github.rateRemaining = 100;
-    const output = await ok();
-    expect(output).toContain("wait for the next run");
-    github.rateRemaining = 4999;
-    await ok();
-    expect(
-      marfa.rows.filter((one) => one.type === "github.issue"),
-    ).toHaveLength(2);
-    expect(Object.keys(kept())).toHaveLength(2);
   });
 
   it("brings in an old issue newly blocked by one in the window, and an old parent, connected", async () => {
