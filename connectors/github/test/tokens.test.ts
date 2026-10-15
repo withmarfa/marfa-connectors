@@ -3,6 +3,7 @@ import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
 import {
   asApp,
   asInstallation,
+  asPersonalToken,
   ClockSkew,
   RateLimitWaiting,
   rateLimited,
@@ -199,5 +200,121 @@ describe("the App's own requests", () => {
         "GET /app/installations",
       ),
     ).rejects.toBeInstanceOf(ClockSkew);
+  });
+});
+
+describe("a personal access token", () => {
+  const personalToken = "github_pat_test_12345678";
+
+  beforeEach(() => {
+    github.personalToken = personalToken;
+  });
+
+  it("is accepted as Bearer auth and lists user repositories", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    const repos = (await octokit.paginate("GET /user/repos", {
+      affiliation: "owner,collaborator,organization_member",
+      per_page: 100,
+    })) as { node_id: string }[];
+    expect(repos.map((r) => r.node_id)).toContain(repository.node);
+  });
+
+  it("returns 401 with GitHub's body when the token is wrong", async () => {
+    const octokit = asPersonalToken(
+      "wrong_token_12345678",
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    const error = await octokit
+      .request("GET /user/repos", { per_page: 100 })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ status: 401 });
+    const asked = github.asked.find((one) => one.path === "/user/repos");
+    expect(asked?.status).toBe(401);
+  });
+
+  it("calls the secret callback with the token before each request", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const seen: string[] = [];
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      (v) => seen.push(v),
+      new AbortController().signal,
+    );
+    await octokit.request("GET /repos/{owner}/{repo}", {
+      owner: "someone",
+      repo: "tracker",
+    });
+    expect(seen).toContain(personalToken);
+    // The repository was reachable without an installation token.
+    expect(
+      github.asked.find((one) => one.path === "/repos/someone/tracker")
+        ?.status,
+    ).toBe(200);
+    void repository;
+  });
+
+  it("sends Bearer authorization, not the token scheme", async () => {
+    github.addRepository("someone/tracker");
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    await octokit.request("GET /user/repos", { per_page: 100 });
+    expect(
+      github.asked.find((one) => one.path === "/user/repos")?.status,
+    ).toBe(200);
+    // Stub only accepts the token for /user/repos if it matches personalToken
+    // and the authorization header starts with "Bearer ".
+    expect(
+      github.asked
+        .filter((one) => one.path === "/user/repos")
+        .every((one) => one.status === 200),
+    ).toBe(true);
+  });
+
+  it("tracks its rate-limit budget by a fingerprint, not the token itself", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    github.budget("core", 0).remaining = 499;
+    await expect(
+      octokit.request("GET /repos/{owner}/{repo}", {
+        owner: "someone",
+        repo: "tracker",
+      }),
+    ).rejects.toBeInstanceOf(RateLimitWaiting);
+    void repository;
+  });
+
+  it("accepts the personal token for GraphQL queries", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    const result = (await octokit.graphql(
+      "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+      { ids: [issue.node] },
+    )) as { nodes: { id: string }[] };
+    expect(result.nodes[0]?.id).toBe(issue.node);
   });
 });

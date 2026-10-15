@@ -1544,3 +1544,127 @@ describe("a relation to an issue in a repository left out", () => {
     ]);
   });
 });
+
+// Helper: run the connector with a personal token instead of App credentials.
+async function onceWithToken(
+  token: string,
+  extra: Record<string, string> = {},
+): Promise<{ code: number; output: string }> {
+  try {
+    const { stderr } = await run("node", [built, "--once"], {
+      env: {
+        PATH: process.env["PATH"],
+        MARFA_API_URL: marfa.url,
+        MARFA_API_KEY: marfa.key,
+        GITHUB_PERSONAL_TOKEN: token,
+        GITHUB_API_URL: github.url,
+        ...extra,
+      },
+    });
+    return { code: 0, output: stderr };
+  } catch (error) {
+    const failed = error as { code: number; stderr: string };
+    return { code: failed.code, output: failed.stderr };
+  }
+}
+
+describe("a personal access token run", () => {
+  const personalToken = "github_pat_test_12345678";
+
+  beforeEach(() => {
+    github.personalToken = personalToken;
+  });
+
+  it("syncs repositories and issues visible to the token", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository, { title: "Token issue" });
+    const result = await onceWithToken(personalToken);
+    expect(result.code, result.output).toBe(0);
+    expect(row(issue.node).properties["title"]).toBe("Token issue");
+  });
+
+  it("fails the run with a clear message when the token is rejected (401), and does not archive rows", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    // Sync first with a valid token to populate rows.
+    await onceWithToken(personalToken);
+    expect(marfa.rows.some((r) => r.type === "github.repository")).toBe(true);
+    // Now run with a wrong token.
+    const result = await onceWithToken("wrong_token_12345678");
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("GITHUB_PERSONAL_TOKEN");
+    expect(result.output).not.toContain("wrong_token");
+    // Rows must not be archived.
+    expect(
+      marfa.rows.filter((r) => r.type === "github.repository" && r.state === "active"),
+    ).toHaveLength(1);
+  });
+
+  it("refuses to start when both App settings and token are set", async () => {
+    const result = await once({
+      GITHUB_PERSONAL_TOKEN: personalToken,
+      // once() already sets GITHUB_APP_ID and GITHUB_PRIVATE_KEY
+    });
+    expect(result.code).toBe(2);
+    expect(result.output).toMatch(/one of|either/i);
+  });
+
+  it("refuses to start when neither App settings nor token are set", async () => {
+    try {
+      const { stderr } = await run("node", [built, "--once"], {
+        env: {
+          PATH: process.env["PATH"],
+          MARFA_API_URL: marfa.url,
+          MARFA_API_KEY: marfa.key,
+          GITHUB_API_URL: github.url,
+        },
+      });
+      throw new Error(`expected exit 2 but exited 0: ${stderr}`);
+    } catch (error) {
+      const failed = error as { code: number; stderr: string };
+      expect(failed.code).toBe(2);
+      expect(failed.stderr).toMatch(/GITHUB_APP_ID|GITHUB_PERSONAL_TOKEN/);
+    }
+  });
+
+  it("narrows repositories by GITHUB_REPOSITORIES when using a token", async () => {
+    const tracker = github.addRepository("someone/tracker");
+    const other = github.addRepository("someone/other");
+    github.addIssue(tracker);
+    github.addIssue(other);
+    const result = await onceWithToken(personalToken, {
+      GITHUB_REPOSITORIES: "someone/tracker",
+    });
+    expect(result.code, result.output).toBe(0);
+    expect(
+      marfa.rows.filter((r) => r.type === "github.repository"),
+    ).toHaveLength(1);
+    expect(
+      marfa.rows.find((r) => r.properties["github_id"] === tracker.node),
+    ).toBeDefined();
+  });
+
+  it("refuses to start when GITHUB_READ_ONLY names an unknown kind", async () => {
+    const result = await onceWithToken(personalToken, {
+      GITHUB_READ_ONLY: "unknown-kind",
+    });
+    expect(result.code).toBe(2);
+    expect(result.output).toContain("unknown-kind");
+  });
+
+  it("does not carry issues when GITHUB_READ_ONLY=issue", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository, { title: "Original" });
+    await onceWithToken(personalToken);
+    // Edit the issue in Marfa; with issue read-only, the edit is put back.
+    const issueRow = row(issue.node);
+    marfa.editRow(issueRow.id, { title: "Edited in Marfa" });
+    const result = await onceWithToken(personalToken, {
+      GITHUB_READ_ONLY: "issue",
+    });
+    expect(result.code, result.output).toBe(0);
+    // The issue on GitHub is unchanged.
+    expect(issue.title).toBe("Original");
+    expect(github.writes()).toHaveLength(0);
+  });
+});

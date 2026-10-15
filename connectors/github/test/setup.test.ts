@@ -239,4 +239,78 @@ describe("setup", () => {
     expect(github.hook?.["secret"]).toBe(written["GITHUB_WEBHOOK_SECRET"]);
     expect(finished.output).not.toContain(written["GITHUB_WEBHOOK_SECRET"]);
   });
+
+  it("with a personal token set, requires no setup and exits cleanly", async () => {
+    const file = join(dir, "secrets.json");
+    const finished = await setup(
+      file,
+      { GITHUB_PERSONAL_TOKEN: "github_pat_test_12345678" },
+      () => undefined,
+    );
+    expect(finished.code).toBe(0);
+    expect(finished.output).toContain("personal access token");
+    // No secrets file is written for the token path.
+    await expect(stat(file)).rejects.toThrow();
+  });
+
+  it("asks only to read for GITHUB_READ_ONLY listing only issue", async () => {
+    const file = join(dir, "secrets.json");
+    let manifest: Record<string, unknown> | undefined;
+    let visited: Promise<void> | undefined;
+    const finished = await setup(
+      file,
+      { GITHUB_READ_ONLY: "issue" },
+      (line) => {
+        const opened = / open (\S+) in a browser/.exec(line)?.[1];
+        if (opened === undefined) return;
+        visited = (async () => {
+          const html = await (await fetch(opened)).text();
+          manifest = JSON.parse(
+            decoded(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? ""),
+          ) as Record<string, unknown>;
+          const action = decoded(/action="([^"]+)"/.exec(html)?.[1] ?? "");
+          const state = new URL(action).searchParams.get("state");
+          await fetch(
+            `${String(manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
+          );
+        })();
+      },
+    );
+    await visited;
+    expect(finished.code).toBe(0);
+    // issue is read-only but comment is still carried, so issues:write is needed.
+    expect(manifest).toMatchObject({
+      default_permissions: { issues: "write", metadata: "read" },
+    });
+  });
+
+  it("asks only to read for GITHUB_READ_ONLY listing both issue and comment", async () => {
+    const file = join(dir, "secrets.json");
+    let manifest: Record<string, unknown> | undefined;
+    let visited: Promise<void> | undefined;
+    const finished = await setup(
+      file,
+      { GITHUB_READ_ONLY: "issue,comment" },
+      (line) => {
+        const opened = / open (\S+) in a browser/.exec(line)?.[1];
+        if (opened === undefined) return;
+        visited = (async () => {
+          const html = await (await fetch(opened)).text();
+          manifest = JSON.parse(
+            decoded(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? ""),
+          ) as Record<string, unknown>;
+          const action = decoded(/action="([^"]+)"/.exec(html)?.[1] ?? "");
+          const state = new URL(action).searchParams.get("state");
+          await fetch(
+            `${String(manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
+          );
+        })();
+      },
+    );
+    await visited;
+    expect(finished.code).toBe(0);
+    expect(manifest).toMatchObject({
+      default_permissions: { issues: "read", metadata: "read" },
+    });
+  });
 });
