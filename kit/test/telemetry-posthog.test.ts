@@ -227,6 +227,13 @@ describe("a failed run", () => {
     expect(exception?.properties.$exception_list?.[0]?.value).toBe(
       "the vendor fell over",
     );
+    const frames =
+      exception?.properties.$exception_list?.[0]?.stacktrace?.frames ?? [];
+    expect(
+      frames.filter((frame) =>
+        JSON.stringify(frame).includes("exception-text"),
+      ),
+    ).toEqual([]);
   });
 
   it("sends nothing for a run that succeeded", async () => {

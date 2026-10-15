@@ -82,7 +82,11 @@ function build(
 ): Error {
   seen.add(error);
   if (!(error instanceof Error)) {
-    return new Error(cap(withoutBodies(redact(textOf(error)))));
+    // A thrown value that is no error has no stack, and the one `new Error`
+    // captures here would be this reporting path's.
+    const out = new Error(cap(withoutBodies(redact(textOf(error)))));
+    out.stack = `${out.name}: ${out.message}`;
+    return out;
   }
   const name = redact(textOf(read(error, "name")) || "Error");
   const message = cap(withoutBodies(redact(textOf(read(error, "message")))));
