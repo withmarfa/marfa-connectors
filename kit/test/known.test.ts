@@ -196,3 +196,26 @@ it("inspects unagreed identities in every state and tombstones by link and natur
   checking = true;
   expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
 });
+
+it("enumerates legacy same-source rows in every retained state", async () => {
+  const connector = defineConnector({
+    name: "test",
+    source: "test",
+    env: {},
+    types: [{ type: linkedType, fields: ["title", "vendor_id"] }],
+    async run(context) {
+      const rows = await context.held(linkedType.id, { state: "any" });
+      expect(rows.map((row) => row.source_id).sort()).toEqual([
+        "active",
+        "archived",
+        "trashed",
+      ]);
+      expect(await context.held(linkedType.id)).toEqual([]);
+    },
+  });
+  for (const key of ["active", "archived", "trashed"])
+    harness.server.insert(key, { title: key }, linkedType.id);
+  harness.server.transition(harness.server.row("archived").id, "archived");
+  harness.server.trash(harness.server.row("trashed").id);
+  expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
+});

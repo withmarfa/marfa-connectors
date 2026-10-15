@@ -955,7 +955,7 @@ export async function runOnce<E extends EnvDeclaration>(
           serial(scope, () => lane(type).rows.derive(keys, values)),
         linked: (...args) => serial(scope, () => linked(...args)),
         known: (type, keys) => serial(scope, () => known(type, keys)),
-        held: (type) => serial(scope, () => heldRows(type)),
+        held: (type, options) => serial(scope, () => heldRows(type, options)),
         inspect: (type, by) => serial(scope, () => inspect(type, by)),
         written,
       };
@@ -967,7 +967,7 @@ export async function runOnce<E extends EnvDeclaration>(
       unscoped(() => lane(type).rows.derive(keys, values)),
     linked: (...args) => unscoped(() => linked(...args)),
     known: (type, keys) => unscoped(() => known(type, keys)),
-    held: (type) => unscoped(() => heldRows(type)),
+    held: (type, options) => unscoped(() => heldRows(type, options)),
     inspect: (type, by) => unscoped(() => inspect(type, by)),
     written,
   };
@@ -1014,15 +1014,17 @@ export async function runOnce<E extends EnvDeclaration>(
         return structuredClone(row);
       });
   };
-  const heldRows: RunContext<E>["held"] = async (type) => {
+  const heldRows: RunContext<E>["held"] = async (type, options) => {
     const { rows, spec } = lane(type);
-    const found = await setup.marfa.ownRows(type, "active");
+    const state = options?.state ?? "active";
+    const found = await setup.marfa.ownRows(type, state);
     return found
       .filter(
         (row) =>
           row.type === type &&
-          row.state === "active" &&
-          (spec.link === undefined
+          (state === "any" || row.state === "active") &&
+          (spec.link === undefined ||
+          (state === "any" && row.source === spec.source)
             ? row.source === spec.source
             : rows.linkOf(row.properties) !== undefined),
       )

@@ -271,7 +271,12 @@ export interface RunContext<E extends EnvDeclaration> {
    * holds, so a connector whose vendor's listing leaves out what it no
    * longer holds can ask about each row it left out.
    */
-  readonly held: (type: string) => Promise<Item[]>;
+  /** With state:any, also includes same-source rows without a link, including
+   * archived and trashed identities that predate a type's link field. */
+  readonly held: (
+    type: string,
+    options?: { state: "any" | "active" },
+  ) => Promise<Item[]>;
   /** Fresh identity evidence, without an agreement requirement. Includes every
    * item state and purge tombstones. source_ids use the connector's item source.
    * A failed read throws; it never proves absence. */
