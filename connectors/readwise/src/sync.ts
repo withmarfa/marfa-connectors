@@ -17,6 +17,7 @@ import {
   enqueueContent,
   isAccountedContent,
   readerFileType,
+  contentMaxBytes,
 } from "@withmarfa/readwise";
 import type { ExportPage } from "@withmarfa/readwise";
 import { identity, ReaderClient, type ReaderReader } from "@withmarfa/readwise";
@@ -31,6 +32,7 @@ export const env = {
   READWISE_ACCOUNT: "required",
   READWISE_ACCESS_TOKEN: "secret",
   READWISE_API_URL: "optional",
+  READWISE_CONTENT_MAX_BYTES: "optional",
   READWISE_READER_API_URL: "optional",
 } as const;
 export type ReadScope = Pick<
@@ -283,6 +285,9 @@ export async function sync(
   }
   const now = options.now ?? Date.now;
   const account = context.env.READWISE_ACCOUNT;
+  const maximumContentBytes = contentMaxBytes(
+    context.env.READWISE_CONTENT_MAX_BYTES,
+  );
   identity(account, "source", 1);
   const base = endpoint(context.env.READWISE_API_URL);
   const readerBase = endpoint(
@@ -347,7 +352,7 @@ export async function sync(
         { ...context, known: context.known },
         reader,
         content.state,
-        { now, exportClient: client },
+        { now, exportClient: client, maxBytes: maximumContentBytes },
       );
   };
   try {

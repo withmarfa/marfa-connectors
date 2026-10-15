@@ -6,6 +6,21 @@ import type { ReaderDocument, TextFilePlan } from "./reader.js";
 export const digest = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
 const storageHosts = new Set(["readwise-assets.s3.amazonaws.com"]);
+export function contentMaxBytes(value?: string | number): number {
+  const bytes =
+    value === undefined
+      ? 256 * 1024 * 1024
+      : typeof value === "string"
+        ? /^\d+$/.test(value)
+          ? Number(value)
+          : NaN
+        : value;
+  if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > 1024 * 1024 * 1024)
+    throw new Error(
+      "READWISE_CONTENT_MAX_BYTES must be a decimal integer from 1 to 1073741824 bytes",
+    );
+  return bytes;
+}
 export function storageUrl(value: string): URL {
   let url: URL;
   try {
@@ -31,6 +46,13 @@ export class StorageUnavailable extends Error {
 export class StorageEmpty extends Error {
   constructor() {
     super("Readwise storage returned empty content");
+  }
+}
+export class StorageLimitExceeded extends Error {
+  constructor(readonly maxBytes: number) {
+    super(
+      `Readwise content exceeds the ${String(maxBytes)}-byte resource limit`,
+    );
   }
 }
 function mime(bytes: Uint8Array, declared: string | null): string {
@@ -67,7 +89,7 @@ export async function download(
   options: { fetch?: typeof fetch; maxBytes?: number; timeoutMs?: number } = {},
 ): ReturnType<FileSource["load"]> {
   const fetcher = options.fetch ?? fetch;
-  const max = options.maxBytes ?? 128 * 1024 * 1024;
+  const max = contentMaxBytes(options.maxBytes);
   const bounded = AbortSignal.any([
     signal,
     AbortSignal.timeout(options.timeoutMs ?? 120_000),
@@ -103,9 +125,13 @@ export async function download(
     throw new StorageUnavailable(response?.status ?? 0);
   }
   const length = response.headers.get("content-length");
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > max)) {
+  if (length !== null && !/^\d+$/.test(length)) {
     await response.body?.cancel();
-    throw new Error("Readwise content exceeds the byte limit");
+    throw new Error("Readwise storage returned an invalid content length");
+  }
+  if (length !== null && Number(length) > max) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new StorageLimitExceeded(max);
   }
   const emptyIsComplete =
     response.status === 200 && (length === null || Number(length) === 0);
@@ -124,16 +150,14 @@ export async function download(
       done = chunk.done;
       if (chunk.value) {
         total += chunk.value.byteLength;
-        if (total > max)
-          throw new Error("Readwise content exceeds the byte limit");
+        if (total > max) throw new StorageLimitExceeded(max);
         prefix.push(chunk.value);
       }
     }
-  } catch {
+  } catch (error) {
     await reader.cancel().catch(() => undefined);
-    throw new Error(
-      "Readwise storage stream failed or exceeded the byte limit",
-    );
+    if (error instanceof StorageLimitExceeded) throw error;
+    throw new Error("Readwise storage stream failed", { cause: error });
   }
   if (total === 0) {
     await reader.cancel();
@@ -165,15 +189,14 @@ export async function download(
           return;
         }
         total += chunk.value.byteLength;
-        if (total > max)
-          throw new Error("Readwise content exceeds the byte limit");
+        if (total > max) throw new StorageLimitExceeded(max);
         controller.enqueue(chunk.value);
-      } catch {
+      } catch (error) {
         await reader.cancel().catch(() => undefined);
         controller.error(
-          new Error(
-            "Readwise storage stream failed or exceeded the byte limit",
-          ),
+          error instanceof StorageLimitExceeded
+            ? error
+            : new Error("Readwise storage stream failed"),
         );
       }
     },
@@ -190,6 +213,7 @@ export interface Resource {
   status: "kept" | "pending" | "unavailable" | "deliberately-unkept";
   reason?: string;
   fileKey?: string;
+  maxBytes?: number;
 }
 export interface ContentFile {
   id: string;

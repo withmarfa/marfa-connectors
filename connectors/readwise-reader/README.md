@@ -15,17 +15,18 @@ Create a connector key with source `readwise-reader`, claimed item source `readw
 
 Reader and Highlights must use different key sources. Two keys under the same key source would share a registration and its saved state. Highlights uses key source `readwise`; both definitions write item source `readwise` and use the same stable account label.
 
-| Variable                          | Meaning                                                                               |
-| --------------------------------- | ------------------------------------------------------------------------------------- |
-| `MARFA_API_URL`                   | Marfa instance address.                                                               |
-| `MARFA_API_KEY`                   | The Reader connector key.                                                             |
-| `READWISE_ACCESS_TOKEN`           | Readwise access token, supplied through the process environment or secret manager.    |
-| `READWISE_ACCOUNT`                | Required stable nonsecret label, such as `primary`; use the same value in Highlights. |
-| `READWISE_READER_INCLUDE_FEED`    | `true` includes feed documents. Default: `false`, saved library only.                 |
-| `READWISE_READER_INBOUND_ONLY`    | `true` disables outbound edits. Default: `false`.                                     |
-| `READWISE_READER_PROPAGATE_PURGE` | `true` allows permanent Marfa purges to delete Reader records. Default: `false`.      |
-| `READWISE_READER_API_URL`         | Optional controlled-test API base. Default: `https://readwise.io/api/v3/`.            |
-| `READWISE_API_URL`                | Optional export API base. Default: `https://readwise.io/api/v2/`.                     |
+| Variable                          | Meaning                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `MARFA_API_URL`                   | Marfa instance address.                                                                          |
+| `MARFA_API_KEY`                   | The Reader connector key.                                                                        |
+| `READWISE_ACCESS_TOKEN`           | Readwise access token, supplied through the process environment or secret manager.               |
+| `READWISE_ACCOUNT`                | Required stable nonsecret label, such as `primary`; use the same value in Highlights.            |
+| `READWISE_READER_INCLUDE_FEED`    | `true` includes feed documents. Default: `false`, saved library only.                            |
+| `READWISE_READER_INBOUND_ONLY`    | `true` disables outbound edits. Default: `false`.                                                |
+| `READWISE_READER_PROPAGATE_PURGE` | `true` allows permanent Marfa purges to delete Reader records. Default: `false`.                 |
+| `READWISE_READER_API_URL`         | Optional controlled-test API base. Default: `https://readwise.io/api/v3/`.                       |
+| `READWISE_CONTENT_MAX_BYTES`      | Remote resource limit in bytes, from 1 through 1073741824 (1 GiB). Default: 268435456 (256 MiB). |
+| `READWISE_API_URL`                | Optional export API base. Default: `https://readwise.io/api/v2/`.                                |
 
 Boolean values must be `true` or `false`. API overrides require HTTPS, except HTTP on loopback; credentials, query strings, and fragments are rejected. API credentials go only to the configured API base. Account labels are never derived from a token. Do not change an account label or endpoint against saved state.
 
@@ -54,7 +55,11 @@ Each retained HTML document, available original, Readwise-hosted image, overflow
 
 The manifest distinguishes kept, pending, unavailable, and deliberately unkept resources. A completed empty HTTP 200 download is recorded as unavailable without replacing any retained bytes; failed or incomplete downloads remain pending. Downloads accept only the verified HTTPS `readwise-assets.s3.amazonaws.com` host and validate each redirect. They never send API credentials to storage or fetch third-party images, tracking pixels, or linked websites. Transient signed URLs are excluded from checkpoint and manifest metadata; original HTML remains exact. A changed or expired source link is refreshed through Reader. Failed downloads retain the last acknowledged bytes.
 
-Downloads stream with a 128 MiB resource limit and bounded timeout. Each content pass handles a bounded number of documents and resources; later runs resume pending work. A productive pass that stops at its resource budget remains ready for the next pass. Failed or stalled work keeps its retry delay. Stable resource keys and acknowledged manifests avoid repeat uploads and unchanged downloads. Text that exceeds the item field limit is retained in a referenced text blob before its final metadata is acknowledged. A purged content item is not silently recreated.
+Downloaded resources have a default 256 MiB limit and a bounded timeout. Set `READWISE_CONTENT_MAX_BYTES` to a positive decimal byte count up to 1073741824 (1 GiB).
+
+Downloads stream through a private temporary file so upload retries can reopen a fresh stream without buffering the entire resource in memory. The temporary file is removed after success, failure, or cancellation. A resource above the configured limit remains pending with its byte limit reported, and its last acknowledged copy remains available. Raising the limit lets existing pending jobs retry at their recorded deadlines without starting a metadata backfill.
+
+Each content pass handles a bounded number of documents and resources; later runs resume pending work. A productive pass that stops at its resource budget remains ready for the next pass. Failed or stalled work keeps its retry delay. Stable resource keys and acknowledged manifests avoid repeat uploads and unchanged downloads. Text that exceeds the item field limit is retained in a referenced text blob before its final metadata is acknowledged. A purged content item is not silently recreated.
 
 Both binaries use the same preservation implementation for already managed Reader rows. Stopping Reader does not make Highlights substitute stale export text or discard retained content.
 

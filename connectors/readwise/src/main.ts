@@ -4,7 +4,7 @@ import {
   type Item,
   type Entry,
 } from "@withmarfa/connector";
-import { endpoint } from "@withmarfa/readwise";
+import { contentMaxBytes, endpoint } from "@withmarfa/readwise";
 import { identity } from "@withmarfa/readwise";
 import { highlightsPolicy } from "./coexistence.js";
 import { env, sync } from "./sync.js";
@@ -66,6 +66,7 @@ await main(
       identity(values.READWISE_ACCOUNT, "source", 1);
       account = values.READWISE_ACCOUNT;
       endpoint(values.READWISE_API_URL);
+      contentMaxBytes(values.READWISE_CONTENT_MAX_BYTES);
     },
     run: sync,
   }),

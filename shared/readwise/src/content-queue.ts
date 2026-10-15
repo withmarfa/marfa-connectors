@@ -13,6 +13,7 @@ import {
   download,
   saveContentQueue,
   StorageEmpty,
+  StorageLimitExceeded,
   StorageUnavailable,
   type ContentJob,
   type Resource,
@@ -27,6 +28,7 @@ import {
 } from "./reader.js";
 import type { ExportClient } from "./export-client.js";
 import type { ReaderReader } from "./reader-client.js";
+import { stageContent } from "./content-staging.js";
 
 type Context = Pick<RunContext<EnvDeclaration>, "known" | "signal" | "log"> & {
   inspect(
@@ -111,7 +113,11 @@ async function preserve(
   context: Context,
   client: ReaderReader,
   job: ContentJob,
-  options: { fetch?: typeof fetch; exportClient?: ExportClient },
+  options: {
+    fetch?: typeof fetch;
+    exportClient?: ExportClient;
+    maxBytes?: number;
+  },
 ): Promise<Preservation> {
   const manifestKey = `${job.canonical}:content:manifest`;
   const existing = await context.inspect(readerFileType.id, {
@@ -221,6 +227,7 @@ async function preserve(
   let attempted = 0;
   let progressed = false;
   let failed = false;
+  let exceededLimit: number | undefined;
   for (const file of plan.files) {
     const resource = plan.resources.find(
       (candidate) => candidate.id === file.id,
@@ -244,6 +251,7 @@ async function preserve(
       row.updated_at ?? job.revision,
       { content_key: file.key },
     );
+    let staged: Awaited<ReturnType<typeof stageContent>> | undefined;
     try {
       if (file.text !== undefined) {
         value.file = {
@@ -284,14 +292,8 @@ async function preserve(
             });
           prepared = await download(renewed.url, context.signal, options);
         }
-        // Vendor reads may checkpoint a wait; finish them before the row write owns the scope.
-        const retained = {
-          bytes: new Uint8Array(
-            await new Response(prepared.bytes).arrayBuffer(),
-          ),
-          mime_type: prepared.mime_type,
-        };
-        value.file = { key: file.key, load: () => Promise.resolve(retained) };
+        staged = await stageContent(prepared, context.signal);
+        value.file = { key: file.key, load: staged.load };
       }
       await commit(context, value);
       resource.status = "kept";
@@ -310,11 +312,22 @@ async function preserve(
       }
       resource.status = "pending";
       failed = true;
-      resource.reason = "download-or-storage-not-acknowledged";
+      resource.reason =
+        error instanceof StorageLimitExceeded
+          ? "resource-exceeds-byte-limit"
+          : "download-or-storage-not-acknowledged";
+      if (error instanceof StorageLimitExceeded) {
+        resource.maxBytes = error.maxBytes;
+        exceededLimit = error.maxBytes;
+      }
       context.log.condition(
         `readwise:content:${digest(job.canonical)}`,
-        "Reader content remains pending; the last acknowledged file is retained",
+        exceededLimit !== undefined
+          ? `Reader content exceeds READWISE_CONTENT_MAX_BYTES (${String(exceededLimit)} bytes); the last acknowledged file is retained`
+          : "Reader content remains pending; the last acknowledged file is retained",
       );
+    } finally {
+      await staged?.dispose();
     }
   }
   if (
@@ -367,6 +380,7 @@ export async function drainContent(
     exportClient?: ExportClient;
     maxJobs?: number;
     now?: () => number;
+    maxBytes?: number;
   } = {},
 ): Promise<void> {
   const now = options.now ?? Date.now;

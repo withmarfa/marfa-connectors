@@ -281,7 +281,11 @@ export async function sync(
   const content: ContentWork = options.content ?? {
     enqueue: enqueueContent,
     drain: (ctx, client, state) =>
-      drainContent(ctx, client, state, { now, ...{ exportClient } }),
+      drainContent(ctx, client, state, {
+        now,
+        exportClient,
+        maxBytes: config.contentMaxBytes,
+      }),
   };
   const cached = new Map<string, ReaderDocument | undefined>();
   const get = async (id: string): Promise<ReaderDocument | undefined> => {

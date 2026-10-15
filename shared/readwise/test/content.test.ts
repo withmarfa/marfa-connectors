@@ -13,6 +13,81 @@ const allowed =
 const signal = new AbortController().signal;
 
 describe("Reader content boundaries", () => {
+  it("admits an available original above 128 MiB without buffering its body", async () => {
+    const file = await download(allowed, signal, {
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(256));
+              },
+            }),
+            { headers: { "content-length": "143307926" } },
+          ),
+        ),
+    });
+    expect(file.bytes).toBeInstanceOf(ReadableStream);
+    if (file.bytes instanceof ReadableStream) await file.bytes.cancel();
+  });
+  it.each([0, -1, 1.5, NaN, Infinity, 1073741825, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid resource limit %s before fetching",
+    async (maximum) => {
+      const fetcher = vi.fn<typeof fetch>();
+      await expect(
+        download(allowed, signal, { fetch: fetcher, maxBytes: maximum }),
+      ).rejects.toThrow("READWISE_CONTENT_MAX_BYTES");
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["header", "prefix", "stream"])(
+    "preserves a typed configured limit failure at the %s boundary",
+    async (boundary) => {
+      const maximum = boundary === "prefix" ? 128 : 512;
+      await expect(
+        (async () => {
+          const file = await download(allowed, signal, {
+            maxBytes: maximum,
+            fetch: () =>
+              Promise.resolve(
+                new Response(
+                  new ReadableStream({
+                    start(controller) {
+                      controller.enqueue(new Uint8Array(256));
+                      controller.enqueue(new Uint8Array(257));
+                      controller.close();
+                    },
+                  }),
+                  {
+                    headers:
+                      boundary === "header" ? { "content-length": "513" } : {},
+                  },
+                ),
+              ),
+          });
+          await new Response(file.bytes).arrayBuffer();
+        })(),
+      ).rejects.toMatchObject({ maxBytes: maximum });
+    },
+  );
+  it("accepts a streamed resource exactly at its configured bound", async () => {
+    const file = await download(allowed, signal, {
+      maxBytes: 512,
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(256));
+                controller.enqueue(new Uint8Array(256));
+                controller.close();
+              },
+            }),
+          ),
+        ),
+    });
+    expect((await new Response(file.bytes).arrayBuffer()).byteLength).toBe(512);
+  });
   it.each(["body", "no-body", "declared-zero"])(
     "identifies a completed empty HTTP 200 response: %s",
     async (kind) => {

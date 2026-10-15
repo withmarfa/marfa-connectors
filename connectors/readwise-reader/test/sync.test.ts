@@ -69,6 +69,7 @@ function fixture(capacity = false, hints?: ReaderContext["hints"]) {
       READWISE_READER_INCLUDE_FEED: undefined,
       READWISE_READER_INBOUND_ONLY: undefined,
       READWISE_READER_PROPAGATE_PURGE: undefined,
+      READWISE_CONTENT_MAX_BYTES: undefined,
     },
     signal: controller.signal,
     waitUntil: () => Promise.resolve(),

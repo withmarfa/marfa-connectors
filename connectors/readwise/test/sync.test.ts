@@ -78,6 +78,7 @@ function fixture() {
       READWISE_ACCOUNT: "primary",
       READWISE_ACCESS_TOKEN: "token",
       READWISE_API_URL: undefined,
+      READWISE_CONTENT_MAX_BYTES: undefined,
       READWISE_READER_API_URL: undefined,
     },
     signal: new AbortController().signal,
@@ -147,6 +148,15 @@ function fixture() {
 }
 
 describe("Readwise export checkpoints", () => {
+  it.each(["0", "1073741825", "not-a-number"])(
+    "rejects invalid content limit %s before contacting the provider",
+    async (maximum) => {
+      const f = fixture();
+      f.context.env = { ...f.context.env, READWISE_CONTENT_MAX_BYTES: maximum };
+      await expect(f.run()).rejects.toThrow("READWISE_CONTENT_MAX_BYTES");
+      expect(f.requests).toEqual([]);
+    },
+  );
   it("resumes a multi-page walk from its original start and commits only after rows", async () => {
     const f = fixture();
     f.setAnswer((query) =>

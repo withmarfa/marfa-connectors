@@ -120,6 +120,7 @@ function fixture(size: number) {
       READWISE_ACCOUNT: "sample",
       READWISE_ACCESS_TOKEN: "fixture",
       READWISE_API_URL: undefined,
+      READWISE_CONTENT_MAX_BYTES: undefined,
       READWISE_READER_API_URL: undefined,
     },
     signal: new AbortController().signal,

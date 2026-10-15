@@ -9,7 +9,8 @@ function fixture() {
   const rows = new Map<string, Item>();
   const files = new Map<string, { key: string; bytes: Uint8Array }>();
   const state = new Map<string, unknown>();
-  const conditions: string[] = [];
+  const conditions = new Map<string, string>();
+  const streamed = new Set<string>();
   const canonical = "sample:reader-document:one";
   rows.set(canonical, {
     id: "one",
@@ -23,8 +24,8 @@ function fixture() {
     log: {
       info: vi.fn(),
       warn: vi.fn(),
-      condition(key) {
-        conditions.push(key);
+      condition(key, message) {
+        conditions.set(key, message);
       },
       unreached: vi.fn(),
     },
@@ -45,6 +46,8 @@ function fixture() {
           const prior = files.get(value.source_id);
           if (value.file && value.file.key !== prior?.key) {
             const result = await value.file.load(context.signal);
+            if (result.bytes instanceof ReadableStream)
+              streamed.add(value.source_id);
             const bytes = new Uint8Array(
               await new Response(result.bytes).arrayBuffer(),
             );
@@ -72,7 +75,7 @@ function fixture() {
       return Promise.resolve({ committed: true as const });
     },
   };
-  return { context, checkpoint, files, canonical, rows, conditions };
+  return { context, checkpoint, files, canonical, rows, conditions, streamed };
 }
 const document: ReaderDocument = {
   id: "one",
@@ -92,6 +95,107 @@ function client(row: ReaderDocument) {
 }
 
 describe("independent Reader content recovery", () => {
+  it.each(["header", "stream"])(
+    "keeps the last good original pending with an explicit %s byte limit",
+    async (boundary) => {
+      const f = fixture();
+      const job = {
+        id: document.id,
+        canonical: f.canonical,
+        type: "readwise.source",
+        revision: "old",
+      };
+      await enqueueContent(f.checkpoint, [job]);
+      await drainContent(f.context, client(document), f.checkpoint, {
+        fetch: () => Promise.resolve(new Response("%PDF-1.7 last good")),
+        maxBytes: 512,
+      });
+      const original = structuredClone(
+        f.files.get(`${f.canonical}:content:original`),
+      );
+      const changed = { ...document, updated_at: "2026-01-02T00:00:00Z" };
+      const fetcher = vi.fn<typeof fetch>(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(256));
+                controller.enqueue(new Uint8Array(257));
+                controller.close();
+              },
+            }),
+            {
+              headers: boundary === "header" ? { "content-length": "513" } : {},
+            },
+          ),
+        ),
+      );
+      await enqueueContent(f.checkpoint, [{ ...job, revision: "new" }]);
+      await drainContent(f.context, client(changed), f.checkpoint, {
+        fetch: fetcher,
+        maxBytes: 512,
+        now: () => 0,
+      });
+      expect(f.files.get(`${f.canonical}:content:original`)).toEqual(original);
+      expect(
+        f.rows.get(`${f.canonical}:content:manifest`)?.properties[
+          "preservation"
+        ],
+      ).toBe("pending");
+      const manifest = JSON.parse(
+        new TextDecoder().decode(
+          f.files.get(`${f.canonical}:content:manifest`)?.bytes,
+        ),
+      ) as {
+        resources: {
+          id: string;
+          status: string;
+          reason?: string;
+          maxBytes?: number;
+        }[];
+      };
+      expect(
+        manifest.resources.find((resource) => resource.id === "original"),
+      ).toMatchObject({
+        status: "pending",
+        reason: "resource-exceeds-byte-limit",
+        maxBytes: 512,
+      });
+      expect(
+        f.conditions.get(`readwise:content:${digest(f.canonical)}`),
+      ).toContain("READWISE_CONTENT_MAX_BYTES (512 bytes)");
+      await drainContent(f.context, client(changed), f.checkpoint, {
+        fetch: fetcher,
+        maxBytes: 1024,
+        now: () => 0,
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await drainContent(f.context, client(changed), f.checkpoint, {
+        fetch: fetcher,
+        maxBytes: 1024,
+        now: () => 120_000,
+      });
+      expect(contentQueue(f.checkpoint)).toEqual([]);
+      expect(
+        f.files.get(`${f.canonical}:content:original`)?.bytes.byteLength,
+      ).toBe(513);
+    },
+  );
+  it("replays staged remote content as a stream instead of a whole-body buffer", async () => {
+    const f = fixture();
+    await enqueueContent(f.checkpoint, [
+      {
+        id: document.id,
+        canonical: f.canonical,
+        type: "readwise.source",
+        revision: "streamed",
+      },
+    ]);
+    await drainContent(f.context, client(document), f.checkpoint, {
+      fetch: () => Promise.resolve(new Response("%PDF-1.7 bytes")),
+    });
+    expect(f.streamed.has(`${f.canonical}:content:original`)).toBe(true);
+  });
   it("resumes a productive resource budget at the same clock without a retry delay", async () => {
     const f = fixture();
     const row = {

@@ -41,13 +41,14 @@ The built-in `references` and `attached-to` definitions are not registered or ch
 
 Supply these environment variables through your secret manager or process environment:
 
-| Variable                | Meaning                                                                                                                                                                       |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MARFA_API_URL`         | Marfa instance address.                                                                                                                                                       |
-| `MARFA_API_KEY`         | The scoped key created above.                                                                                                                                                 |
-| `READWISE_ACCESS_TOKEN` | Your Readwise access token, treated as a secret.                                                                                                                              |
-| `READWISE_ACCOUNT`      | Stable nonsecret account label, such as `primary`.                                                                                                                            |
-| `READWISE_API_URL`      | Optional API base for controlled testing; defaults to `https://readwise.io/api/v2/`. Requires HTTPS, except HTTP on loopback, and rejects credentials, queries and fragments. |
+| Variable                     | Meaning                                                                                                                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MARFA_API_URL`              | Marfa instance address.                                                                                                                                                       |
+| `MARFA_API_KEY`              | The scoped key created above.                                                                                                                                                 |
+| `READWISE_ACCESS_TOKEN`      | Your Readwise access token, treated as a secret.                                                                                                                              |
+| `READWISE_ACCOUNT`           | Stable nonsecret account label, such as `primary`.                                                                                                                            |
+| `READWISE_CONTENT_MAX_BYTES` | Remote resource limit in bytes, from 1 through 1073741824 (1 GiB). Default: 268435456 (256 MiB).                                                                              |
+| `READWISE_API_URL`           | Optional API base for controlled testing; defaults to `https://readwise.io/api/v2/`. Requires HTTPS, except HTTP on loopback, and rejects credentials, queries and fragments. |
 
 Run once or poll with the kit's existing scheduler:
 
@@ -88,6 +89,8 @@ The private `@withmarfa/readwise` workspace package defines both item types, ide
 For verified Reader-managed rows, Highlights refreshes Reader metadata, including when no export change is available and the Reader process is stopped. Up to 20 managed document and known annotation lookups use direct requests. Larger sets use a complete validated Reader listing when its first page indicates no more requests than individual lookups; a large unrelated feed keeps the direct lookup path. The listing retains only those managed identities and known annotations and does not authorize deletion. Reader supplies the canonical passage; a differing export passage is retained in `readwise_text`. Highlights observes shared fields without replacing pending local edits or carrying them upstream. Export tombstones do not archive Reader-managed rows. Ordinary export-only rows retain their existing behavior.
 
 Set `READWISE_READER_API_URL` only for controlled testing. Its default is `https://readwise.io/api/v3/`, with the same endpoint restrictions as `READWISE_API_URL`. The token is sent only to the configured API endpoint. A failed Reader lookup never substitutes older export values. Managed Reader content and over-limit text use the shared bounded preservation queue, including when Reader is stopped. An acknowledged manifest for the same canonical identity and revision avoids requeuing unchanged content. Queue pressure drains ready work before admission; if capacity remains full, refresh retains its cursor before the unaccepted row and does not report completion. The last good row and bytes remain until their replacements are acknowledged. Grant `readwise.file=write` and `attached-to=write` before enabling this content recovery.
+
+Downloads stream through a private temporary file, removed after success, failure, or cancellation; upload retries reopen that file without buffering the whole resource in memory. Set `READWISE_CONTENT_MAX_BYTES` to a positive decimal byte count, default 268435456 (256 MiB), at most 1073741824 (1 GiB). Oversized resources remain pending with an explicit byte-limit condition and keep their last acknowledged copy. A limit increase applies to existing pending jobs at their recorded retry deadlines without triggering a metadata backfill.
 
 ## Replace existing schemas
 

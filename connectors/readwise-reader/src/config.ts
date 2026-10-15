@@ -1,9 +1,10 @@
-import { endpoint, identity } from "@withmarfa/readwise";
+import { contentMaxBytes, endpoint, identity } from "@withmarfa/readwise";
 import type { EnvValues } from "@withmarfa/connector";
 export const env = {
   READWISE_ACCOUNT: "required",
   READWISE_ACCESS_TOKEN: "secret",
   READWISE_API_URL: "optional",
+  READWISE_CONTENT_MAX_BYTES: "optional",
   READWISE_READER_API_URL: "optional",
   READWISE_READER_INCLUDE_FEED: "optional",
   READWISE_READER_INBOUND_ONLY: "optional",
@@ -16,6 +17,7 @@ export interface ReaderConfig {
   includeFeed: boolean;
   inboundOnly: boolean;
   propagatePurge: boolean;
+  contentMaxBytes: number;
 }
 function flag(value: string | undefined, name: string): boolean {
   if (value === undefined || value === "false") return false;
@@ -26,6 +28,7 @@ export function parseConfig(values: EnvValues<typeof env>): ReaderConfig {
   identity(values.READWISE_ACCOUNT, "source", 1);
   return {
     account: values.READWISE_ACCOUNT,
+    contentMaxBytes: contentMaxBytes(values.READWISE_CONTENT_MAX_BYTES),
     readerBase: endpoint(
       values.READWISE_READER_API_URL ?? "https://readwise.io/api/v3/",
     ),
