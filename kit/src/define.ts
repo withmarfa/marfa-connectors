@@ -48,15 +48,15 @@ export interface Connected {
 
 /**
  * How the kit treats an environment variable a connector names: `secret`
- * and `required` fail the start when absent, and a secret's value is
- * redacted from every log line and report.
+ * and `required` fail the start when absent. `optional-secret` may be
+ * absent; both secret kinds are redacted from every log line and report.
  */
-export type EnvKind = "secret" | "required" | "optional";
+export type EnvKind = "secret" | "optional-secret" | "required" | "optional";
 
 export type EnvDeclaration = Readonly<Record<string, EnvKind>>;
 
 export type EnvValues<E extends EnvDeclaration> = {
-  readonly [K in keyof E]: E[K] extends "optional"
+  readonly [K in keyof E]: E[K] extends "optional" | "optional-secret"
     ? string | undefined
     : string;
 };

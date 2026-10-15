@@ -54,15 +54,16 @@ export function readEnvironment<E extends EnvDeclaration>(
   const secrets = new Map([["MARFA_API_KEY", key]]);
   for (const [name, kind] of Object.entries(connector.env ?? {})) {
     // Setup makes what the connector needs later, so it needs none of it.
-    if (kind === "optional" || setup) {
-      values[name] = present(name);
-      const value = values[name];
-      if (kind === "secret" && value !== undefined) secrets.set(name, value);
-      continue;
-    }
-    const value = need(name);
+    const value =
+      kind === "optional" || kind === "optional-secret" || setup
+        ? present(name)
+        : need(name);
     values[name] = value;
-    if (kind === "secret") secrets.set(name, value);
+    if (
+      (kind === "secret" || kind === "optional-secret") &&
+      value !== undefined
+    )
+      secrets.set(name, value);
   }
   if (missing.length > 0) {
     throw new ConfigurationError(
