@@ -3,8 +3,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { appKey, GitHubStub } from "../proof/github-stub.js";
 
 // What each test holds the stand-in to is what GitHub does, as its
-// documentation says and as a read-only probe of api.github.com showed on
-// the date in the pull request that added them.
+// documentation says or, where a title says "observed", as a read-only
+// probe of api.github.com showed. The probe used user tokens only.
 
 let key: string;
 let github: GitHubStub;
@@ -84,7 +84,7 @@ function graphql(token: string): Promise<Response> {
 const issues = "/repos/someone/tracker/issues";
 
 describe("a page's ETag", () => {
-  it("answers 304 to another token of the installation that sends it, as GitHub ties no 304 to one token", async () => {
+  it("answers 304 to another token of the installation that sends it, as GitHub was observed to tie no 304 to one user token", async () => {
     github.addIssue(github.addRepository("someone/tracker"));
     const first = await mint();
     const second = await mint();
@@ -96,7 +96,7 @@ describe("a page's ETag", () => {
     );
   });
 
-  it("answers 200 to a credential sent under another scheme, as GitHub's ETag names the scheme", async () => {
+  it("answers 200 to a credential sent under another scheme, as GitHub's ETag was observed to name the scheme", async () => {
     github.addIssue(github.addRepository("someone/tracker"));
     const token = await mint();
     const etag = (await get(issues, token)).headers.get("etag") ?? "";
@@ -295,7 +295,7 @@ describe("the rate limit headers", () => {
   });
 
   it.each([403, 429] as const)(
-    "come with the seconds to wait on a secondary limit answered %i, while the budget is not spent",
+    "come with the seconds to wait on a secondary limit answered %i",
     async (status) => {
       const repository = github.addRepository("someone/tracker");
       github.addIssue(repository);

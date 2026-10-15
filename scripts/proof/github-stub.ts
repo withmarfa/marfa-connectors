@@ -624,7 +624,9 @@ export class GitHubStub {
       res.end(data === undefined ? undefined : JSON.stringify(data));
     };
     // GitHub's primary limit is a 403 on REST and an error under a 200 on
-    // GraphQL, and a secondary limit comes with the seconds to wait.
+    // GraphQL, and a secondary limit comes with the seconds to wait. The
+    // documentation does not name the GraphQL error's type; the connector
+    // reads `RATE_LIMITED`.
     const limit = (secondary: boolean, status: 403 | 429 = 403): void => {
       asked.limited = true;
       const headers = secondary ? { "retry-after": "1" } : {};
@@ -657,8 +659,9 @@ export class GitHubStub {
       const size = Number(url.searchParams.get("per_page") ?? "30");
       const at = Number(url.searchParams.get("page") ?? "1");
       const slice = all.slice((at - 1) * size, at * size);
-      // GitHub's ETag tells the answers apart by the page, the media type
-      // asked for and the word that names the credential's scheme.
+      // The page and the media type change GitHub's ETag as its documentation
+      // says. A probe with user tokens, not installation tokens, showed that
+      // the scheme word changes it too and that the token does not.
       const etag = `"${createHash("sha256")
         .update(
           JSON.stringify([
