@@ -17,6 +17,7 @@ import {
   readerContentRevision,
   type ContentJob,
   type ReaderDocument,
+  parseReaderPage,
 } from "@withmarfa/readwise";
 
 export interface IdentityInspection {
@@ -32,6 +33,7 @@ export interface SharedContext {
   held(type: string): Promise<Item[]>;
   log: { condition(key: string, message: string): void };
 }
+export class PreservationQueueFull extends Error {}
 export function highlightsPolicy(
   type: string,
   item: Item | undefined,
@@ -102,6 +104,68 @@ export class SharedRows {
       this.fetched.set(id, value);
     }
     return value;
+  }
+  private async listing(rows: readonly { row: Item }[]): Promise<void> {
+    const wanted = new Set<string>();
+    for (const { row } of rows) {
+      const id = row.properties["reader_id"];
+      if (typeof id === "string") wanted.add(id);
+      const notes = row.properties["reader_notes"];
+      if (notes !== null && typeof notes === "object" && !Array.isArray(notes))
+        for (const id of Object.keys(notes)) wanted.add(id);
+    }
+    // Small sets fit in one LIST window without scanning an unrelated feed.
+    if (wanted.size <= 20) return;
+    const found = new Map<string, ReaderDocument>();
+    const identities = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    let total: number | undefined;
+    for (;;) {
+      this.context.signal?.throwIfAborted();
+      const page = parseReaderPage(
+        await this.reader.page(cursor === undefined ? {} : { cursor }),
+      );
+      total ??= page.count;
+      if (page.count !== total - identities.size)
+        throw new Error(
+          "Reader remaining count does not match the refresh listing progress",
+        );
+      for (const document of page.results) {
+        if (identities.has(document.id))
+          throw new Error("Reader refresh listing repeated a document");
+        identities.add(document.id);
+        if (wanted.has(document.id)) found.set(document.id, document);
+      }
+      if (
+        page.results.length > page.count ||
+        (page.nextPageCursor === null &&
+          (page.count !== page.results.length || identities.size !== total))
+      )
+        throw new Error(
+          "Reader refresh listing count does not match its unique documents",
+        );
+      // A large unrelated account can cost more pages than direct managed lookups.
+      if (
+        cursor === undefined &&
+        page.results.length > 0 &&
+        Math.ceil(total / page.results.length) > wanted.size
+      )
+        return;
+      if (page.nextPageCursor === null) break;
+      if (page.results.length === 0)
+        throw new Error(
+          "Reader returned an empty intermediate refresh listing page",
+        );
+      if (cursors.has(page.nextPageCursor))
+        throw new Error("Reader repeated a refresh listing cursor");
+      if (cursors.size >= 4096)
+        throw new Error("Reader refresh cursor history is full");
+      cursors.add(page.nextPageCursor);
+      cursor = page.nextPageCursor;
+    }
+    for (const id of wanted)
+      this.fetched.set(id, Promise.resolve(found.get(id)));
   }
   private async locate(
     type: string,
@@ -325,7 +389,7 @@ export class SharedRows {
         value: unknown,
       ): Promise<{ committed: boolean; reason?: string }>;
     };
-  }): Promise<void> {
+  }): Promise<boolean> {
     const rows: { type: string; row: Item }[] = [];
     for (const type of ["readwise.source", "readwise.highlight"])
       for (const row of await this.context.held(type))
@@ -335,6 +399,8 @@ export class SharedRows {
     const cursor = scope.state?.get("cursor");
     if (cursor !== undefined && cursor !== null && typeof cursor !== "string")
       throw new Error("Reader refresh cursor is invalid");
+    await this.listing(rows);
+    let complete = true;
     for (const { type, row } of rows) {
       if (typeof cursor === "string" && row.id.localeCompare(cursor) <= 0)
         continue;
@@ -353,6 +419,8 @@ export class SharedRows {
             `readwise:reader-refresh:${row.id}`,
             error instanceof Error ? error.message : "Reader refresh failed",
           );
+          if (error instanceof PreservationQueueFull) return false;
+          complete = false;
         }
       }
       if (entry !== undefined) await scope.upsert(type, [entry]);
@@ -367,5 +435,6 @@ export class SharedRows {
       throw new Error(
         `Reader refresh completion was not saved: ${saved.reason ?? "unknown"}`,
       );
+    return complete;
   }
 }

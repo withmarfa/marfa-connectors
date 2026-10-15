@@ -15,10 +15,16 @@ import {
   type Query,
   drainContent,
   enqueueContent,
+  isAccountedContent,
+  readerFileType,
 } from "@withmarfa/readwise";
 import type { ExportPage } from "@withmarfa/readwise";
 import { identity, ReaderClient, type ReaderReader } from "@withmarfa/readwise";
-import { SharedRows, type SharedContext } from "./coexistence.js";
+import {
+  PreservationQueueFull,
+  SharedRows,
+  type SharedContext,
+} from "./coexistence.js";
 import { sourceType, highlightType } from "@withmarfa/readwise";
 
 export const env = {
@@ -298,8 +304,14 @@ export async function sync(
     context.known === undefined
       ? undefined
       : async (job) => {
+          const manifest = await context.inspect(readerFileType.id, {
+            links: [`${job.canonical}:content:manifest`],
+          });
+          if (isAccountedContent(manifest.items[0], job)) return;
+          if (await enqueueContent(content.state, [job])) return;
+          await preserve();
           if (!(await enqueueContent(content.state, [job])))
-            throw new Error(
+            throw new PreservationQueueFull(
               "Reader preservation queue is full; metadata waits for acknowledged content work",
             );
         },
@@ -348,13 +360,14 @@ export async function sync(
     const refreshScope = context.forScope("reader-refresh", {
       retry: { mode: "refetch", context: hash([account, readerBase, shape]) },
     });
-    await shared.refresh(refreshScope);
-    const refreshed = await refreshScope.state.checkpoint(
-      "refresh",
-      new Date(now()).toISOString(),
-    );
-    if (!refreshed.committed)
-      throw new Error(`Reader refresh was not saved: ${refreshed.reason}`);
+    if (await shared.refresh(refreshScope)) {
+      const refreshed = await refreshScope.state.checkpoint(
+        "refresh",
+        new Date(now()).toISOString(),
+      );
+      if (!refreshed.committed)
+        throw new Error(`Reader refresh was not saved: ${refreshed.reason}`);
+    }
     if (saved.shape !== shape) {
       saved = { ...saved, shape };
       delete saved.walk;

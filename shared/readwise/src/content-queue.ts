@@ -78,6 +78,18 @@ function entry(
     connections: { "attached-to": [{ type: job.type, id: job.canonical }] },
   };
 }
+export function isAccountedContent(
+  manifest: Item | undefined,
+  job: Pick<ContentJob, "canonical" | "revision">,
+): boolean {
+  return (
+    manifest?.properties["canonical_key"] ===
+      `${job.canonical}:content:manifest` &&
+    manifest.properties["reader_revision"] === job.revision &&
+    manifest.properties["preservation"] === "accounted" &&
+    typeof manifest.properties["blob_ref"] === "string"
+  );
+}
 async function commit(context: Context, file: Entry): Promise<void> {
   const scope = context.forScope(`reader-file:${digest(file.source_id)}`);
   await scope.upsert(readerFileType.id, [file]);
@@ -90,28 +102,28 @@ async function commit(context: Context, file: Entry): Promise<void> {
       `Reader content write was not acknowledged: ${result.reason}`,
     );
 }
+interface Preservation {
+  complete: boolean;
+  progressed: boolean;
+}
 async function preserve(
   context: Context,
   client: ReaderReader,
   job: ContentJob,
   options: { fetch?: typeof fetch; exportClient?: ExportClient },
-): Promise<boolean> {
+): Promise<Preservation> {
   const manifestKey = `${job.canonical}:content:manifest`;
   const existing = await context.inspect(readerFileType.id, {
     links: [manifestKey],
   });
   // An explicit purge is not undone by the next content walk.
-  if (existing.tombstones.length) return true;
+  if (existing.tombstones.length) return { complete: true, progressed: false };
   const manifest = existing.items[0];
-  if (
-    manifest?.properties["reader_revision"] === job.revision &&
-    manifest.properties["preservation"] === "accounted" &&
-    typeof manifest.properties["blob_ref"] === "string"
-  )
-    return true;
+  if (isAccountedContent(manifest, job))
+    return { complete: true, progressed: false };
   const target = await context.inspect(job.type, { links: [job.canonical] });
   if (target.tombstones.length || target.items[0]?.state === "trashed")
-    return true;
+    return { complete: true, progressed: false };
   if (target.items.length !== 1)
     throw new Error("Reader content waits for its unambiguous parent item");
   const parent = target.items[0];
@@ -213,6 +225,8 @@ async function preserve(
       if (typeof item.key === "string") purged.add(item.key);
   }
   let attempted = 0;
+  let progressed = false;
+  let failed = false;
   for (const file of plan.files) {
     const resource = plan.resources.find(
       (candidate) => candidate.id === file.id,
@@ -287,6 +301,7 @@ async function preserve(
       }
       await commit(context, value);
       resource.status = "kept";
+      progressed = true;
     } catch (error) {
       if (
         error instanceof ReadwiseThrottleError ||
@@ -300,6 +315,7 @@ async function preserve(
         continue;
       }
       resource.status = "pending";
+      failed = true;
       resource.reason = "download-or-storage-not-acknowledged";
       context.log.condition(
         `readwise:content:${digest(job.canonical)}`,
@@ -345,7 +361,7 @@ async function preserve(
       }),
   };
   await commit(context, value);
-  return complete;
+  return { complete, progressed: progressed && !failed };
 }
 /** Queue acknowledgement is independent of metadata and of each resource's checkpoint. */
 export async function drainContent(
@@ -369,9 +385,9 @@ export async function drainContent(
     context.signal.throwIfAborted();
     attempted++;
     reached.push(`readwise:content:${digest(job.canonical)}`);
-    let complete = false;
+    let result: Preservation = { complete: false, progressed: false };
     try {
-      complete = await preserve(context, client, job, options);
+      result = await preserve(context, client, job, options);
     } catch (error) {
       if (
         error instanceof ReadwiseThrottleError ||
@@ -385,7 +401,8 @@ export async function drainContent(
       );
     }
     queue = queue.filter((candidate) => candidate.id !== job.id);
-    if (!complete) {
+    if (!result.complete && result.progressed) queue.push(job);
+    else if (!result.complete) {
       const attempts = (job.attempts ?? 0) + 1;
       queue.push({
         ...job,

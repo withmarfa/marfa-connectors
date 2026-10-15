@@ -92,6 +92,89 @@ function client(row: ReaderDocument) {
 }
 
 describe("independent Reader content recovery", () => {
+  it("resumes a productive resource budget at the same clock without a retry delay", async () => {
+    const f = fixture();
+    const row = {
+      ...document,
+      raw_source_url: null,
+      html_content: Array.from(
+        { length: 17 },
+        (_, index) =>
+          `<img src="https://readwise-assets.s3.amazonaws.com/${String(index)}.png">`,
+      ).join(""),
+    };
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("image bytes")),
+    );
+    await enqueueContent(f.checkpoint, [
+      {
+        id: row.id,
+        canonical: f.canonical,
+        type: "readwise.source",
+        revision: "many-images",
+      },
+    ]);
+    await drainContent(f.context, client(row), f.checkpoint, {
+      fetch: fetcher,
+      now: () => 0,
+      maxJobs: 1,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(15);
+    expect(contentQueue(f.checkpoint)).toMatchObject([{ id: row.id }]);
+    expect(contentQueue(f.checkpoint)[0]?.due).toBeUndefined();
+    expect(contentQueue(f.checkpoint)[0]?.attempts).toBeUndefined();
+    await drainContent(f.context, client(row), f.checkpoint, {
+      fetch: fetcher,
+      now: () => 0,
+      maxJobs: 1,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(17);
+    expect(contentQueue(f.checkpoint)).toEqual([]);
+    expect(
+      f.rows.get(`${f.canonical}:content:manifest`)?.properties["preservation"],
+    ).toBe("accounted");
+  });
+
+  it("backs off real resource failures even when other resources made progress", async () => {
+    const f = fixture();
+    const row = {
+      ...document,
+      raw_source_url: null,
+      html_content: Array.from(
+        { length: 17 },
+        (_, index) =>
+          `<img src="https://readwise-assets.s3.amazonaws.com/${String(index)}.png">`,
+      ).join(""),
+    };
+    const fetcher = vi.fn<typeof fetch>((input) =>
+      input instanceof URL && input.pathname === "/0.png"
+        ? Promise.reject(new Error("network failed"))
+        : Promise.resolve(new Response("image bytes")),
+    );
+    await enqueueContent(f.checkpoint, [
+      {
+        id: row.id,
+        canonical: f.canonical,
+        type: "readwise.source",
+        revision: "many-images",
+      },
+    ]);
+    await drainContent(f.context, client(row), f.checkpoint, {
+      fetch: fetcher,
+      now: () => 0,
+      maxJobs: 1,
+    });
+    expect(contentQueue(f.checkpoint)).toMatchObject([
+      { attempts: 1, due: 120_000 },
+    ]);
+    expect(fetcher).toHaveBeenCalledTimes(15);
+    await drainContent(f.context, client(row), f.checkpoint, {
+      fetch: fetcher,
+      now: () => 0,
+      maxJobs: 1,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(15);
+  });
   it.each([false, true])(
     "accounts for an empty original without changing prior bytes: prior=%s",
     async (prior) => {
