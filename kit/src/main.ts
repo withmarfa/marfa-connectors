@@ -392,7 +392,7 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
     `  MARFA_API_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
     "  OTEL_EXPORTER_OTLP_ENDPOINT (optional: where to send logs, traces and errors over OTLP; nothing is sent while it is unset)",
-    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: where to send a failed run's error for PostHog error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
+    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: the PostHog host and project token a failed run's error is sent to for error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
   ];
 }
 

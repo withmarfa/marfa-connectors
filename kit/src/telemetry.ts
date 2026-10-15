@@ -11,16 +11,16 @@ export const exportTimeoutMs = 1500;
  *  under way, then the last one. */
 export const telemetryBoundMs = 2 * exportTimeoutMs;
 
-/**
- * The settings, read as Marfa's server reads them: present only when
- * `OTEL_EXPORTER_OTLP_ENDPOINT` is set, which is what turns telemetry on.
- */
 export interface ExceptionSettings {
   readonly host: string;
   /** The PostHog project token, which is a secret. */
   readonly token: string;
 }
 
+/**
+ * The settings, read as Marfa's server reads them: present only when
+ * `OTEL_EXPORTER_OTLP_ENDPOINT` is set, which is what turns telemetry on.
+ */
 export interface TelemetrySettings {
   readonly serviceName: string | undefined;
   readonly tracesEndpoint: string;
