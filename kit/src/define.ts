@@ -200,6 +200,8 @@ export interface Log {
 export type Secret = (value: string) => void;
 
 export interface RunContext<E extends EnvDeclaration> {
+  /** Acknowledges a vendor retry deadline before waiting; restart honors it. */
+  readonly waitUntil: (retryAt: string) => Promise<void>;
   /** Detached snapshots of unresolved writes. Definitively rejected requests do not block inbound reconciliation. */
   readonly pendingOutbound: () => readonly OutboundIntent[];
   readonly env: EnvValues<E>;

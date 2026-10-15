@@ -920,7 +920,22 @@ export async function runOnce<E extends EnvDeclaration>(
     [...outbound.values()]
       .filter((record) => record.rejected === undefined)
       .map(publicIntent);
+  const waitUntil: RunContext<E>["waitUntil"] = async (retryAt) => {
+    check();
+    const delay = new Unreachable("vendor rate limit", { retryAt });
+    await keepVendorRetry(delay);
+    while (outboundRetryAt !== undefined) {
+      check();
+      const left = Date.parse(outboundRetryAt) - clock.now().getTime();
+      if (left <= 0) break;
+      await clock.sleep(left, setup.signal);
+    }
+    check();
+    outboundRetryAt = undefined;
+    await saveOutbound();
+  };
   const context: RunContext<E> = {
+    waitUntil: (retryAt) => unscoped(() => waitUntil(retryAt)),
     pendingOutbound,
     env,
     signal: setup.signal,
@@ -956,6 +971,7 @@ export async function runOnce<E extends EnvDeclaration>(
       };
       scopes.set(name, scope);
       const scoped: ScopedRunContext<E> = {
+        waitUntil: (retryAt) => serial(scope, () => waitUntil(retryAt)),
         pendingOutbound,
         refusals: {
           pending: () =>
@@ -1081,20 +1097,7 @@ export async function runOnce<E extends EnvDeclaration>(
     env,
     signal: setup.signal,
     state,
-    waitUntil: async (retryAt) => {
-      check();
-      const delay = new Unreachable("vendor rate limit", { retryAt });
-      await keepVendorRetry(delay);
-      while (outboundRetryAt !== undefined) {
-        check();
-        const left = Date.parse(outboundRetryAt) - clock.now().getTime();
-        if (left <= 0) break;
-        await clock.sleep(left, setup.signal);
-      }
-      check();
-      outboundRetryAt = undefined;
-      await saveOutbound();
-    },
+    waitUntil,
     outbound: {
       get: (id) => {
         const record = outbound.get(id);
