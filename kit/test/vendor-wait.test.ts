@@ -2,6 +2,14 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import type { Entry } from "../src/define.js";
 import { Harness, testType, vendor } from "./harness.js";
 
+function gate() {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 let harness: Harness;
 beforeEach(async () => {
   harness = await Harness.create();
@@ -135,5 +143,93 @@ it.each(["deadline", "clear"])(
     expect(harness.kept()["outboundRetryAt"]).toBe(
       stage === "deadline" ? retryAt : undefined,
     );
+  },
+);
+
+it.each(["root", "scoped"] as const)(
+  "keeps the longest concurrent %s deadline when the process stops",
+  async (kind) => {
+    const held = vendor();
+    const first = new Date(harness.clock.now().getTime() + 1000).toISOString();
+    const last = new Date(harness.clock.now().getTime() + 62_000).toISOString();
+    let resumed = 0;
+    held.read = async (context) => {
+      const other = kind === "root" ? context : context.forScope("other");
+      await Promise.all([context.waitUntil(first), other.waitUntil(last)]);
+      resumed++;
+    };
+    const running = harness.once(held);
+    await Promise.race([
+      harness.clock.sleeping(1000),
+      harness.clock.sleeping(62_000),
+      running.then(() => {
+        throw new Error("inbound run ended before waiting for the vendor");
+      }),
+    ]);
+    const kept = harness.kept()["outboundRetryAt"];
+    harness.stop();
+    await running;
+    expect(kept).toBe(last);
+    expect(harness.kept()["outboundRetryAt"]).toBe(last);
+    expect(resumed).toBe(0);
+    harness.clock.advance(1000);
+    expect(await harness.once(held)).toBe(1);
+    expect(held.runs).toBe(1);
+    harness.clock.advance(61_000);
+    expect(await harness.once(held)).toBe(0);
+    expect(held.runs).toBe(2);
+    expect(resumed).toBe(1);
+  },
+);
+
+it.each(["root", "scoped"] as const)(
+  "keeps a concurrent %s extension received during the clearing acknowledgment",
+  async (kind) => {
+    const held = vendor();
+    const first = new Date(harness.clock.now().getTime() + 1000).toISOString();
+    const last = new Date(harness.clock.now().getTime() + 62_000).toISOString();
+    const clearing = gate();
+    const releaseClear = gate();
+    const extend = gate();
+    const registered = gate();
+    let firstResumed = 0;
+    held.read = async (context) => {
+      const other = kind === "root" ? context : context.forScope("other");
+      await Promise.all([
+        context.waitUntil(first).then(() => {
+          firstResumed++;
+        }),
+        extend.promise.then(() => {
+          const waiting = other.waitUntil(last);
+          registered.resolve();
+          return waiting;
+        }),
+      ]);
+    };
+    const running = harness.once(held);
+    await harness.clock.sleeping(1000);
+    harness.server.beforeAnswer = async (request) => {
+      if (request.method !== "PUT" || !request.path.endsWith("/state")) return;
+      harness.server.beforeAnswer = undefined;
+      clearing.resolve();
+      await releaseClear.promise;
+    };
+    await harness.clock.wake(1000);
+    await clearing.promise;
+    extend.resolve();
+    await registered.promise;
+    releaseClear.resolve();
+    await Promise.race([
+      harness.clock.sleeping(61_000),
+      running.then(() => {
+        throw new Error("inbound run ended before honoring the extension");
+      }),
+    ]);
+    const kept = harness.kept()["outboundRetryAt"];
+    harness.stop();
+    await running;
+    expect(firstResumed).toBe(0);
+    expect(kept).toBe(last);
+    expect(harness.kept()["outboundRetryAt"]).toBe(last);
   },
 );

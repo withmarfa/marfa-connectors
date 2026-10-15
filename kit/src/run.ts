@@ -923,19 +923,42 @@ export async function runOnce<E extends EnvDeclaration>(
   const waitUntil: RunContext<E>["waitUntil"] = async (retryAt) => {
     check();
     const delay = new Unreachable("vendor rate limit", { retryAt });
-    await keepVendorRetry(delay);
-    while (outboundRetryAt !== undefined) {
-      check();
-      const left = Date.parse(outboundRetryAt) - clock.now().getTime();
-      if (left <= 0) break;
-      await clock.sleep(left, setup.signal);
+    rememberVendorRetry(delay);
+    phase.rootInFlight += 1;
+    try {
+      await unscoped(saveOutbound);
+      for (;;) {
+        check();
+        if (acknowledged.outboundRetryAt !== outboundRetryAt) {
+          await unscoped(saveOutbound);
+          continue;
+        }
+        const left =
+          outboundRetryAt === undefined
+            ? 0
+            : Date.parse(outboundRetryAt) - clock.now().getTime();
+        if (left > 0) {
+          await clock.sleep(left, setup.signal);
+          continue;
+        }
+        const cleared = await unscoped(async () => {
+          if (
+            outboundRetryAt !== undefined &&
+            Date.parse(outboundRetryAt) > clock.now().getTime()
+          )
+            return false;
+          outboundRetryAt = undefined;
+          await saveOutbound();
+          return true;
+        });
+        if (cleared && outboundRetryAt === undefined) return;
+      }
+    } finally {
+      phase.rootInFlight -= 1;
     }
-    check();
-    outboundRetryAt = undefined;
-    await saveOutbound();
   };
   const context: RunContext<E> = {
-    waitUntil: (retryAt) => unscoped(() => waitUntil(retryAt)),
+    waitUntil,
     pendingOutbound,
     env,
     signal: setup.signal,
@@ -971,7 +994,7 @@ export async function runOnce<E extends EnvDeclaration>(
       };
       scopes.set(name, scope);
       const scoped: ScopedRunContext<E> = {
-        waitUntil: (retryAt) => serial(scope, () => waitUntil(retryAt)),
+        waitUntil,
         pendingOutbound,
         refusals: {
           pending: () =>
@@ -1346,11 +1369,8 @@ export async function runOnce<E extends EnvDeclaration>(
       outboundBusy = false;
     }
   };
-  const keepVendorRetry = async (
-    error: unknown,
-    itemId?: string,
-  ): Promise<void> => {
-    if (!(error instanceof Unreachable) || error.retryAt === undefined) return;
+  const rememberVendorRetry = (error: Unreachable, itemId?: string): void => {
+    if (error.retryAt === undefined) return;
     if (
       outboundRetryAt === undefined ||
       Date.parse(error.retryAt) > Date.parse(outboundRetryAt)
@@ -1361,6 +1381,13 @@ export async function runOnce<E extends EnvDeclaration>(
       if (held !== undefined && !held.acknowledged)
         outbound.set(itemId, { ...held, requestNotApplied: true });
     }
+  };
+  const keepVendorRetry = async (
+    error: unknown,
+    itemId?: string,
+  ): Promise<void> => {
+    if (!(error instanceof Unreachable) || error.retryAt === undefined) return;
+    rememberVendorRetry(error, itemId);
     await saveOutbound();
   };
   const invoke = async <T>(
@@ -1379,7 +1406,7 @@ export async function runOnce<E extends EnvDeclaration>(
     try {
       const result = await callback();
       checkDurability();
-      if (outboundBusy) {
+      if (outboundBusy || phase.rootInFlight > 0) {
         phase.unfinishedOperations = true;
         throw new Error("outbound journal operations were not awaited");
       }
