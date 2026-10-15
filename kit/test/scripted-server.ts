@@ -2174,6 +2174,10 @@ export class ScriptedServer {
       refuse(409, "source_id_conflict");
       return;
     }
+    if (input["version_match"] === "exact" && version !== row.version) {
+      refuse(409, "version_conflict");
+      return;
+    }
     if (version !== row.version) {
       const ancestor = this.snapshots
         .get(row.id)

@@ -706,10 +706,11 @@ export class Marfa {
     id: string,
     version: number,
     properties: Record<string, unknown>,
+    exact = false,
   ): Promise<Item> {
     const { data, error, response } = await this.client.PATCH("/items/{id}", {
       params: { path: { id } },
-      body: { version, properties },
+      body: { version, properties, ...(exact && { version_match: "exact" }) },
     });
     if (data === undefined) throw refusal(response, error);
     return data.item;
@@ -770,6 +771,7 @@ export class Marfa {
     properties: Record<string, unknown>,
     occurredAt: string | undefined,
     sourceId?: string,
+    exact = false,
   ): Promise<Item> {
     const { data, error, response } = await this.client.PATCH("/items/{id}", {
       params: { path: { id } },
@@ -777,6 +779,7 @@ export class Marfa {
         version,
         properties,
         properties_mode: "replace",
+        ...(exact && { version_match: "exact" }),
         ...(occurredAt !== undefined && { occurred_at: occurredAt }),
         ...(sourceId !== undefined && { source_id: sourceId }),
       },

@@ -42,8 +42,9 @@ function connector(options: {
     async run(context) {
       await context.upsert(linkedType.id, options.entries);
     },
-    async onChange(change) {
+    onChange(change) {
       options.changes.push(change);
+      return Promise.resolve(undefined);
     },
   });
 }
@@ -67,7 +68,7 @@ it("preserves first-agreement divergence and carries only the local value", asyn
   expect(await start(definition, harness.runtime(["--once"]))).toBe(0);
   expect(harness.server.row("one").properties["title"]).toBe("Local");
   expect(changes).toHaveLength(1);
-  expect([...changes[0]!.changed]).toEqual(["title"]);
+  expect([...(changes[0]?.changed ?? [])]).toEqual(["title"]);
 });
 
 it("observes vendor changes while retaining local divergence without outbound work", async () => {
@@ -87,9 +88,7 @@ it("observes vendor changes while retaining local divergence without outbound wo
   expect(harness.server.row("one").properties["title"]).toBe("Local");
   expect(options.changes).toEqual([]);
   expect(
-    [...harness.server.agreements.values()].every(
-      (value) => value.waiting !== true,
-    ),
+    [...harness.server.agreements.values()].every((value) => !value.waiting),
   ).toBe(true);
 });
 
@@ -212,8 +211,9 @@ it("reads ownership again before carrying a cached watch change", async () => {
   options.entries = [];
   const moved = {
     ...definition,
-    async run() {
+    run() {
       harness.server.touch("one", { note: "other" });
+      return Promise.resolve(undefined);
     },
   };
   expect(await start(moved, harness.runtime(["--once"]))).toBe(0);
@@ -280,4 +280,26 @@ it("refuses a stale inbound write when only the ownership marker changed", async
   expect(await start(definition, harness.runtime(["--once"]))).toBe(0);
   expect(raced).toBe(true);
   expect(harness.server.row("one").properties["title"]).toBe("Before");
+});
+
+it("keeps a refused exact write pending on a server without the precondition", async () => {
+  const options = {
+    entries: [entry("Before")],
+    changes: [] as Change[],
+    policy: () => ({ owned: true }),
+  };
+  const definition = connector(options);
+  expect(await start(definition, harness.runtime(["--once"]))).toBe(0);
+  const id = harness.server.row("one").id;
+  harness.server.refuseNext(
+    `PATCH /items/${id}`,
+    400,
+    "validation_error",
+    "version_match is not declared",
+  );
+  options.entries = [entry("After")];
+  await start(definition, harness.runtime(["--once"]));
+  expect(harness.server.row("one").properties["title"]).toBe("Before");
+  expect(await start(definition, harness.runtime(["--once"]))).toBe(0);
+  expect(harness.server.row("one").properties["title"]).toBe("After");
 });

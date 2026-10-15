@@ -173,9 +173,11 @@ it("inspects unagreed identities in every state and tombstones by link and natur
           expect(result.tombstones[0]?.key).toBe(
             "links" in by ? "vendor:purged" : "purged",
           );
-          result.items[0]!.properties["title"] = "Detached";
+          const first = result.items[0];
+          if (first === undefined) throw new Error("expected a row");
+          first.properties["title"] = "Detached";
           const again = await reader.inspect(linkedType.id, by);
-          expect(again.items[0]!.properties["title"]).not.toBe("Detached");
+          expect(again.items[0]?.properties["title"]).not.toBe("Detached");
         }
       }
       harness.server.refuseNext("POST /items/lookup", 403, "forbidden");

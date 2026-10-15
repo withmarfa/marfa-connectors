@@ -129,10 +129,10 @@ export function forRow(
     if (mode === "mirror") readOnly.add(field);
     else if (mode === "sync") {
       if (kind.twoWay) readOnly.delete(field);
-    } else if (mode === "observe") {
+    } else {
       readOnly.delete(field);
       observed.add(field);
-    } else throw new Error(`invalid policy for ${field}`);
+    }
   }
   return {
     ...kind,
@@ -694,6 +694,7 @@ export class Rows {
           merged.properties,
           merged.occurredAt,
           rekey,
+          this.kind.policy !== undefined,
         );
         this.index(written);
         this.agree(row.id, merged.agreement, entry);
@@ -919,7 +920,14 @@ export class Rows {
       this.checkStopped();
       try {
         this.index(
-          await this.marfa.update(row.id, row.version, properties, undefined),
+          await this.marfa.update(
+            row.id,
+            row.version,
+            properties,
+            undefined,
+            undefined,
+            this.kind.policy !== undefined,
+          ),
         );
       } catch (error) {
         await this.absorb(error, row.source_id ?? row.id);
@@ -1064,12 +1072,7 @@ export class Rows {
         attempt === 0 && this.kind.policy === undefined
           ? this.byId.get(id)
           : await this.marfa.item(id);
-      if (
-        row === undefined ||
-        row.type !== this.kind.type ||
-        row.state === "trashed"
-      )
-        return [];
+      if (row?.type !== this.kind.type || row.state === "trashed") return [];
       this.index(row);
       const kind = forRow(this.kind, row);
       if (kind.owned === false) return [];
@@ -1099,7 +1102,14 @@ export class Rows {
       this.checkStopped();
       try {
         this.index(
-          await this.marfa.update(row.id, row.version, properties, undefined),
+          await this.marfa.update(
+            row.id,
+            row.version,
+            properties,
+            undefined,
+            undefined,
+            this.kind.policy !== undefined,
+          ),
         );
       } catch (error) {
         if (
@@ -1179,6 +1189,8 @@ export class Rows {
           row.version,
           properties,
           undefined,
+          undefined,
+          this.kind.policy !== undefined,
         );
         this.index(written);
         this.counts.updated += 1;
@@ -1243,9 +1255,14 @@ export class Rows {
       );
     };
     try {
-      written = await this.marfa.merge(item.id, item.version, {
-        [link]: value,
-      });
+      written = await this.marfa.merge(
+        item.id,
+        item.version,
+        {
+          [link]: value,
+        },
+        this.kind.policy !== undefined,
+      );
     } catch (error) {
       if (
         !(error instanceof Refusal) ||
@@ -1260,9 +1277,14 @@ export class Rows {
       }
       assertOwned(current);
       try {
-        written = await this.marfa.merge(current.id, current.version, {
-          [link]: value,
-        });
+        written = await this.marfa.merge(
+          current.id,
+          current.version,
+          {
+            [link]: value,
+          },
+          this.kind.policy !== undefined,
+        );
       } catch (again) {
         throw taken(again);
       }
