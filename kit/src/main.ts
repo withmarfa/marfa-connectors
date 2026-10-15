@@ -37,7 +37,7 @@ import {
 } from "./run.js";
 import { nodeRuntime, type Runtime } from "./runtime.js";
 import {
-  headerSecrets,
+  telemetrySecrets,
   noTelemetry,
   readTelemetry,
   startTelemetry,
@@ -392,6 +392,7 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
     `  MARFA_API_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
     "  OTEL_EXPORTER_OTLP_ENDPOINT (optional: where to send logs, traces and errors over OTLP; nothing is sent while it is unset)",
+    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: where to send a failed run's error for PostHog error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
   ];
 }
 
@@ -518,7 +519,7 @@ export async function start<E extends EnvDeclaration>(
       noTelemetry,
     );
   }
-  logger.keep(headerSecrets(telemetrySettings));
+  logger.keep(telemetrySecrets(telemetrySettings));
   const telemetry = await startTelemetry(
     telemetrySettings,
     connector.name,

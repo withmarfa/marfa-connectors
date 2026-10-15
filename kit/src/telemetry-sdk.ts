@@ -32,6 +32,7 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import type { Level, Logger } from "./log.js";
 import { describe, type RunResult, type Trigger } from "./run.js";
+import type { ExceptionReporter } from "./telemetry-posthog.js";
 import type { Clock } from "./runtime.js";
 import {
   exportTimeoutMs,
@@ -226,13 +227,13 @@ function outcomeOf(result: RunResult): string {
   return result.failure === undefined ? "stopped" : "failed";
 }
 
-export function exporting(
+export async function exporting(
   settings: TelemetrySettings,
   connectorName: string,
   logger: Logger,
   clock: Clock,
   random: () => number,
-): Telemetry {
+): Promise<Telemetry> {
   const redact: Redact = (text) => logger.redact(text);
   let warned = false;
   const failed = (error: Error | undefined): void => {
@@ -242,6 +243,19 @@ export function exporting(
       `telemetry could not be sent, and the connector goes on without what was lost; this is said once: ${error === undefined ? "no reason was given" : describe(error)}`,
     );
   };
+  let exceptions: ExceptionReporter | undefined;
+  if (settings.exceptions !== undefined) {
+    try {
+      // The only place PostHog's code is loaded, and only once all three of
+      // its settings are given. Without it the OTLP exports go on.
+      const posthog = await import("./telemetry-posthog.js");
+      exceptions = posthog.reporting(settings.exceptions, redact, failed);
+    } catch (error) {
+      logger.warn(
+        `exceptions could not be sent to PostHog, so the connector goes on without them: ${describe(error)}`,
+      );
+    }
+  }
   const resource = resourceFromAttributes({
     "service.name": settings.serviceName ?? connectorName,
     "marfa.connector.name": connectorName,
@@ -321,6 +335,25 @@ export function exporting(
     }
     span.end(at);
   };
+  // Not sampled: the ratio is for traces, and a failed run's error is always
+  // sent, whether or not its span could be made.
+  const reported = (
+    result: RunResult | undefined,
+    thrown: unknown,
+    trigger: Trigger,
+  ): void => {
+    if (result !== undefined && result.failure === undefined) return;
+    try {
+      exceptions?.report(result === undefined ? thrown : result.failure, {
+        "service.name": settings.serviceName ?? connectorName,
+        "marfa.connector.name": connectorName,
+        "marfa.connector.trigger": trigger,
+        "deployment.environment": "production",
+      });
+    } catch {
+      // A report that cannot be made is lost to error tracking alone.
+    }
+  };
   const emitter = loggerProvider.getLogger("@withmarfa/connector");
   let current: Span | undefined;
 
@@ -372,6 +405,7 @@ export function exporting(
         } catch {
           // Telemetry never changes how a run ends.
         }
+        reported(result, thrown, trigger);
       }
     },
 
@@ -381,6 +415,7 @@ export function exporting(
         Promise.allSettled([
           tracerProvider.shutdown(),
           loggerProvider.shutdown(),
+          exceptions?.shutdown(),
         ]),
         new Promise<void>((resolve) => {
           timer = setTimeout(resolve, telemetryBoundMs);
