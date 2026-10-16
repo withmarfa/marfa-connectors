@@ -15,12 +15,17 @@ it("parses signed assets and unsigned uploads without changing the body", () => 
 it.each([
   "http://private-user-images.githubusercontent.com/a",
   "https://private-user-images.githubusercontent.com.evil.test/a",
-  "https://user:pass@objects.githubusercontent.com/a",
   "https://objects.githubusercontent.com:444/a",
   "https://127.0.0.1/a",
   "https://github-production-user-asset-.s3.amazonaws.com/a",
 ])("refuses an unsafe storage address: %s", (url) => {
   expect(() => assetUrl(url)).toThrow();
+});
+it("refuses credentials in an otherwise allowed storage address", () => {
+  const url = new URL("https://objects.githubusercontent.com/a");
+  url.username = "user";
+  url.password = "pass";
+  expect(() => assetUrl(url.href)).toThrow();
 });
 it("follows only allowed redirects with no credential headers", async () => {
   const seen: { url: string; init: RequestInit | undefined }[] = [];
