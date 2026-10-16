@@ -52,7 +52,7 @@ import {
   usage,
   type Schedule,
 } from "./schedule.js";
-import { edgeTypeDifferences } from "./type-check.js";
+import { constraintWidening, edgeTypeDifferences } from "./type-check.js";
 import {
   ensureTypes,
   metadataCommand,
@@ -203,7 +203,20 @@ async function ensureConnections(
         }
       }
     }
-    const differences = edgeTypeDifferences(connection, held);
+    let differences = edgeTypeDifferences(connection, held);
+    if (differences.length > 0 && constraintWidening(connection, held)) {
+      try {
+        await marfa.widenEdgeType(connection, held);
+      } catch (error) {
+        if (causeOf(error) === "marfa") throw error;
+        return `the connection type ${connection.id} could not widen its endpoint constraints: ${describe(error)}`;
+      }
+      served = await marfa.edgeTypes();
+      held = served.find((type) => type.id === connection.id);
+      if (held === undefined)
+        return `the connection type ${connection.id} is missing after its endpoint constraint evolution`;
+      differences = edgeTypeDifferences(connection, held);
+    }
     if (differences.length > 0) {
       return `the connection type ${connection.id} on the server differs from the one this connector carries, and is not rewritten: ${differences.join("; ")}`;
     }
@@ -263,9 +276,9 @@ async function registerAndCheck<E extends EnvDeclaration>(
   if (step.problem !== undefined) return stopped(step.problem);
   const problem = await ensureConnections(connector.connections ?? [], marfa);
   if (problem !== undefined) return stopped(problem);
-  // Every connection is registered as declared now, and registering is all
-  // write on edge_types is for. Types stay writable, since that is how the
-  // connector keeps its types current. Read on edge_types gates nothing, and
+  // Registering and widening connections are finished for this binary.
+  // Types stay writable, since that is how the connector keeps its types current.
+  // Read on edge_types gates nothing, and
   // is the narrowing the binary can name, since it cannot name one map empty.
   const spare = key.metadata_permissions["edge_types"] === "write";
   return {

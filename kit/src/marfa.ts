@@ -431,6 +431,31 @@ export class Marfa {
     if (data === undefined) throw refusal(response, error);
   }
 
+  async widenEdgeType(
+    carried: ConnectionDefinition,
+    held: EdgeType,
+  ): Promise<void> {
+    const body: ConnectionDefinition & { evolve_constraints: true } = {
+      id: held.id,
+      ...(held.label !== undefined && { label: held.label }),
+      ...(held.description !== undefined && { description: held.description }),
+      cardinality: held.cardinality,
+      source_type_constraints: carried.source_type_constraints ?? [],
+      target_type_constraints: carried.target_type_constraints ?? [],
+      cascade_on_delete: held.cascade_on_delete,
+      property_schema: held.property_schema,
+      ...(held.reverse_name !== undefined && {
+        reverse_name: held.reverse_name,
+      }),
+      written_at: held.written_at,
+      evolve_constraints: true,
+    };
+    const { data, error, response } = await this.client.POST("/edge-types", {
+      body,
+    });
+    if (data === undefined) throw refusal(response, error);
+  }
+
   async edgesFrom(
     type: string,
     ids: readonly string[],

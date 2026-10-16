@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ConnectionDefinition, TypeDefinition } from "./define.js";
 import type { EdgeType } from "./marfa.js";
 
@@ -148,4 +149,39 @@ export function edgeTypeDifferences(
       ([name, here, there]) =>
         `${name} is ${show(here)} here and ${show(there)} on the server`,
     );
+}
+
+export function constraintWidening(
+  carried: ConnectionDefinition,
+  served: EdgeType,
+): boolean {
+  if (
+    edgeTypeDifferences(
+      {
+        ...carried,
+        source_type_constraints: served.source_type_constraints,
+        target_type_constraints: served.target_type_constraints,
+      },
+      served,
+    ).length > 0 ||
+    !isDeepStrictEqual(carried.property_schema ?? {}, served.property_schema)
+  )
+    return false;
+  const widens = (before: readonly string[], after: readonly string[]) => {
+    const all = (values: readonly string[]) =>
+      values.length === 0 || values.includes("*");
+    if (all(after)) return true;
+    if (all(before)) return false;
+    return before.every((value) => after.includes(value));
+  };
+  return (
+    widens(
+      served.source_type_constraints,
+      carried.source_type_constraints ?? [],
+    ) &&
+    widens(
+      served.target_type_constraints,
+      carried.target_type_constraints ?? [],
+    )
+  );
 }

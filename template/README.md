@@ -199,7 +199,7 @@ The key keeps `types=write` for as long as the connector runs, since it is how t
 marfa keys update <key-id> --metadata-permission types=write --metadata-permission edge_types=read
 ```
 
-Read on `edge_types` registers nothing, and is the narrowing the kit's warning names. An update replaces a whole map with the entries it names, so the command names `types=write` again: without it the key would lose the write that keeps its types current. The rest of the key stays as it was. A later version of the connector that declares a new connection type needs `edge_types=write` again until its first start has registered it.
+Read on `edge_types` registers nothing, and is the narrowing the kit's warning names. An update replaces a whole map with the entries it names, so the command names `types=write` again: without it the key would lose the write that keeps its types current. The rest of the key stays as it was. A later version that declares a new connection type or adds endpoint types to an existing connection needs `edge_types=write` again until its first start has registered or widened it. Widening uses an explicit server operation, preserves existing connections and definition metadata, and requires a server that supports it. The kit retains every existing endpoint constraint token, or allows every type with an empty list or `*`. It refuses narrowing, replacing a token with an ancestor, and other structural changes instead of rewriting the definition.
 
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among unrevoked keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 
