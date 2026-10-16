@@ -349,7 +349,17 @@ export async function sync(
   const preserve = async () => {
     if (context.known !== undefined)
       await drainContent(
-        { ...context, known: context.known },
+        {
+          ...context,
+          known: context.known,
+          log: {
+            ...context.log,
+            condition: (key, message) => {
+              if (key !== "readwise:content-pending")
+                context.log.condition(key, message);
+            },
+          },
+        },
         reader,
         content.state,
         { now, exportClient: client, maxBytes: maximumContentBytes },
@@ -450,5 +460,18 @@ export async function sync(
     await checkpoint(scope, { ...acknowledged, retryUntil: error.until });
     context.log.unreached({ prefixes: ["readwise:"] });
     context.log.condition("readwise:rate-limit", error.message);
+  } finally {
+    if (context.known !== undefined)
+      await drainContent(
+        {
+          ...context,
+          known: context.known,
+          // Reporting reaches no jobs and must not change which were reached.
+          log: { ...context.log, unreached: () => undefined },
+        },
+        reader,
+        content.state,
+        { maxJobs: 0 },
+      );
   }
 }
