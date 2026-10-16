@@ -38,10 +38,12 @@ export async function proveConnectionEvolution(
       const initial = await run("original");
       assert.equal(initial.code, 0, initial.output);
       const rows = await rowsOf(client, type, source);
-      const original = rows.get("original"),
-        target = rows.get("target");
-      assert.ok(original);
-      assert.ok(target);
+      const listedOriginal = rows.get("original"),
+        listedTarget = rows.get("target");
+      assert.ok(listedOriginal);
+      assert.ok(listedTarget);
+      const original = await item(client, listedOriginal.id),
+        target = await item(client, listedTarget.id);
       const edges = async (id: string) => {
         const result = await client.GET("/items/{id}/edges", {
           params: {
@@ -82,8 +84,9 @@ export async function proveConnectionEvolution(
       });
       const upgraded = await run("widened");
       assert.equal(upgraded.code, 0, upgraded.output);
-      const added = (await rowsOf(client, extra, source)).get("new");
-      assert.ok(added);
+      const listedAdded = (await rowsOf(client, extra, source)).get("new");
+      assert.ok(listedAdded);
+      const added = await item(client, listedAdded.id);
       const addedEdges = await edges(added.id);
       assert.equal(addedEdges.length, 1);
       assert.equal(addedEdges[0]?.target_id, target.id);
