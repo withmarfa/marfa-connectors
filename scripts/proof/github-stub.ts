@@ -176,6 +176,7 @@ export class GitHubStub {
   // Answers this many listings of a repository's issues or an issue's
   // comments 404, as a repository GitHub hides for a moment.
   listingsFailing = 0;
+  pullListsRefused = new Set<string>();
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
@@ -1584,6 +1585,13 @@ export class GitHubStub {
       );
       if (repository === undefined || this.missingPullRepository) {
         send(200, { data: { repository: null } });
+        return;
+      }
+      if (
+        operation === "PullRequestList" &&
+        this.pullListsRefused.has(repository.node)
+      ) {
+        send(403, { message: "Resource not accessible by integration" });
         return;
       }
       if (operation === "PullRequestNumber") {

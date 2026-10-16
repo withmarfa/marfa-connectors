@@ -514,35 +514,36 @@ async function readAll(
       return;
     const scoped = context.forScope(`repository:${node}`);
     await scoped.upsert(repositoryType, [repositoryEntry(at.repository)]);
-    // GitHub answers each issue of such a repository 410, as if deleted.
-    if (at.repository.has_issues === false) {
-      const [owner = "", name = ""] = at.repository.full_name.split("/");
-      const prs = await listPullRequests(
-        octokit,
-        owner,
-        name,
-        day(new Date(Date.now() - windowDays * 86_400_000)),
-      );
-      await scoped.upsert(
-        pullRequestType,
-        prs.map((pr) =>
-          pullRequestEntry(
-            pr,
-            new Set([...synced, ...paused]),
-            privateIn(privacy, node),
-          ),
-        ),
-      );
-      next[node] = await marked(
-        scoped,
-        node,
-        repository,
-        privateIn(privacy, node),
-      );
-      await save(scoped, node, next[node]);
-      return;
-    }
     try {
+      // GitHub answers each issue of such a repository 410, as if deleted.
+      if (at.repository.has_issues === false) {
+        const [owner = "", name = ""] = at.repository.full_name.split("/");
+        const prs = await listPullRequests(
+          octokit,
+          owner,
+          name,
+          day(new Date(Date.now() - windowDays * 86_400_000)),
+        );
+        await scoped.upsert(
+          pullRequestType,
+          prs.map((pr) =>
+            pullRequestEntry(
+              pr,
+              new Set([...synced, ...paused]),
+              privateIn(privacy, node),
+            ),
+          ),
+        );
+        next[node] = await marked(
+          scoped,
+          node,
+          repository,
+          privateIn(privacy, node),
+        );
+        await save(scoped, node, next[node]);
+        coverage.reached(`repository-unreadable:${node}`);
+        return;
+      }
       next[node] = await syncRepository(scoped, octokit, node, repository, {
         synced,
         inside: new Set([...synced, ...paused]),

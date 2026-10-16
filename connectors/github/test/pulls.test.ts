@@ -287,6 +287,40 @@ describe("pull request reading", () => {
     await ok();
     expect(row(pr.node).type).toBe("github.pull_request");
   });
+  it.each([false, true])(
+    "keeps a refused repository's progress and reads healthy pull requests (issues disabled: %s)",
+    async (issuesOff) => {
+      const denied = github.addRepository("someone/denied", { issuesOff });
+      const healthy = github.addRepository("someone/healthy");
+      const held = github.addPullRequest(denied, { title: "Before" });
+      const changed = github.addPullRequest(healthy, { title: "Before" });
+      await ok();
+      const saved = () => {
+        const state = marfa.states.get("github")?.["state"] as
+          { repositories?: Record<string, unknown> } | undefined;
+        return structuredClone(state?.repositories?.[denied.node]);
+      };
+      const progress = saved();
+      held.title = "Unread change";
+      held.updated_at = github.now();
+      changed.title = "Healthy change";
+      changed.updated_at = github.now();
+      github.pullListsRefused.add(denied.node);
+      const result = await once();
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain("someone/denied");
+      expect(result.output).toContain("403");
+      expect(row(held.node).properties["title"]).toBe("Before");
+      expect(row(held.node).state).toBe("active");
+      expect(saved()).toEqual(progress);
+      expect(row(changed.node).properties["title"]).toBe("Healthy change");
+      expect(github.writes()).toEqual([]);
+      github.pullListsRefused.clear();
+      await ok();
+      expect(row(held.node).properties["title"]).toBe("Unread change");
+      expect(github.writes()).toEqual([]);
+    },
+  );
   it("keeps prior data when GitHub returns no repository for a pull request listing", async () => {
     const repo = github.addRepository("someone/tracker");
     const pr = github.addPullRequest(repo);
