@@ -2003,6 +2003,19 @@ export async function runOnce<E extends EnvDeclaration>(
       });
       await store.flush([current.id]);
     }
+    if (changeKind === "trashed" && spec.policy !== undefined) {
+      const fresh = await currentItem(kind.type, current.id);
+      if (fresh?.type !== kind.type) return;
+      rows.adopt(fresh);
+      // Preparation can yield while a person restores, adopts, or edits it.
+      // Keep the observation waiting rather than send an obsolete trash.
+      if (
+        fresh.state !== "trashed" ||
+        fresh.version !== current.version ||
+        !forRow(spec, fresh).twoWay
+      )
+        return;
+    }
     let answered: Entry | undefined;
     try {
       answered = await invoke(
