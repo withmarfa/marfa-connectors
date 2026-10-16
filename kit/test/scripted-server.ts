@@ -1404,6 +1404,17 @@ export class ScriptedServer {
     if (method === "POST" && url.pathname === "/edge-types") {
       const id = String(input["id"]);
       if (this.edgeTypes.has(id)) {
+        if (input["evolve_constraints"] === true) {
+          if (this.grants.metadata_permissions?.["edge_types"] !== "write") {
+            refuse(403, "forbidden", "metadata.edge_types:write is required");
+            return;
+          }
+          const stored = { ...input, shipped: false };
+          Reflect.deleteProperty(stored, "evolve_constraints");
+          this.edgeTypes.set(id, stored);
+          send(200, { edge_type: stored });
+          return;
+        }
         refuse(409, "conflict", `the edge type ${id} exists`);
         return;
       }
