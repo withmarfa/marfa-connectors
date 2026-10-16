@@ -37,9 +37,7 @@ export interface Counts {
 
 /** The links or keys an entry's row was known by, newest first. */
 function earlier(entry: Entry): string[] {
-  return [entry.movedFrom ?? []]
-    .flat()
-    .filter((before) => before !== "" && before !== entry.source_id);
+  return [entry.movedFrom ?? []].flat().filter((before) => before !== "");
 }
 
 export class Stopped extends Error {
@@ -836,7 +834,15 @@ export class Rows {
       return id === undefined ? undefined : this.byId.get(id);
     };
     const linked =
-      byLink(value) ?? before.map(byLink).find((row) => row !== undefined);
+      byLink(value) ??
+      before
+        .map((key) => {
+          const row = byLink(key);
+          if (key === sourceId && this.byKey.get(sourceId) !== row?.id)
+            return undefined;
+          return row;
+        })
+        .find((row) => row !== undefined);
     if (linked !== undefined) return linked;
     const id =
       this.byKey.get(sourceId) ??

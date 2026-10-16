@@ -644,6 +644,92 @@ export async function proveReadwiseReader(
         return "21 confirmed direct absences, zero archives; smaller-set witness passed earlier";
       },
     );
+    await verify(
+      "reader fixture: current Highlights-first adoption keeps IDs, content and repeated runs stable",
+      async () => {
+        vendor.sources.length = 0;
+        vendor.documents.clear();
+        const html = "<article>Fresh current installation 漢字</article>";
+        vendor.sources.push({
+          user_book_id: 91,
+          source: "reader",
+          external_id: "fresh-doc",
+          title: "Fresh article",
+          highlights: [
+            { id: 92, external_id: "fresh-hi", text: "Fresh passage" },
+          ],
+        });
+        vendor.documents.set("fresh-doc", {
+          id: "fresh-doc",
+          category: "article",
+          title: "Fresh article",
+          location: "new",
+          html_content: html,
+          updated_at: stamp,
+        });
+        vendor.documents.set("fresh-hi", {
+          id: "fresh-hi",
+          category: "highlight",
+          parent_id: "fresh-doc",
+          content: "Fresh passage",
+          updated_at: stamp,
+        });
+        const freshHighlightsKey = await key("reader-proof-fresh-highlights");
+        const freshReaderKey = await key("reader-proof-fresh-reader");
+        const freshHighlights = new ConnectorUnderProof(
+          "readwise",
+          url,
+          freshHighlightsKey.key,
+          options("fresh"),
+        );
+        const freshReader = new ConnectorUnderProof(
+          "readwise-reader",
+          url,
+          freshReaderKey.key,
+          { ...options("fresh"), READWISE_READER_INBOUND_ONLY: "true" },
+        );
+        const freshRows = async () =>
+          new Map(
+            [...(await all())].filter(
+              ([, item]) => item.properties["account"] === "fresh",
+            ),
+          );
+        await once(freshHighlights);
+        const original = await freshRows();
+        assert.equal(original.size, 2);
+        for (const [natural, item] of original)
+          assert.equal(item.properties["canonical_key"], natural);
+        await once(freshReader);
+        const adopted = await freshRows();
+        assert.equal(adopted.size, 2);
+        for (const [natural, item] of adopted) {
+          assert.equal(item.id, original.get(natural)?.id);
+          assert.equal(item.source_id, natural);
+          assert.equal(item.properties["reader_managed"], true);
+        }
+        const snapshot = async () => ({
+          items: await freshRows(),
+          files: [...(await rowsOf(admin, "readwise.file", "readwise"))].filter(
+            ([, item]) => item.properties["account"] === "fresh",
+          ),
+        });
+        const retained = await snapshot();
+        const file = retained.files.find(
+          ([, item]) => item.properties["resource_kind"] === "html",
+        )?.[1];
+        assert.ok(file);
+        const content = await admin.GET("/blobs/{hash}", {
+          params: { path: { hash: String(file.properties["blob_ref"]) } },
+          parseAs: "arrayBuffer",
+        });
+        assert.ok(content.data, JSON.stringify(content.error));
+        assert.equal(Buffer.from(content.data).toString(), html);
+        await once(freshHighlights);
+        await once(freshReader);
+        assert.deepEqual(await snapshot(), retained);
+        return "current binaries, original IDs and natural keys, retained HTML, unchanged item and file versions";
+      },
+    );
     if (failures.length)
       throw new AggregateError(
         failures,

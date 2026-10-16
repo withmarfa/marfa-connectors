@@ -501,6 +501,51 @@ describe("what the two sides agree on, after each kind of agreement", () => {
 });
 
 describe("a row the vendor moved, relinked by its entry", () => {
+  it("does not adopt another row holding a previous link equal to its natural key", async () => {
+    const held = vendor([
+      { ...one, properties: { ...one.properties, vendor_id: "original" } },
+      {
+        source_id: "a:2",
+        properties: { title: "Another item", vendor_id: "a:1" },
+      },
+    ]);
+    expect(await harness.twoWay(held)).toBe(0);
+    const original = structuredClone(harness.server.rows);
+    held.entries = [{ ...one, movedFrom: "a:1" }];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain("skipped 1");
+    expect(harness.server.rows).toEqual(original);
+  });
+
+  it("retains an explicit previous link equal to the unchanged natural key", async () => {
+    const held = vendor([
+      { ...one, properties: { ...one.properties, vendor_id: "a:1" } },
+    ]);
+    expect(await harness.twoWay(held)).toBe(0);
+    const before = structuredClone(harness.server.row("a:1"));
+    held.entries = [one];
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).toContain("skipped 1");
+    expect(harness.server.row("a:1")).toEqual(before);
+    held.entries = [{ ...one, movedFrom: "a:1" }];
+    const agreements = structuredClone([...harness.server.agreements]);
+    harness.server.refuseNext(`PATCH /items/${before.id}`, 503, "unavailable");
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.server.row("a:1")).toEqual(before);
+    expect([...harness.server.agreements]).toEqual(agreements);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.lastRun().summary).not.toContain("skipped 1");
+    expect(harness.server.rows).toHaveLength(1);
+    expect(harness.server.row("a:1")).toMatchObject({
+      id: before.id,
+      source_id: before.source_id,
+      properties: { vendor_id: "v1" },
+    });
+    const adopted = structuredClone(harness.server.row("a:1"));
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1")).toEqual(adopted);
+  });
+
   it("is not found under its old value in the same run", async () => {
     const held = vendor([one]);
     expect(await harness.twoWay(held)).toBe(0);

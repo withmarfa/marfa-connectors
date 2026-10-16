@@ -168,6 +168,12 @@ export function merge(input: MergeInput): Merged {
     const marfaNow = mark(held(properties, field));
     const observing = input.observe?.(field) === true;
     if (agreement === undefined) {
+      if (input.firstHold === true && marfaNow === "" && vendorNow !== "") {
+        seeded.push(field);
+        take(field);
+        marfa[field] = vendorNow;
+        continue;
+      }
       if (
         (input.firstHold === true && !readOnly(field)) ||
         (input.firstHold === true && observing)
