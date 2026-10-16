@@ -184,3 +184,14 @@ it("ignores signed asset examples inside code elements", () => {
   ).toEqual([]);
   expect(assetsIn(`<img src="${signed}">`).assets).toHaveLength(1);
 });
+
+it("accounts for an unsigned file rendered as text after an HTML image", () => {
+  const unsigned = "https://github.com/user-attachments/files/12/note.txt";
+  const html = `<a href="${signed}"><img src="${signed}"></a>\n[Note](${unsigned})`;
+  expect(assetsIn(html).unsigned).toEqual([unsigned]);
+  expect(
+    assetsIn(`[Image](https://github.com/user-attachments/assets/${id})`)
+      .unavailable,
+  ).toEqual([`https://github.com/user-attachments/assets/${id}`]);
+  expect(assetsIn(`<pre><code>${html}</code></pre>`).unsigned).toEqual([]);
+});

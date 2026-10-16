@@ -44,12 +44,18 @@ export function assetsIn(html: string): {
       | DefaultTreeAdapterTypes.DocumentFragment,
   ): void => {
     if ("tagName" in node && ["pre", "code"].includes(node.tagName)) return;
-    if ("attrs" in node) {
-      const attrs = Object.fromEntries(
-        node.attrs.map((a) => [a.name, a.value]),
-      );
-      for (const name of ["src", "href"]) {
-        const value = attrs[name];
+    {
+      const attrs =
+        "attrs" in node
+          ? Object.fromEntries(node.attrs.map((a) => [a.name, a.value]))
+          : {};
+      const values = [attrs["src"], attrs["href"]];
+      if ("value" in node)
+        for (const match of node.value.matchAll(
+          /https:\/\/github\.com\/user-attachments\/(?:files|assets)\/[^\s<>"'()\]]+/g,
+        ))
+          values.push(match[0]);
+      for (const value of values) {
         if (!value) continue;
         let url: URL;
         try {

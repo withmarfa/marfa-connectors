@@ -464,3 +464,27 @@ it("clears completed note condition on scheduled reread", async () => {
     "github-files:one",
   );
 });
+
+it("records unsigned upload text after an HTML image without fetching the file", async () => {
+  const f = await fixture();
+  const unsigned = "https://github.com/user-attachments/files/1/note.txt";
+  f.text(
+    `<img src="https://github.com/user-attachments/assets/${id}">\n[Note](${unsigned})`,
+  );
+  f.html(
+    `<a href="https://private-user-images.githubusercontent.com/42/123-${id}.png?jwt=fresh"><img src="https://private-user-images.githubusercontent.com/42/123-${id}.png?jwt=fresh"></a>\n[Note](${unsigned})`,
+  );
+  expect(await f.once()).toBe(0);
+  const note = f.h.server.row("one").properties["github_files"] as {
+    not_kept: Record<string, string>;
+    pending: boolean;
+  };
+  expect(note.not_kept[unsigned]).toBe(
+    "GitHub did not sign this upload for API download",
+  );
+  expect(note.pending).toBe(false);
+  expect(f.counts().loads).toBe(1);
+  const counts = f.counts();
+  expect(await f.once()).toBe(0);
+  expect(f.counts()).toEqual(counts);
+});
