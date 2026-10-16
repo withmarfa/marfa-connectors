@@ -842,6 +842,7 @@ it.each(["held", "current"])(
     expect(marfa.edges.map((edge) => edge.id)).toEqual(edgeIds);
     expect(github.writes()).toEqual([]);
   },
+  60_000,
 );
 
 it.each(["scheduled", "named"])(

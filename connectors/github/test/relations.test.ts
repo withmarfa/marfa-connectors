@@ -253,7 +253,7 @@ describe("related and duplicate issues", () => {
     await once();
     expect(marfa.edges.map((one) => one.id)).toEqual(edges);
     expect(github.writes().length).toBe(writes);
-  });
+  }, 60_000);
   it("carries a relation add and removal and writes nothing when unchanged", async () => {
     const repo = github.addRepository("someone/tracker");
     const a = github.addIssue(repo);

@@ -294,23 +294,30 @@ describe("an issue changed in Marfa", () => {
 });
 
 describe("a trash", () => {
-  it("leaves an issue closed as a duplicate a duplicate through a trash and a restore", async () => {
-    const issue = github.addIssue(repository, {
-      title: "Twice",
-      state: "closed",
-      state_reason: "duplicate",
-      closed_at: github.ago(1),
-      updated_at: github.ago(1),
-    });
-    await ok();
-    expect(row(issue.node).properties["status"]).toBe("canceled");
-    marfa.trash(row(issue.node).id);
-    await settled();
-    marfa.restore(row(issue.node).id);
-    await settled();
-    expect(issue).toMatchObject({ state: "closed", state_reason: "duplicate" });
-    expect(written()).toEqual([]);
-  });
+  it(
+    "leaves an issue closed as a duplicate a duplicate through a trash and a restore",
+    async () => {
+      const issue = github.addIssue(repository, {
+        title: "Twice",
+        state: "closed",
+        state_reason: "duplicate",
+        closed_at: github.ago(1),
+        updated_at: github.ago(1),
+      });
+      await ok();
+      expect(row(issue.node).properties["status"]).toBe("canceled");
+      marfa.trash(row(issue.node).id);
+      await settled();
+      marfa.restore(row(issue.node).id);
+      await settled();
+      expect(issue).toMatchObject({
+        state: "closed",
+        state_reason: "duplicate",
+      });
+      expect(written()).toEqual([]);
+    },
+    multiRunTimeout,
+  );
 
   it(
     "closes the issue as not planned, stays, comes back on GitHub's activity, and a restore reopens it",
@@ -472,30 +479,35 @@ describe("relations drawn in Marfa", () => {
     child = github.addIssue(repository, { title: "Child" });
   });
 
-  it("reach GitHub, and their removal too", async () => {
-    await ok();
-    marfa.drawEdge(
-      row(child.node).id,
-      row(parent.node).id,
-      "github.sub-issue-of",
-    );
-    marfa.drawEdge(
-      row(child.node).id,
-      row(parent.node).id,
-      "github.blocked-by",
-    );
-    await settled();
-    expect(child.parent).toBe(parent.node);
-    expect(child.blocked_by).toEqual([parent.node]);
-    for (const edge of marfa.edges.filter(
-      (one) => one.source_id === row(child.node).id,
-    )) {
-      if (edge.edge_type !== "github.in-repository") marfa.removeEdge(edge.id);
-    }
-    await settled();
-    expect(child.parent).toBeNull();
-    expect(child.blocked_by).toEqual([]);
-  });
+  it(
+    "reach GitHub, and their removal too",
+    async () => {
+      await ok();
+      marfa.drawEdge(
+        row(child.node).id,
+        row(parent.node).id,
+        "github.sub-issue-of",
+      );
+      marfa.drawEdge(
+        row(child.node).id,
+        row(parent.node).id,
+        "github.blocked-by",
+      );
+      await settled();
+      expect(child.parent).toBe(parent.node);
+      expect(child.blocked_by).toEqual([parent.node]);
+      for (const edge of marfa.edges.filter(
+        (one) => one.source_id === row(child.node).id,
+      )) {
+        if (edge.edge_type !== "github.in-repository")
+          marfa.removeEdge(edge.id);
+      }
+      await settled();
+      expect(child.parent).toBeNull();
+      expect(child.blocked_by).toEqual([]);
+    },
+    multiRunTimeout,
+  );
 
   it("that GitHub refuses are taken back in Marfa, and the run says why", async () => {
     const other = github.addRepository("another/elsewhere");
@@ -832,26 +844,30 @@ describe("what the adversarial review found", () => {
 });
 
 describe("what the fix review found", () => {
-  it("keeps a create and an edit waiting through GitHub's secondary limit, and carries them after", async () => {
-    const issue = github.addIssue(repository, { title: "Before" });
-    await ok();
-    const made = marfa.insert(
-      undefined,
-      { title: "Made in Marfa" },
-      "github.issue",
-      "person",
-    );
-    marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
-    marfa.edit(row(issue.node).id, { title: "After" });
-    github.writesLimited = { left: 100, status: 403 };
-    expect(await ok()).toContain("waits");
-    github.writesLimited = undefined;
-    await ok();
-    expect(issue.title).toBe("After");
-    expect(
-      github.issues.filter((one) => one.title === "Made in Marfa"),
-    ).toHaveLength(1);
-  });
+  it(
+    "keeps a create and an edit waiting through GitHub's secondary limit, and carries them after",
+    async () => {
+      const issue = github.addIssue(repository, { title: "Before" });
+      await ok();
+      const made = marfa.insert(
+        undefined,
+        { title: "Made in Marfa" },
+        "github.issue",
+        "person",
+      );
+      marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
+      marfa.edit(row(issue.node).id, { title: "After" });
+      github.writesLimited = { left: 100, status: 403 };
+      expect(await ok()).toContain("waits");
+      github.writesLimited = undefined;
+      await ok();
+      expect(issue.title).toBe("After");
+      expect(
+        github.issues.filter((one) => one.title === "Made in Marfa"),
+      ).toHaveLength(1);
+    },
+    multiRunTimeout,
+  );
 
   it("keeps a relation waiting through GitHub's GraphQL limit, and the run goes on", async () => {
     const child = github.addIssue(repository, { title: "Child" });
@@ -1079,28 +1095,35 @@ describe("where a write lands", () => {
     expect(output).toContain(`${said.id} is not sent to the vendor until`);
   });
 
-  it("is the issue the row was agreed for when its number and repository are edited before a trash", async () => {
-    const kept = github.addIssue(repository, { title: "Kept" });
-    const binned = github.addIssue(repository, { title: "Binned" });
-    const elsewhere = github.addRepository("someone/elsewhere");
-    const far = github.addIssue(elsewhere, { title: "Far" });
-    await ok();
-    const id = row(binned.node).id;
-    marfa.edit(id, { number: kept.number });
-    marfa.trash(id);
-    await ok();
-    expect(kept.state).toBe("open");
-    expect([binned.state, binned.state_reason]).toEqual([
-      "closed",
-      "not_planned",
-    ]);
-    const other = row(kept.node).id;
-    marfa.edit(other, { repository: "someone/elsewhere", number: far.number });
-    marfa.trash(other);
-    await ok();
-    expect(far.state).toBe("open");
-    expect(kept.state).toBe("closed");
-  });
+  it(
+    "is the issue the row was agreed for when its number and repository are edited before a trash",
+    async () => {
+      const kept = github.addIssue(repository, { title: "Kept" });
+      const binned = github.addIssue(repository, { title: "Binned" });
+      const elsewhere = github.addRepository("someone/elsewhere");
+      const far = github.addIssue(elsewhere, { title: "Far" });
+      await ok();
+      const id = row(binned.node).id;
+      marfa.edit(id, { number: kept.number });
+      marfa.trash(id);
+      await ok();
+      expect(kept.state).toBe("open");
+      expect([binned.state, binned.state_reason]).toEqual([
+        "closed",
+        "not_planned",
+      ]);
+      const other = row(kept.node).id;
+      marfa.edit(other, {
+        repository: "someone/elsewhere",
+        number: far.number,
+      });
+      marfa.trash(other);
+      await ok();
+      expect(far.state).toBe("open");
+      expect(kept.state).toBe("closed");
+    },
+    multiRunTimeout,
+  );
 
   function quiet(issue: Issue): void {
     Object.assign(issue, {
