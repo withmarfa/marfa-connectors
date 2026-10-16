@@ -20,9 +20,10 @@ import {
 } from "../src/types.js";
 import type { Source } from "../src/export.js";
 
-it.each([false, true])(
+it.each(["safe", "lone-holder", "unknown-parent", "reactivated"])(
   "adopts only a safe active highlight identity with production policy; lone holder=%s",
-  async (loneHolder) => {
+  async (scenario) => {
+    const loneHolder = scenario === "lone-holder";
     const server = await new ScriptedServer("readwise", {
       types: [sourceType.id, highlightType.id],
       edges: ["references"],
@@ -59,6 +60,23 @@ it.each([false, true])(
         },
       ],
     };
+    const exports: Source[] = [source];
+    const additional: Source = {
+      user_book_id: 8,
+      source: "reader",
+      external_id: scenario === "unknown-parent" ? null : "historical-doc",
+      is_deleted: false,
+      highlights: [
+        {
+          id: 43,
+          external_id: "hi",
+          text: "Historical other-source passage",
+          is_deleted: scenario !== "unknown-parent",
+        },
+      ],
+    };
+    if (scenario === "unknown-parent" || scenario === "reactivated")
+      exports.push(additional);
     const document = {
       id: "hi",
       category: "highlight",
@@ -131,10 +149,18 @@ it.each([false, true])(
           );
           await identities.prepare(
             {
-              page: () =>
+              page: (query) =>
                 Promise.resolve({
                   count: 1,
-                  results: [source],
+                  results: structuredClone(
+                    query.sourceId === undefined
+                      ? query.updatedAfter === undefined
+                        ? exports
+                        : []
+                      : exports.filter(
+                          (value) => value.user_book_id === query.sourceId,
+                        ),
+                  ),
                   nextPageCursor: null,
                 }),
               sourceForHighlight: () => Promise.resolve(undefined),
@@ -179,7 +205,52 @@ it.each([false, true])(
       server.keySource = "readwise-reader";
       server.grants = { ...server.grants, sources: ["readwise"] };
       reader = true;
+      const originalHighlights = structuredClone(
+        server.rows.filter((row) => row.type === highlightType.id),
+      );
       const code = await start(connector(), harness.runtime(["--once"]));
+      if (scenario === "unknown-parent") {
+        expect(code, harness.lines.join("\n")).toBe(1);
+        expect(
+          server.rows.filter((row) => row.type === highlightType.id),
+        ).toEqual(originalHighlights);
+        expect(await start(connector(), harness.runtime(["--once"]))).toBe(1);
+        expect(
+          server.rows.filter((row) => row.type === highlightType.id),
+        ).toEqual(originalHighlights);
+        server.keySource = "readwise";
+        expect([...server.agreements]).toEqual(agreements);
+        return;
+      }
+      if (scenario === "reactivated") {
+        expect(code, harness.lines.join("\n")).toBe(0);
+        const before = structuredClone(server.rows),
+          beforeAgreements = structuredClone(
+            [...server.agreements].map(([id, value]) => [
+              id,
+              value.waiting,
+              value.record,
+            ]),
+          );
+        const changed = additional.highlights[0];
+        if (!changed) throw new Error("missing historical claim");
+        changed.is_deleted = false;
+        document.content = "Reader passage after historical claim reactivated";
+        for (let retry = 0; retry < 2; retry++) {
+          expect(await start(connector(), harness.runtime(["--once"]))).toBe(1);
+          expect(server.rows).toEqual(before);
+          expect(
+            [...server.agreements].map(([id, value]) => [
+              id,
+              value.waiting,
+              value.record,
+            ]),
+          ).toEqual(beforeAgreements);
+        }
+        server.keySource = "readwise";
+        expect([...server.agreements]).toEqual(agreements);
+        return;
+      }
       if (loneHolder) {
         expect(code, harness.lines.join("\n")).toBe(1);
         expect(server.row("sample:highlight:41")).toEqual(historical);

@@ -42,10 +42,15 @@ function fixture() {
     },
   };
   const client: ExportClient = {
-    page: () =>
+    page: (query) =>
       Promise.resolve({
         count: sources.length,
-        results: sources,
+        results:
+          query.sourceId === undefined
+            ? sources
+            : sources.filter(
+                (source) => source.user_book_id === query.sourceId,
+              ),
         nextPageCursor: null,
       }),
     sourceForHighlight: () => Promise.resolve(undefined),
@@ -96,11 +101,25 @@ it("refines an existing highlight alias with verified export parent evidence for
 
 it("retains conflicting export parent evidence for the same natural identity", async () => {
   const f = fixture();
+  const original = f.sources[0];
+  if (!original) throw new Error("missing source");
+  original.is_deleted = false;
+  const firstHighlight = original.highlights[0];
+  if (!firstHighlight) throw new Error("missing highlight");
+  firstHighlight.is_deleted = false;
   f.sources.push({
     user_book_id: 8,
     source: "reader",
     external_id: "other-doc",
-    highlights: [{ id: 42, external_id: "hi", text: "Different parent" }],
+    is_deleted: false,
+    highlights: [
+      {
+        id: 42,
+        external_id: "hi",
+        text: "Different parent",
+        is_deleted: false,
+      },
+    ],
   });
   const first = await f.load();
   await first.prepare(f.client, 5);
@@ -421,6 +440,8 @@ it("does not admit a matching tombstone from an incomplete export answer", async
   const source = f.sources[0];
   if (source === undefined) throw new Error("missing export fixture");
   source.highlights = [{ id: 42, external_id: "hi", is_deleted: true }];
+  const first = await f.load();
+  await first.prepare(f.client, 5);
   const identities = await f.load();
   await identities.prepare(f.client, 5);
   vi.spyOn(f.client, "page").mockResolvedValue({
@@ -886,6 +907,8 @@ it("retains a complete 51-page lifecycle index across restart", async () => {
         },
   );
   const page = vi.spyOn(f.client, "page").mockImplementation((query) => {
+    if (query.updatedAfter !== undefined && query.sourceId === undefined)
+      return Promise.resolve({ count: 0, results: [], nextPageCursor: null });
     const at = Number(query.cursor ?? 0);
     const source = query.sourceId === 7 ? f.source : sources[at];
     if (!source) throw new Error("missing export page");
@@ -979,7 +1002,7 @@ it("requires the lifecycle readiness checkpoint before admission and retries saf
   const fail = vi
     .spyOn(f.state, "checkpoint")
     .mockImplementation((key, value) =>
-      key === "lifecycle-ready" && value === true
+      key === "lifecycle-ready" && value !== false
         ? Promise.resolve({ committed: false, reason: "row-refused" })
         : checkpoint(key, value),
     );
@@ -1006,6 +1029,328 @@ it("clears old lifecycle status when a refreshed export omits a historical alias
   const resumed = await f.load();
   expect(await resumed.prepare(f.client, 5, true)).toBe(true);
   await expect(resumed.resolve(f.document)).rejects.toThrow(
-    /incomplete lifecycle evidence/,
+    /incomplete lifecycle evidence|reconciliation/,
   );
+});
+
+function crossSourceFixture() {
+  const f = lifecycleFixture();
+  f.rows.splice(1);
+  f.source.highlights = f.source.highlights.filter((h) => h.id === 42);
+  const historical: Source = {
+    user_book_id: 8,
+    source: "reader",
+    external_id: "historical-doc",
+    is_deleted: false,
+    highlights: [
+      {
+        id: 41,
+        external_id: "hi",
+        text: "Historical passage",
+        is_deleted: true,
+      },
+    ],
+  };
+  f.sources.push(historical);
+  let updates: Source[] = [];
+  const requests: {
+    sourceId?: number;
+    updatedAfter?: string;
+    cursor?: string;
+  }[] = [];
+  vi.spyOn(f.client, "page").mockImplementation((query) => {
+    requests.push({ ...query });
+    return Promise.resolve({
+      count: 2,
+      results: structuredClone(
+        query.sourceId === undefined
+          ? query.updatedAfter === undefined
+            ? f.sources
+            : updates
+          : f.sources.filter(
+              (source) => source.user_book_id === query.sourceId,
+            ),
+      ),
+      nextPageCursor: null,
+    });
+  });
+  return {
+    ...f,
+    historical,
+    requests,
+    setUpdates: (value: Source[]) => {
+      updates = value;
+    },
+  };
+}
+
+it.each([
+  "reactivated",
+  "new-claim",
+  "parent-lost",
+  "source-kind-lost",
+  "reader-id-lost",
+  "read-failed",
+])("checks every current alias source after restart: %s", async (kind) => {
+  const f = crossSourceFixture();
+  const before = structuredClone(f.rows);
+  const first = await f.load();
+  await first.prepare(f.client, 5);
+  await first.resolve(f.document);
+  if (kind === "reactivated" && f.historical.highlights[0])
+    f.historical.highlights[0].is_deleted = false;
+  if (kind === "new-claim")
+    f.historical.highlights.push({
+      id: 43,
+      external_id: "hi",
+      text: "New competing claim",
+      is_deleted: false,
+    });
+  if (kind === "parent-lost") f.historical.external_id = null;
+  if (kind === "source-kind-lost") f.historical.source = null;
+  if (kind === "reader-id-lost" && f.historical.highlights[0])
+    f.historical.highlights[0].external_id = null;
+  if (kind === "read-failed") {
+    const page = vi.spyOn(f.client, "page").getMockImplementation();
+    if (!page) throw new Error("missing provider fixture");
+    vi.spyOn(f.client, "page").mockImplementation((query) =>
+      query.sourceId === 8
+        ? Promise.reject(new Error("historical source unavailable"))
+        : page(query),
+    );
+  }
+  const resumed = await f.load();
+  await resumed.prepare(f.client, 5);
+  await expect(resumed.resolve(f.document)).rejects.toThrow(
+    /identity|alias|parent|unavailable|reconciliation/,
+  );
+  expect(f.rows).toEqual(before);
+});
+
+it.each([null, "", undefined])(
+  "retains an unknown-parent competing claim in a complete export: %s",
+  async (parent) => {
+    const f = lifecycleFixture();
+    f.sources.push({
+      user_book_id: 8,
+      source: "reader",
+      ...(parent === undefined ? {} : { external_id: parent }),
+      is_deleted: false,
+      highlights: [
+        {
+          id: 43,
+          external_id: "hi",
+          text: "Unknown-parent competing claim",
+          is_deleted: false,
+        },
+      ],
+    });
+    const before = structuredClone(f.rows);
+    for (let run = 0; run < 2; run++) {
+      const identities = await f.load();
+      await identities.prepare(f.client, 5);
+      await expect(identities.resolve(f.document)).rejects.toThrow(
+        /identity|parent/,
+      );
+      expect(f.rows).toEqual(before);
+    }
+  },
+);
+
+it("does not block a verified identity because an unrelated source has no parent", async () => {
+  const f = lifecycleFixture();
+  f.sources.push({
+    user_book_id: 8,
+    source: "reader",
+    external_id: null,
+    is_deleted: false,
+    highlights: [
+      {
+        id: 43,
+        external_id: "unrelated",
+        text: "Unrelated claim",
+        is_deleted: false,
+      },
+    ],
+  });
+  vi.spyOn(f.client, "page").mockImplementation((query) =>
+    Promise.resolve({
+      count: 2,
+      results: structuredClone(
+        query.sourceId === undefined
+          ? query.updatedAfter === undefined
+            ? f.sources
+            : []
+          : f.sources.filter((s) => s.user_book_id === query.sourceId),
+      ),
+      nextPageCursor: null,
+    }),
+  );
+  for (let run = 0; run < 2; run++) {
+    const identities = await f.load();
+    await identities.prepare(f.client, 5);
+    expect(await identities.resolve(f.document)).toMatchObject({
+      enrichment: {
+        sourceId: "one:highlight:42",
+        properties: { readwise_id: "42" },
+      },
+    });
+  }
+});
+
+it("discovers a new competing source through a complete account-wide delta", async () => {
+  const f = crossSourceFixture();
+  const first = await f.load();
+  await first.prepare(f.client, 5);
+  await first.resolve(f.document);
+  const newlyCompeting: Source = {
+    user_book_id: 9,
+    source: "reader",
+    external_id: "new-doc",
+    is_deleted: false,
+    highlights: [
+      {
+        id: 44,
+        external_id: "hi",
+        text: "New source claim",
+        is_deleted: false,
+      },
+    ],
+  };
+  f.sources.push(newlyCompeting);
+  f.setUpdates([newlyCompeting]);
+  const before = structuredClone(f.rows);
+  const resumed = await f.load();
+  await resumed.prepare(f.client, 5);
+  await expect(resumed.resolve(f.document)).rejects.toThrow(/identity/);
+  expect(f.rows).toEqual(before);
+  expect(
+    f.requests.some(
+      (q) => q.updatedAfter !== undefined && q.sourceId === undefined,
+    ),
+  ).toBe(true);
+});
+
+it("checkpoints a paginated account-wide delta before admitting any lifecycle choice", async () => {
+  const f = crossSourceFixture();
+  const first = await f.load();
+  await first.prepare(f.client, 5);
+  await first.resolve(f.document);
+  const before = structuredClone(f.rows);
+  const original = vi.spyOn(f.client, "page").getMockImplementation();
+  if (!original) throw new Error("missing fixture");
+  const deltaCursors: (string | undefined)[] = [];
+  const lowers: (string | undefined)[] = [];
+  const competing: Source = {
+    user_book_id: 9,
+    source: "reader",
+    external_id: "new-doc",
+    is_deleted: false,
+    highlights: [
+      { id: 44, external_id: "hi", is_deleted: false, text: "New claim" },
+    ],
+  };
+  f.sources.push(competing);
+  vi.spyOn(f.client, "page").mockImplementation((query) => {
+    if (query.updatedAfter === undefined || query.sourceId !== undefined)
+      return original(query);
+    deltaCursors.push(query.cursor);
+    lowers.push(query.updatedAfter);
+    return Promise.resolve({
+      count: 2,
+      results: query.cursor ? [competing] : [],
+      nextPageCursor: query.cursor ? null : "next-delta",
+    });
+  });
+  const partial = await f.load();
+  expect(await partial.prepare(f.client, 1)).toBe(false);
+  await expect(partial.resolve(f.document)).rejects.toThrow(/complete export/);
+  expect(f.rows).toEqual(before);
+  const resumed = await f.load();
+  expect(await resumed.prepare(f.client, 1)).toBe(true);
+  await expect(resumed.resolve(f.document)).rejects.toThrow(/identity/);
+  expect(f.rows).toEqual(before);
+  expect(deltaCursors).toEqual([undefined, "next-delta"]);
+  expect(lowers[0]).toBeTruthy();
+  expect(lowers[1]).toBe(lowers[0]);
+});
+
+it.each(["missing", "expired", "old-coverage"])(
+  "requires a full catalogue when its overlap marker is %s",
+  async (kind) => {
+    const f = crossSourceFixture();
+    const first = await f.load();
+    await first.prepare(f.client, 5);
+    const stored = f.saved.get("identities") as {
+      start?: string;
+      lower?: string;
+    };
+    if (kind === "missing") {
+      delete stored.start;
+      delete stored.lower;
+    } else if (kind === "expired") stored.start = "2000-01-01T00:00:00.000Z";
+    else f.saved.set("lifecycle-ready", true);
+    f.saved.set("identities", stored);
+    f.requests.length = 0;
+    const resumed = await f.load();
+    expect(await resumed.prepare(f.client, 5)).toBe(true);
+    expect(f.requests[0]).toEqual({});
+  },
+);
+
+it.each(["deleted", "reactivated"])(
+  "applies an explicit %s highlight claim from a completed delta",
+  async (kind) => {
+    const f = crossSourceFixture();
+    const first = await f.load();
+    await first.prepare(f.client, 5);
+    await first.resolve(f.document);
+    const changed = kind === "deleted" ? f.source : f.historical;
+    const highlight = changed.highlights[0];
+    if (!highlight) throw new Error("missing changed claim");
+    highlight.is_deleted = kind === "deleted";
+    f.setUpdates([changed]);
+    const before = structuredClone(f.rows);
+    const resumed = await f.load();
+    await resumed.prepare(f.client, 5);
+    await expect(resumed.resolve(f.document)).rejects.toThrow(/identity/);
+    expect(f.rows).toEqual(before);
+  },
+);
+
+it("retains a failed delta cursor and cannot use partial evidence for admission", async () => {
+  const f = crossSourceFixture();
+  const first = await f.load();
+  await first.prepare(f.client, 5);
+  await first.resolve(f.document);
+  const original = vi.spyOn(f.client, "page").getMockImplementation();
+  if (!original) throw new Error("missing fixture");
+  const cursors: (string | undefined)[] = [];
+  let failed = true;
+  vi.spyOn(f.client, "page").mockImplementation((query) => {
+    if (query.updatedAfter === undefined || query.sourceId !== undefined)
+      return original(query);
+    cursors.push(query.cursor);
+    if (query.cursor && failed)
+      return Promise.reject(new Error("delta unavailable"));
+    return Promise.resolve({
+      count: 0,
+      results: [],
+      nextPageCursor: query.cursor ? null : "retry-delta",
+    });
+  });
+  const partial = await f.load();
+  expect(await partial.prepare(f.client, 1)).toBe(false);
+  const interrupted = await f.load();
+  await expect(interrupted.prepare(f.client, 1)).rejects.toThrow(/unavailable/);
+  await expect(interrupted.resolve(f.document)).rejects.toThrow(
+    /complete export/,
+  );
+  failed = false;
+  const resumed = await f.load();
+  expect(await resumed.prepare(f.client, 1)).toBe(true);
+  expect(await resumed.resolve(f.document)).toMatchObject({
+    enrichment: { properties: { readwise_id: "42" } },
+  });
+  expect(cursors).toEqual([undefined, "retry-delta", "retry-delta"]);
 });

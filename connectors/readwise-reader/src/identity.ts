@@ -23,7 +23,7 @@ interface Alias {
   natural: string;
   readwiseId: string;
   sourceId?: number;
-  parent?: string;
+  parent?: string | null;
   active?: boolean;
 }
 interface Bridge {
@@ -33,6 +33,8 @@ interface Bridge {
   cursor: string | null;
   seen: string[];
   complete: boolean;
+  start?: string;
+  lower?: string;
 }
 export interface Resolved {
   canonical: string;
@@ -42,6 +44,15 @@ export interface Resolved {
   previousProperties?: Readonly<Record<string, unknown>>;
 }
 const maxBytes = 512 * 1024;
+const catalogVersion = "reader-claims-with-updates";
+const fullEvery = 24 * 60 * 60 * 1000;
+function timestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
+}
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -92,7 +103,9 @@ function validateAliases(
           (typeof alias["sourceId"] !== "number" ||
             !Number.isSafeInteger(alias["sourceId"]) ||
             alias["sourceId"] <= 0)) ||
-        (alias["parent"] !== undefined && !boundedString(alias["parent"])) ||
+        (alias["parent"] !== undefined &&
+          alias["parent"] !== null &&
+          !boundedString(alias["parent"])) ||
         (alias["active"] !== undefined &&
           typeof alias["active"] !== "boolean") ||
         (kind === "document" &&
@@ -138,6 +151,7 @@ export class ReaderIdentities {
   private readonly exportSources = new Map<number, readonly Source[]>();
   private client?: ExportClient;
   private lifecycleReady: boolean;
+  private prepared = false;
   private bridge: Bridge;
   private constructor(
     private readonly account: string,
@@ -146,7 +160,7 @@ export class ReaderIdentities {
     endpoint: string,
     stored: unknown,
   ) {
-    this.lifecycleReady = state.get("lifecycle-ready") === true;
+    this.lifecycleReady = state.get("lifecycle-ready") === catalogVersion;
     if (stored === undefined)
       this.bridge = {
         account,
@@ -160,8 +174,10 @@ export class ReaderIdentities {
       if (
         !record(stored) ||
         Buffer.byteLength(JSON.stringify(stored)) > maxBytes ||
-        Object.keys(stored).sort().join(",") !==
-          "account,aliases,complete,cursor,endpoint,seen" ||
+        Object.keys(stored)
+          .filter((key) => !["start", "lower"].includes(key))
+          .sort()
+          .join(",") !== "account,aliases,complete,cursor,endpoint,seen" ||
         stored["account"] !== account ||
         stored["endpoint"] !== endpoint ||
         !Array.isArray(stored["seen"]) ||
@@ -172,7 +188,10 @@ export class ReaderIdentities {
         new Set(stored["seen"]).size !== stored["seen"].length ||
         typeof stored["complete"] !== "boolean" ||
         (stored["cursor"] !== null && !boundedString(stored["cursor"])) ||
-        (stored["complete"] && stored["cursor"] !== null)
+        (stored["complete"] && stored["cursor"] !== null) ||
+        (stored["start"] !== undefined && !timestamp(stored["start"])) ||
+        (stored["lower"] !== undefined &&
+          (!timestamp(stored["lower"]) || stored["start"] === undefined))
       )
         throw new Error(
           "Reader identity cache does not match this account or endpoint, or is invalid",
@@ -184,6 +203,12 @@ export class ReaderIdentities {
         cursor: stored["cursor"],
         seen: stored["seen"] as string[],
         complete: stored["complete"],
+        ...(typeof stored["start"] === "string"
+          ? { start: stored["start"] }
+          : {}),
+        ...(typeof stored["lower"] === "string"
+          ? { lower: stored["lower"] }
+          : {}),
       };
     }
   }
@@ -311,15 +336,31 @@ export class ReaderIdentities {
   ): Promise<boolean> {
     this.client = client;
     if (
-      this.bridge.complete &&
-      (refresh ||
-        (!this.lifecycleReady &&
-          Object.values(this.bridge.aliases).some(multipleAliases)))
+      (this.bridge.complete && (refresh || !this.prepared)) ||
+      this.bridge.start === undefined
     ) {
+      const previous = this.bridge.start;
+      const full =
+        refresh ||
+        !this.lifecycleReady ||
+        previous === undefined ||
+        Date.now() - Date.parse(previous) >= fullEvery ||
+        Date.parse(previous) > Date.now();
       await this.setLifecycleReady(false);
-      for (const aliases of Object.values(this.bridge.aliases))
-        for (const alias of aliases) delete alias.active;
-      this.bridge = { ...this.bridge, cursor: null, seen: [], complete: false };
+      if (full)
+        for (const aliases of Object.values(this.bridge.aliases))
+          for (const alias of aliases) delete alias.active;
+      this.bridge = {
+        ...this.bridge,
+        cursor: null,
+        seen: [],
+        complete: false,
+        start: new Date().toISOString(),
+      };
+      if (full) delete this.bridge.lower;
+      // Overlap the prior walk to discover claims added while its pages were read.
+      else this.bridge.lower = previous;
+      this.prepared = false;
       this.exportSources.clear();
       await this.save();
     }
@@ -334,9 +375,10 @@ export class ReaderIdentities {
       let page;
       try {
         page = parsePage(
-          await client.page(
-            this.bridge.cursor ? { cursor: this.bridge.cursor } : {},
-          ),
+          await client.page({
+            ...(this.bridge.cursor ? { cursor: this.bridge.cursor } : {}),
+            ...(this.bridge.lower ? { updatedAfter: this.bridge.lower } : {}),
+          }),
         );
       } catch (error) {
         if (
@@ -362,20 +404,22 @@ export class ReaderIdentities {
         const held = collected.get(source.user_book_id) ?? [];
         held.push(source);
         collected.set(source.user_book_id, held);
-        if (source.source !== "reader" || !source.external_id) continue;
-        const parent = readerIdentity(
-          this.account,
-          "document",
-          source.external_id,
-        );
-        this.alias(
-          parent,
-          {
-            natural: identity(this.account, "source", source.user_book_id),
-            readwiseId: String(source.user_book_id),
-          },
-          source.is_deleted ? {} : mapSource(this.account, source).properties,
-        );
+        if (source.source !== "reader") continue;
+        if (source.external_id) {
+          const parent = readerIdentity(
+            this.account,
+            "document",
+            source.external_id,
+          );
+          this.alias(
+            parent,
+            {
+              natural: identity(this.account, "source", source.user_book_id),
+              readwiseId: String(source.user_book_id),
+            },
+            source.is_deleted ? {} : mapSource(this.account, source).properties,
+          );
+        }
         for (const highlight of source.highlights) {
           if (!highlight.external_id) continue;
           const key = readerIdentity(
@@ -389,7 +433,8 @@ export class ReaderIdentities {
               natural: identity(this.account, "highlight", highlight.id),
               readwiseId: String(highlight.id),
               sourceId: source.user_book_id,
-              parent: source.external_id,
+              parent:
+                source.external_id === "" ? null : (source.external_id ?? null),
               ...(typeof source.is_deleted === "boolean" &&
               typeof highlight.is_deleted === "boolean"
                 ? { active: !source.is_deleted && !highlight.is_deleted }
@@ -416,19 +461,23 @@ export class ReaderIdentities {
       this.bridge.complete = page.nextPageCursor === null;
       await this.save();
       if (this.bridge.complete) {
-        if (fromStart) {
+        if (fromStart && this.bridge.lower === undefined) {
           for (const [id, sources] of collected)
             this.exportSources.set(id, sources);
         }
         await this.save();
         await this.setLifecycleReady(true);
+        this.prepared = true;
         return true;
       }
     }
     return false;
   }
   private async setLifecycleReady(value: boolean): Promise<void> {
-    const saved = await this.state.checkpoint("lifecycle-ready", value);
+    const saved = await this.state.checkpoint(
+      "lifecycle-ready",
+      value ? catalogVersion : false,
+    );
     if (!saved.committed)
       throw new Error(
         `Reader lifecycle evidence was not saved: ${saved.reason}`,
@@ -439,11 +488,18 @@ export class ReaderIdentities {
     document: ReaderDocument,
     aliases: readonly Alias[],
   ): Alias {
-    if (!this.bridge.complete || !this.lifecycleReady)
+    if (!this.bridge.complete || !this.lifecycleReady || !this.prepared)
       throw new Error("Reader lifecycle identity requires a complete export");
     if (typeof document.parent_id !== "string" || !document.parent_id)
       throw new Error("Reader lifecycle identity requires a verified parent");
-    if (aliases.some((alias) => typeof alias.active !== "boolean"))
+    if (
+      aliases.some(
+        (alias) =>
+          typeof alias.active !== "boolean" ||
+          typeof alias.parent !== "string" ||
+          !alias.parent,
+      )
+    )
       throw new Error(
         "Reader identity conflict: multiple export IDs have incomplete lifecycle evidence",
       );
@@ -458,6 +514,83 @@ export class ReaderIdentities {
         "Reader identity conflict: export parent differs from Reader parent",
       );
     return selected;
+  }
+  private async sourceEvidence(sourceId: number): Promise<readonly Source[]> {
+    const cached = this.exportSources.get(sourceId);
+    if (cached !== undefined) return cached;
+    if (this.client === undefined)
+      throw new Error("Reader export client is unavailable");
+    const sources: Source[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    for (;;) {
+      const page = parsePage(
+        await this.client.page({ sourceId, ...(cursor ? { cursor } : {}) }),
+      );
+      sources.push(...page.results);
+      if (page.nextPageCursor === null) {
+        this.exportSources.set(sourceId, sources);
+        return sources;
+      }
+      if (seen.has(page.nextPageCursor))
+        throw new Error("Reader export preservation repeated a cursor");
+      if (seen.size >= 4096)
+        throw new Error("Reader export preservation cursor history is full");
+      seen.add(page.nextPageCursor);
+      cursor = page.nextPageCursor;
+    }
+  }
+  private async verifyCurrentAliases(
+    document: ReaderDocument,
+    aliases: readonly Alias[],
+  ): Promise<void> {
+    const claims: Alias[] = [];
+    for (const sourceId of new Set(aliases.map((alias) => alias.sourceId))) {
+      if (sourceId === undefined)
+        throw new Error("Reader lifecycle identity lacks its export source");
+      const sources = await this.sourceEvidence(sourceId);
+      if (sources.length === 0)
+        throw new Error("Reader lifecycle export source is unavailable");
+      for (const source of sources) {
+        if (
+          source.user_book_id !== sourceId ||
+          source.source !== "reader" ||
+          typeof source.is_deleted !== "boolean"
+        )
+          throw new Error(
+            "Reader lifecycle export source identity is unverified",
+          );
+        for (const highlight of source.highlights) {
+          if (highlight.external_id !== document.id) continue;
+          if (!source.external_id || typeof highlight.is_deleted !== "boolean")
+            throw new Error(
+              "Reader lifecycle identity has an unknown parent or status",
+            );
+          claims.push({
+            natural: identity(this.account, "highlight", highlight.id),
+            readwiseId: String(highlight.id),
+            sourceId,
+            parent: source.external_id,
+            active: !source.is_deleted && !highlight.is_deleted,
+          });
+        }
+      }
+    }
+    const same = (a: Alias, b: Alias) =>
+      a.natural === b.natural &&
+      a.readwiseId === b.readwiseId &&
+      a.sourceId === b.sourceId &&
+      a.parent === b.parent &&
+      a.active === b.active;
+    if (
+      aliases.some(
+        (held) => claims.filter((claim) => same(held, claim)).length !== 1,
+      ) ||
+      claims.some((claim) => !aliases.some((held) => same(held, claim)))
+    )
+      throw new Error(
+        "Reader lifecycle identity needs complete export reconciliation",
+      );
   }
   async resolve(document: ReaderDocument): Promise<Resolved> {
     const kind = document.category === "highlight" ? "highlight" : "document";
@@ -486,6 +619,16 @@ export class ReaderIdentities {
       throw new Error(
         "Reader identity conflict: multiple export IDs claim one Reader object",
       );
+    if (multiple && kind === "highlight") {
+      if (!this.bridge.complete || !this.lifecycleReady || !this.prepared)
+        throw new Error("Reader lifecycle identity requires a complete export");
+      try {
+        await this.verifyCurrentAliases(document, aliases);
+      } catch (error) {
+        await this.setLifecycleReady(false);
+        throw error;
+      }
+    }
     const alias = multiple
       ? this.activeAlias(document, aliases)
       : aliases.reduce<Alias | undefined>(
@@ -502,61 +645,9 @@ export class ReaderIdentities {
       );
     let exportText: string | undefined;
     if (kind === "highlight" && alias?.sourceId !== undefined) {
-      if (this.client === undefined)
-        throw new Error("Reader export client is unavailable");
-      let sources = this.exportSources.get(alias.sourceId);
-      if (sources === undefined) {
-        const fetched: Source[] = [];
-        let cursor: string | undefined;
-        const seen = new Set<string>();
-        let complete = false;
-        for (let pageIndex = 0; pageIndex < 50; pageIndex++) {
-          const page = parsePage(
-            await this.client.page({
-              sourceId: alias.sourceId,
-              ...(cursor ? { cursor } : {}),
-            }),
-          );
-          fetched.push(...page.results);
-          if (page.nextPageCursor === null) {
-            complete = true;
-            break;
-          }
-          if (seen.has(page.nextPageCursor))
-            throw new Error("Reader export preservation repeated a cursor");
-          seen.add(page.nextPageCursor);
-          cursor = page.nextPageCursor;
-        }
-        if (!complete)
-          throw new Error(
-            "Reader export passage remains unavailable; metadata is retained",
-          );
-        sources = fetched;
-      }
+      const sources = await this.sourceEvidence(alias.sourceId);
       try {
         if (multiple) {
-          for (const held of aliases.filter(
-            (value) => value.sourceId === alias.sourceId,
-          )) {
-            const current = sources.flatMap((source) =>
-              source.highlights
-                .filter(
-                  (highlight) =>
-                    String(highlight.id) === held.readwiseId &&
-                    highlight.external_id === document.id &&
-                    source.external_id === held.parent &&
-                    typeof source.is_deleted === "boolean" &&
-                    typeof highlight.is_deleted === "boolean",
-                )
-                .map(
-                  (highlight) => !source.is_deleted && !highlight.is_deleted,
-                ),
-            );
-            if (current.length !== 1 || current[0] !== held.active)
-              throw new Error(
-                "Reader lifecycle identity needs complete export reconciliation",
-              );
-          }
           const selected = sources.flatMap((source) =>
             source.highlights
               .filter(
