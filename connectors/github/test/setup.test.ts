@@ -101,6 +101,9 @@ describe("read-only kinds", () => {
   it("accepts individual kinds while preserving the other kind's writes", () => {
     expect(readOnly("issue", "issue")).toBe(true);
     expect(readOnly("issue", "comment")).toBe(false);
+    expect(readOnly("pull_request")).toBe(false);
+    expect(readOnly("pull_request", "pull_request")).toBe(true);
+    expect(readOnly("pull_request", "issue")).toBe(false);
     expect(readOnly(" issue, comment ")).toBe(true);
     expect(readOnly("true", "comment")).toBe(true);
     expect(readOnly("false", "issue")).toBe(false);

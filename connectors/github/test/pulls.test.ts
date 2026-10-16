@@ -34,7 +34,7 @@ afterEach(async () => {
   await marfa.stop();
   await github.stop();
 });
-async function once() {
+async function once(env: Record<string, string | undefined> = {}) {
   try {
     const result = await run(
       "node",
@@ -48,6 +48,7 @@ async function once() {
           GITHUB_PRIVATE_KEY: key,
           GITHUB_WEBHOOK_SECRET: "test-secret",
           GITHUB_API_URL: github.url,
+          ...env,
         },
       },
     );
@@ -57,8 +58,8 @@ async function once() {
     return { code: result.code, output: result.stderr };
   }
 }
-async function ok() {
-  const result = await once();
+async function ok(env: Record<string, string | undefined> = {}) {
+  const result = await once(env);
   expect(result.code, result.output).toBe(0);
   return result.output;
 }
@@ -201,6 +202,48 @@ describe("pull request reading", () => {
     expect(github.writes().every((one) => one.path.includes("/issues/"))).toBe(
       true,
     );
+  });
+  it("accepts the pull_request kind while issues and comments remain writable", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repo);
+    const pr = github.addPullRequest(repo);
+    const comment = github.addComment(issue, "Before", "marfa-connectors[bot]");
+    comment.app = true;
+    const env = { GITHUB_READ_ONLY: "pull_request" };
+    await ok(env);
+    marfa.edit(row(issue.node).id, { title: "After" });
+    marfa.edit(row(comment.node).id, { body: "After" });
+    marfa.edit(row(pr.node).id, { title: "Local edit" });
+    await ok(env);
+    expect(issue.title).toBe("After");
+    expect(comment.body).toBe("After");
+    expect(row(pr.node).properties["title"]).toBe(pr.title);
+    expect(github.writes()).toHaveLength(2);
+  });
+  it("keeps pull requests and closing links read-only with a personal token", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repo);
+    const pr = github.addPullRequest(repo, { closing_issues: [issue.node] });
+    github.personalToken = "github_pat_pull_test";
+    const env = {
+      GITHUB_PERSONAL_TOKEN: github.personalToken,
+      GITHUB_APP_ID: undefined,
+      GITHUB_PRIVATE_KEY: undefined,
+      GITHUB_WEBHOOK_SECRET: undefined,
+      GITHUB_READ_ONLY: "false",
+    };
+    await ok(env);
+    marfa.edit(row(pr.node).id, { title: "Local edit" });
+    marfa.edit(row(issue.node).id, { title: "Local issue edit" });
+    const edge = marfa.edges.find((one) => one.edge_type === "github.closes");
+    if (edge === undefined) throw new Error("No closing edge");
+    marfa.removeEdge(edge.id);
+    await ok(env);
+    expect(row(pr.node).properties["title"]).toBe(pr.title);
+    expect(row(issue.node).properties["title"]).toBe(issue.title);
+    expect(links(pr.node, "github.closes")).toEqual([issue.node]);
+    expect(github.writes()).toEqual([]);
+    expect(github.asked.some((one) => one.path.startsWith("/app"))).toBe(false);
   });
   it("polls checks without updated_at changes and preserves exact versions on no-op reruns", async () => {
     const repo = github.addRepository("someone/tracker");
