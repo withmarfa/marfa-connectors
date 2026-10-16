@@ -1526,7 +1526,6 @@ export class ScriptedServer {
     if (parts[0] === "items" && id !== undefined) {
       const row = this.rows.find((candidate) => candidate.id === id);
       if (method === "GET" && parts.length === 2) {
-        // A trashed row is read back by no door but its restore.
         if (row === undefined || row.state === "trashed") {
           refuse(404, "item_not_found");
           return;

@@ -711,8 +711,7 @@ export class Marfa {
     return data.item;
   }
 
-  /** One row as it stands, or `undefined` once purged or in the bin,
-   *  which no read but its restore reaches. */
+  /** One row as it stands, or `undefined` once purged or in the bin. */
   async item(id: string): Promise<Item | undefined> {
     const { data, error, response } = await this.client.GET("/items/{id}", {
       params: { path: { id } },

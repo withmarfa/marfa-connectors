@@ -905,7 +905,7 @@ export async function runOnce<E extends EnvDeclaration>(
     await fetchRows([id]);
     const found = inLane(id);
     if (found?.spec.policy !== undefined) {
-      const fresh = await setup.marfa.item(id);
+      const fresh = await currentItem(found.spec.type, id);
       if (fresh?.type !== found.spec.type) return undefined;
       found.rows.adopt(fresh);
       return inLane(id);
@@ -1856,7 +1856,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec, rows } = lane(item.type);
     if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
-      const fresh = await setup.marfa.item(item.id);
+      const fresh = await currentItem(item.type, item.id);
       if (fresh?.type !== item.type) return;
       rows.adopt(fresh);
       item = fresh;
@@ -2002,6 +2002,19 @@ export async function runOnce<E extends EnvDeclaration>(
         attempted: agreement.attempted ?? clock.now().toISOString(),
       });
       await store.flush([current.id]);
+    }
+    if (changeKind === "trashed" && spec.policy !== undefined) {
+      const fresh = await currentItem(kind.type, current.id);
+      if (fresh?.type !== kind.type) return;
+      rows.adopt(fresh);
+      // Preparation can yield while a person restores, adopts, or edits it.
+      // Keep the observation waiting rather than send an obsolete trash.
+      if (
+        fresh.state !== "trashed" ||
+        fresh.version !== current.version ||
+        !forRow(spec, fresh).twoWay
+      )
+        return;
     }
     let answered: Entry | undefined;
     try {
