@@ -730,6 +730,108 @@ export async function proveReadwiseReader(
         return "current binaries, original IDs and natural keys, retained HTML, unchanged item and file versions";
       },
     );
+    await verify(
+      "reader fixture: unique active highlight alias preserves historical rows and content",
+      async () => {
+        vendor.sources.length = 0;
+        vendor.documents.clear();
+        const html = "<article>Lifecycle preservation 漢字</article>";
+        const source = {
+          user_book_id: 101,
+          source: "reader",
+          external_id: "lifecycle-doc",
+          title: "Lifecycle article",
+          is_deleted: false,
+          highlights: [
+            {
+              id: 102,
+              external_id: "lifecycle-hi",
+              text: "Historical passage",
+              is_deleted: false,
+            },
+            {
+              id: 103,
+              external_id: "lifecycle-hi",
+              text: "Active passage",
+              is_deleted: false,
+            },
+          ],
+        };
+        vendor.sources.push(source);
+        vendor.documents.set("lifecycle-doc", {
+          id: "lifecycle-doc",
+          category: "article",
+          title: "Lifecycle article",
+          location: "new",
+          html_content: html,
+          updated_at: stamp,
+        });
+        vendor.documents.set("lifecycle-hi", {
+          id: "lifecycle-hi",
+          category: "highlight",
+          parent_id: "lifecycle-doc",
+          content: "Current Reader passage",
+          updated_at: stamp,
+        });
+        const highlightsKey = await key("reader-proof-lifecycle-highlights");
+        const readerKey = await key("reader-proof-lifecycle-reader");
+        const highlights = new ConnectorUnderProof(
+          "readwise",
+          url,
+          highlightsKey.key,
+          options("lifecycle"),
+        );
+        const reader = new ConnectorUnderProof(
+          "readwise-reader",
+          url,
+          readerKey.key,
+          { ...options("lifecycle"), READWISE_READER_INBOUND_ONLY: "true" },
+        );
+        await once(highlights);
+        const historical = await row("lifecycle:highlight:102");
+        const active = await row("lifecycle:highlight:103");
+        const old = source.highlights[0];
+        assert.ok(old);
+        old.is_deleted = true;
+        const writes = vendor.writes.length;
+        await once(reader);
+        assert.deepEqual(await row("lifecycle:highlight:102"), historical);
+        const adopted = await row("lifecycle:highlight:103");
+        assert.equal(adopted.id, active.id);
+        assert.equal(adopted.source_id, active.source_id);
+        assert.equal(adopted.properties["readwise_id"], "103");
+        assert.equal(
+          adopted.properties["canonical_key"],
+          "lifecycle:reader-highlight:lifecycle-hi",
+        );
+        assert.equal(adopted.properties["text"], "Current Reader passage");
+        assert.equal(adopted.properties["readwise_text"], "Active passage");
+        const snapshot = async () => ({
+          items: [...(await all())].filter(
+            ([, item]) => item.properties["account"] === "lifecycle",
+          ),
+          files: [...(await rowsOf(admin, "readwise.file", "readwise"))].filter(
+            ([, item]) => item.properties["account"] === "lifecycle",
+          ),
+        });
+        const retained = await snapshot();
+        assert.equal(retained.items.length, 3);
+        const file = retained.files.find(
+          ([, item]) => item.properties["resource_kind"] === "html",
+        )?.[1];
+        assert.ok(file);
+        const blob = await admin.GET("/blobs/{hash}", {
+          params: { path: { hash: String(file.properties["blob_ref"]) } },
+          parseAs: "arrayBuffer",
+        });
+        assert.ok(blob.data);
+        assert.equal(Buffer.from(blob.data).toString(), html);
+        await once(reader);
+        assert.deepEqual(await snapshot(), retained);
+        assert.equal(vendor.writes.length, writes);
+        return "active row ID retained, historical row untouched, export passage and HTML retained, exact unchanged versions, zero provider writes";
+      },
+    );
     if (failures.length)
       throw new AggregateError(
         failures,

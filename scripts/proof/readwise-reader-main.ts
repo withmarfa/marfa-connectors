@@ -1,6 +1,8 @@
 import { createClient } from "@withmarfa/client";
 import { ProofServer } from "./server.js";
+import { statementsHeld } from "./check.js";
 import { proveReadwiseReader } from "./readwise-reader.js";
+const statements = 12;
 const server = new ProofServer();
 let booting: Promise<unknown> = Promise.resolve();
 let stopping = false;
@@ -28,6 +30,11 @@ try {
     (body) => server.mintKey(body),
     (id, body) => server.updateKey(id, body),
   );
+  if (statementsHeld() !== statements)
+    throw new Error(
+      `${String(statementsHeld())} Reader statements held; expected ${String(statements)}`,
+    );
+  console.log(`ok   all ${String(statements)} Reader statements held`);
 } finally {
   await server.stop();
 }

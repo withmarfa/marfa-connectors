@@ -20,6 +20,7 @@ export interface ReaderFixtureSource {
   source: string;
   external_id: string;
   title: string;
+  is_deleted?: boolean;
   highlights: {
     id: number;
     external_id: string;

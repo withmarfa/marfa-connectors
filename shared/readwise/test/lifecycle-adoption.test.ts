@@ -1,0 +1,291 @@
+import { expect, it } from "vitest";
+import { defineConnector } from "../../../kit/src/define.js";
+import { start } from "../../../kit/src/main.js";
+import { Harness } from "../../../kit/test/harness.js";
+import { ScriptedServer } from "../../../kit/test/scripted-server.js";
+import { ReaderIdentities } from "../../../connectors/readwise-reader/src/identity.js";
+import { readerPolicy } from "../../../connectors/readwise-reader/src/policy.js";
+import { mapHighlight, mapSource } from "../src/mapping.js";
+import {
+  mapReaderHighlight,
+  mapReaderSource,
+  readerMutableSourceFields,
+  readerMutableHighlightFields,
+} from "../src/reader.js";
+import {
+  sourceFields,
+  sourceType,
+  highlightFields,
+  highlightType,
+} from "../src/types.js";
+import type { Source } from "../src/export.js";
+
+it.each(["safe", "lone-holder", "unknown-parent", "reactivated"])(
+  "adopts only a safe active highlight identity with production policy; lone holder=%s",
+  async (scenario) => {
+    const loneHolder = scenario === "lone-holder";
+    const server = await new ScriptedServer("readwise", {
+      types: [sourceType.id, highlightType.id],
+      edges: ["references"],
+    }).start();
+    const harness = new Harness(server);
+    server.edgeTypes.set("references", {
+      id: "references",
+      cardinality: "many-to-many",
+      source_type_constraints: ["*"],
+      target_type_constraints: ["*"],
+      cascade_on_delete: "orphan",
+      property_schema: {},
+      written_at: "source",
+      shipped: true,
+    });
+    const source: Source = {
+      user_book_id: 7,
+      source: "reader",
+      external_id: "doc",
+      is_deleted: false,
+      title: "Article",
+      highlights: [
+        {
+          id: 41,
+          external_id: "hi",
+          text: "Historical passage",
+          is_deleted: false,
+        },
+        {
+          id: 42,
+          external_id: "hi",
+          text: "Active passage",
+          is_deleted: false,
+        },
+      ],
+    };
+    const exports: Source[] = [source];
+    const additional: Source = {
+      user_book_id: 8,
+      source: "reader",
+      external_id: scenario === "unknown-parent" ? null : "historical-doc",
+      is_deleted: false,
+      highlights: [
+        {
+          id: 43,
+          external_id: "hi",
+          text: "Historical other-source passage",
+          is_deleted: scenario !== "unknown-parent",
+        },
+      ],
+    };
+    if (scenario === "unknown-parent" || scenario === "reactivated")
+      exports.push(additional);
+    const document = {
+      id: "hi",
+      category: "highlight",
+      parent_id: "doc",
+      content: "Current Reader passage",
+      updated_at: "2026-10-15T00:00:00Z",
+    };
+    let reader = false;
+    const connector = () =>
+      defineConnector({
+        name: reader ? "readwise-reader" : "readwise",
+        source: "readwise",
+        env: {},
+        connections: [
+          {
+            id: "references",
+            label: "References",
+            cardinality: "many-to-many",
+            source_type_constraints: [highlightType.id],
+            target_type_constraints: [sourceType.id],
+          },
+        ],
+        types: [
+          {
+            type: sourceType,
+            fields: sourceFields,
+            readOnly: sourceFields.filter(
+              (field) =>
+                !(readerMutableSourceFields as readonly string[]).includes(
+                  field,
+                ),
+            ),
+            policy: (item, entry) =>
+              reader
+                ? readerPolicy(sourceType.id, "sample", item, entry, true)
+                : { owned: true },
+          },
+          {
+            type: highlightType,
+            fields: highlightFields,
+            readOnly: highlightFields.filter(
+              (field) =>
+                !(readerMutableHighlightFields as readonly string[]).includes(
+                  field,
+                ),
+            ),
+            policy: (item, entry) =>
+              reader
+                ? readerPolicy(highlightType.id, "sample", item, entry, true)
+                : { owned: true },
+          },
+        ],
+        async run(context) {
+          if (!reader) {
+            await context.upsert(sourceType.id, [mapSource("sample", source)]);
+            await context.upsert(
+              highlightType.id,
+              source.highlights
+                .filter((h) => !loneHolder || h.id === 41)
+                .map((h) => mapHighlight("sample", 7, h)),
+            );
+            return;
+          }
+          const scope = context.forScope("lifecycle");
+          const identities = await ReaderIdentities.load(
+            "sample",
+            "https://fixture.invalid/",
+            context,
+            scope.state,
+          );
+          await identities.prepare(
+            {
+              page: (query) =>
+                Promise.resolve({
+                  count: 1,
+                  results: structuredClone(
+                    query.sourceId === undefined
+                      ? query.updatedAfter === undefined
+                        ? exports
+                        : []
+                      : exports.filter(
+                          (value) => value.user_book_id === query.sourceId,
+                        ),
+                  ),
+                  nextPageCursor: null,
+                }),
+              sourceForHighlight: () => Promise.resolve(undefined),
+            },
+            1,
+          );
+          const parent = {
+            id: "doc",
+            category: "article",
+            title: "Article",
+            updated_at: "2026-10-15T00:00:00Z",
+          };
+          const parentIdentity = await identities.resolve(parent);
+          await scope.upsert(sourceType.id, [
+            mapReaderSource("sample", parent, parentIdentity.enrichment).entry,
+          ]);
+          const resolved = await identities.resolve(document);
+          await scope.upsert(highlightType.id, [
+            mapReaderHighlight("sample", document, resolved.enrichment).entry,
+          ]);
+        },
+      });
+    try {
+      const first = await start(connector(), harness.runtime(["--once"]));
+      expect(first, harness.lines.join("\n")).toBe(0);
+      if (loneHolder) {
+        server.touch("sample:highlight:41", {
+          reader_managed: true,
+          reader_id: "hi",
+          canonical_key: "sample:reader-highlight:hi",
+        });
+        server.row("sample:highlight:41").state = "archived";
+      } else server.touch("sample:highlight:42", { note: "", tags: [] });
+      const historical = structuredClone(server.row("sample:highlight:41"));
+      const active = loneHolder
+        ? undefined
+        : structuredClone(server.row("sample:highlight:42"));
+      const agreements = structuredClone([...server.agreements]);
+      const deleted = source.highlights[0];
+      if (!deleted) throw new Error("missing historical highlight");
+      deleted.is_deleted = true;
+      server.keySource = "readwise-reader";
+      server.grants = { ...server.grants, sources: ["readwise"] };
+      reader = true;
+      const originalHighlights = structuredClone(
+        server.rows.filter((row) => row.type === highlightType.id),
+      );
+      const code = await start(connector(), harness.runtime(["--once"]));
+      if (scenario === "unknown-parent") {
+        expect(code, harness.lines.join("\n")).toBe(1);
+        expect(
+          server.rows.filter((row) => row.type === highlightType.id),
+        ).toEqual(originalHighlights);
+        expect(await start(connector(), harness.runtime(["--once"]))).toBe(1);
+        expect(
+          server.rows.filter((row) => row.type === highlightType.id),
+        ).toEqual(originalHighlights);
+        server.keySource = "readwise";
+        expect([...server.agreements]).toEqual(agreements);
+        return;
+      }
+      if (scenario === "reactivated") {
+        expect(code, harness.lines.join("\n")).toBe(0);
+        const before = structuredClone(server.rows),
+          beforeAgreements = structuredClone(
+            [...server.agreements].map(([id, value]) => [
+              id,
+              value.waiting,
+              value.record,
+            ]),
+          );
+        const changed = additional.highlights[0];
+        if (!changed) throw new Error("missing historical claim");
+        changed.is_deleted = false;
+        document.content = "Reader passage after historical claim reactivated";
+        for (let retry = 0; retry < 2; retry++) {
+          expect(await start(connector(), harness.runtime(["--once"]))).toBe(1);
+          expect(server.rows).toEqual(before);
+          expect(
+            [...server.agreements].map(([id, value]) => [
+              id,
+              value.waiting,
+              value.record,
+            ]),
+          ).toEqual(beforeAgreements);
+        }
+        server.keySource = "readwise";
+        expect([...server.agreements]).toEqual(agreements);
+        return;
+      }
+      if (loneHolder) {
+        expect(code, harness.lines.join("\n")).toBe(1);
+        expect(server.row("sample:highlight:41")).toEqual(historical);
+        expect(server.rows).toHaveLength(2);
+        expect(await start(connector(), harness.runtime(["--once"]))).toBe(1);
+        expect(server.row("sample:highlight:41")).toEqual(historical);
+        server.keySource = "readwise";
+        expect([...server.agreements]).toEqual(agreements);
+        return;
+      }
+      expect(code, harness.lines.join("\n")).toBe(0);
+      if (!active) throw new Error("missing active row");
+      expect(server.rows).toHaveLength(3);
+      expect(server.row("sample:highlight:41")).toEqual(historical);
+      expect(server.row("sample:highlight:42")).toMatchObject({
+        id: active.id,
+        source_id: active.source_id,
+        properties: {
+          canonical_key: "sample:reader-highlight:hi",
+          reader_managed: true,
+          reader_parent_id: "doc",
+          readwise_id: "42",
+          readwise_text: "Active passage",
+          text: "Current Reader passage",
+          note: "",
+          tags: [],
+        },
+      });
+      const adopted = structuredClone(server.rows);
+      expect(await start(connector(), harness.runtime(["--once"]))).toBe(0);
+      expect(server.rows).toEqual(adopted);
+      server.keySource = "readwise";
+      expect([...server.agreements]).toEqual(agreements);
+    } finally {
+      await harness.close();
+    }
+  },
+);
