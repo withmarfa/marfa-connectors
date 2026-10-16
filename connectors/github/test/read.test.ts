@@ -14,6 +14,7 @@ const types = [
   "github.comment",
   "github.file",
   "github.file.image",
+  "github.pull_request",
 ];
 const connections = [
   "github.in-repository",
@@ -22,6 +23,8 @@ const connections = [
   "github.relates-to",
   "github.duplicate-of",
   "attached-to",
+  "github.closes",
+  "github.closed-by",
   "in-thread",
 ];
 
@@ -276,20 +279,28 @@ describe("a first sync", () => {
     "counts GraphQL apart from REST: with %i GraphQL points left, more GraphQL is asked: %s, and an independent repository finishes",
     async (left, continues) => {
       const first = github.addRepository("someone/first");
-      const second = github.addRepository("someone/second");
+      github.installations.push({ id: 2, login: "another" });
+      const second = github.addRepository("another/second", {
+        installation: 2,
+      });
       const empty = github.addRepository("someone/empty");
       github.addIssue(first);
       github.addIssue(second);
       // The first GraphQL request is counted, so its answer says `left`.
       github.budget("graphql").remaining = left + 1;
       const output = await ok();
-      const queries = github.asked.filter((one) => one.path === "/graphql");
+      const queries = github.asked.filter(
+        (one) =>
+          one.path === "/graphql" &&
+          (one.body as { variables: { owner?: string } }).variables.owner ===
+            "someone",
+      );
       expect(github.asked.filter((one) => one.limited)).toEqual([]);
       expect(queries.length > 1).toBe(continues);
-      expect(output.includes("someone/second waits")).toBe(!continues);
-      expect(kept()[first.node]?.["comments"]).toBeDefined();
-      expect(kept()[second.node]?.["comments"] !== undefined).toBe(continues);
-      expect(kept()[empty.node]?.["comments"]).toBeDefined();
+      expect(output.includes("another/second waits")).toBe(false);
+      expect(kept()[first.node]?.["comments"]).toBeUndefined();
+      expect(kept()[second.node]?.["comments"]).toBeDefined();
+      expect(kept()[empty.node]?.["comments"]).toBeUndefined();
       expect(github.budget("core").remaining).toBeGreaterThan(4000);
       if (!continues) {
         expect(queries).toHaveLength(1);
@@ -548,7 +559,7 @@ describe("what a row says of its repository's visibility", () => {
     }
   });
 
-  it("keeps unchanged visibility while polling relationships", async () => {
+  it("keeps visibility unchanged while polling relationships and checks", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
     github.addComment(issue, "Words");
@@ -679,7 +690,7 @@ describe("a comment cursor", () => {
 });
 
 describe("a run after", () => {
-  it("keeps REST listings conditional and writes nothing while polling relationships", async () => {
+  it("keeps REST conditional and writes nothing while polling relationships and checks", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
     github.addComment(issue, "Hello");
@@ -1166,7 +1177,13 @@ describe("the installation tokens", () => {
       expect.objectContaining({ permissions: { metadata: "read" } }),
       expect.objectContaining({
         repository_ids: [tracker.id],
-        permissions: { issues: "read", metadata: "read" },
+        permissions: {
+          issues: "read",
+          pull_requests: "read",
+          checks: "read",
+          statuses: "read",
+          metadata: "read",
+        },
       }),
     ]);
     expect(mints()[0]).not.toHaveProperty("repository_ids");
@@ -1191,7 +1208,13 @@ describe("the installation tokens", () => {
       expect.objectContaining({ permissions: { metadata: "read" } }),
       expect.objectContaining({
         repository_ids: [tracker.id, other.id],
-        permissions: { issues: "read", metadata: "read" },
+        permissions: {
+          issues: "read",
+          pull_requests: "read",
+          checks: "read",
+          statuses: "read",
+          metadata: "read",
+        },
       }),
     ]);
     expect(links(child.node, "github.sub-issue-of")).toEqual([parent.node]);

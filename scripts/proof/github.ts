@@ -33,6 +33,7 @@ const types = [
   "github.comment",
   "github.file",
   "github.file.image",
+  "github.pull_request",
 ];
 const connections = [
   "github.in-repository",
@@ -41,6 +42,8 @@ const connections = [
   "github.relates-to",
   "github.duplicate-of",
   "attached-to",
+  "github.closes",
+  "github.closed-by",
   "in-thread",
 ];
 
@@ -121,7 +124,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its five types and seven connection types, in-thread among them, and the metadata to register them and keep the types current",
+      "github: its key is minted with write on its six types and nine connection types, in-thread among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -203,7 +206,7 @@ export async function proveGitHub(
           .map((kind) => `${kind.id} ${kind.cascade_on_delete}`);
         if (
           parents.join() !==
-            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image" ||
+            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image,github.pull_request on core.task" ||
           inRepo.join() !== repo.id ||
           subOf.join() !== top.id ||
           blockedBy.join() !== blockerRow.id ||

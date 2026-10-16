@@ -67,6 +67,11 @@
     "github_files": {
       "type": "object",
       "description": "Attachment UUIDs, unavailable links and safe retry outcomes. Signed download addresses are never retained."
+    },
+    "closed_by_url": {
+      "type": "string",
+      "format": "url",
+      "description": "The address of the pull request that closed this issue, where that pull request's repository is not synced."
     }
   },
   "display_hints": {

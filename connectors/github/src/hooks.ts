@@ -1,5 +1,5 @@
 import type { Delivery, Hint } from "@withmarfa/connector";
-import { commentType, issueType } from "./entries.js";
+import { commentType, issueType, pullRequestType } from "./entries.js";
 
 type Payload = Record<string, unknown>;
 
@@ -13,6 +13,30 @@ function named(type: string, ...values: unknown[]): Hint[] {
   return values.flatMap((value) => {
     const id = nodeOf(value);
     return id === undefined ? [] : [{ type, id }];
+  });
+}
+
+function pullRequestsFromCheck(
+  value: unknown,
+  repository: unknown,
+): readonly Hint[] {
+  if (typeof value !== "object" || value === null) return [];
+  const prs = (value as Payload)["pull_requests"];
+  if (!Array.isArray(prs)) return [];
+  const repo = nodeOf(repository);
+  return prs.flatMap((pr: unknown) => {
+    const node = nodeOf(pr);
+    if (node !== undefined) return [{ type: pullRequestType, id: node }];
+    const number =
+      typeof pr === "object" && pr !== null
+        ? (pr as Payload)["number"]
+        : undefined;
+    return repo !== undefined &&
+      typeof number === "number" &&
+      Number.isSafeInteger(number) &&
+      number > 0
+      ? [{ type: pullRequestType, id: `number:${repo}:${String(number)}` }]
+      : [];
   });
 }
 
@@ -51,6 +75,24 @@ export function hints(delivery: Delivery): readonly Hint[] | "everything" {
         payload["blocked_issue"],
         payload["blocking_issue"],
       );
+    case "pull_request":
+      return named(pullRequestType, payload["pull_request"]);
+    case "check_run":
+      return pullRequestsFromCheck(payload["check_run"], payload["repository"]);
+    case "check_suite":
+      return pullRequestsFromCheck(
+        payload["check_suite"],
+        payload["repository"],
+      );
+    case "status": {
+      const repo = nodeOf(payload["repository"]);
+      const sha = payload["sha"];
+      return repo !== undefined &&
+        typeof sha === "string" &&
+        /^[a-f0-9]{6,64}$/i.test(sha)
+        ? [{ type: pullRequestType, id: `commit:${repo}:${sha}` }]
+        : [];
+    }
     default:
       return [];
   }

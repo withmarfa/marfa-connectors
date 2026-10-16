@@ -62,11 +62,27 @@ export interface Issue {
   blocked_by: string[];
   relates_to?: string[];
   duplicate_of?: string | null;
+  closed_by?: string | null;
   pull?: boolean;
   deleted?: boolean;
   moved?: boolean;
   app?: boolean;
   unlisted?: number;
+}
+
+export interface PullRequest extends Issue {
+  pr_state: "open" | "closed" | "merged";
+  draft: boolean;
+  merged_at: string | null;
+  base_branch: string;
+  head_branch: string;
+  head_sha: string;
+  closing_issues: string[];
+  checks: {
+    state: string;
+    check_runs: Record<string, number>;
+    statuses: Record<string, number>;
+  } | null;
 }
 
 export interface Comment {
@@ -127,6 +143,10 @@ export class GitHubStub {
   installations: Installation[] = [{ id: 1, login: "someone" }];
   repositories: Repository[] = [];
   issues: Issue[] = [];
+  pulls: PullRequest[] = [];
+  pullPageSize = 100;
+  closingPageSize = 100;
+  missingPullRepository = false;
   comments: Comment[] = [];
   asked: Asked[] = [];
   manifestCode: string | undefined = "manifest-code";
@@ -156,11 +176,15 @@ export class GitHubStub {
   // Answers this many listings of a repository's issues or an issue's
   // comments 404, as a repository GitHub hides for a moment.
   listingsFailing = 0;
+  pullListsRefused = new Set<string>();
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
   appPermissions: Record<string, Access> = {
     issues: "write",
+    pull_requests: "read",
+    checks: "read",
+    statuses: "read",
     metadata: "read",
   };
   /** Seconds GitHub's clock runs ahead of this machine's. */
@@ -292,6 +316,31 @@ export class GitHubStub {
     };
     this.issues.push(made);
     return made;
+  }
+
+  addPullRequest(
+    repository: Repository,
+    fields: Partial<PullRequest> = {},
+  ): PullRequest {
+    const issue = this.addIssue(repository, { pull: true });
+    const pr = Object.assign(
+      issue,
+      {
+        node: `PR_${String(issue.id)}`,
+        pr_state: "open" as const,
+        draft: false,
+        merged_at: null,
+        base_branch: "main",
+        head_branch: "change",
+        head_sha: "abc123",
+        closing_issues: [],
+        checks: null,
+      },
+      fields,
+    ) as PullRequest;
+    pr.state = pr.pr_state === "open" ? "open" : "closed";
+    this.pulls.push(pr);
+    return pr;
   }
 
   addComment(issue: Issue, body: string, user = "someone"): Comment {
@@ -957,6 +1006,27 @@ export class GitHubStub {
       return;
     }
     if (
+      (match = /^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/pulls$/.exec(
+        path,
+      )) &&
+      method === "GET"
+    ) {
+      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      if (repository === undefined) {
+        send(404, { message: "Not Found" });
+        return;
+      }
+      page(
+        this.pulls
+          .filter(
+            (pr) =>
+              pr.repository === repository.node && pr.head_sha === match?.[3],
+          )
+          .map((pr) => ({ node_id: pr.node, number: pr.number })),
+      );
+      return;
+    }
+    if (
       (match = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(path)) &&
       method === "GET"
     ) {
@@ -1370,6 +1440,71 @@ export class GitHubStub {
     };
   }
 
+  private graphPull(
+    pr: PullRequest,
+    sees: (repository: Repository) => boolean,
+    after = 0,
+  ): Record<string, unknown> {
+    const repository = this.repositoryOf(pr);
+    const closing = pr.closing_issues.flatMap((id) => {
+      const issue = this.issue(id);
+      if (issue === undefined || issue.deleted === true) return [];
+      const where = this.repositoryOf(issue);
+      return sees(where)
+        ? [
+            {
+              id: issue.node,
+              url: `${this.address(where)}/issues/${String(issue.number)}`,
+              repository: { id: where.node },
+            },
+          ]
+        : [];
+    });
+    const rollup =
+      pr.checks === null
+        ? null
+        : {
+            state: pr.checks.state,
+            contexts: {
+              checkRunCountsByState: Object.entries(pr.checks.check_runs).map(
+                ([state, count]) => ({ state, count }),
+              ),
+              statusContextCountsByState: Object.entries(
+                pr.checks.statuses,
+              ).map(([state, count]) => ({ state, count })),
+            },
+          };
+    return {
+      __typename: "PullRequest",
+      id: pr.node,
+      number: pr.number,
+      title: pr.title,
+      body: pr.body ?? "",
+      url: `${this.address(repository)}/pull/${String(pr.number)}`,
+      state: pr.pr_state.toUpperCase(),
+      isDraft: pr.draft,
+      mergedAt: pr.merged_at,
+      closedAt: pr.closed_at,
+      baseRefName: pr.base_branch,
+      headRefName: pr.head_branch,
+      updatedAt: pr.updated_at,
+      createdAt: pr.created_at,
+      author: this.author(pr.user),
+      repository: {
+        id: repository.node,
+        nameWithOwner: `${repository.owner}/${repository.name}`,
+      },
+      closingIssuesReferences: {
+        nodes: closing.slice(after, after + this.closingPageSize),
+        pageInfo: {
+          hasNextPage: closing.length > after + this.closingPageSize,
+          endCursor: String(after + this.closingPageSize),
+        },
+      },
+      commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+    };
+  }
+
   private graphql(
     req: IncomingMessage,
     body: { query: string; variables: Record<string, unknown> },
@@ -1410,6 +1545,131 @@ export class GitHubStub {
             (where) => !where.private || this.visible(req, where.node),
           );
     };
+    const seesPull = (where: Repository): boolean =>
+      !where.private || this.visible(req, where.node);
+    if (operation === "PullRequests") {
+      send(200, {
+        data: {
+          nodes: nodes(body.variables["ids"], (id) => {
+            const pr = this.pulls.find(
+              (one) => one.node === id && one.deleted !== true,
+            );
+            return pr === undefined || !seesPull(this.repositoryOf(pr))
+              ? undefined
+              : this.graphPull(pr, seesPull);
+          }),
+        },
+      });
+      return;
+    }
+    if (operation === "ClosingIssues") {
+      const pr = this.pulls.find(
+        (one) => one.node === body.variables["id"] && one.deleted !== true,
+      );
+      send(200, {
+        data: {
+          node:
+            pr === undefined || !seesPull(this.repositoryOf(pr))
+              ? null
+              : this.graphPull(pr, seesPull, Number(body.variables["after"])),
+        },
+      });
+      return;
+    }
+    if (operation === "PullRequestList" || operation === "PullRequestNumber") {
+      const repository = this.repositories.find(
+        (one) =>
+          one.owner === body.variables["owner"] &&
+          one.name === body.variables["name"] &&
+          this.visible(req, one.node),
+      );
+      if (repository === undefined || this.missingPullRepository) {
+        send(200, { data: { repository: null } });
+        return;
+      }
+      if (
+        operation === "PullRequestList" &&
+        this.pullListsRefused.has(repository.node)
+      ) {
+        send(403, { message: "Resource not accessible by integration" });
+        return;
+      }
+      if (operation === "PullRequestNumber") {
+        const pr = this.pulls.find(
+          (one) =>
+            one.repository === repository.node &&
+            one.number === body.variables["number"] &&
+            one.deleted !== true,
+        );
+        send(200, {
+          data: {
+            repository: {
+              pullRequest: pr === undefined ? null : { id: pr.node },
+            },
+          },
+        });
+        return;
+      }
+      const states = body.variables["states"] as string[];
+      const all = this.pulls
+        .filter(
+          (one) =>
+            one.repository === repository.node &&
+            one.deleted !== true &&
+            states.includes(one.pr_state.toUpperCase()),
+        )
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      const after = Number(body.variables["after"] ?? 0);
+      send(200, {
+        data: {
+          repository: {
+            pullRequests: {
+              nodes: all
+                .slice(after, after + this.pullPageSize)
+                .map((pr) => this.graphPull(pr, seesPull)),
+              pageInfo: {
+                hasNextPage: all.length > after + this.pullPageSize,
+                endCursor: String(after + this.pullPageSize),
+              },
+            },
+          },
+        },
+      });
+      return;
+    }
+    if (operation === "ClosedBy") {
+      send(200, {
+        data: {
+          nodes: nodes(body.variables["ids"], (id) => {
+            const issue = this.issue(id);
+            if (issue === undefined || !seesPull(this.repositoryOf(issue)))
+              return undefined;
+            const pr = this.pulls.find((one) => one.node === issue.closed_by);
+            return {
+              __typename: "Issue",
+              id: issue.node,
+              state: issue.state.toUpperCase(),
+              timelineItems: {
+                nodes: [
+                  {
+                    closer:
+                      pr !== undefined && seesPull(this.repositoryOf(pr))
+                        ? {
+                            __typename: "PullRequest",
+                            id: pr.node,
+                            url: `${this.address(this.repositoryOf(pr))}/pull/${String(pr.number)}`,
+                            repository: { id: pr.repository },
+                          }
+                        : null,
+                  },
+                ],
+              },
+            };
+          }),
+        },
+      });
+      return;
+    }
     if (
       operation === "Issues" ||
       operation === "Relations" ||

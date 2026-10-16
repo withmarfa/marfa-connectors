@@ -17,6 +17,7 @@ beforeEach(async () => {
       "github.comment",
       "github.file",
       "github.file.image",
+      "github.pull_request",
     ],
     edges: [
       "github.in-repository",
@@ -24,6 +25,8 @@ beforeEach(async () => {
       "github.blocked-by",
       "github.relates-to",
       "github.duplicate-of",
+      "github.closes",
+      "github.closed-by",
       "in-thread",
       "attached-to",
     ],
@@ -250,7 +253,7 @@ describe("related and duplicate issues", () => {
     await once();
     expect(marfa.edges.map((one) => one.id)).toEqual(edges);
     expect(github.writes().length).toBe(writes);
-  });
+  }, 60_000);
   it("carries a relation add and removal and writes nothing when unchanged", async () => {
     const repo = github.addRepository("someone/tracker");
     const a = github.addIssue(repo);

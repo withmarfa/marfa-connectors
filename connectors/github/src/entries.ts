@@ -26,11 +26,14 @@ function issueBody(body: string | null): string | null {
 export const repositoryType = "github.repository";
 export const issueType = "github.issue";
 export const commentType = "github.comment";
+export const pullRequestType = "github.pull_request";
 export const inRepository = "github.in-repository";
 export const subIssueOf = "github.sub-issue-of";
 export const blockedBy = "github.blocked-by";
 export const relatesTo = "github.relates-to";
 export const duplicateOf = "github.duplicate-of";
+export const githubCloses = "github.closes";
+export const githubClosedBy = "github.closed-by";
 export const inThread = "in-thread";
 
 export interface RestRepository {
@@ -168,19 +171,29 @@ export function repositoryEntry(repository: RestRepository): Entry {
   };
 }
 
+/** Identifies the pull request that closed an issue. `node` is present when
+ *  the PR's repository is synced so a connection can be made; absent when
+ *  only its address is known. */
+export type ClosedByPR =
+  { node: string; url: string } | { node?: undefined; url: string } | null;
+
 /** `hidden` is the repository's visibility: named by every read and by the
- *  answers to writes where the last read recorded it. */
+ *  answers to writes where the last read recorded it. `closedByPR`, when
+ *  given, sets the github.closed-by connection (synced PR) or closed_by_url
+ *  (PR outside the synced set). */
 export function issueEntry(
   issue: Issue,
   relations: Relations,
   synced: ReadonlySet<string>,
   hidden?: boolean,
   retainedIssues: ReadonlySet<string> = new Set(),
+  closedByPR?: ClosedByPR,
 ): Entry {
   const inside = (one: Related): boolean =>
     synced.has(one.repository.id) || retainedIssues.has(one.id);
   const target = (one: Related): Target => ({ type: issueType, id: one.id });
   const parent = relations.parent;
+  const prNode = closedByPR?.node;
   return {
     source_id: issue.node,
     properties: {
@@ -210,6 +223,14 @@ export function issueEntry(
       blocked_by_urls: relations.blockedBy
         .filter((one) => !inside(one))
         .map((one) => one.url),
+      ...((closedByPR !== undefined || issue.open) && {
+        closed_by_url:
+          closedByPR !== null &&
+          closedByPR !== undefined &&
+          prNode === undefined
+            ? closedByPR.url
+            : null,
+      }),
     },
     occurred_at: issue.createdAt,
     changed_at: issue.updatedAt,
@@ -224,6 +245,85 @@ export function issueEntry(
         relations.duplicateOf !== null && inside(relations.duplicateOf)
           ? [target(relations.duplicateOf)]
           : [],
+      ...((closedByPR !== undefined || issue.open) && {
+        [githubClosedBy]:
+          prNode === undefined ? [] : [{ type: pullRequestType, id: prNode }],
+      }),
+    },
+  };
+}
+
+export interface CheckCounts {
+  /** Rollup state from GitHub's StatusCheckRollup. */
+  state: string;
+  /** Non-zero counts by CheckRunState. */
+  check_runs: Record<string, number>;
+  /** Non-zero counts by StatusState. */
+  statuses: Record<string, number>;
+}
+
+export interface PullRequest {
+  node: string;
+  number: number;
+  title: string;
+  body: string | null;
+  url: string;
+  prState: "open" | "closed" | "merged";
+  draft: boolean;
+  mergedAt: string | null;
+  closedAt: string | null;
+  baseBranch: string;
+  headBranch: string;
+  author: string | null;
+  checks: CheckCounts | null;
+  createdAt: string;
+  updatedAt: string;
+  repository: { node: string; name: string };
+  closingIssues: { id: string; url: string; repository: { id: string } }[];
+}
+
+export function prStatusOf(prState: "open" | "closed" | "merged"): string {
+  if (prState === "open") return "pending";
+  if (prState === "merged") return "completed";
+  return "canceled";
+}
+
+export function pullRequestEntry(
+  pr: PullRequest,
+  syncedRepositories: ReadonlySet<string>,
+  hidden: boolean,
+): Entry {
+  const closingIssueTargets = pr.closingIssues
+    .filter((issue) => syncedRepositories.has(issue.repository.id))
+    .map((issue) => ({ type: issueType, id: issue.id }));
+  const completedAt =
+    pr.prState === "open" ? null : (pr.mergedAt ?? pr.closedAt);
+  return {
+    source_id: pr.node,
+    properties: {
+      github_id: pr.node,
+      title: pr.title,
+      body: pr.body,
+      status: prStatusOf(pr.prState),
+      completed_at: completedAt,
+      url: pr.url,
+      number: pr.number,
+      repository: pr.repository.name,
+      private: hidden,
+      author: pr.author,
+      pr_state: pr.prState,
+      draft: pr.draft,
+      merged_at: pr.mergedAt,
+      base_branch: pr.baseBranch,
+      head_branch: pr.headBranch,
+      checks: pr.checks,
+      github_updated_at: pr.updatedAt,
+    },
+    occurred_at: pr.createdAt,
+    changed_at: pr.updatedAt,
+    connections: {
+      [inRepository]: [{ type: repositoryType, id: pr.repository.node }],
+      [githubCloses]: closingIssueTargets,
     },
   };
 }

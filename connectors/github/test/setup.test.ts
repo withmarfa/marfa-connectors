@@ -22,6 +22,7 @@ beforeEach(async () => {
       "github.comment",
       "github.file",
       "github.file.image",
+      "github.pull_request",
     ],
     edges: [
       "github.in-repository",
@@ -30,6 +31,8 @@ beforeEach(async () => {
       "github.relates-to",
       "github.duplicate-of",
       "attached-to",
+      "github.closes",
+      "github.closed-by",
       "in-thread",
     ],
   }).start();
@@ -98,6 +101,9 @@ describe("read-only kinds", () => {
   it("accepts individual kinds while preserving the other kind's writes", () => {
     expect(readOnly("issue", "issue")).toBe(true);
     expect(readOnly("issue", "comment")).toBe(false);
+    expect(readOnly("pull_request")).toBe(false);
+    expect(readOnly("pull_request", "pull_request")).toBe(true);
+    expect(readOnly("pull_request", "issue")).toBe(false);
     expect(readOnly(" issue, comment ")).toBe(true);
     expect(readOnly("true", "comment")).toBe(true);
     expect(readOnly("false", "issue")).toBe(false);
@@ -150,7 +156,13 @@ describe("setup", () => {
       url: "https://github.com/withmarfa/marfa-connectors",
       hook_attributes: { active: true },
       public: false,
-      default_permissions: { issues: "write", metadata: "read" },
+      default_permissions: {
+        issues: "write",
+        pull_requests: "read",
+        checks: "read",
+        statuses: "read",
+        metadata: "read",
+      },
       default_events: [
         "issues",
         "issue_comment",
@@ -158,6 +170,10 @@ describe("setup", () => {
         "issue_dependencies",
         "issue_relates_to",
         "repository",
+        "pull_request",
+        "check_run",
+        "check_suite",
+        "status",
       ],
     });
     const hook = (seenPage.manifest?.["hook_attributes"] as { url: string })
@@ -213,7 +229,13 @@ describe("setup", () => {
     expect(finished.code).toBe(0);
     expect(manifest).toMatchObject({
       hook_attributes: { active: false },
-      default_permissions: { issues: "read", metadata: "read" },
+      default_permissions: {
+        issues: "read",
+        pull_requests: "read",
+        checks: "read",
+        statuses: "read",
+        metadata: "read",
+      },
     });
     expect(finished.output).toContain("its webhook is off");
   });

@@ -32,6 +32,7 @@ const parent: TypeDefinition = {
   },
 };
 const comment = { ...parent, id: "github.comment" };
+const pullRequest = { ...parent, id: "github.pull_request" };
 const repositoryType = {
   id: "github.repository",
   label: "Repository",
@@ -46,7 +47,7 @@ afterEach(async () => {
 async function fixture(content = png, mime = "image/png") {
   const active = new Harness(
     await new ScriptedServer("github", {
-      types: [parent.id, comment.id],
+      types: [parent.id, comment.id, pullRequest.id],
     }).start(),
   );
   h = active;
@@ -55,6 +56,7 @@ async function fixture(content = png, mime = "image/png") {
       [
         parent.id,
         comment.id,
+        pullRequest.id,
         "github.repository",
         "github.file",
         "github.file.image",
@@ -107,7 +109,7 @@ async function fixture(content = png, mime = "image/png") {
     types: [
       ...fileKinds,
       { type: repositoryType, fields: ["github_id"] },
-      ...[parent, comment].map((type) => ({
+      ...[parent, comment, pullRequest].map((type) => ({
         type,
         fields: ["github_id", "body", "repository", "private", "github_files"],
         derived: ["github_files", "private"],
@@ -119,7 +121,7 @@ async function fixture(content = png, mime = "image/png") {
       {
         id: "github.in-repository",
         cardinality: "many-to-one",
-        source_type_constraints: [parent.id, comment.id],
+        source_type_constraints: [parent.id, comment.id, pullRequest.id],
         target_type_constraints: [repositoryType.id],
       },
     ],

@@ -34,6 +34,10 @@ export const events = [
   "issue_dependencies",
   "issue_relates_to",
   "repository",
+  "pull_request",
+  "check_run",
+  "check_suite",
+  "status",
 ];
 
 /** The public address's own path, a prefix the instance sits behind, kept
@@ -54,11 +58,18 @@ export function readOnly(value: string | undefined, kind?: string): boolean {
     kind === undefined &&
     kinds.some(
       (one) =>
-        !["repository", "issue", "comment", "file", "image"].includes(one),
+        ![
+          "repository",
+          "issue",
+          "comment",
+          "pull_request",
+          "file",
+          "image",
+        ].includes(one),
     )
   )
     throw new Error(
-      `GITHUB_READ_ONLY holds an unknown kind (${kinds.filter((one) => !["repository", "issue", "comment", "file", "image"].includes(one)).join(", ")}); use true, false, or a comma-separated list of repository, issue, comment, file, image`,
+      `GITHUB_READ_ONLY holds an unknown kind (${kinds.filter((one) => !["repository", "issue", "comment", "pull_request", "file", "image"].includes(one)).join(", ")}); use true, false, or a comma-separated list of repository, issue, comment, pull_request, file, image`,
     );
   return kind === undefined
     ? ["issue", "comment"].every((one) => kinds.includes(one))
@@ -76,13 +87,16 @@ export function manifest(options: {
     name: options.name,
     url: "https://github.com/withmarfa/marfa-connectors",
     description:
-      "Keeps issues, their comments and their relations in step with a Marfa instance.",
+      "Syncs issues and comments with Marfa and reads pull requests, closing links and checks.",
     hook_attributes: { url: options.hook, active: options.active },
     redirect_url: options.callback,
     public: false,
     default_permissions: {
       issues: options.readOnly ? "read" : "write",
       metadata: "read",
+      pull_requests: "read",
+      checks: "read",
+      statuses: "read",
     },
     default_events: events,
   };
