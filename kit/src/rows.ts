@@ -104,6 +104,12 @@ export class Declined extends Error {
 
 export interface Spec {
   readonly policy?: import("./define.js").Kind["policy"];
+  /** Runtime admission for an identity whose durable write cannot yet recover. */
+  readonly suspended?: (
+    item: Item | undefined,
+    entry: Entry | undefined,
+    earlier: readonly string[],
+  ) => boolean;
   readonly owned?: boolean;
   readonly observed?: ReadonlySet<string>;
   readonly firstAgreement?: "preserve" | "hold";
@@ -122,11 +128,24 @@ export interface Spec {
   readonly connections: ReadonlySet<string>;
 }
 
+export function suspended(
+  kind: Spec,
+  item: Item | undefined,
+  entry?: Entry,
+): boolean {
+  return (
+    kind.suspended?.(item, entry, entry === undefined ? [] : earlier(entry)) ===
+    true
+  );
+}
+
 export function forRow(
   kind: Spec,
   item: Item | undefined,
   entry?: Entry,
 ): Spec {
+  if (suspended(kind, item, entry))
+    return { ...kind, owned: false, twoWay: false };
   const policy = kind.policy?.(item, entry);
   if (policy === undefined) return kind;
   const readOnly = new Set(kind.readOnly);

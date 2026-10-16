@@ -485,12 +485,6 @@ export async function runOnce<E extends EnvDeclaration>(
     return next;
   };
   const specs = specsOf(connector, env, setup.narrowed);
-  // The retry guard below must not add ownership lookups for trashed rows.
-  const policyKinds = new Set(
-    [...specs.values()]
-      .filter((kind) => kind.policy !== undefined)
-      .map((kind) => kind.type),
-  );
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
   for (const [type, condition] of setup.narrowed?.conditions ?? []) {
@@ -597,9 +591,8 @@ export async function runOnce<E extends EnvDeclaration>(
     if (original === undefined) continue;
     specs.set(type, {
       ...original,
-      policy(item, entry) {
-        const policy = original.policy?.(item, entry);
-        const held = [...outbound.values()].some((one) => {
+      suspended(item, entry, earlier) {
+        return [...outbound.values()].some((one) => {
           const captured = one.change.item;
           if (captured.type !== type || !suspendedOutbound.has(captured.id))
             return false;
@@ -611,13 +604,16 @@ export async function runOnce<E extends EnvDeclaration>(
               : (one.agreement?.link ?? captured.properties[original.link]);
           return (
             entry.source_id === captured.source_id ||
+            (typeof link === "string" && earlier.includes(link)) ||
+            (original.link === undefined &&
+              captured.source_id !== undefined &&
+              earlier.includes(captured.source_id)) ||
             (original.link !== undefined &&
               typeof link === "string" &&
               entry.properties[original.link] === link) ||
             (one.change.kind === "created" && link === undefined)
           );
         });
-        return held ? { ...policy, owned: false } : (policy ?? {});
       },
     });
   }
@@ -896,6 +892,13 @@ export async function runOnce<E extends EnvDeclaration>(
     for (const id of fresh) asked.add(id);
     for (const item of found.data) lanes.get(item.type)?.rows.adopt(item);
   };
+  const currentItem = async (
+    type: string,
+    id: string,
+  ): Promise<Item | undefined> =>
+    (await setup.marfa.lookup(type, { ids: [id] })).data.find(
+      (one) => one.id === id,
+    );
   const find = async (
     id: string,
   ): Promise<{ item: Item; spec: Spec; rows: Rows } | undefined> => {
@@ -1852,7 +1855,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (recovered.has(item.id)) return;
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec, rows } = lane(item.type);
-    if (policyKinds.has(item.type) || refusedOutbound.has(item.id)) {
+    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
       const fresh = await setup.marfa.item(item.id);
       if (fresh?.type !== item.type) return;
       rows.adopt(fresh);
@@ -2145,7 +2148,7 @@ export async function runOnce<E extends EnvDeclaration>(
       purged.delete(id);
       pushed += 1;
     } else {
-      let live = await setup.marfa.item(id);
+      let live = await currentItem(change.item.type, id);
       if (live !== undefined) {
         rows.adopt(live);
         // The create's link is confirmed separately from the captured values.
@@ -2507,7 +2510,7 @@ export async function runOnce<E extends EnvDeclaration>(
         continue;
       }
       if (refusedOutbound.has(id)) {
-        const live = await setup.marfa.item(id);
+        const live = await currentItem(change.item.type, id);
         if (live?.type === change.item.type) {
           lane(live.type).rows.adopt(live);
           recovered.delete(id);
@@ -2528,7 +2531,7 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       try {
         if (!record.acknowledged) {
-          const live = await setup.marfa.item(id);
+          const live = await currentItem(change.item.type, id);
           if (
             (live === undefined && change.kind !== "purged") ||
             (live !== undefined &&

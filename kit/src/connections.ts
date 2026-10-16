@@ -10,6 +10,7 @@ import { causeOf, Refusal, type Edge, type Marfa } from "./marfa.js";
 import {
   connectKey,
   forRow,
+  suspended,
   Stopped,
   type Hooks,
   type Rows,
@@ -496,6 +497,10 @@ export class Connections {
     entry?: Entry,
   ): Promise<{ item: Item; spec: Spec } | undefined> {
     const found = this.rowOf(id);
+    if (found !== undefined && suspended(found.spec, found.item, entry)) {
+      this.hooks.omitted?.();
+      return undefined;
+    }
     if (found?.spec.policy === undefined) return found;
     const item = await this.marfa.item(id);
     if (
@@ -539,6 +544,11 @@ export class Connections {
     entry?: Entry,
   ): Promise<boolean> {
     if (this.hooks.fenced() || this.signal.aborted) throw new Stopped();
+    const found = this.rowOf(item.id);
+    if (found !== undefined && suspended(found.spec, found.item, entry)) {
+      this.hooks.omitted?.();
+      return false;
+    }
     try {
       if (this.rowOf(item.id)?.spec.policy !== undefined) {
         return await this.guarded(
@@ -572,6 +582,12 @@ export class Connections {
     const refused: { id: string; type: string; target: string }[] = [];
     const plain = [];
     for (const add of adds) {
+      const found = this.rowOf(add.item.id);
+      if (found !== undefined && suspended(found.spec, found.item, add.entry)) {
+        this.hooks.omitted?.();
+        refused.push({ id: add.item.id, type: add.type, target: add.target });
+        continue;
+      }
       if (this.rowOf(add.item.id)?.spec.policy === undefined) {
         plain.push(add);
         continue;

@@ -19,6 +19,11 @@ beforeEach(async () => {
       types: [linkedType.id, otherType.id],
     }).start(),
   );
+  harness.server.grants = {
+    type_permissions: { [linkedType.id]: "write", [otherType.id]: "write" },
+    edge_permissions: { "test.blocks": "write" },
+    metadata_permissions: { types: "write", edge_types: "write" },
+  };
 });
 afterEach(() => harness.close());
 
@@ -30,9 +35,19 @@ function fixture(journal?: "change" | "remake", ownership = false) {
   const attempts: string[] = [];
   const healthy: string[] = [];
   let reads = 0;
+  let connected: boolean | undefined;
   const entry = (id: string, title: string): Entry => ({
     source_id: id,
     properties: { title, vendor_id: `vendor-${id}` },
+    ...(id === "one" && connected !== undefined
+      ? {
+          connections: {
+            "test.blocks": connected
+              ? [{ type: otherType.id, id: "vendor-two" }]
+              : [],
+          },
+        }
+      : {}),
   });
   const send = async (
     change: Change,
@@ -81,6 +96,14 @@ function fixture(journal?: "change" | "remake", ownership = false) {
       },
       { type: otherType, fields: ["title", "vendor_id"] },
     ],
+    connections: [
+      {
+        id: "test.blocks",
+        cardinality: "many-to-many",
+        source_type_constraints: [linkedType.id],
+        target_type_constraints: [otherType.id],
+      },
+    ],
     carries: () => carried,
     async run(context) {
       reads += 1;
@@ -103,6 +126,9 @@ function fixture(journal?: "change" | "remake", ownership = false) {
     },
     recover: () => {
       fail = false;
+    },
+    connect: (value: boolean) => {
+      connected = value;
     },
     sourceTitle: (title: string) => {
       primaryTitle = title;
@@ -245,3 +271,25 @@ it("withholds a kind's inbound rows when an uncertain create has no vendor ident
   );
   expect(harness.server.row("one").properties["title"]).toBe("Original");
 });
+
+it.each([false, true])(
+  "retains connections while a durable write is suspended; connected=%s",
+  async (connected) => {
+    const f = fixture("change");
+    f.connect(connected);
+    expect(await f.once()).toBe(0);
+    const row = harness.server.row("one");
+    const targets = () => harness.server.targetsOf(row.id, "test.blocks");
+    const before = targets();
+    expect(before).toHaveLength(connected ? 1 : 0);
+    harness.server.edit(row.id, { title: "Captured" });
+    expect(await f.once()).toBe(0);
+    const pending = structuredClone(harness.kept()["outbound"]);
+    f.allow([otherType.id]);
+    f.connect(!connected);
+    expect(await f.once()).toBe(0);
+    expect(targets()).toEqual(before);
+    expect(harness.kept()["outbound"]).toEqual(pending);
+    expect(f.attempts).toHaveLength(1);
+  },
+);
