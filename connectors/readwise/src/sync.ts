@@ -346,6 +346,7 @@ export async function sync(
       now,
       waitUntil: (until) => context.waitUntil(until),
     });
+  const reachedContent = new Set<string>();
   const preserve = async () => {
     if (context.known !== undefined)
       await drainContent(
@@ -354,6 +355,9 @@ export async function sync(
           known: context.known,
           log: {
             ...context.log,
+            unreached: ({ exceptKeys = [] }) => {
+              for (const key of exceptKeys) reachedContent.add(key);
+            },
             condition: (key, message) => {
               if (key !== "readwise:content-pending")
                 context.log.condition(key, message);
@@ -466,8 +470,16 @@ export async function sync(
         {
           ...context,
           known: context.known,
-          // Reporting reaches no jobs and must not change which were reached.
-          log: { ...context.log, unreached: () => undefined },
+          log: {
+            ...context.log,
+            // Independent batches must not mask jobs reached by another drain.
+            unreached: (selectors) => {
+              context.log.unreached({
+                ...selectors,
+                exceptKeys: [...reachedContent],
+              });
+            },
+          },
         },
         reader,
         content.state,
