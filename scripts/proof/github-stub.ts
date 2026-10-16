@@ -1670,7 +1670,11 @@ export class GitHubStub {
       });
       return;
     }
-    if (operation === "Issues" || operation === "Relations" || operation === "FileIssues") {
+    if (
+      operation === "Issues" ||
+      operation === "Relations" ||
+      operation === "FileIssues"
+    ) {
       const data = { nodes: nodes(body.variables["ids"], issueNode) };
       send(200, { data, ...(errors.length > 0 && { errors }) });
       return;

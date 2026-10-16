@@ -58,7 +58,14 @@ export function readOnly(value: string | undefined, kind?: string): boolean {
     kind === undefined &&
     kinds.some(
       (one) =>
-        !["repository", "issue", "comment", "pull_request", "file", "image"].includes(one),
+        ![
+          "repository",
+          "issue",
+          "comment",
+          "pull_request",
+          "file",
+          "image",
+        ].includes(one),
     )
   )
     throw new Error(

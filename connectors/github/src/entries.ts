@@ -256,7 +256,7 @@ export function issueEntry(
 export interface CheckCounts {
   /** Rollup state from GitHub's StatusCheckRollup. */
   state: string;
-  /** Non-zero counts by CheckStatusState. */
+  /** Non-zero counts by CheckRunState. */
   check_runs: Record<string, number>;
   /** Non-zero counts by StatusState. */
   statuses: Record<string, number>;

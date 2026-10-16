@@ -13,6 +13,8 @@ const types = [
   "github.issue",
   "github.comment",
   "github.pull_request",
+  "github.file",
+  "github.file.image",
 ];
 const edges = [
   "github.in-repository",
@@ -23,6 +25,7 @@ const edges = [
   "github.closes",
   "github.closed-by",
   "in-thread",
+  "attached-to",
 ];
 beforeEach(async () => {
   marfa = await new ScriptedServer("github", { types, edges }).start();

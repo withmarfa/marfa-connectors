@@ -830,34 +830,37 @@ async function syncRepository(
         ? { node: pr.id, url: pr.url }
         : { url: pr.url };
   };
-  await upsert(issueType, await fileNotes(context, issueType, [
-    ...listed.flatMap((issue) => {
-      const found = relations.get(issue.node_id);
-      if (found === undefined) return [];
-      return [
-        issueEntry(
-          issueOfRest(issue, at),
-          found,
-          options.inside,
-          hidden,
-          knownTargets,
-          closer(issue.node_id),
+  await upsert(
+    issueType,
+    await fileNotes(context, issueType, [
+      ...listed.flatMap((issue) => {
+        const found = relations.get(issue.node_id);
+        if (found === undefined) return [];
+        return [
+          issueEntry(
+            issueOfRest(issue, at),
+            found,
+            options.inside,
+            hidden,
+            knownTargets,
+            closer(issue.node_id),
+          ),
+        ];
+      }),
+      ...beside
+        .filter(({ issue }) => options.synced.has(issue.repository.node))
+        .map(({ issue, relations: known }) =>
+          issueEntry(
+            issue,
+            known,
+            options.inside,
+            privateIn(options.privacy, issue.repository.node),
+            knownTargets,
+            closer(issue.node),
+          ),
         ),
-      ];
-    }),
-    ...beside
-      .filter(({ issue }) => options.synced.has(issue.repository.node))
-      .map(({ issue, relations: known }) =>
-        issueEntry(
-          issue,
-          known,
-          options.inside,
-          privateIn(options.privacy, issue.repository.node),
-          knownTargets,
-          closer(issue.node),
-        ),
-      ),
-  ]));
+    ]),
+  );
 
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();

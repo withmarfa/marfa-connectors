@@ -41,6 +41,8 @@ export async function proveGitHubPullRequests(
       "github.issue",
       "github.comment",
       "github.pull_request",
+      "github.file",
+      "github.file.image",
     ];
     const connections = [
       "github.in-repository",
@@ -51,6 +53,7 @@ export async function proveGitHubPullRequests(
       "github.closes",
       "github.closed-by",
       "in-thread",
+      "attached-to",
     ];
     const key = await mintKey({
       label: "pull request proof",
