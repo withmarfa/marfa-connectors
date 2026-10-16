@@ -148,6 +148,7 @@ const readPrefixes = [
   "repository-lost:",
   "issues-off:",
   "repository-unreadable:",
+  "pull-requests-unreadable:",
   "repository-progress:",
   "unsettled:",
   "issue-missing:",
@@ -513,6 +514,7 @@ async function readAll(
     if (at === undefined || octokit === undefined || repository === undefined)
       return;
     const scoped = context.forScope(`repository:${node}`);
+    const unreadable = `${at.repository.has_issues === false ? "pull-requests-unreadable" : "repository-unreadable"}:${node}`;
     await scoped.upsert(repositoryType, [repositoryEntry(at.repository)]);
     try {
       // GitHub answers each issue of such a repository 410, as if deleted.
@@ -541,7 +543,7 @@ async function readAll(
           privateIn(privacy, node),
         );
         await save(scoped, node, next[node]);
-        coverage.reached(`repository-unreadable:${node}`);
+        coverage.reached(`pull-requests-unreadable:${node}`);
         return;
       }
       next[node] = await syncRepository(scoped, octokit, node, repository, {
@@ -564,13 +566,16 @@ async function readAll(
               .committed,
         },
       );
-      coverage.reached(`repository-unreadable:${node}`);
+      coverage.reached(
+        `repository-unreadable:${node}`,
+        `pull-requests-unreadable:${node}`,
+      );
     } catch (error) {
       if (personal !== undefined && status(error) === 401) throw error;
       if (error instanceof PermissionRequired) {
         permissions.push(`${repository.name}: ${error.message}`);
         log.condition(
-          `repository-unreadable:${node}`,
+          unreadable,
           `${repository.name}: ${error.message}; its rows and progress are kept`,
         );
         next[node] = await marked(
@@ -584,7 +589,7 @@ async function readAll(
       }
       if (!lostAccess(error)) throw error;
       log.condition(
-        `repository-unreadable:${node}`,
+        unreadable,
         `${repository.name} is listed for ${personal === undefined ? "the App" : "the personal token"} but answered ${String(status(error))}, so its rows are left as they are, bar the private marker, which is set to true since its visibility is not known`,
       );
       next[node] = await marked(scoped, node, repository, true);

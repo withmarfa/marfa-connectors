@@ -348,6 +348,15 @@ describe("a run for deliveries", () => {
       },
     });
     await watching(async () => {
+      const prior = {
+        [`repository-unreadable:${repo.node}`]: "Earlier issue body refusal",
+        [`pull-requests-unreadable:${repo.node}`]:
+          "Earlier pull request listing refusal",
+      };
+      marfa.problems.set("github", {
+        ...marfa.problems.get("github"),
+        ...prior,
+      });
       const before = github.asked.length;
       pr.checks = {
         state: "SUCCESS",
@@ -363,6 +372,7 @@ describe("a run for deliveries", () => {
         "the check delivery",
       );
       expect(row(pr.node).properties["checks"]).toEqual(pr.checks);
+      expect(marfa.problems.get("github")).toMatchObject(prior);
       pr.checks = {
         state: "FAILURE",
         check_runs: { COMPLETED: 1 },

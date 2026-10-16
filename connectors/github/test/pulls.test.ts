@@ -331,6 +331,14 @@ describe("pull request reading", () => {
         return structuredClone(state?.repositories?.[denied.node]);
       };
       const progress = saved();
+      const unreadable = `${issuesOff ? "pull-requests-unreadable" : "repository-unreadable"}:${denied.node}`;
+      const oldBody = `repository-unreadable:${denied.node}`;
+      const oldPulls = `pull-requests-unreadable:${denied.node}`;
+      marfa.problems.set("github", {
+        ...marfa.problems.get("github"),
+        [oldPulls]: "Earlier pull request listing refusal",
+        ...(issuesOff && { [oldBody]: "Earlier issue body refusal" }),
+      });
       held.title = "Unread change";
       held.updated_at = github.now();
       changed.title = "Healthy change";
@@ -340,6 +348,11 @@ describe("pull request reading", () => {
       expect(result.code, result.output).toBe(0);
       expect(result.output).toContain("someone/denied");
       expect(result.output).toContain("403");
+      expect(marfa.problems.get("github")?.[unreadable]).toContain("403");
+      if (issuesOff)
+        expect(marfa.problems.get("github")?.[oldBody]).toBe(
+          "Earlier issue body refusal",
+        );
       expect(row(held.node).properties["title"]).toBe("Before");
       expect(row(held.node).state).toBe("active");
       expect(saved()).toEqual(progress);
@@ -348,6 +361,16 @@ describe("pull request reading", () => {
       github.pullListsRefused.clear();
       await ok();
       expect(row(held.node).properties["title"]).toBe("Unread change");
+      expect(marfa.problems.get("github")).not.toHaveProperty(unreadable);
+      expect(marfa.problems.get("github")).not.toHaveProperty(oldPulls);
+      if (issuesOff) {
+        expect(marfa.problems.get("github")?.[oldBody]).toBe(
+          "Earlier issue body refusal",
+        );
+        denied.issuesOff = false;
+        await ok();
+      }
+      expect(marfa.problems.get("github")).not.toHaveProperty(oldBody);
       expect(github.writes()).toEqual([]);
     },
   );
