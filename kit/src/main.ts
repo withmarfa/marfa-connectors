@@ -405,7 +405,7 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
     `  MARFA_API_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
     "  OTEL_EXPORTER_OTLP_ENDPOINT (optional: where to send logs, traces and errors over OTLP; nothing is sent while it is unset)",
-    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: the PostHog host and project token a failed run's error is sent to for error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
+    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: the PostHog host and project token the error of a failed run, or of a start that ends the process, is sent to for error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
   ];
 }
 
@@ -569,7 +569,9 @@ async function started<E extends EnvDeclaration>(
       await connector.checkEnv?.(environment.values as EnvValues<E>);
     }
   } catch (error) {
-    logger.error(`cannot start: ${describe(error)}`);
+    const problem = `cannot start: ${describe(error)}`;
+    logger.error(problem);
+    telemetry.startFailed(problem);
     return 2;
   }
 
@@ -637,17 +639,23 @@ async function serve<E extends EnvDeclaration>(
   const stopped = (): boolean => stop.signal.aborted;
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
+  // A start that ends the process is told to error tracking once; one that
+  // is tried again is not told at all, however many times it fails.
+  const cannotStart = (problem: string): void => {
+    logger.error(problem);
+    telemetry.startFailed(problem);
+  };
   let started: Started | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
       started = await registerAndCheck(connector, marfa, again, logger);
     } catch (error) {
       if (causeOf(error) === "address" || faultOf(error) !== undefined) {
-        logger.error(addressProblem(error, environment.url));
+        cannotStart(addressProblem(error, environment.url));
         return 2;
       }
       if (schedule.mode !== "every" || causeOf(error) !== "marfa") {
-        logger.error(startProblem(error, environment.url, keyGuide(connector)));
+        cannotStart(startProblem(error, environment.url, keyGuide(connector)));
         return 1;
       }
       const wait = Math.max(
@@ -668,7 +676,7 @@ async function serve<E extends EnvDeclaration>(
   // A start that cannot go on is the registration's failed run.
   const refuseStart = async (problem: string): Promise<void> => {
     const at = clock.now().toISOString();
-    logger.error(problem);
+    cannotStart(problem);
     try {
       await marfa.report(connectorId, {
         outcome: "failed",
