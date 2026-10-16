@@ -151,6 +151,43 @@ describe("related and duplicate issues", () => {
       ),
     ).toBe(true);
   });
+  it("removes a redundant reverse drawing immediately without writing GitHub", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const a = github.addIssue(repo);
+    const b = github.addIssue(repo);
+    const low = a.node < b.node ? a : b;
+    const high = a.node < b.node ? b : a;
+    a.relates_to = [b.node];
+    b.relates_to = [a.node];
+    await once();
+    const canonical = marfa.edges.find(
+      (one) => one.edge_type === "github.relates-to",
+    );
+    if (canonical === undefined) throw new Error("No canonical edge");
+    const writes = github.writes().length;
+    marfa.drawEdge(row(high.node).id, row(low.node).id, "github.relates-to");
+    await once();
+    expect(links(low.node, "github.relates-to")).toEqual([high.node]);
+    expect(links(high.node, "github.relates-to")).toEqual([]);
+    expect(
+      marfa.edges
+        .filter((one) => one.edge_type === "github.relates-to")
+        .map((one) => one.id),
+    ).toEqual([canonical.id]);
+    expect(github.writes().length).toBe(writes);
+    await once();
+    expect(
+      marfa.edges
+        .filter((one) => one.edge_type === "github.relates-to")
+        .map((one) => one.id),
+    ).toEqual([canonical.id]);
+    expect(github.writes().length).toBe(writes);
+    marfa.removeEdge(canonical.id);
+    await once();
+    expect(a.relates_to).toEqual([]);
+    expect(b.relates_to).toEqual([]);
+    expect(github.writes().length).toBe(writes + 1);
+  });
   it("canonicalizes a reverse drawing and restores refused additions", async () => {
     const repo = github.addRepository("someone/tracker");
     const a = github.addIssue(repo);

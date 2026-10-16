@@ -582,7 +582,11 @@ async function relations(
         continue;
       }
       if (holds(type, other) === (side === "added")) {
-        took(related[side], type, other);
+        // Existing symmetric links use the canonical direction; only a newly
+        // made reverse link needs to survive until the next read.
+        if (!(type === relatesTo && side === "added" && other < node)) {
+          took(related[side], type, other);
+        }
         continue;
       }
       const both = writer(context, app, [
