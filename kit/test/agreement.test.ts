@@ -32,6 +32,45 @@ function row(
 }
 
 describe("merge", () => {
+  it.each([false, true])(
+    "seeds missing first-adoption values and holds explicit local clears with observe=%s",
+    (observe) => {
+      const input = {
+        fields,
+        readOnly: never,
+        observe: () => observe,
+        firstHold: true,
+        agreement: undefined,
+        row: row({ title: "", labels: [] }),
+        entry: {
+          source_id: "one",
+          properties: {
+            title: "Reader title",
+            body: "New body",
+            labels: ["a"],
+          },
+        },
+      };
+      const first = merge(input);
+      expect(first.properties).toEqual({
+        title: "",
+        body: "New body",
+        labels: [],
+      });
+      expect(changedInMarfa(first.agreement, fields, first.properties)).toEqual(
+        [],
+      );
+      expect(first.agreement.waiting).toBeUndefined();
+      expect(
+        merge({
+          ...input,
+          row: row(first.properties),
+          agreement: first.agreement,
+        }).properties,
+      ).toEqual(first.properties);
+    },
+  );
+
   it("holds ambiguous first-adoption divergence without inventing outbound intent", () => {
     const input = {
       fields,
