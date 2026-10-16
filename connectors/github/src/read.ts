@@ -1408,6 +1408,13 @@ async function readNamed(
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),
   );
+  const canonicalSources = new Map(
+    [...issues].map(([id, found]) => [id, found.relations]),
+  );
+  await readRelatedSources(context, canonicalSources, synced, async (ids) => {
+    await ask(ids);
+    for (const [id, found] of issues) canonicalSources.set(id, found.relations);
+  });
   const closers = new Map<
     string,
     { id: string; url: string; repository: { id: string } }

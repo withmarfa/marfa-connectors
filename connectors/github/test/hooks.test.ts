@@ -859,7 +859,6 @@ it.each(["scheduled", "named"])(
     if (read === "scheduled") {
       changed();
       await once();
-      await once();
     } else {
       await watching(async () => {
         changed();

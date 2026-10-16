@@ -46,6 +46,8 @@ export async function proveGitHubPullRequests(
       "github.in-repository",
       "github.sub-issue-of",
       "github.blocked-by",
+      "github.relates-to",
+      "github.duplicate-of",
       "github.closes",
       "github.closed-by",
       "in-thread",
