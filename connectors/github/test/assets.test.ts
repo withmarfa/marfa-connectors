@@ -9,6 +9,7 @@ it("parses signed assets and unsigned uploads without changing the body", () => 
   expect(assetsIn(html)).toEqual({
     assets: [{ id, url: signed + "&x=1", title: "Example" }],
     unsigned: ["https://github.com/user-attachments/files/12/name.txt"],
+    unavailable: [],
   });
 });
 it.each([
@@ -175,4 +176,11 @@ it("bounds a stalled download and contains its transport error", async () => {
       timeoutMs: 5,
     }),
   ).rejects.toThrow("GitHub asset download failed");
+});
+
+it("ignores signed asset examples inside code elements", () => {
+  expect(
+    assetsIn(`<pre><code><img src="${signed}"></code></pre>`).assets,
+  ).toEqual([]);
+  expect(assetsIn(`<img src="${signed}">`).assets).toHaveLength(1);
 });

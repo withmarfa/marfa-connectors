@@ -30,6 +30,12 @@ const parent: TypeDefinition = {
   },
 };
 const comment = { ...parent, id: "github.comment" };
+const repositoryType: TypeDefinition = {
+  id: "github.repository",
+  label: "Repository",
+  link_field: "github_id",
+  fields: { github_id: { type: "string" } },
+};
 let h: Harness | undefined;
 afterEach(async () => {
   await h?.close();
@@ -44,13 +50,19 @@ async function fixture(content = png, mime = "image/png") {
   h = active;
   active.server.grants = {
     type_permissions: Object.fromEntries(
-      [parent.id, comment.id, "github.file", "github.file.image"].map((id) => [
-        id,
-        "write",
-      ]),
+      [
+        parent.id,
+        comment.id,
+        "github.repository",
+        "github.file",
+        "github.file.image",
+      ].map((id) => [id, "write"]),
     ),
-    edge_permissions: { "attached-to": "write" },
-    metadata_permissions: { types: "write" },
+    edge_permissions: {
+      "attached-to": "write",
+      "github.in-repository": "write",
+    },
+    metadata_permissions: { types: "write", edge_types: "write" },
   };
   let response = 200,
     queryCount = 0,
@@ -88,6 +100,7 @@ async function fixture(content = png, mime = "image/png") {
     env: {},
     types: [
       ...fileKinds,
+      { type: repositoryType, fields: ["github_id"] },
       ...[parent, comment].map((type) => ({
         type,
         fields: ["github_id", "body", "repository", "private", "github_files"],
@@ -95,9 +108,24 @@ async function fixture(content = png, mime = "image/png") {
         readOnly: ["github_files"],
       })),
     ],
-    connections: [filesConnection],
+    connections: [
+      filesConnection,
+      {
+        id: "github.in-repository",
+        cardinality: "many-to-one",
+        source_type_constraints: [parent.id, comment.id],
+        target_type_constraints: [repositoryType.id],
+      },
+    ],
     async run(root) {
       const context = root.forScope("repository");
+      await context.upsert(
+        repositoryType.id,
+        [...new Set(parents.map((p) => p.repository))].map((repository) => ({
+          source_id: `repo:${repository}`,
+          properties: { github_id: `repo:${repository}` },
+        })),
+      );
       for (const type of [parent.id, comment.id])
         await context.upsert(
           type,
@@ -108,6 +136,11 @@ async function fixture(content = png, mime = "image/png") {
               .filter((p) => p.type === type)
               .map((p) => ({
                 source_id: p.id,
+                connections: {
+                  "github.in-repository": [
+                    { type: repositoryType.id, id: `repo:${p.repository}` },
+                  ],
+                },
                 properties: {
                   github_id: p.id,
                   body: text,
@@ -118,13 +151,24 @@ async function fixture(content = png, mime = "image/png") {
           ),
         );
       for (const repository of new Set(parents.map((p) => p.repository)))
-        await preserveFiles(context, client, repository, {
-          fetch: fetcher,
-          checkpoint: async (parent) =>
-            acknowledge &&
-            (await context.state.checkpoint("github-files-last", parent))
-              .committed,
-        });
+        await preserveFiles(
+          context,
+          client,
+          {
+            id: `repo:${repository}`,
+            name: repository,
+            private: parents.some(
+              (p) => p.repository === repository && p.private,
+            ),
+          },
+          {
+            fetch: fetcher,
+            checkpoint: async (parent) =>
+              acknowledge &&
+              (await context.state.checkpoint("github-files-last", parent))
+                .committed,
+          },
+        );
     },
   });
   return {
@@ -150,7 +194,13 @@ async function fixture(content = png, mime = "image/png") {
     mark: async (hidden: boolean) => {
       const privacy = defineConnector({
         ...connector,
-        run: (context) => markFilesPrivate(context, "owner/repo", hidden),
+        run: (context) =>
+          markFilesPrivate(
+            context,
+            new Map([
+              ["repo:owner/repo", { name: "owner/repo", private: hidden }],
+            ]),
+          ),
       });
       return start(privacy, active.runtime(["--once"]));
     },

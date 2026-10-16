@@ -142,6 +142,7 @@ const readPrefixes = [
   "unsettled:",
   "issue-missing:",
   "issue-moved:",
+  "github-files:",
 ];
 
 class Coverage {
@@ -373,6 +374,22 @@ async function readAll(
         ),
     );
   }
+  // Visibility follows immutable repository identity, including restored files
+  // whose repository is no longer in saved progress.
+  await markFilesPrivate(
+    context,
+    new Map(
+      [...listed.values(), ...outside.values()].map(({ repository }) => [
+        repository.node_id,
+        { name: repository.full_name, private: repository.private },
+      ]),
+    ),
+    new Set(
+      Object.entries(kept).flatMap(([node, repository]) =>
+        deferred.has(repository.installation) ? [node] : [],
+      ),
+    ),
+  );
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
     await readNamed(
@@ -397,7 +414,20 @@ async function readAll(
         !unsettled.has(node) &&
         at.repository.has_issues !== false
       )
-        await preserveFiles(context, client, at.repository.full_name);
+        await preserveFiles(
+          context,
+          client,
+          {
+            id: node,
+            name: at.repository.full_name,
+            private: at.repository.private,
+          },
+          {
+            reached: (parent) => {
+              coverage.reached(`github-files:${parent}`);
+            },
+          },
+        );
     }
     return;
   }
@@ -491,11 +521,19 @@ async function readAll(
         privacy,
         check,
       });
-      await preserveFiles(scoped, octokit, repository.name, {
-        checkpoint: async (parent) =>
-          (await scoped.state.checkpoint("github-files-last", parent))
-            .committed,
-      });
+      await preserveFiles(
+        scoped,
+        octokit,
+        { id: node, name: repository.name, private: at.repository.private },
+        {
+          reached: (parent) => {
+            coverage.reached(`github-files:${parent}`);
+          },
+          checkpoint: async (parent) =>
+            (await scoped.state.checkpoint("github-files-last", parent))
+              .committed,
+        },
+      );
       coverage.reached(`repository-unreadable:${node}`);
     } catch (error) {
       if (personal !== undefined && status(error) === 401) throw error;
@@ -798,7 +836,7 @@ async function syncRepository(
     new Map(listed.map((issue) => [issue.number, issue.node_id])),
   );
   if (repository.comments !== undefined && repository.private !== hidden) {
-    await markRows(context, node, hidden, repository.name);
+    await markRows(context, node, hidden);
   }
 
   const kept: Kept = {
@@ -905,8 +943,7 @@ async function marked(
   repository: Kept,
   hidden: boolean,
 ): Promise<Kept> {
-  if (repository.private !== hidden)
-    await markRows(context, node, hidden, repository.name);
+  if (repository.private !== hidden) await markRows(context, node, hidden);
   return { ...repository, private: hidden };
 }
 
@@ -916,9 +953,7 @@ async function markRows(
   context: Context,
   node: string,
   hidden: boolean,
-  repositoryName: string,
 ): Promise<void> {
-  await markFilesPrivate(context, repositoryName, hidden);
   const under = { type: repositoryType, id: node };
   for (const type of [issueType, commentType]) {
     const links = (await context.linked(type, inRepository, under)).flatMap(

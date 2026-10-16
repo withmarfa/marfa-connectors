@@ -33,14 +33,17 @@ export interface Asset {
 export function assetsIn(html: string): {
   assets: Asset[];
   unsigned: string[];
+  unavailable: string[];
 } {
   const assets = new Map<string, Asset>();
   const unsigned = new Set<string>();
+  const unavailable = new Map<string, string>();
   const visit = (
     node:
       | DefaultTreeAdapterTypes.ChildNode
       | DefaultTreeAdapterTypes.DocumentFragment,
   ): void => {
+    if ("tagName" in node && ["pre", "code"].includes(node.tagName)) return;
     if ("attrs" in node) {
       const attrs = Object.fromEntries(
         node.attrs.map((a) => [a.name, a.value]),
@@ -63,6 +66,23 @@ export function assetsIn(html: string): {
           url.pathname.startsWith("/user-attachments/files/")
         )
           unsigned.add(url.origin + url.pathname);
+        if (
+          url.protocol === "https:" &&
+          url.hostname === "github.com" &&
+          !url.username &&
+          !url.password &&
+          !url.port &&
+          url.pathname.startsWith("/user-attachments/assets/")
+        ) {
+          const id = uuid
+            .exec(url.pathname.slice("/user-attachments/assets/".length))?.[0]
+            .toLowerCase();
+          if (id)
+            unavailable.set(
+              id,
+              `https://github.com/user-attachments/assets/${id}`,
+            );
+        }
         try {
           url = assetUrl(value);
         } catch {
@@ -76,7 +96,14 @@ export function assetsIn(html: string): {
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
   };
   visit(parseFragment(html));
-  return { assets: [...assets.values()], unsigned: [...unsigned].sort() };
+  return {
+    assets: [...assets.values()],
+    unsigned: [...unsigned].sort(),
+    unavailable: [...unavailable]
+      .filter(([id]) => !assets.has(id))
+      .map(([, url]) => url)
+      .sort(),
+  };
 }
 function media(prefix: Uint8Array, declared: string | null): string {
   const bytes = Buffer.from(prefix);

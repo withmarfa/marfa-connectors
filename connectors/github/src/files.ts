@@ -42,11 +42,13 @@ export const fileKinds = fileTypes.map((id) => ({
       github_parents: {
         type: "object",
         description:
-          "Parent node IDs with their type, repository, and last known visibility.",
+          "Parent node IDs with their type, immutable repository ID, name, and last known visibility.",
       },
     },
   } satisfies TypeDefinition,
   fields: fileFields,
+  derived: ["private", "github_parents"],
+  readOnly: ["private", "github_parents"],
 }));
 export const filesConnection: ConnectionDefinition = {
   id: "attached-to",
@@ -61,15 +63,17 @@ type Context = Pick<
   | "upsert"
   | "known"
   | "inspect"
+  | "linked"
   | "signal"
   | "log"
   | "secret"
 >;
 type Provenance = Record<
   string,
-  { type: string; repository: string; private: boolean }
+  { type: string; repository: string; repository_id: string; private: boolean }
 >;
 interface Note {
+  repository_id: string;
   body: string;
   assets: string[];
   pending: boolean;
@@ -85,11 +89,13 @@ function parentsOf(value: unknown): Provenance {
     const at = object(valueAt);
     if (
       (at["type"] === "github.issue" || at["type"] === "github.comment") &&
-      typeof at["repository"] === "string"
+      typeof at["repository"] === "string" &&
+      typeof at["repository_id"] === "string"
     )
       out[id] = {
         type: at["type"],
         repository: at["repository"],
+        repository_id: at["repository_id"],
         private: at["private"] !== false,
       };
   }
@@ -98,6 +104,7 @@ function parentsOf(value: unknown): Provenance {
 function noteOf(value: unknown): Note | undefined {
   const at = object(value);
   if (
+    typeof at["repository_id"] !== "string" ||
     typeof at["body"] !== "string" ||
     typeof at["pending"] !== "boolean" ||
     !Array.isArray(at["assets"]) ||
@@ -105,6 +112,7 @@ function noteOf(value: unknown): Note | undefined {
   )
     return;
   return {
+    repository_id: at["repository_id"],
     body: at["body"],
     pending: at["pending"],
     assets: at["assets"],
@@ -161,13 +169,32 @@ export async function fileNotes(
         : [];
     }),
   );
-  return entries.map((entry) => ({
-    ...entry,
-    properties: {
-      ...entry.properties,
-      github_files: notes.get(String(entry.properties["github_id"])),
-    },
-  }));
+  return entries.map((entry) => {
+    const prior = noteOf(notes.get(String(entry.properties["github_id"])));
+    const repository = entry.connections?.["github.in-repository"]?.[0]?.id;
+    const body = entry.properties["body"];
+    const note =
+      repository === undefined
+        ? prior
+        : prior !== undefined
+          ? { ...prior, repository_id: repository }
+          : typeof body === "string" &&
+              /user-attachments\/|private-user-images\.githubusercontent\.com|github-production-user-asset-|objects\.githubusercontent\.com/.test(
+                body,
+              )
+            ? {
+                repository_id: repository,
+                body: "",
+                assets: [],
+                pending: true,
+                not_kept: {},
+              }
+            : undefined;
+    return {
+      ...entry,
+      properties: { ...entry.properties, github_files: note },
+    };
+  });
 }
 async function existing(
   context: Context,
@@ -190,7 +217,7 @@ async function keep(
   context: Context,
   parent: Item,
   asset: Asset,
-  options: { fetch?: typeof fetch },
+  options: { fetch?: typeof fetch; repository: Repository },
 ): Promise<string | undefined> {
   const prior = await existing(context, asset.id);
   if (prior.removed) return "The retained file was removed in Marfa";
@@ -198,8 +225,9 @@ async function keep(
   const node = String(parent.properties["github_id"]);
   parents[node] = {
     type: parent.type,
-    repository: String(parent.properties["repository"]),
-    private: parent.properties["private"] !== false,
+    repository: options.repository.name,
+    repository_id: options.repository.id,
+    private: options.repository.private,
   };
   const known =
     prior.row !== undefined &&
@@ -248,23 +276,53 @@ async function keep(
       await opened.bytes.cancel().catch(() => undefined);
   }
 }
+export interface Repository {
+  id: string;
+  name: string;
+  private: boolean;
+}
 /** Only stable parent identities and safe outcomes survive a signed URL's lifetime. */
 export async function preserveFiles(
   context: Context,
   client: Client,
-  repository: string,
+  repository: Repository,
   options: {
     fetch?: typeof fetch;
     checkpoint?: (parent: string) => Promise<boolean>;
+    reached?: (parent: string) => void;
   } = {},
 ): Promise<void> {
-  const all: Item[] = [];
-  for (const type of ["github.issue", "github.comment"])
-    all.push(...(await context.held(type, { state: "any" })));
-  const held = all.filter(
-    (row) =>
-      row.state !== "trashed" && row.properties["repository"] === repository,
+  const held: Item[] = [];
+  for (const type of ["github.issue", "github.comment"]) {
+    const connected = new Set(
+      (
+        await context.linked(type, "github.in-repository", {
+          type: "github.repository",
+          id: repository.id,
+        })
+      ).map((row) => row.id),
+    );
+    for (const row of await context.held(type, { state: "any" }))
+      if (
+        row.state !== "trashed" &&
+        (connected.has(row.id) ||
+          noteOf(row.properties["github_files"])?.repository_id ===
+            repository.id)
+      )
+        held.push(row);
+  }
+  const parents = new Map(
+    held.map((row) => [
+      String(row.properties["github_id"]),
+      {
+        type: row.type,
+        repository: repository.name,
+        repository_id: repository.id,
+        private: repository.private,
+      },
+    ]),
   );
+  await refreshFiles(context, (id) => parents.get(id));
   const candidates = held.filter((row) => {
     const body =
       typeof row.properties["body"] === "string" ? row.properties["body"] : "";
@@ -304,6 +362,7 @@ export async function preserveFiles(
         }
         const parsed = assetsIn(node.bodyHTML);
         const note: Note = {
+          repository_id: repository.id,
           body: createHash("sha256")
             .update(
               typeof parent.properties["body"] === "string"
@@ -312,33 +371,29 @@ export async function preserveFiles(
             )
             .digest("hex"),
           assets: [],
-          pending: false,
-          not_kept: Object.fromEntries(
-            parsed.unsigned.map((url) => [
+          pending: parsed.unavailable.length > 0,
+          not_kept: Object.fromEntries([
+            ...parsed.unsigned.map((url): [string, string] => [
               url,
               "GitHub did not sign this upload for API download",
             ]),
-          ),
+            ...parsed.unavailable.map((url): [string, string] => [
+              url,
+              "GitHub did not return a signed asset address; retry waits for fresh HTML",
+            ]),
+          ]),
         };
         for (const asset of parsed.assets) {
-          const reason = await keep(context, parent, asset, options);
+          const reason = await keep(context, parent, asset, {
+            ...options,
+            repository,
+          });
           if (reason) {
             note.not_kept[
               `https://github.com/user-attachments/assets/${asset.id}`
             ] = reason;
             if (reason.startsWith("The signed")) note.pending = true;
           } else note.assets.push(asset.id);
-        }
-        if (
-          parsed.assets.length === 0 &&
-          (typeof parent.properties["body"] === "string"
-            ? parent.properties["body"]
-            : ""
-          ).includes("user-attachments/assets/")
-        ) {
-          note.pending = true;
-          note.not_kept["rendered-assets"] =
-            "GitHub did not return a signed asset address; retry waits for fresh HTML";
         }
         if (
           note.assets.length > 0 &&
@@ -350,6 +405,7 @@ export async function preserveFiles(
             "Retained bytes await an acknowledged attachment write";
         }
         await context.derive(type, [id], { github_files: note });
+        options.reached?.(id);
         if (note.pending)
           context.log.condition(
             `github-files:${id}`,
@@ -359,28 +415,41 @@ export async function preserveFiles(
     }
   }
 }
-export async function markFilesPrivate(
+async function refreshFiles(
   context: Context,
-  repository: string,
-  hidden: boolean,
+  evidence: (
+    id: string,
+    parent: Provenance[string],
+  ) => Provenance[string] | undefined,
 ): Promise<void> {
   for (const type of fileTypes)
     for (const row of await context.held(type, { state: "any" })) {
       if (row.state === "trashed") continue;
       const parents = parentsOf(row.properties["github_parents"]);
-      let changed = false;
-      for (const parent of Object.values(parents))
-        if (parent.repository === repository && parent.private !== hidden) {
-          parent.private = hidden;
-          changed = true;
-        }
-      if (changed)
-        await context.upsert(type, [
-          fileEntry(
-            String(row.properties["github_id"]),
-            properties(row),
-            parents,
-          ),
-        ]);
+      for (const [id, parent] of Object.entries(parents)) {
+        const current = evidence(id, parent);
+        if (current?.type === parent.type) parents[id] = current;
+      }
+      await context.derive(type, [String(row.properties["github_id"])], {
+        github_parents: parents,
+        private:
+          Object.keys(parents).length === 0 ||
+          Object.values(parents).some((parent) => parent.private),
+      });
     }
+}
+export async function markFilesPrivate(
+  context: Context,
+  repositories: ReadonlyMap<string, Omit<Repository, "id">>,
+  deferred: ReadonlySet<string> = new Set(),
+): Promise<void> {
+  await refreshFiles(context, (_id, parent) => {
+    if (deferred.has(parent.repository_id)) return;
+    const current = repositories.get(parent.repository_id);
+    return {
+      ...parent,
+      repository: current?.name ?? parent.repository,
+      private: current?.private ?? true,
+    };
+  });
 }
