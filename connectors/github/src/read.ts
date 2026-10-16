@@ -676,6 +676,24 @@ async function syncRepository(
       around.filter((id) => !listedNodes.has(id)),
     )),
   ];
+  const canonicalSources = new Map<string, Relations>([
+    ...relations,
+    ...beside
+      .filter(({ issue }) => options.synced.has(issue.repository.node))
+      .map(({ issue, relations: known }) => [issue.node, known] as const),
+  ]);
+  await readRelatedSources(
+    context,
+    canonicalSources,
+    options.synced,
+    async (ids) => {
+      for (const found of await issuesByNode(octokit, ids)) {
+        if (!options.synced.has(found.issue.repository.node)) continue;
+        beside.push(found);
+        canonicalSources.set(found.issue.node, found.relations);
+      }
+    },
+  );
   const knownTargets = await retainedTargets(
     context,
     [...relations.values(), ...beside.map((one) => one.relations)],
@@ -1064,6 +1082,40 @@ async function retainedTargets(
   return context.known(issueType, [...new Set(candidates)]);
 }
 
+async function readRelatedSources(
+  context: Context,
+  known: Map<string, Relations>,
+  synced: ReadonlySet<string>,
+  read: (ids: string[]) => Promise<void>,
+): Promise<void> {
+  const asked = new Set(known.keys());
+  const checked = new Set<string>();
+  for (;;) {
+    const wanted = new Set<string>();
+    for (const [node, relations] of known) {
+      if (checked.has(node)) continue;
+      checked.add(node);
+      for (const other of relations.relatesTo) {
+        if (other.id < node && synced.has(other.repository.id))
+          wanted.add(other.id);
+      }
+      // A removed pair is absent from GitHub, but its canonical source
+      // still holds the connection in Marfa and must be refreshed.
+      for (const row of await context.linked(issueType, relatesTo, {
+        type: issueType,
+        id: node,
+      })) {
+        const source = linkOf(row);
+        if (source !== undefined && source < node) wanted.add(source);
+      }
+    }
+    const ids = [...wanted].filter((id) => !asked.has(id));
+    if (ids.length === 0) return;
+    for (const id of ids) asked.add(id);
+    await read(ids);
+  }
+}
+
 async function readNamed(
   context: Context,
   listed: ReadonlyMap<
@@ -1124,7 +1176,9 @@ async function readNamed(
       namedIssues.add(comment.issue);
     }
   }
+  const neededIssues = new Set(namedIssues);
   const ask = async (ids: readonly string[]): Promise<void> => {
+    for (const id of ids) neededIssues.add(id);
     for (const [installation, octokit] of clients) {
       const wanted = ids.filter((id) => !issues.has(id));
       for (const found of (await attempt(installation, () =>
@@ -1143,17 +1197,6 @@ async function readNamed(
     }
   };
   await ask([...namedIssues]);
-  const heldRelated: string[] = [];
-  for (const node of namedIssues) {
-    for (const row of await context.linked(issueType, relatesTo, {
-      type: issueType,
-      id: node,
-    })) {
-      const link = linkOf(row);
-      if (link !== undefined) heldRelated.push(link);
-    }
-  }
-  await ask(heldRelated);
   await ask(
     [...issues.values()]
       .flatMap(({ relations }) => [
@@ -1165,6 +1208,13 @@ async function readNamed(
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),
   );
+  const canonicalSources = new Map(
+    [...issues].map(([id, found]) => [id, found.relations]),
+  );
+  await readRelatedSources(context, canonicalSources, synced, async (ids) => {
+    await ask(ids);
+    for (const [id, found] of issues) canonicalSources.set(id, found.relations);
+  });
   const knownTargets = await retainedTargets(
     context,
     [...issues.values()].map((one) => one.relations),
@@ -1203,7 +1253,7 @@ async function readNamed(
   const unfinished = (): void => {
     if (
       deferred.size > 0 &&
-      [...namedIssues, ...namedComments].some(
+      [...neededIssues, ...namedComments].some(
         (id) => !shown.has(id) || notApplied.has(id),
       )
     )
