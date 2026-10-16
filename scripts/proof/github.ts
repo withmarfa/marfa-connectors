@@ -27,13 +27,20 @@ const entry = resolve(
   "../../../connectors/github/dist/main.js",
 );
 const folder = resolve(import.meta.dirname, "../../../connectors/github/src");
-const types = ["github.repository", "github.issue", "github.comment"];
+const types = [
+  "github.repository",
+  "github.issue",
+  "github.comment",
+  "github.file",
+  "github.file.image",
+];
 const connections = [
   "github.in-repository",
   "github.sub-issue-of",
   "github.blocked-by",
   "github.relates-to",
   "github.duplicate-of",
+  "attached-to",
   "in-thread",
 ];
 
@@ -114,7 +121,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its three types and six connection types, in-thread among them, and the metadata to register them and keep the types current",
+      "github: its key is minted with write on its five types and seven connection types, in-thread among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
