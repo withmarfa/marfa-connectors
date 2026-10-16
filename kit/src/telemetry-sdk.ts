@@ -222,6 +222,12 @@ class Sampled implements SpanProcessor {
   }
 }
 
+/** What error tracking is handed for a connector that could not start, so
+ *  that it groups apart from a failed run. */
+class StartFailure extends Error {
+  override name = "StartFailure";
+}
+
 function outcomeOf(result: RunResult): string {
   if (result.succeeded) return "succeeded";
   return result.failure === undefined ? "stopped" : "failed";
@@ -337,22 +343,27 @@ export async function exporting(
   };
   // Not sampled: the ratio is for traces, and a failed run's error is always
   // sent, whether or not its span could be made.
+  const sent = (error: unknown, properties: Record<string, string>): void => {
+    try {
+      exceptions?.report(error, {
+        "service.name": settings.serviceName ?? connectorName,
+        "marfa.connector.name": connectorName,
+        ...properties,
+        "deployment.environment": "production",
+      });
+    } catch {
+      // A report that cannot be made is lost to error tracking alone.
+    }
+  };
   const reported = (
     result: RunResult | undefined,
     thrown: unknown,
     trigger: Trigger,
   ): void => {
     if (result !== undefined && result.failure === undefined) return;
-    try {
-      exceptions?.report(result === undefined ? thrown : result.failure, {
-        "service.name": settings.serviceName ?? connectorName,
-        "marfa.connector.name": connectorName,
-        "marfa.connector.trigger": trigger,
-        "deployment.environment": "production",
-      });
-    } catch {
-      // A report that cannot be made is lost to error tracking alone.
-    }
+    sent(result === undefined ? thrown : result.failure, {
+      "marfa.connector.trigger": trigger,
+    });
   };
   const emitter = loggerProvider.getLogger("@withmarfa/connector");
   let current: Span | undefined;
@@ -407,6 +418,10 @@ export async function exporting(
         }
         reported(result, thrown, trigger);
       }
+    },
+
+    startFailed(problem: string) {
+      sent(new StartFailure(problem), {});
     },
 
     async shutdown() {
