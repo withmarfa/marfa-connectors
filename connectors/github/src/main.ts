@@ -55,7 +55,7 @@ function appOf(values: {
   };
 }
 
-const connector = defineConnector({
+const connector = defineConnector<typeof env>({
   name: "github",
   description:
     "Repositories, issues and comments through a personal access token or GitHub App, with sub-issues and blockers. Personal token runs are read only; App runs can carry Marfa edits back.",

@@ -242,7 +242,7 @@ describe("a personal access token", () => {
   });
 
   it("calls the secret callback with the token before each request", async () => {
-    const repository = github.addRepository("someone/tracker");
+    github.addRepository("someone/tracker");
     const seen: string[] = [];
     const octokit = asPersonalToken(
       personalToken,
@@ -259,7 +259,6 @@ describe("a personal access token", () => {
     expect(
       github.asked.find((one) => one.path === "/repos/someone/tracker")?.status,
     ).toBe(200);
-    void repository;
   });
 
   it("sends Bearer authorization, not the token scheme", async () => {
@@ -284,7 +283,7 @@ describe("a personal access token", () => {
   });
 
   it("tracks its rate-limit budget by a fingerprint, not the token itself", async () => {
-    const repository = github.addRepository("someone/tracker");
+    github.addRepository("someone/tracker");
     const octokit = asPersonalToken(
       personalToken,
       github.url,
@@ -302,7 +301,6 @@ describe("a personal access token", () => {
         repo: "tracker",
       }),
     ).rejects.toBeInstanceOf(RateLimitWaiting);
-    void repository;
   });
 
   it("accepts the personal token for GraphQL queries", async () => {
@@ -314,10 +312,10 @@ describe("a personal access token", () => {
       () => undefined,
       new AbortController().signal,
     );
-    const result = (await octokit.graphql(
+    const result = await octokit.graphql<{ nodes: { id: string }[] }>(
       "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
       { ids: [issue.node] },
-    )) as { nodes: { id: string }[] };
+    );
     expect(result.nodes[0]?.id).toBe(issue.node);
   });
 

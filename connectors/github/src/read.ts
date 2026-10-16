@@ -180,6 +180,7 @@ export async function read(
     if ("token" in app && status(error) === 401)
       throw new Error(
         "GitHub rejected GITHUB_PERSONAL_TOKEN (401); existing rows and progress are kept",
+        { cause: error },
       );
     if (rateLimited(error)) {
       context.log.condition(
@@ -223,9 +224,7 @@ async function readAll(
   const installations: Installation[] =
     "token" in app
       ? [{ id: 0, account: { login: "the personal token" } }]
-      : ((await asApp(app, signal).paginate(
-          "GET /app/installations",
-        )) as Installation[]);
+      : await asApp(app, signal).paginate("GET /app/installations");
   coverage.reached("clock-skew");
   const clients = new Map<number, Client>();
   const listed = new Map<
