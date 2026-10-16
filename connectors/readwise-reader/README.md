@@ -41,6 +41,8 @@ For an existing Highlights installation, follow [Replace existing schemas](../re
 
 Documents retain type `readwise.source`; highlights retain `readwise.highlight`. Existing item IDs and export natural keys remain unchanged. Verified Reader identities use the link `<account>:reader-document:<ID>` or `<account>:reader-highlight:<ID>`. Reader-only rows begin with that natural key. A later export ID enriches the same row; an absent export ID stays absent.
 
+When a complete export explicitly identifies one active highlight and deleted historical aliases for the same Reader highlight, the connector adopts only the active alias after verifying its Reader parent. Historical aliases and retained historical rows stay intact. Missing lifecycle evidence or two active claims remain unresolved.
+
 The identity index inspects retained states and known purge tombstones before admission. Conflicting holders or contradictory export evidence produce a condition and retain the pending identity for investigation. The connector never merges or deletes conflicting rows automatically. A local explicit create that may be recovering a request blocks matching inbound admission until its journal settles.
 
 Reader supplies the canonical highlight passage. A differing export passage remains in `readwise_text`. Note records retain their identities and metadata while their text is folded into the annotation. Unknown categories remain available. Reader's archive location is a reading location, not Marfa's archive state.

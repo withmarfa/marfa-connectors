@@ -540,3 +540,237 @@ it.each(["source-deleted", "ambiguous"])(
     ).rejects.toThrow(/identity|ambiguous/);
   },
 );
+
+it.each([false, true])(
+  "selects the sole active export highlight while retaining its deleted alias; restart=%s",
+  async (restart) => {
+    const f = fixture();
+    const source = f.sources[0];
+    if (!source) throw new Error("missing source");
+    source.is_deleted = false;
+    source.highlights = [
+      {
+        id: 41,
+        external_id: "hi",
+        text: "Historical passage",
+        is_deleted: true,
+      },
+      {
+        id: 42,
+        external_id: "hi",
+        text: "Active export passage",
+        is_deleted: false,
+      },
+    ];
+    const first = await f.load();
+    await first.prepare(f.client, 5);
+    const identities = restart ? await f.load() : first;
+    if (restart) await identities.prepare(f.client, 5);
+    const resolved = await identities.resolve({
+      id: "hi",
+      category: "highlight",
+      parent_id: "doc",
+      content: "Reader passage",
+    });
+    expect(resolved.enrichment.properties).toMatchObject({
+      readwise_id: "42",
+      readwise_source_id: "7",
+      readwise_text: "Active export passage",
+    });
+    const saved = structuredClone(f.saved.get("identities"));
+    expect(JSON.stringify(saved)).not.toContain("Active export passage");
+    await expect(
+      identities.resolve({
+        id: "hi",
+        category: "highlight",
+        parent_id: "other",
+        content: "Reader passage",
+      }),
+    ).rejects.toThrow(/parent/);
+  },
+);
+
+function lifecycleFixture() {
+  const f = fixture();
+  const source = f.sources[0];
+  if (!source) throw new Error("missing source");
+  source.is_deleted = false;
+  source.highlights = [
+    { id: 41, external_id: "hi", text: "Historical passage", is_deleted: true },
+    {
+      id: 42,
+      external_id: "hi",
+      text: "Active export passage",
+      is_deleted: false,
+    },
+  ];
+  const row = (id: string, readwiseId: string) => ({
+    id,
+    source: "readwise",
+    source_id: `one:highlight:${readwiseId}`,
+    type: "readwise.highlight",
+    state: "active" as const,
+    version: 3,
+    schema_version: 1,
+    created_at: "2026-10-15T00:00:00Z",
+    updated_at: "2026-10-15T00:00:00Z",
+    occurred_at: "2026-10-15T00:00:00Z",
+    properties: {
+      account: "one",
+      reader_id: "hi",
+      readwise_id: readwiseId,
+      readwise_source_id: "7",
+      canonical_key: `one:highlight:${readwiseId}`,
+      text:
+        id === "historical" ? "Keep historical bytes" : "Kept active passage",
+    },
+  });
+  f.rows.push(row("active", "42"), {
+    ...row("historical", "41"),
+    state: "archived",
+  });
+  return {
+    ...f,
+    source,
+    document: {
+      id: "hi",
+      category: "highlight",
+      parent_id: "doc",
+      content: "Reader passage",
+    },
+  };
+}
+
+it("adopts only the verified active natural row and leaves a retained historical row intact", async () => {
+  const f = lifecycleFixture();
+  const before = structuredClone(f.rows);
+  const identities = await f.load();
+  await identities.prepare(f.client, 5);
+  expect(await identities.resolve(f.document)).toMatchObject({
+    enrichment: {
+      sourceId: "one:highlight:42",
+      properties: {
+        readwise_id: "42",
+        text: "Kept active passage",
+        readwise_text: "Active export passage",
+      },
+    },
+  });
+  expect(f.rows).toEqual(before);
+});
+
+it("retains a historical canonical holder rather than replacing it with the active alias", async () => {
+  const f = lifecycleFixture();
+  const historical = f.rows[1];
+  if (!historical) throw new Error("missing historical row");
+  historical.properties = {
+    ...historical.properties,
+    canonical_key: "one:reader-highlight:hi",
+  };
+  const before = structuredClone(f.rows);
+  const identities = await f.load();
+  await identities.prepare(f.client, 5);
+  await expect(identities.resolve(f.document)).rejects.toThrow(
+    /existing states|tombstones/,
+  );
+  expect(f.rows).toEqual(before);
+});
+
+it.each([
+  "two-active",
+  "none-active",
+  "source-status-missing",
+  "highlight-status-missing",
+  "parent-mismatch",
+  "parent-missing",
+  "missing-historical",
+  "incomplete",
+  "read-failed",
+])("retains ambiguous or incomplete lifecycle evidence: %s", async (kind) => {
+  const f = lifecycleFixture();
+  const identities = await f.load();
+  await identities.prepare(f.client, 5);
+  if (kind === "two-active" && f.source.highlights[0])
+    f.source.highlights[0].is_deleted = false;
+  if (kind === "none-active" && f.source.highlights[1])
+    f.source.highlights[1].is_deleted = true;
+  if (kind === "source-status-missing") delete f.source.is_deleted;
+  if (kind === "highlight-status-missing" && f.source.highlights[0])
+    delete f.source.highlights[0].is_deleted;
+  const document = { ...f.document };
+  if (kind === "parent-mismatch") document.parent_id = "other";
+  if (kind === "parent-missing") Object.assign(document, { parent_id: null });
+  if (kind === "missing-historical")
+    f.source.highlights = f.source.highlights.slice(1);
+  const resumed = await f.load();
+  await resumed.prepare(f.client, 5);
+  if (kind === "incomplete")
+    vi.spyOn(f.client, "page").mockResolvedValue({
+      count: 1,
+      results: f.sources,
+      nextPageCursor: "again",
+    });
+  if (kind === "read-failed")
+    vi.spyOn(f.client, "page").mockRejectedValue(
+      new Error("export unavailable"),
+    );
+  const before = structuredClone(f.rows);
+  await expect(resumed.resolve(document)).rejects.toThrow(
+    /identity|parent|export|cursor|unavailable|incomplete/,
+  );
+  expect(f.rows).toEqual(before);
+});
+
+it("requires complete paginated export evidence after an identity-cache restart", async () => {
+  const f = lifecycleFixture();
+  const page = vi.spyOn(f.client, "page").mockImplementation((query) =>
+    Promise.resolve({
+      count: 2,
+      results: [
+        {
+          ...f.source,
+          highlights: query.cursor
+            ? f.source.highlights.slice(1)
+            : f.source.highlights.slice(0, 1),
+        },
+      ],
+      nextPageCursor: query.cursor ? null : "second",
+    }),
+  );
+  const first = await f.load();
+  expect(await first.prepare(f.client, 1)).toBe(false);
+  const resumed = await f.load();
+  expect(await resumed.prepare(f.client, 1)).toBe(true);
+  expect(await resumed.resolve(f.document)).toMatchObject({
+    enrichment: {
+      sourceId: "one:highlight:42",
+      properties: { readwise_id: "42" },
+    },
+  });
+  expect(
+    page.mock.calls.filter(([q]) => q.cursor === "second").length,
+  ).toBeGreaterThanOrEqual(2);
+});
+
+it("does not admit the active row through a retained canonical tombstone", async () => {
+  const f = lifecycleFixture();
+  const inspect = f.context.inspect;
+  vi.spyOn(f.context, "inspect").mockImplementation(async (type, query) => {
+    const result = await inspect(type, query);
+    return "links" in query
+      ? {
+          ...result,
+          tombstones: [
+            {
+              key: "one:reader-highlight:hi",
+              purged_at: "2026-10-15T00:00:00Z",
+              settled_at: "2026-10-15T00:00:00Z",
+            },
+          ],
+        }
+      : result;
+  });
+  const identities = await f.load();
+  await identities.prepare(f.client, 5);
+  await expect(identities.resolve(f.document)).rejects.toThrow(/tombstones/);
+});

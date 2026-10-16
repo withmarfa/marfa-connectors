@@ -167,6 +167,19 @@ export function readerExportPassage(
 ): string | undefined {
   if (typeof expected.parentId !== "string" || expected.parentId.length === 0)
     throw new Error("Reader export source identity lacks its verified parent");
+  const active = sources.some(
+    (source) =>
+      source.user_book_id === expected.sourceId &&
+      source.external_id === expected.parentId &&
+      source.source === "reader" &&
+      source.is_deleted === false &&
+      source.highlights.some(
+        (highlight) =>
+          highlight.id === expected.highlightId &&
+          highlight.external_id === expected.readerId &&
+          highlight.is_deleted === false,
+      ),
+  );
   let deleted = false;
   let text: string | undefined;
   for (const source of sources) {
@@ -182,7 +195,12 @@ export function readerExportPassage(
     for (const highlight of source.highlights) {
       if (
         (highlight.external_id === expected.readerId &&
-          highlight.id !== expected.highlightId) ||
+          highlight.id !== expected.highlightId &&
+          !(
+            active &&
+            source.is_deleted === false &&
+            highlight.is_deleted === true
+          )) ||
         (highlight.id === expected.highlightId &&
           highlight.external_id != null &&
           highlight.external_id !== expected.readerId)
