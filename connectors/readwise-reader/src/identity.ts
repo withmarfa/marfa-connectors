@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { packIdentities, unpackIdentities } from "./checkpoint.js";
 import type { CheckpointState, Item, RunContext } from "@withmarfa/connector";
 import {
@@ -25,6 +25,7 @@ interface Alias {
   sourceId?: number;
   parent?: string | null;
   active?: boolean;
+  observed?: string;
 }
 interface Bridge {
   account: string;
@@ -35,6 +36,7 @@ interface Bridge {
   complete: boolean;
   start?: string;
   lower?: string;
+  walk?: string;
 }
 export interface Resolved {
   canonical: string;
@@ -44,7 +46,7 @@ export interface Resolved {
   previousProperties?: Readonly<Record<string, unknown>>;
 }
 const maxBytes = 512 * 1024;
-const catalogVersion = "reader-claims-with-updates";
+const catalogVersion = "reader-claims-with-walk-evidence";
 const fullEvery = 24 * 60 * 60 * 1000;
 function timestamp(value: unknown): value is string {
   return (
@@ -93,9 +95,14 @@ function validateAliases(
         !record(alias) ||
         Object.keys(alias).some(
           (field) =>
-            !["natural", "readwiseId", "sourceId", "parent", "active"].includes(
-              field,
-            ),
+            ![
+              "natural",
+              "readwiseId",
+              "sourceId",
+              "parent",
+              "active",
+              "observed",
+            ].includes(field),
         ) ||
         !boundedString(alias["natural"], 8 * 1024 * 1024) ||
         !exportId(alias["readwiseId"]) ||
@@ -108,6 +115,9 @@ function validateAliases(
           !boundedString(alias["parent"])) ||
         (alias["active"] !== undefined &&
           typeof alias["active"] !== "boolean") ||
+        (alias["observed"] !== undefined &&
+          (typeof alias["observed"] !== "string" ||
+            !/^[a-f0-9]{32}$/.test(alias["observed"]))) ||
         (kind === "document" &&
           (alias["sourceId"] !== undefined ||
             alias["parent"] !== undefined ||
@@ -120,6 +130,18 @@ function validateAliases(
 }
 function multipleAliases(aliases: readonly Alias[]): boolean {
   return (
+    aliases.some(
+      (alias) =>
+        alias.observed !== undefined &&
+        aliases.some(
+          (other) =>
+            other !== alias &&
+            other.observed === alias.observed &&
+            other.natural === alias.natural &&
+            other.readwiseId === alias.readwiseId &&
+            other.sourceId === alias.sourceId,
+        ),
+    ) ||
     new Set(aliases.map((alias) => alias.readwiseId)).size > 1 ||
     new Set(
       aliases.flatMap((alias) =>
@@ -175,7 +197,7 @@ export class ReaderIdentities {
         !record(stored) ||
         Buffer.byteLength(JSON.stringify(stored)) > maxBytes ||
         Object.keys(stored)
-          .filter((key) => !["start", "lower"].includes(key))
+          .filter((key) => !["start", "lower", "walk"].includes(key))
           .sort()
           .join(",") !== "account,aliases,complete,cursor,endpoint,seen" ||
         stored["account"] !== account ||
@@ -189,6 +211,9 @@ export class ReaderIdentities {
         typeof stored["complete"] !== "boolean" ||
         (stored["cursor"] !== null && !boundedString(stored["cursor"])) ||
         (stored["complete"] && stored["cursor"] !== null) ||
+        (stored["walk"] !== undefined &&
+          (typeof stored["walk"] !== "string" ||
+            !/^[a-f0-9]{32}$/.test(stored["walk"]))) ||
         (stored["start"] !== undefined && !timestamp(stored["start"])) ||
         (stored["lower"] !== undefined &&
           (!timestamp(stored["lower"]) || stored["start"] === undefined))
@@ -206,6 +231,7 @@ export class ReaderIdentities {
         ...(typeof stored["start"] === "string"
           ? { start: stored["start"] }
           : {}),
+        ...(typeof stored["walk"] === "string" ? { walk: stored["walk"] } : {}),
         ...(typeof stored["lower"] === "string"
           ? { lower: stored["lower"] }
           : {}),
@@ -314,19 +340,33 @@ export class ReaderIdentities {
     properties: Readonly<Record<string, unknown>>,
   ): void {
     const previous = this.bridge.aliases[key] ?? [];
-    const compatible = previous.findIndex(
-      (alias) =>
-        alias.natural === value.natural &&
-        alias.readwiseId === value.readwiseId &&
-        (alias.sourceId === undefined ||
-          value.sourceId === undefined ||
-          alias.sourceId === value.sourceId) &&
-        (alias.parent === undefined ||
-          value.parent === undefined ||
-          alias.parent === value.parent),
-    );
-    if (compatible < 0) this.bridge.aliases[key] = [...previous, value];
-    else previous[compatible] = { ...previous[compatible], ...value };
+    const matching = (alias: Alias) =>
+      alias.natural === value.natural &&
+      alias.readwiseId === value.readwiseId &&
+      (alias.sourceId === undefined ||
+        value.sourceId === undefined ||
+        alias.sourceId === value.sourceId);
+    const held = previous.filter(matching);
+    if (held.length === 0) this.bridge.aliases[key] = [...previous, value];
+    else if (value.observed !== undefined) {
+      // Parent and status are observations, not identity. A later walk replaces
+      // old evidence; disagreeing observations in one walk remain a conflict.
+      const current = held.filter((alias) => alias.observed === value.observed);
+      const retained = previous.filter((alias) => !matching(alias));
+      this.bridge.aliases[key] = [
+        ...retained,
+        ...current,
+        ...(current.some(
+          (alias) =>
+            alias.parent === value.parent && alias.active === value.active,
+        )
+          ? []
+          : [value]),
+      ];
+    } else if (!held.some((alias) => alias.observed !== undefined)) {
+      const compatible = previous.findIndex(matching);
+      previous[compatible] = { ...previous[compatible], ...value };
+    }
     this.enriched.set(key, properties);
   }
   async prepare(
@@ -336,12 +376,15 @@ export class ReaderIdentities {
   ): Promise<boolean> {
     this.client = client;
     if (
-      (this.bridge.complete && (refresh || !this.prepared)) ||
-      this.bridge.start === undefined
+      (this.bridge.complete &&
+        (refresh || !this.prepared || !this.lifecycleReady)) ||
+      this.bridge.start === undefined ||
+      this.bridge.walk === undefined
     ) {
       const previous = this.bridge.start;
       const full =
         refresh ||
+        this.bridge.walk === undefined ||
         !this.lifecycleReady ||
         previous === undefined ||
         Date.now() - Date.parse(previous) >= fullEvery ||
@@ -356,6 +399,7 @@ export class ReaderIdentities {
         seen: [],
         complete: false,
         start: new Date().toISOString(),
+        walk: randomUUID().replaceAll("-", ""),
       };
       if (full) delete this.bridge.lower;
       // Overlap the prior walk to discover claims added while its pages were read.
@@ -390,6 +434,7 @@ export class ReaderIdentities {
         await this.setLifecycleReady(false);
         for (const aliases of Object.values(this.bridge.aliases))
           for (const alias of aliases) delete alias.active;
+        this.bridge.walk = randomUUID().replaceAll("-", "");
         this.bridge.cursor = null;
         this.bridge.seen = [];
         fromStart = true;
@@ -400,6 +445,9 @@ export class ReaderIdentities {
         at--;
         continue;
       }
+      const walk = this.bridge.walk;
+      if (walk === undefined)
+        throw new Error("Reader identity walk is unavailable");
       for (const source of page.results) {
         const held = collected.get(source.user_book_id) ?? [];
         held.push(source);
@@ -432,6 +480,7 @@ export class ReaderIdentities {
             {
               natural: identity(this.account, "highlight", highlight.id),
               readwiseId: String(highlight.id),
+              observed: walk,
               sourceId: source.user_book_id,
               parent:
                 source.external_id === "" ? null : (source.external_id ?? null),
@@ -544,6 +593,21 @@ export class ReaderIdentities {
     document: ReaderDocument,
     aliases: readonly Alias[],
   ): Promise<void> {
+    if (
+      aliases.some((alias, at) =>
+        aliases
+          .slice(at + 1)
+          .some(
+            (other) =>
+              alias.natural === other.natural &&
+              alias.readwiseId === other.readwiseId &&
+              alias.sourceId === other.sourceId,
+          ),
+      )
+    )
+      throw new Error(
+        "Reader lifecycle identity has conflicting export observations",
+      );
     const claims: Alias[] = [];
     for (const sourceId of new Set(aliases.map((alias) => alias.sourceId))) {
       if (sourceId === undefined)

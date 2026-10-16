@@ -1354,3 +1354,109 @@ it("retains a failed delta cursor and cannot use partial evidence for admission"
   });
   expect(cursors).toEqual([undefined, "retry-delta", "retry-delta"]);
 });
+
+it.each(["restart-delta", "same-instance-full", "restart-full"])(
+  "replaces unknown parent evidence without changing historical rows: %s",
+  async (mode) => {
+    const f = crossSourceFixture();
+    f.historical.external_id = null;
+    const historical = lifecycleFixture().rows[1];
+    if (!historical) throw new Error("missing historical row");
+    historical.properties["reader_managed"] = true;
+    historical.properties["readwise_source_id"] = "8";
+    f.rows.push(historical);
+    const before = structuredClone(f.rows);
+    const first = await f.load();
+    await first.prepare(f.client, 5);
+    if (mode.endsWith("full"))
+      await expect(first.resolve(f.document)).rejects.toThrow(
+        /identity|parent/,
+      );
+    expect(f.rows).toEqual(before);
+    f.historical.external_id = "historical-doc";
+    f.setUpdates([f.historical]);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const next =
+        mode.startsWith("same-instance") && attempt === 0
+          ? first
+          : await f.load();
+      await next.prepare(f.client, 5, mode.endsWith("full"));
+      expect(
+        (await next.resolve(f.document)).enrichment.properties,
+      ).toMatchObject({
+        readwise_id: "42",
+        readwise_text: "Active export passage",
+      });
+      expect(f.rows).toEqual(before);
+    }
+  },
+);
+
+it("replaces a prior known parent only after authoritative reconciliation", async () => {
+  const f = crossSourceFixture();
+  const before = structuredClone(f.rows);
+  const first = await f.load();
+  await first.prepare(f.client, 5);
+  await first.resolve(f.document);
+  f.historical.external_id = "corrected-historical-doc";
+  const stale = await f.load();
+  await stale.prepare(f.client, 5);
+  await expect(stale.resolve(f.document)).rejects.toThrow(/reconciliation/);
+  expect(f.rows).toEqual(before);
+  const reconciled = await f.load();
+  await reconciled.prepare(f.client, 5, true);
+  expect(
+    (await reconciled.resolve(f.document)).enrichment.properties?.[
+      "readwise_id"
+    ],
+  ).toBe("42");
+  expect(f.rows).toEqual(before);
+});
+
+it.each(["parent", "status"])(
+  "holds conflicting observations of one identity in one walk: %s",
+  async (kind) => {
+    const f = crossSourceFixture();
+    const contradictory = structuredClone(f.historical);
+    if (kind === "parent") contradictory.external_id = "contradictory-doc";
+    else if (contradictory.highlights[0])
+      contradictory.highlights[0].is_deleted = false;
+    f.sources.push(contradictory);
+    const before = structuredClone(f.rows);
+    const first = await f.load();
+    await first.prepare(f.client, 5);
+    await expect(first.resolve(f.document)).rejects.toThrow(
+      /reconciliation|identity/,
+    );
+    expect(f.rows).toEqual(before);
+    f.sources.pop();
+    const corrected = await f.load();
+    await corrected.prepare(f.client, 5, true);
+    expect(
+      (await corrected.resolve(f.document)).enrichment.properties?.[
+        "readwise_id"
+      ],
+    ).toBe("42");
+    expect(f.rows).toEqual(before);
+  },
+);
+
+it.each(["parent", "status"])(
+  "holds contradictory observations even without another export identity: %s",
+  async (kind) => {
+    const f = crossSourceFixture();
+    f.sources.splice(1);
+    const contradictory = structuredClone(f.source);
+    if (kind === "parent") contradictory.external_id = "contradictory-doc";
+    else if (contradictory.highlights[0])
+      contradictory.highlights[0].is_deleted = true;
+    f.sources.push(contradictory);
+    const before = structuredClone(f.rows);
+    const identities = await f.load();
+    await identities.prepare(f.client, 5);
+    await expect(identities.resolve(f.document)).rejects.toThrow(
+      /identity|conflicting/,
+    );
+    expect(f.rows).toEqual(before);
+  },
+);
