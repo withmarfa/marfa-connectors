@@ -115,6 +115,9 @@ export interface Asked {
 // The clock moves a second at every write, so `updated_at` orders them.
 export class GitHubStub {
   url = "";
+  personalToken: string | undefined;
+  personalRepositories: ReadonlySet<string> | undefined;
+  personalDenied = new Map<string, string>();
   installations: Installation[] = [{ id: 1, login: "someone" }];
   repositories: Repository[] = [];
   issues: Issue[] = [];
@@ -434,6 +437,11 @@ export class GitHubStub {
   }
 
   private reaches(req: IncomingMessage, repository: Repository): boolean {
+    if (this.isPersonal(req))
+      return (
+        this.personalRepositories === undefined ||
+        this.personalRepositories.has(repository.node)
+      );
     const grant = this.grantOf(req);
     return (
       repository.installation === this.installationOf(req)?.id &&
@@ -443,8 +451,16 @@ export class GitHubStub {
   }
 
   private allows(req: IncomingMessage, wanted: Access): boolean {
+    if (this.isPersonal(req)) return wanted === "read";
     const held = this.grantOf(req)?.permissions["issues"];
     return held === "write" || held === wanted;
+  }
+
+  private isPersonal(req: IncomingMessage): boolean {
+    return (
+      this.personalToken !== undefined &&
+      req.headers.authorization === `Bearer ${this.personalToken}`
+    );
   }
 
   /** Why GitHub would refuse the App's JWT, if it would: it checks the
@@ -691,7 +707,7 @@ export class GitHubStub {
     let match: RegExpExecArray | null;
     if (!asApp && req.headers.authorization !== undefined) {
       const grant = this.grantOf(req);
-      if (grant === undefined) {
+      if (grant === undefined && !this.isPersonal(req)) {
         send(401, { message: "Bad credentials" });
         return;
       }
@@ -736,6 +752,27 @@ export class GitHubStub {
         return;
       }
     }
+    if (this.isPersonal(req)) {
+      const at = /^\/repos\/([^/]+)\/([^/]+)\/.+/.exec(path);
+      const repository =
+        at === null
+          ? undefined
+          : this.repositories.find(
+              (one) => one.owner === at[1] && one.name === at[2],
+            );
+      const required =
+        repository === undefined
+          ? undefined
+          : this.personalDenied.get(repository.node);
+      if (required !== undefined) {
+        send(
+          403,
+          { message: "Resource not accessible by personal access token" },
+          { "x-accepted-github-permissions": required },
+        );
+        return;
+      }
+    }
     // A refused request is not counted, and a spent budget refuses the rest.
     if (!(budget.remaining > 0)) {
       limit(false);
@@ -749,6 +786,16 @@ export class GitHubStub {
     ) {
       this.listingsFailing -= 1;
       send(404, { message: "Not Found" });
+      return;
+    }
+    if (method === "GET" && path === "/user/repos") {
+      if (!this.isPersonal(req)) send(401, { message: "Bad credentials" });
+      else
+        page(
+          this.repositories
+            .filter((one) => this.reaches(req, one) && one.hidden !== true)
+            .map((one) => this.restRepository(one)),
+        );
       return;
     }
     if (method === "GET" && path === "/app") {
@@ -1290,7 +1337,7 @@ export class GitHubStub {
     limit: (secondary: boolean) => void,
   ): void {
     const operation = /^\s*(query|mutation)\s+(\w+)/.exec(body.query)?.[2];
-    if (this.installationOf(req) === undefined) {
+    if (this.installationOf(req) === undefined && !this.isPersonal(req)) {
       send(401, { message: "Bad credentials" });
       return;
     }

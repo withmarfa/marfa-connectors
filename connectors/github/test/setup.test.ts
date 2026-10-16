@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
 import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
 import { apiVersion } from "../src/github.js";
-import { hookUrl } from "../src/setup.js";
+import { hookUrl, readOnly } from "../src/setup.js";
 
 const built = resolve(import.meta.dirname, "../dist/main.js");
 
@@ -82,6 +82,22 @@ describe("the webhook's address", () => {
     expect(hookUrl("https://marfa.example/a/b/", "/inbound/in_1")).toBe(
       "https://marfa.example/a/b/inbound/in_1",
     );
+  });
+});
+
+describe("read-only kinds", () => {
+  it("accepts individual kinds while preserving the other kind's writes", () => {
+    expect(readOnly("issue", "issue")).toBe(true);
+    expect(readOnly("issue", "comment")).toBe(false);
+    expect(readOnly(" issue, comment ")).toBe(true);
+    expect(readOnly("true", "comment")).toBe(true);
+    expect(readOnly("false", "issue")).toBe(false);
+    expect(readOnly(undefined, "issue")).toBe(false);
+  });
+
+  it("rejects unknown kinds and empty list members", () => {
+    expect(() => readOnly("isssue")).toThrow("GITHUB_READ_ONLY");
+    expect(() => readOnly("issue,,comment")).toThrow("GITHUB_READ_ONLY");
   });
 });
 
@@ -238,5 +254,80 @@ describe("setup", () => {
     expect(github.hook?.["content_type"]).toBe("json");
     expect(github.hook?.["secret"]).toBe(written["GITHUB_WEBHOOK_SECRET"]);
     expect(finished.output).not.toContain(written["GITHUB_WEBHOOK_SECRET"]);
+  });
+
+  it("with a personal token set, requires no setup and exits cleanly", async () => {
+    const file = join(dir, "secrets.json");
+    const finished = await setup(
+      file,
+      { GITHUB_PERSONAL_TOKEN: "github_pat_test_12345678" },
+      () => undefined,
+    );
+    expect(finished.code).toBe(0);
+    expect(finished.output).toContain("personal access token");
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({});
+    expect(marfa.endpoints).toHaveLength(1);
+    expect(github.asked).toEqual([]);
+  });
+
+  it("keeps write permission for comments when only issues are read only", async () => {
+    const file = join(dir, "secrets.json");
+    let manifest: Record<string, unknown> | undefined;
+    let visited: Promise<void> | undefined;
+    const finished = await setup(
+      file,
+      { GITHUB_READ_ONLY: "issue" },
+      (line) => {
+        const opened = / open (\S+) in a browser/.exec(line)?.[1];
+        if (opened === undefined) return;
+        visited = (async () => {
+          const html = await (await fetch(opened)).text();
+          manifest = JSON.parse(
+            decoded(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? ""),
+          ) as Record<string, unknown>;
+          const action = decoded(/action="([^"]+)"/.exec(html)?.[1] ?? "");
+          const state = new URL(action).searchParams.get("state");
+          await fetch(
+            `${String(manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
+          );
+        })();
+      },
+    );
+    await visited;
+    expect(finished.code).toBe(0);
+    // issue is read-only but comment is still carried, so issues:write is needed.
+    expect(manifest).toMatchObject({
+      default_permissions: { issues: "write", metadata: "read" },
+    });
+  });
+
+  it("asks only to read for GITHUB_READ_ONLY listing both issue and comment", async () => {
+    const file = join(dir, "secrets.json");
+    let manifest: Record<string, unknown> | undefined;
+    let visited: Promise<void> | undefined;
+    const finished = await setup(
+      file,
+      { GITHUB_READ_ONLY: "issue,comment" },
+      (line) => {
+        const opened = / open (\S+) in a browser/.exec(line)?.[1];
+        if (opened === undefined) return;
+        visited = (async () => {
+          const html = await (await fetch(opened)).text();
+          manifest = JSON.parse(
+            decoded(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? ""),
+          ) as Record<string, unknown>;
+          const action = decoded(/action="([^"]+)"/.exec(html)?.[1] ?? "");
+          const state = new URL(action).searchParams.get("state");
+          await fetch(
+            `${String(manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
+          );
+        })();
+      },
+    );
+    await visited;
+    expect(finished.code).toBe(0);
+    expect(manifest).toMatchObject({
+      default_permissions: { issues: "read", metadata: "read" },
+    });
   });
 });

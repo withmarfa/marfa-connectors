@@ -3,8 +3,10 @@ import type { EnvDeclaration, SetupContext } from "@withmarfa/connector";
 import { anonymous, asApp, defaultBase, type App } from "./github.js";
 
 export interface SetupEnv {
+  readonly GITHUB_PERSONAL_TOKEN?: string | undefined;
   readonly GITHUB_APP_ID?: string | undefined;
   readonly GITHUB_PRIVATE_KEY?: string | undefined;
+  readonly GITHUB_WEBHOOK_SECRET?: string | undefined;
   readonly GITHUB_API_URL?: string | undefined;
   readonly GITHUB_PUBLIC_URL?: string | undefined;
   readonly GITHUB_ORGANIZATION?: string | undefined;
@@ -43,8 +45,20 @@ export function hookUrl(publicUrl: string, path: string): string {
   return address.toString();
 }
 
-export function readOnly(value: string | undefined): boolean {
-  return value === "true";
+export function readOnly(value: string | undefined, kind?: string): boolean {
+  if (value === undefined || value === "false") return false;
+  if (value === "true") return true;
+  const kinds = value.split(",").map((one) => one.trim());
+  if (
+    kind === undefined &&
+    kinds.some((one) => !["repository", "issue", "comment"].includes(one))
+  )
+    throw new Error(
+      `GITHUB_READ_ONLY holds an unknown kind (${kinds.filter((one) => !["repository", "issue", "comment"].includes(one)).join(", ")}); use true, false, or a comma-separated list of repository, issue, comment`,
+    );
+  return kind === undefined
+    ? ["issue", "comment"].every((one) => kinds.includes(one))
+    : kinds.includes(kind);
 }
 
 export function manifest(options: {
@@ -117,6 +131,21 @@ export async function setUp<E extends EnvDeclaration>(
   env: SetupEnv,
 ): Promise<Record<string, string>> {
   const { listen, endpoint, secret, log, signal } = context;
+  readOnly(env.GITHUB_READ_ONLY);
+  if (env.GITHUB_PERSONAL_TOKEN !== undefined) {
+    if (
+      env.GITHUB_APP_ID !== undefined ||
+      env.GITHUB_PRIVATE_KEY !== undefined ||
+      env.GITHUB_WEBHOOK_SECRET !== undefined
+    )
+      throw new Error(
+        "choose either GITHUB_PERSONAL_TOKEN or the GitHub App settings",
+      );
+    log.info(
+      "a personal access token needs no setup; sync runs read only on the schedule",
+    );
+    return {};
+  }
   const base = env.GITHUB_API_URL ?? defaultBase;
   const made = await endpoint({
     label: "github",

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/core";
 import { GraphqlResponseError } from "@octokit/graphql";
@@ -19,6 +20,15 @@ export interface App {
   readonly appId: string;
   readonly privateKey: string;
   readonly base: string;
+}
+
+export interface Personal {
+  readonly token: string;
+  readonly base: string;
+}
+
+export class PermissionRequired extends Error {
+  override name = "PermissionRequired";
 }
 
 function client(base: string, signal: AbortSignal, auth?: object): Client {
@@ -321,6 +331,53 @@ async function tokenFor(
 
 export function anonymous(base: string, signal: AbortSignal): Client {
   return client(base, signal);
+}
+
+export function asPersonalToken(
+  token: string,
+  base: string,
+  secret: Secret,
+  signal: AbortSignal,
+): Client {
+  secret(token);
+  const fingerprint = createHash("sha256").update(token).digest("hex");
+  const octokit = counted(
+    client(base, signal),
+    `${base} personal ${fingerprint}`,
+    true,
+  );
+  octokit.hook.before("request", (options) => {
+    secret(token);
+    const graph = /\/graphql(?:[?#]|$)/.test(options.url);
+    const query = (options as { query?: unknown }).query;
+    if (
+      !["GET", "HEAD"].includes(options.method) &&
+      !(
+        graph &&
+        typeof query === "string" &&
+        /^(?:\s*query\b|\s*\{)/.test(query)
+      )
+    )
+      throw new Error(
+        "GITHUB_PERSONAL_TOKEN is read only; GitHub writes require an App",
+      );
+    options.headers.authorization = `Bearer ${token}`;
+  });
+  octokit.hook.error("request", (error) => {
+    if (
+      error instanceof RequestError &&
+      error.status === 403 &&
+      !rateLimited(error)
+    ) {
+      const required = error.response?.headers["x-accepted-github-permissions"];
+      if (typeof required === "string" && required !== "")
+        throw new PermissionRequired(
+          `GITHUB_PERSONAL_TOKEN needs GitHub permissions ${required}`,
+        );
+    }
+    throw error;
+  });
+  return octokit;
 }
 
 export function asApp(app: App, signal: AbortSignal): Client {

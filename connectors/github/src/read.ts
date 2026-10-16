@@ -25,8 +25,10 @@ import {
 import {
   asApp,
   asInstallation,
+  asPersonalToken,
   ClockSkew,
   RateLimitWaiting,
+  PermissionRequired,
   namedAtMost,
   rateLimited,
   numbersIn,
@@ -35,6 +37,7 @@ import {
   status,
   unlessUnchanged,
   type App,
+  type Personal,
   type Client,
   type Page,
 } from "./github.js";
@@ -167,13 +170,18 @@ class Coverage {
 
 export async function read(
   context: RootContext,
-  app: App,
+  app: App | Personal,
   scope: Scope | undefined,
 ): Promise<void> {
   const coverage = new Coverage();
   try {
     await readAll(context, app, scope, coverage);
   } catch (error) {
+    if ("token" in app && status(error) === 401)
+      throw new Error(
+        "GitHub rejected GITHUB_PERSONAL_TOKEN (401); existing rows and progress are kept",
+        { cause: error },
+      );
     if (rateLimited(error)) {
       context.log.condition(
         "rate-limit-reserve",
@@ -192,7 +200,7 @@ export async function read(
 
 async function readAll(
   context: RootContext,
-  app: App,
+  app: App | Personal,
   scope: Scope | undefined,
   coverage: Coverage,
 ): Promise<void> {
@@ -207,9 +215,16 @@ async function readAll(
   }
   coverage.reached("unsettled");
   const kept = keptOf(state.get("repositories"));
-  const installations = (await asApp(app, signal).paginate(
-    "GET /app/installations",
-  )) as Installation[];
+  const personal =
+    "token" in app
+      ? asPersonalToken(app.token, app.base, secret, signal)
+      : undefined;
+  // Zero groups the personal token's repositories in the shared read plan;
+  // it is never sent to GitHub as an installation id.
+  const installations: Installation[] =
+    "token" in app
+      ? [{ id: 0, account: { login: "the personal token" } }]
+      : await asApp(app, signal).paginate("GET /app/installations");
   coverage.reached("clock-skew");
   const clients = new Map<number, Client>();
   const listed = new Map<
@@ -234,17 +249,24 @@ async function readAll(
       );
       continue;
     }
-    const lister = asInstallation(
-      app,
-      installation.id,
-      { access: "list" },
-      secret,
-      signal,
-    );
+    const lister =
+      personal ??
+      asInstallation(
+        app as App,
+        installation.id,
+        { access: "list" },
+        secret,
+        signal,
+      );
     try {
-      const repositories = (await lister.paginate(
-        "GET /installation/repositories",
-      )) as RestRepository[];
+      const repositories = (
+        personal === undefined
+          ? await lister.paginate("GET /installation/repositories")
+          : await lister.paginate("GET /user/repos", {
+              affiliation: "owner,collaborator,organization_member",
+              per_page: 100,
+            })
+      ) as RestRepository[];
       coverage.reached(`installation-lost:${String(installation.id)}`);
       answered.add(installation.id);
       for (const [node, old] of Object.entries(kept)) {
@@ -278,6 +300,7 @@ async function readAll(
         });
       }
     } catch (error) {
+      if (personal !== undefined && !rateLimited(error)) throw error;
       if (rateLimited(error)) {
         deferred.add(installation.id);
         waiting.push(`${who}'s repositories`);
@@ -300,7 +323,7 @@ async function readAll(
     for (const one of scope.unmatched(seen)) {
       log.condition(
         `repositories-unmatched:${one}`,
-        `GITHUB_REPOSITORIES names ${one}, which no installation of the App shows`,
+        `GITHUB_REPOSITORIES names ${one}, which ${personal === undefined ? "no installation of the App shows" : "the personal token cannot see"}`,
       );
     }
   }
@@ -330,7 +353,7 @@ async function readAll(
   }
   for (const [installation, repositoryIds] of reached) {
     coverage.reached(`token-unnarrowed:${String(installation)}`);
-    if (repositoryIds.length > namedAtMost) {
+    if (personal === undefined && repositoryIds.length > namedAtMost) {
       log.condition(
         `token-unnarrowed:${String(installation)}`,
         `GitHub limits a token to ${String(namedAtMost)} named repositories, so the ${String(repositoryIds.length)} synced or paused under installation ${String(installation)} are read with a token that reaches all of its repositories`,
@@ -338,13 +361,14 @@ async function readAll(
     }
     clients.set(
       installation,
-      asInstallation(
-        app,
-        installation,
-        { access: "read", repositoryIds },
-        secret,
-        signal,
-      ),
+      personal ??
+        asInstallation(
+          app as App,
+          installation,
+          { access: "read", repositoryIds },
+          secret,
+          signal,
+        ),
     );
   }
   // A run for deliveries leaves every cursor as it was: the rest went unread.
@@ -412,7 +436,7 @@ async function readAll(
       continue;
     }
     if (answered.has(repository.installation)) {
-      await takeOut(scoped, node, repository.name);
+      await takeOut(scoped, node, repository.name, personal !== undefined);
       await save(scoped, node);
       continue;
     }
@@ -427,6 +451,7 @@ async function readAll(
     await save(scoped, node, next[node]);
   }
 
+  const permissions: string[] = [];
   const sync = async (node: string, check: boolean): Promise<void> => {
     const at = listed.get(node);
     const repository = next[node];
@@ -456,10 +481,26 @@ async function readAll(
       });
       coverage.reached(`repository-unreadable:${node}`);
     } catch (error) {
+      if (personal !== undefined && status(error) === 401) throw error;
+      if (error instanceof PermissionRequired) {
+        permissions.push(`${repository.name}: ${error.message}`);
+        log.condition(
+          `repository-unreadable:${node}`,
+          `${repository.name}: ${error.message}; its rows and progress are kept`,
+        );
+        next[node] = await marked(
+          scoped,
+          node,
+          repository,
+          privateIn(privacy, node),
+        );
+        await save(scoped, node, next[node]);
+        return;
+      }
       if (!lostAccess(error)) throw error;
       log.condition(
         `repository-unreadable:${node}`,
-        `${repository.name} is listed for the App but answered ${String(status(error))}, so its rows are left as they are, bar the private marker, which is set to true since its visibility is not known`,
+        `${repository.name} is listed for ${personal === undefined ? "the App" : "the personal token"} but answered ${String(status(error))}, so its rows are left as they are, bar the private marker, which is set to true since its visibility is not known`,
       );
       next[node] = await marked(scoped, node, repository, true);
     }
@@ -487,6 +528,8 @@ async function readAll(
       waiting.push(at.repository.full_name);
     }
   }
+  if (permissions.length > 0 && permissions.length === listed.size)
+    throw new Error(permissions.join("; "));
   if (waiting.length > 0) {
     log.condition(
       "rate-limit-reserve",
@@ -503,7 +546,12 @@ async function readAll(
   }
 }
 
-async function takeOut(context: Context, node: string, name: string) {
+async function takeOut(
+  context: Context,
+  node: string,
+  name: string,
+  personal = false,
+) {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
   const links = (rows: Item[]): string[] =>
@@ -515,7 +563,7 @@ async function takeOut(context: Context, node: string, name: string) {
   await archive(issueType, links(await linked(issueType, inRepository, under)));
   await archive(repositoryType, [node]);
   log.info(
-    `${name} was taken out of the App's installation, and its rows archived`,
+    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived`,
   );
 }
 

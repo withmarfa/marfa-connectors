@@ -3,6 +3,7 @@ import { appKey, GitHubStub } from "../../../scripts/proof/github-stub.js";
 import {
   asApp,
   asInstallation,
+  asPersonalToken,
   ClockSkew,
   RateLimitWaiting,
   rateLimited,
@@ -199,5 +200,182 @@ describe("the App's own requests", () => {
         "GET /app/installations",
       ),
     ).rejects.toBeInstanceOf(ClockSkew);
+  });
+});
+
+describe("a personal access token", () => {
+  const personalToken = "github_pat_test_12345678";
+
+  beforeEach(() => {
+    github.personalToken = personalToken;
+  });
+
+  it("is accepted as Bearer auth and lists user repositories", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    const repos = (await octokit.paginate("GET /user/repos", {
+      affiliation: "owner,collaborator,organization_member",
+      per_page: 100,
+    })) as { node_id: string }[];
+    expect(repos.map((r) => r.node_id)).toContain(repository.node);
+  });
+
+  it("returns 401 with GitHub's body when the token is wrong", async () => {
+    const octokit = asPersonalToken(
+      "wrong_token_12345678",
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    const error = await octokit
+      .request("GET /user/repos", { per_page: 100 })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ status: 401 });
+    const asked = github.asked.find((one) => one.path === "/user/repos");
+    expect(asked?.status).toBe(401);
+  });
+
+  it("calls the secret callback with the token before each request", async () => {
+    github.addRepository("someone/tracker");
+    const seen: string[] = [];
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      (v) => seen.push(v),
+      new AbortController().signal,
+    );
+    await octokit.request("GET /repos/{owner}/{repo}", {
+      owner: "someone",
+      repo: "tracker",
+    });
+    expect(seen).toContain(personalToken);
+    // The repository was reachable without an installation token.
+    expect(
+      github.asked.find((one) => one.path === "/repos/someone/tracker")?.status,
+    ).toBe(200);
+  });
+
+  it("sends Bearer authorization, not the token scheme", async () => {
+    github.addRepository("someone/tracker");
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    await octokit.request("GET /user/repos", { per_page: 100 });
+    expect(github.asked.find((one) => one.path === "/user/repos")?.status).toBe(
+      200,
+    );
+    // Stub only accepts the token for /user/repos if it matches personalToken
+    // and the authorization header starts with "Bearer ".
+    expect(
+      github.asked
+        .filter((one) => one.path === "/user/repos")
+        .every((one) => one.status === 200),
+    ).toBe(true);
+  });
+
+  it("tracks its rate-limit budget by a fingerprint, not the token itself", async () => {
+    github.addRepository("someone/tracker");
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    github.budget("core", 0).remaining = 499;
+    await octokit.request("GET /repos/{owner}/{repo}", {
+      owner: "someone",
+      repo: "tracker",
+    });
+    await expect(
+      octokit.request("GET /repos/{owner}/{repo}", {
+        owner: "someone",
+        repo: "tracker",
+      }),
+    ).rejects.toBeInstanceOf(RateLimitWaiting);
+  });
+
+  it("accepts the personal token for GraphQL queries", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    const result = await octokit.graphql<{ nodes: { id: string }[] }>(
+      "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+      { ids: [issue.node] },
+    );
+    expect(result.nodes[0]?.id).toBe(issue.node);
+  });
+
+  it("shares a token's reserve across clients and keeps another token independent", async () => {
+    const make = (token: string) =>
+      asPersonalToken(
+        token,
+        github.url,
+        () => undefined,
+        new AbortController().signal,
+      );
+    github.budget("core", 0).remaining = 499;
+    await make(personalToken).request("GET /user/repos");
+    await expect(
+      make(personalToken).request("GET /user/repos"),
+    ).rejects.toBeInstanceOf(RateLimitWaiting);
+    github.personalToken = "another-personal-token";
+    github.refill("core", 0);
+    await expect(
+      make(github.personalToken).request("GET /user/repos"),
+    ).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("blocks REST writes and GraphQL mutations before GitHub receives them", async () => {
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    await expect(
+      octokit.request("POST /repos/someone/tracker/issues", { title: "New" }),
+    ).rejects.toThrow("read only");
+    await expect(
+      octokit.graphql(
+        "mutation Create { createIssue(input: {}) { issue { id } } }",
+      ),
+    ).rejects.toThrow("read only");
+    expect(github.asked).toEqual([]);
+  });
+
+  it("keeps GraphQL budgets separate from the token's REST reserve", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const octokit = asPersonalToken(
+      personalToken,
+      github.url,
+      () => undefined,
+      new AbortController().signal,
+    );
+    github.budget("core", 0).remaining = 499;
+    await octokit.request("GET /user/repos");
+    await expect(
+      octokit.graphql(
+        "query Issues($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+        { ids: [issue.node] },
+      ),
+    ).resolves.toMatchObject({ nodes: [{ id: issue.node }] });
+    await expect(octokit.request("GET /user/repos")).rejects.toBeInstanceOf(
+      RateLimitWaiting,
+    );
   });
 });

@@ -24,9 +24,10 @@ import issue from "./github.issue.json" with { type: "json" };
 import repository from "./github.repository.json" with { type: "json" };
 
 const env = {
-  GITHUB_APP_ID: "required",
-  GITHUB_PRIVATE_KEY: "secret",
-  GITHUB_WEBHOOK_SECRET: "secret",
+  GITHUB_APP_ID: "optional",
+  GITHUB_PRIVATE_KEY: "optional-secret",
+  GITHUB_WEBHOOK_SECRET: "optional-secret",
+  GITHUB_PERSONAL_TOKEN: "optional-secret",
   GITHUB_READ_ONLY: "optional",
   GITHUB_API_URL: "optional",
   GITHUB_PUBLIC_URL: "optional",
@@ -36,10 +37,17 @@ const env = {
 } as const;
 
 function appOf(values: {
-  GITHUB_APP_ID: string;
-  GITHUB_PRIVATE_KEY: string;
+  GITHUB_APP_ID: string | undefined;
+  GITHUB_PRIVATE_KEY: string | undefined;
   GITHUB_API_URL: string | undefined;
 }): App {
+  if (
+    values.GITHUB_APP_ID === undefined ||
+    values.GITHUB_PRIVATE_KEY === undefined
+  )
+    throw new Error(
+      "GitHub writes require GITHUB_APP_ID and GITHUB_PRIVATE_KEY",
+    );
   return {
     appId: values.GITHUB_APP_ID,
     privateKey: values.GITHUB_PRIVATE_KEY,
@@ -47,10 +55,10 @@ function appOf(values: {
   };
 }
 
-const connector = defineConnector({
+const connector = defineConnector<typeof env>({
   name: "github",
   description:
-    "Repositories, issues and their comments from the repositories a GitHub App is installed on, with sub-issues and blockers, and changes made in Marfa carried back.",
+    "Repositories, issues and comments through a personal access token or GitHub App, with sub-issues and blockers. Personal token runs are read only; App runs can carry Marfa edits back.",
   source: "github",
   types: [
     {
@@ -151,9 +159,30 @@ const connector = defineConnector({
   ],
   env,
   carries: (values) =>
-    readOnly(values.GITHUB_READ_ONLY) ? [] : [issueType, commentType],
+    values.GITHUB_PERSONAL_TOKEN !== undefined
+      ? []
+      : [issueType, commentType].filter(
+          (kind) =>
+            !readOnly(values.GITHUB_READ_ONLY, kind.slice("github.".length)),
+        ),
   checkEnv(values) {
     scopeOf(values.GITHUB_REPOSITORIES);
+    readOnly(values.GITHUB_READ_ONLY);
+    const app = [
+      values.GITHUB_APP_ID,
+      values.GITHUB_PRIVATE_KEY,
+      values.GITHUB_WEBHOOK_SECRET,
+    ];
+    if (values.GITHUB_PERSONAL_TOKEN !== undefined) {
+      if (app.some((one) => one !== undefined))
+        throw new Error(
+          "choose either GITHUB_PERSONAL_TOKEN or the GitHub App settings",
+        );
+    } else if (app.some((one) => one === undefined)) {
+      throw new Error(
+        "set GITHUB_PERSONAL_TOKEN or all of GITHUB_APP_ID, GITHUB_PRIVATE_KEY and GITHUB_WEBHOOK_SECRET",
+      );
+    }
   },
   setup(context) {
     return setUp(context, context.env);
@@ -161,7 +190,12 @@ const connector = defineConnector({
   run(context) {
     return read(
       context,
-      appOf(context.env),
+      context.env.GITHUB_PERSONAL_TOKEN === undefined
+        ? appOf(context.env)
+        : {
+            token: context.env.GITHUB_PERSONAL_TOKEN,
+            base: context.env.GITHUB_API_URL ?? defaultBase,
+          },
       scopeOf(context.env.GITHUB_REPOSITORIES),
     );
   },
@@ -171,16 +205,20 @@ const connector = defineConnector({
   remake(change, context) {
     return remake(change, context, appOf(context.env));
   },
-  inbound: {
-    verify: (delivery, values) =>
-      verifyHmac({
-        secret: values.GITHUB_WEBHOOK_SECRET,
-        body: delivery.body,
-        signature: delivery.header("x-hub-signature-256"),
-        prefix: "sha256=",
+  ...(process.env["GITHUB_PERSONAL_TOKEN"]?.trim()
+    ? {}
+    : {
+        inbound: {
+          verify: (delivery, values) =>
+            verifyHmac({
+              secret: values.GITHUB_WEBHOOK_SECRET ?? "",
+              body: delivery.body,
+              signature: delivery.header("x-hub-signature-256"),
+              prefix: "sha256=",
+            }),
+          hints,
+        },
       }),
-    hints,
-  },
 });
 
 await main(connector);
