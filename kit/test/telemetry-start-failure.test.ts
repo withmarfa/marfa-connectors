@@ -154,6 +154,41 @@ describe("a connector that cannot start and ends", () => {
     );
   });
 
+  it.each([
+    [
+      "a JSON value in it",
+      `invalid settings ${JSON.stringify({ region: "unknown" })}`,
+      "cannot start: invalid settings [removed]",
+    ],
+    [
+      "more than the report allows",
+      "x".repeat(2500),
+      `cannot start: ${"x".repeat(2500)}`.slice(0, 1999) + "\u2026",
+    ],
+  ])(
+    "sends the text it logged, and no other, when the check's message has %s",
+    async (_name, message, expected) => {
+      const connector = testConnector(vendor([one]));
+      const code = await start(
+        {
+          ...connector,
+          checkEnv: () => {
+            throw new Error(message);
+          },
+        },
+        harness.runtime(["--once"], all()),
+      );
+      expect(code).toBe(2);
+      const logged = harness.lines.at(-1) ?? "";
+      expect(logged.endsWith(` error ${expected}`)).toBe(true);
+      expect(only(posthog).value).toBe(expected);
+      // The same line reaches the OpenTelemetry logs.
+      expect(collector.logRecords().map((record) => record.body)).toContain(
+        expected,
+      );
+    },
+  );
+
   it("sends nothing without the PostHog settings, which is all that stops the exception above", async () => {
     const closed = await closedUrl();
     expect(

@@ -44,7 +44,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Every action is pinned by commit with its tag in a comment, and the Dockerfile's base image by digest; Dependabot keeps them current and `scripts/test/tree.test.ts` refuses one that is not.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
-- TypeScript, strict, on Node 22 or later. The transport to Marfa is `@withmarfa/client` and nothing else. Telemetry export is a separate, optional channel to the endpoint the OpenTelemetry settings name, and its code is loaded only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A failed run's error, and the error of a start that ends the process, also reach PostHog's error tracking, as the server's errors do, when `MARFA_POSTHOG_HOST` and `MARFA_POSTHOG_PROJECT_TOKEN` are set beside the endpoint, and the PostHog client is loaded only then.
+- TypeScript, strict, on Node 22 or later. The transport to Marfa is `@withmarfa/client` and nothing else. Telemetry export is a separate, optional channel to the endpoint the OpenTelemetry settings name, and its code is loaded only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A failed run's error, and the error of a start that ends the process after telemetry starts, also reach PostHog's error tracking, as the server's errors do, when `MARFA_POSTHOG_HOST` and `MARFA_POSTHOG_PROJECT_TOKEN` are set beside the endpoint, and the PostHog client is loaded only then. Failures found before telemetry starts, including missing variables and malformed settings, are logged only.
 
 ## Code Review Rules
 
