@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { proveConnectionEvolution } from "./connection-evolution.js";
 import { ProofServer } from "./server.js";
 
@@ -18,6 +21,17 @@ try {
   const boot = server.boot();
   booting = boot;
   const { url, commit } = await boot;
+  const pin = (
+    await readFile(
+      resolve(import.meta.dirname, "../../monorepo.commit"),
+      "utf8",
+    )
+  ).trim();
+  assert.equal(
+    commit,
+    pin,
+    "The proof server does not match the committed pin",
+  );
   console.log(`Connection evolution proof server ${commit}`);
   await proveConnectionEvolution(
     url,
