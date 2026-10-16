@@ -24,6 +24,7 @@ interface Alias {
   readwiseId: string;
   sourceId?: number;
   parent?: string;
+  active?: boolean;
 }
 interface Bridge {
   account: string;
@@ -81,7 +82,9 @@ function validateAliases(
         !record(alias) ||
         Object.keys(alias).some(
           (field) =>
-            !["natural", "readwiseId", "sourceId", "parent"].includes(field),
+            !["natural", "readwiseId", "sourceId", "parent", "active"].includes(
+              field,
+            ),
         ) ||
         !boundedString(alias["natural"], 8 * 1024 * 1024) ||
         !exportId(alias["readwiseId"]) ||
@@ -90,13 +93,32 @@ function validateAliases(
             !Number.isSafeInteger(alias["sourceId"]) ||
             alias["sourceId"] <= 0)) ||
         (alias["parent"] !== undefined && !boundedString(alias["parent"])) ||
+        (alias["active"] !== undefined &&
+          typeof alias["active"] !== "boolean") ||
         (kind === "document" &&
-          (alias["sourceId"] !== undefined || alias["parent"] !== undefined)) ||
+          (alias["sourceId"] !== undefined ||
+            alias["parent"] !== undefined ||
+            alias["active"] !== undefined)) ||
         (alias["sourceId"] === undefined) !== (alias["parent"] === undefined)
       )
         throw new Error("Reader identity aliases are invalid");
     }
   }
+}
+function multipleAliases(aliases: readonly Alias[]): boolean {
+  return (
+    new Set(aliases.map((alias) => alias.readwiseId)).size > 1 ||
+    new Set(
+      aliases.flatMap((alias) =>
+        alias.sourceId === undefined ? [] : [alias.sourceId],
+      ),
+    ).size > 1 ||
+    new Set(
+      aliases.flatMap((alias) =>
+        alias.parent === undefined ? [] : [alias.parent],
+      ),
+    ).size > 1
+  );
 }
 function unpackAliases(
   value: unknown,
@@ -115,7 +137,7 @@ export class ReaderIdentities {
   >();
   private readonly exportSources = new Map<number, readonly Source[]>();
   private client?: ExportClient;
-  private completeExport: readonly Source[] | undefined;
+  private lifecycleReady: boolean;
   private bridge: Bridge;
   private constructor(
     private readonly account: string,
@@ -124,6 +146,7 @@ export class ReaderIdentities {
     endpoint: string,
     stored: unknown,
   ) {
+    this.lifecycleReady = state.get("lifecycle-ready") === true;
     if (stored === undefined)
       this.bridge = {
         account,
@@ -287,10 +310,17 @@ export class ReaderIdentities {
     refresh = false,
   ): Promise<boolean> {
     this.client = client;
-    if (refresh && this.bridge.complete) {
+    if (
+      this.bridge.complete &&
+      (refresh ||
+        (!this.lifecycleReady &&
+          Object.values(this.bridge.aliases).some(multipleAliases)))
+    ) {
+      await this.setLifecycleReady(false);
+      for (const aliases of Object.values(this.bridge.aliases))
+        for (const alias of aliases) delete alias.active;
       this.bridge = { ...this.bridge, cursor: null, seen: [], complete: false };
       this.exportSources.clear();
-      this.completeExport = undefined;
       await this.save();
     }
     if (this.bridge.complete) {
@@ -315,6 +345,9 @@ export class ReaderIdentities {
           restarted
         )
           throw error;
+        await this.setLifecycleReady(false);
+        for (const aliases of Object.values(this.bridge.aliases))
+          for (const alias of aliases) delete alias.active;
         this.bridge.cursor = null;
         this.bridge.seen = [];
         fromStart = true;
@@ -357,6 +390,10 @@ export class ReaderIdentities {
               readwiseId: String(highlight.id),
               sourceId: source.user_book_id,
               parent: source.external_id,
+              ...(typeof source.is_deleted === "boolean" &&
+              typeof highlight.is_deleted === "boolean"
+                ? { active: !source.is_deleted && !highlight.is_deleted }
+                : {}),
             },
             highlight.is_deleted
               ? {}
@@ -380,118 +417,47 @@ export class ReaderIdentities {
       await this.save();
       if (this.bridge.complete) {
         if (fromStart) {
-          this.completeExport = [...collected.values()].flat();
           for (const [id, sources] of collected)
             this.exportSources.set(id, sources);
         }
         await this.save();
+        await this.setLifecycleReady(true);
         return true;
       }
     }
     return false;
   }
-  private async fullExport(): Promise<readonly Source[]> {
-    if (this.completeExport !== undefined) return this.completeExport;
-    if (this.client === undefined || !this.bridge.complete)
-      throw new Error("Reader lifecycle identity requires a complete export");
-    const sources: Source[] = [];
-    let cursor: string | undefined;
-    const seen = new Set<string>();
-    for (let at = 0; at < 50; at++) {
-      const page = parsePage(await this.client.page(cursor ? { cursor } : {}));
-      sources.push(...page.results);
-      if (page.nextPageCursor === null) {
-        this.completeExport = sources;
-        return sources;
-      }
-      if (seen.has(page.nextPageCursor))
-        throw new Error("Readwise lifecycle export repeated a cursor");
-      seen.add(page.nextPageCursor);
-      cursor = page.nextPageCursor;
-    }
-    throw new Error("Reader lifecycle export remains incomplete");
+  private async setLifecycleReady(value: boolean): Promise<void> {
+    const saved = await this.state.checkpoint("lifecycle-ready", value);
+    if (!saved.committed)
+      throw new Error(
+        `Reader lifecycle evidence was not saved: ${saved.reason}`,
+      );
+    this.lifecycleReady = value;
   }
-  private async activeAlias(
+  private activeAlias(
     document: ReaderDocument,
     aliases: readonly Alias[],
-  ): Promise<Alias> {
+  ): Alias {
+    if (!this.bridge.complete || !this.lifecycleReady)
+      throw new Error("Reader lifecycle identity requires a complete export");
     if (typeof document.parent_id !== "string" || !document.parent_id)
       throw new Error("Reader lifecycle identity requires a verified parent");
-    const candidates = (await this.fullExport()).flatMap((source) =>
-      source.source === "reader"
-        ? source.highlights
-            .filter((highlight) => highlight.external_id === document.id)
-            .map((highlight) => ({ source, highlight }))
-        : [],
-    );
-    if (
-      candidates.some(
-        ({ source, highlight }) =>
-          typeof source.is_deleted !== "boolean" ||
-          typeof highlight.is_deleted !== "boolean" ||
-          !source.external_id,
-      ) ||
-      aliases.some(
-        (alias) =>
-          !candidates.some(
-            ({ source, highlight }) =>
-              alias.natural ===
-                identity(this.account, "highlight", highlight.id) &&
-              alias.readwiseId === String(highlight.id) &&
-              (alias.sourceId === undefined ||
-                alias.sourceId === source.user_book_id) &&
-              (alias.parent === undefined ||
-                alias.parent === source.external_id),
-          ),
-      )
-    )
+    if (aliases.some((alias) => typeof alias.active !== "boolean"))
       throw new Error(
         "Reader identity conflict: multiple export IDs have incomplete lifecycle evidence",
       );
-    const active = candidates.filter(
-      ({ source, highlight }) => !source.is_deleted && !highlight.is_deleted,
-    );
+    const active = aliases.filter((alias) => alias.active);
     if (active.length !== 1)
       throw new Error(
         "Reader identity conflict: multiple export IDs claim one Reader object",
       );
     const selected = active[0];
-    if (selected?.source.external_id !== document.parent_id)
+    if (selected?.parent !== document.parent_id)
       throw new Error(
         "Reader identity conflict: export parent differs from Reader parent",
       );
-    const value = {
-      natural: identity(this.account, "highlight", selected.highlight.id),
-      readwiseId: String(selected.highlight.id),
-      sourceId: selected.source.user_book_id,
-      parent: selected.source.external_id,
-    };
-    if (
-      !aliases.some(
-        (alias) =>
-          alias.natural === value.natural &&
-          alias.readwiseId === value.readwiseId,
-      )
-    )
-      throw new Error(
-        "Reader lifecycle identity changed; export reconciliation is required",
-      );
-    // The selection is evidence for this run, never a replacement for historical aliases.
-    this.enriched.set(
-      readerIdentity(this.account, "highlight", document.id),
-      mapHighlight(
-        this.account,
-        selected.source.user_book_id,
-        selected.highlight,
-      ).properties,
-    );
-    this.exportSources.set(
-      selected.source.user_book_id,
-      (await this.fullExport()).filter(
-        (source) => source.user_book_id === selected.source.user_book_id,
-      ),
-    );
-    return value;
+    return selected;
   }
   async resolve(document: ReaderDocument): Promise<Resolved> {
     const kind = document.category === "highlight" ? "highlight" : "document";
@@ -515,24 +481,13 @@ export class ReaderIdentities {
       );
     const canonical = readerIdentity(this.account, kind, document.id);
     const aliases = this.bridge.aliases[canonical] ?? [];
-    const multiple =
-      new Set(aliases.map((alias) => alias.readwiseId)).size > 1 ||
-      new Set(
-        aliases.flatMap((alias) =>
-          alias.sourceId === undefined ? [] : [alias.sourceId],
-        ),
-      ).size > 1 ||
-      new Set(
-        aliases.flatMap((alias) =>
-          alias.parent === undefined ? [] : [alias.parent],
-        ),
-      ).size > 1;
+    const multiple = multipleAliases(aliases);
     if (multiple && kind !== "highlight")
       throw new Error(
         "Reader identity conflict: multiple export IDs claim one Reader object",
       );
     const alias = multiple
-      ? await this.activeAlias(document, aliases)
+      ? this.activeAlias(document, aliases)
       : aliases.reduce<Alias | undefined>(
           (previous, value) => ({ ...previous, ...value }),
           undefined,
@@ -578,12 +533,70 @@ export class ReaderIdentities {
           );
         sources = fetched;
       }
-      exportText = readerExportPassage(sources, {
-        sourceId: alias.sourceId,
-        highlightId: Number(alias.readwiseId),
-        readerId: document.id,
-        parentId: document.parent_id,
-      });
+      try {
+        if (multiple) {
+          for (const held of aliases.filter(
+            (value) => value.sourceId === alias.sourceId,
+          )) {
+            const current = sources.flatMap((source) =>
+              source.highlights
+                .filter(
+                  (highlight) =>
+                    String(highlight.id) === held.readwiseId &&
+                    highlight.external_id === document.id &&
+                    source.external_id === held.parent &&
+                    typeof source.is_deleted === "boolean" &&
+                    typeof highlight.is_deleted === "boolean",
+                )
+                .map(
+                  (highlight) => !source.is_deleted && !highlight.is_deleted,
+                ),
+            );
+            if (current.length !== 1 || current[0] !== held.active)
+              throw new Error(
+                "Reader lifecycle identity needs complete export reconciliation",
+              );
+          }
+          const selected = sources.flatMap((source) =>
+            source.highlights
+              .filter(
+                (highlight) =>
+                  source.is_deleted === false &&
+                  source.user_book_id === alias.sourceId &&
+                  source.external_id === document.parent_id &&
+                  source.source === "reader" &&
+                  highlight.id === Number(alias.readwiseId) &&
+                  highlight.external_id === document.id &&
+                  highlight.is_deleted === false,
+              )
+              .map((highlight) => ({ source, highlight })),
+          );
+          if (selected.length !== 1)
+            throw new Error(
+              "Reader lifecycle active alias needs complete export reconciliation",
+            );
+          const evidence = selected[0];
+          if (evidence === undefined)
+            throw new Error("Reader lifecycle active alias is unavailable");
+          this.enriched.set(
+            canonical,
+            mapHighlight(
+              this.account,
+              evidence.source.user_book_id,
+              evidence.highlight,
+            ).properties,
+          );
+        }
+        exportText = readerExportPassage(sources, {
+          sourceId: alias.sourceId,
+          highlightId: Number(alias.readwiseId),
+          readerId: document.id,
+          parentId: document.parent_id,
+        });
+      } catch (error) {
+        if (multiple) await this.setLifecycleReady(false);
+        throw error;
+      }
       this.exportSources.set(alias.sourceId, sources);
     }
     const linked = await this.context.inspect(type, { links: [canonical] });
@@ -621,6 +634,16 @@ export class ReaderIdentities {
     )
       throw new Error(
         "Reader identity conflict: existing identity has a different account or no natural key",
+      );
+    if (
+      multiple &&
+      row !== undefined &&
+      ((row.source_id !== alias?.natural && row.source_id !== canonical) ||
+        (row.properties["readwise_id"] !== undefined &&
+          row.properties["readwise_id"] !== alias?.readwiseId))
+    )
+      throw new Error(
+        "Reader canonical holder differs from the verified active alias",
       );
     const properties = {
       ...this.enriched.get(canonical),

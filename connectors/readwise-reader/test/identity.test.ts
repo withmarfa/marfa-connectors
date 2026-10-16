@@ -52,7 +52,7 @@ function fixture() {
   };
   const load = () =>
     ReaderIdentities.load("one", "https://example.com", context, state);
-  return { saved, rows, sources, client, load, context };
+  return { saved, rows, sources, client, load, context, state };
 }
 
 it("refines an existing highlight alias with verified export parent evidence for restart", async () => {
@@ -773,4 +773,239 @@ it("does not admit the active row through a retained canonical tombstone", async
   const identities = await f.load();
   await identities.prepare(f.client, 5);
   await expect(identities.resolve(f.document)).rejects.toThrow(/tombstones/);
+});
+
+it.each(["active", "archived", "trashed"] as const)(
+  "refuses a lone historical canonical holder without rewriting its %s state",
+  async (state) => {
+    const f = lifecycleFixture();
+    f.rows.splice(0, 1);
+    const historical = f.rows[0];
+    if (!historical) throw new Error("missing historical row");
+    historical.state = state;
+    historical.properties = {
+      ...historical.properties,
+      reader_managed: true,
+      canonical_key: "one:reader-highlight:hi",
+    };
+    const before = structuredClone(f.rows);
+    for (let run = 0; run < 2; run++) {
+      const identities = await f.load();
+      await identities.prepare(f.client, 5);
+      await expect(identities.resolve(f.document)).rejects.toThrow(
+        /canonical holder|active alias/,
+      );
+      expect(f.rows).toEqual(before);
+    }
+  },
+);
+
+it("enriches a Reader-only natural row without reassigning an existing export identity", async () => {
+  const f = lifecycleFixture();
+  f.rows.splice(0);
+  f.rows.push({
+    id: "reader-only",
+    source: "readwise",
+    source_id: "one:reader-highlight:hi",
+    type: "readwise.highlight",
+    state: "active",
+    version: 1,
+    schema_version: 1,
+    created_at: "2026-10-15T00:00:00Z",
+    updated_at: "2026-10-15T00:00:00Z",
+    occurred_at: "2026-10-15T00:00:00Z",
+    properties: {
+      account: "one",
+      reader_managed: true,
+      reader_id: "hi",
+      canonical_key: "one:reader-highlight:hi",
+      text: "Reader passage",
+    },
+  });
+  const identities = await f.load();
+  await identities.prepare(f.client, 5);
+  expect(await identities.resolve(f.document)).toMatchObject({
+    enrichment: {
+      sourceId: "one:reader-highlight:hi",
+      properties: { readwise_id: "42" },
+    },
+  });
+});
+
+it("keeps a lone document holder unresolved when two export sources claim it", async () => {
+  const f = lifecycleFixture();
+  f.rows.splice(0);
+  f.rows.push({
+    id: "historical-doc",
+    source: "readwise",
+    source_id: "one:source:7",
+    type: "readwise.source",
+    state: "archived",
+    version: 2,
+    schema_version: 1,
+    created_at: "2026-10-15T00:00:00Z",
+    updated_at: "2026-10-15T00:00:00Z",
+    occurred_at: "2026-10-15T00:00:00Z",
+    properties: {
+      account: "one",
+      reader_managed: true,
+      reader_id: "doc",
+      readwise_id: "7",
+      canonical_key: "one:reader-document:doc",
+      title: "Keep historical document",
+    },
+  });
+  f.sources.push({
+    user_book_id: 8,
+    source: "reader",
+    external_id: "doc",
+    is_deleted: false,
+    highlights: [],
+  });
+  const before = structuredClone(f.rows);
+  const identities = await f.load();
+  await identities.prepare(f.client, 5);
+  await expect(
+    identities.resolve({ id: "doc", category: "article" }),
+  ).rejects.toThrow(/multiple export IDs/);
+  expect(f.rows).toEqual(before);
+});
+
+it("retains a complete 51-page lifecycle index across restart", async () => {
+  const f = lifecycleFixture();
+  f.rows.splice(0);
+  const sources = Array.from({ length: 51 }, (_, at) =>
+    at === 0
+      ? f.source
+      : {
+          user_book_id: 7 + at,
+          source: "reader",
+          external_id: `doc-${String(at)}`,
+          is_deleted: false,
+          highlights: [],
+        },
+  );
+  const page = vi.spyOn(f.client, "page").mockImplementation((query) => {
+    const at = Number(query.cursor ?? 0);
+    const source = query.sourceId === 7 ? f.source : sources[at];
+    if (!source) throw new Error("missing export page");
+    return Promise.resolve({
+      count: 51,
+      results: [source],
+      nextPageCursor: query.sourceId === 7 || at === 50 ? null : String(at + 1),
+    });
+  });
+  const first = await f.load();
+  expect(await first.prepare(f.client, 51)).toBe(true);
+  expect(
+    (await first.resolve(f.document)).enrichment.properties?.["readwise_id"],
+  ).toBe("42");
+  const resumed = await f.load();
+  expect(await resumed.prepare(f.client, 1)).toBe(true);
+  page.mockClear();
+  expect(
+    (await resumed.resolve(f.document)).enrichment.properties?.["readwise_id"],
+  ).toBe("42");
+  expect(page.mock.calls.every(([query]) => query.sourceId === 7)).toBe(true);
+});
+
+it("resumes a bounded 51-page evidence upgrade instead of repeating its first pages", async () => {
+  const f = lifecycleFixture();
+  f.rows.splice(0);
+  f.saved.set(
+    "identities",
+    cache({
+      "one:reader-highlight:hi": [
+        {
+          natural: "one:highlight:41",
+          readwiseId: "41",
+          sourceId: 7,
+          parent: "doc",
+        },
+        {
+          natural: "one:highlight:42",
+          readwiseId: "42",
+          sourceId: 7,
+          parent: "doc",
+        },
+      ],
+    }),
+  );
+  const sources = Array.from({ length: 51 }, (_, at) =>
+    at === 0
+      ? f.source
+      : {
+          user_book_id: 7 + at,
+          source: "reader",
+          external_id: `doc-${String(at)}`,
+          is_deleted: false,
+          highlights: [],
+        },
+  );
+  const cursors: number[] = [];
+  vi.spyOn(f.client, "page").mockImplementation((query) => {
+    const at = Number(query.cursor ?? 0);
+    if (query.sourceId === undefined) cursors.push(at);
+    const source = query.sourceId === 7 ? f.source : sources[at];
+    if (!source) throw new Error("missing export page");
+    return Promise.resolve({
+      count: 51,
+      results: [source],
+      nextPageCursor: query.sourceId === 7 || at === 50 ? null : String(at + 1),
+    });
+  });
+  for (let pass = 0; pass < 8; pass++) {
+    const identities = await f.load();
+    const complete = await identities.prepare(f.client, 7);
+    expect(complete).toBe(pass === 7);
+    if (complete)
+      expect(
+        (await identities.resolve(f.document)).enrichment.properties?.[
+          "readwise_id"
+        ],
+      ).toBe("42");
+    else
+      await expect(identities.resolve(f.document)).rejects.toThrow(
+        /complete export/,
+      );
+  }
+  expect(cursors).toEqual(Array.from({ length: 51 }, (_, at) => at));
+});
+
+it("requires the lifecycle readiness checkpoint before admission and retries safely", async () => {
+  const f = lifecycleFixture();
+  const before = structuredClone(f.rows);
+  const checkpoint = f.state.checkpoint.bind(f.state);
+  const fail = vi
+    .spyOn(f.state, "checkpoint")
+    .mockImplementation((key, value) =>
+      key === "lifecycle-ready" && value === true
+        ? Promise.resolve({ committed: false, reason: "row-refused" })
+        : checkpoint(key, value),
+    );
+  const first = await f.load();
+  await expect(first.prepare(f.client, 5)).rejects.toThrow(
+    /evidence was not saved/,
+  );
+  await expect(first.resolve(f.document)).rejects.toThrow(/complete export/);
+  expect(f.rows).toEqual(before);
+  fail.mockRestore();
+  const resumed = await f.load();
+  expect(await resumed.prepare(f.client, 5)).toBe(true);
+  expect(
+    (await resumed.resolve(f.document)).enrichment.properties?.["readwise_id"],
+  ).toBe("42");
+  expect(f.rows).toEqual(before);
+});
+
+it("clears old lifecycle status when a refreshed export omits a historical alias", async () => {
+  const f = lifecycleFixture();
+  const first = await f.load();
+  await first.prepare(f.client, 5);
+  f.source.highlights = f.source.highlights.slice(1);
+  const resumed = await f.load();
+  expect(await resumed.prepare(f.client, 5, true)).toBe(true);
+  await expect(resumed.resolve(f.document)).rejects.toThrow(
+    /incomplete lifecycle evidence/,
+  );
 });
