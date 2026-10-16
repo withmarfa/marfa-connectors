@@ -1602,6 +1602,18 @@ describe("a personal access token run", () => {
     ).toHaveLength(1);
   });
 
+  it("redacts a token echoed by GitHub from logs and failed-run reports", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.addIssue(repository);
+    github.echoCredentials = true;
+    const result = await onceWithToken(personalToken);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("broken for Bearer [redacted]");
+    expect(result.output).not.toContain(personalToken);
+    expect(JSON.stringify(marfa.runs)).not.toContain(personalToken);
+    expect(JSON.stringify(marfa.runs)).toContain("[redacted]");
+  });
+
   it("refuses to start when both App settings and token are set", async () => {
     const result = await once({
       GITHUB_PERSONAL_TOKEN: personalToken,
