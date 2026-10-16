@@ -59,6 +59,9 @@ importers:
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../../kit
+      parse5:
+        specifier: 8.0.1
+        version: 8.0.1
       universal-github-app-jwt:
         specifier: ^2.2.2
         version: 2.2.2
