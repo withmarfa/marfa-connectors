@@ -1769,4 +1769,30 @@ describe("a personal access token run", () => {
     expect(result.code, result.output).toBe(1);
     expect(result.output).toContain("issues=read");
   });
+
+  it.each([false, true])(
+    "refreshes privacy after a denied read without advancing body cursors; healthy repository: %s",
+    async (healthy) => {
+      const repository = github.addRepository("someone/tracker", {
+        private: false,
+      });
+      const issue = github.addIssue(repository);
+      const comment = github.addComment(issue, "Original body");
+      if (healthy) github.addIssue(github.addRepository("someone/healthy"));
+      const first = await onceWithToken(personalToken);
+      expect(first.code, first.output).toBe(0);
+      expect(row(issue.node).properties["private"]).toBe(false);
+      expect(row(comment.node).properties["private"]).toBe(false);
+      const before = structuredClone(kept()[repository.node]);
+      repository.private = true;
+      github.personalDenied.set(repository.node, "issues=read");
+      const result = await onceWithToken(personalToken);
+      expect(result.code, result.output).toBe(healthy ? 0 : 1);
+      for (const node of [repository.node, issue.node, comment.node])
+        expect(row(node).properties["private"]).toBe(true);
+      expect(row(comment.node).properties["body"]).toBe("Original body");
+      expect(kept()[repository.node]).toEqual({ ...before, private: true });
+      expect(result.output).toContain("issues=read");
+    },
+  );
 });

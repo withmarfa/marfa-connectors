@@ -488,6 +488,13 @@ async function readAll(
           `repository-unreadable:${node}`,
           `${repository.name}: ${error.message}; its rows and progress are kept`,
         );
+        next[node] = await marked(
+          scoped,
+          node,
+          repository,
+          privateIn(privacy, node),
+        );
+        await save(scoped, node, next[node]);
         return;
       }
       if (!lostAccess(error)) throw error;
