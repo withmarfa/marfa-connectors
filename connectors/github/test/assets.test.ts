@@ -22,7 +22,7 @@ it.each([
   expect(() => assetUrl(url)).toThrow();
 });
 it("follows only allowed redirects with no credential headers", async () => {
-  const seen: { url: string; init?: RequestInit }[] = [];
+  const seen: { url: string; init: RequestInit | undefined }[] = [];
   const fetcher = ((url: string | URL | Request, init?: RequestInit) => {
     seen.push({ url: url instanceof Request ? url.url : url.toString(), init });
     return Promise.resolve(
