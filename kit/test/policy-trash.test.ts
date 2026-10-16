@@ -41,7 +41,7 @@ function fixture(policy = true) {
     },
     onChange(change) {
       changes.push(change);
-      return Promise.resolve();
+      return Promise.resolve(undefined);
     },
   });
   return {
