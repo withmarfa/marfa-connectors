@@ -384,11 +384,13 @@ async function readAll(
         { name: repository.full_name, private: repository.private },
       ]),
     ),
-    new Set(
-      Object.entries(kept).flatMap(([node, repository]) =>
-        deferred.has(repository.installation) ? [node] : [],
+    {
+      deferred: new Set(
+        Object.entries(kept).flatMap(([node, repository]) =>
+          deferred.has(repository.installation) ? [node] : [],
+        ),
       ),
-    ),
+    },
   );
   // A run for deliveries leaves every cursor as it was: the rest went unread.
   if (context.hints !== undefined) {
@@ -943,6 +945,11 @@ async function marked(
   repository: Kept,
   hidden: boolean,
 ): Promise<Kept> {
+  await markFilesPrivate(
+    context,
+    new Map([[node, { name: repository.name, private: hidden }]]),
+    { complete: false },
+  );
   if (repository.private !== hidden) await markRows(context, node, hidden);
   return { ...repository, private: hidden };
 }

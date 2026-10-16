@@ -11,7 +11,13 @@ let github: GitHubStub;
 const key = appKey();
 beforeEach(async () => {
   marfa = await new ScriptedServer("github", {
-    types: ["github.repository", "github.issue", "github.comment"],
+    types: [
+      "github.repository",
+      "github.issue",
+      "github.comment",
+      "github.file",
+      "github.file.image",
+    ],
     edges: [
       "github.in-repository",
       "github.sub-issue-of",
@@ -19,6 +25,7 @@ beforeEach(async () => {
       "github.relates-to",
       "github.duplicate-of",
       "in-thread",
+      "attached-to",
     ],
   }).start();
   marfa.grants = {

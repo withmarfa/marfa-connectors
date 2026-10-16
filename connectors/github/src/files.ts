@@ -327,13 +327,16 @@ export async function preserveFiles(
     const body =
       typeof row.properties["body"] === "string" ? row.properties["body"] : "";
     const note = noteOf(row.properties["github_files"]);
+    const hash = createHash("sha256").update(body).digest("hex");
+    if (note?.pending === false && note.body === hash) {
+      options.reached?.(String(row.properties["github_id"]));
+      return false;
+    }
     return (
-      (note !== undefined ||
-        /user-attachments\/|private-user-images\.githubusercontent\.com|github-production-user-asset-|objects\.githubusercontent\.com/.test(
-          body,
-        )) &&
-      (note?.pending === true ||
-        note?.body !== createHash("sha256").update(body).digest("hex"))
+      note !== undefined ||
+      /user-attachments\/|private-user-images\.githubusercontent\.com|github-production-user-asset-|objects\.githubusercontent\.com/.test(
+        body,
+      )
     );
   });
   for (const type of ["github.issue", "github.comment"]) {
@@ -441,11 +444,12 @@ async function refreshFiles(
 export async function markFilesPrivate(
   context: Context,
   repositories: ReadonlyMap<string, Omit<Repository, "id">>,
-  deferred: ReadonlySet<string> = new Set(),
+  options: { deferred?: ReadonlySet<string>; complete?: boolean } = {},
 ): Promise<void> {
   await refreshFiles(context, (_id, parent) => {
-    if (deferred.has(parent.repository_id)) return;
+    if (options.deferred?.has(parent.repository_id)) return;
     const current = repositories.get(parent.repository_id);
+    if (!current && options.complete === false) return;
     return {
       ...parent,
       repository: current?.name ?? parent.repository,

@@ -71,6 +71,7 @@ async function fixture(content = png, mime = "image/png") {
     loads = 0,
     revision = 1;
   let text = body;
+  let retainDeliveryCondition = false;
   let rendered: string | undefined;
   let assetId = id;
   let acknowledge = true;
@@ -109,8 +110,8 @@ async function fixture(content = png, mime = "image/png") {
       ...[parent, comment].map((type) => ({
         type,
         fields: ["github_id", "body", "repository", "private", "github_files"],
-        derived: ["github_files"],
-        readOnly: ["github_files"],
+        derived: ["github_files", "private"],
+        readOnly: ["github_files", "private"],
       })),
     ],
     connections: [
@@ -175,6 +176,7 @@ async function fixture(content = png, mime = "image/png") {
           },
         );
       root.log.unreached({
+        keys: retainDeliveryCondition ? ["github-files:one"] : [],
         prefixes: ["github-files:"],
         exceptKeys: [...reached],
       });
@@ -183,12 +185,22 @@ async function fixture(content = png, mime = "image/png") {
   return {
     h: active,
     once: () => start(connector, active.runtime(["--once"])),
+    deliveryRetention: (value: boolean) => {
+      retainDeliveryCondition = value;
+    },
     html: (value: string) => {
       rendered = value;
     },
-    readEmpty: async () => {
+    readEmpty: async (denied = false) => {
       const github = await new GitHubStub().start();
       github.personalToken = "review-token";
+      if (denied) {
+        github.addRepository("owner/repo", {
+          private: false,
+          node: "repoNode",
+        });
+        github.listingsFailing = 10;
+      }
       try {
         return await start(
           defineConnector({
@@ -418,4 +430,37 @@ it("retries unfinished attachment work after a repository rename", async () => {
       .pending,
   ).toBe(false);
   expect(f.counts().loads).toBe(2);
+});
+
+it("marks retained files private when listed repository denies its read", async () => {
+  const f = await fixture();
+  expect(await f.once(), f.h.lines.join("\n")).toBe(0);
+  const saved = f.h.server.states.get("github");
+  if (!saved) throw new Error("No GitHub state");
+  (saved["state"] as Record<string, unknown>)["repositories"] = {
+    repoNode: { installation: 0, name: "owner/repo", private: false },
+  };
+  expect(await f.readEmpty(true), f.h.lines.join("\n")).toBe(0);
+  expect(f.h.server.row("one").properties["private"]).toBe(true);
+  expect(f.h.server.row(id).properties["private"]).toBe(true);
+});
+it("clears completed note condition on scheduled reread", async () => {
+  const f = await fixture();
+  f.setStatus(403);
+  expect(await f.once()).toBe(0);
+  expect(f.h.server.problems.get("github")).toHaveProperty("github-files:one");
+  f.text("");
+  f.html("");
+  f.deliveryRetention(true);
+  expect(await f.once()).toBe(0);
+  expect(
+    (f.h.server.row("one").properties["github_files"] as { pending: boolean })
+      .pending,
+  ).toBe(false);
+  expect(f.h.server.problems.get("github")).toHaveProperty("github-files:one");
+  f.deliveryRetention(false);
+  expect(await f.once()).toBe(0);
+  expect(f.h.server.problems.get("github")).not.toHaveProperty(
+    "github-files:one",
+  );
 });
