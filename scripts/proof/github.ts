@@ -203,7 +203,7 @@ export async function proveGitHub(
           .map((kind) => `${kind.id} ${kind.cascade_on_delete}`);
         if (
           parents.join() !==
-            "github.repository on core.entity,github.issue on core.task,github.comment on core.message" ||
+            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image" ||
           inRepo.join() !== repo.id ||
           subOf.join() !== top.id ||
           blockedBy.join() !== blockerRow.id ||
