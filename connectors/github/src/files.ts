@@ -172,7 +172,7 @@ export async function fileNotes(
 async function existing(
   context: Context,
   id: string,
-): Promise<{ row?: Item; removed: boolean }> {
+): Promise<{ row: Item | undefined; removed: boolean }> {
   const found: Awaited<ReturnType<Context["inspect"]>>[] = [];
   for (const type of fileTypes)
     found.push(await context.inspect(type, { links: [id] }));
@@ -194,18 +194,18 @@ async function keep(
 ): Promise<string | undefined> {
   const prior = await existing(context, asset.id);
   if (prior.removed) return "The retained file was removed in Marfa";
-  const parents = parentsOf(prior.row?.properties.github_parents);
-  const node = String(parent.properties.github_id);
+  const parents = parentsOf(prior.row?.properties["github_parents"]);
+  const node = String(parent.properties["github_id"]);
   parents[node] = {
     type: parent.type,
-    repository: String(parent.properties.repository),
-    private: parent.properties.private !== false,
+    repository: String(parent.properties["repository"]),
+    private: parent.properties["private"] !== false,
   };
   const known =
     prior.row !== undefined &&
     (await context.known(prior.row.type, [asset.id])).has(asset.id) &&
-    typeof prior.row.properties.blob_ref === "string" &&
-    typeof prior.row.properties.mime_type === "string";
+    typeof prior.row.properties["blob_ref"] === "string" &&
+    typeof prior.row.properties["mime_type"] === "string";
   if (known && prior.row) {
     await context.upsert(prior.row.type, [
       fileEntry(asset.id, properties(prior.row), parents),
@@ -236,7 +236,7 @@ async function keep(
     if (
       !after.row ||
       !(await context.known(kind, [asset.id])).has(asset.id) ||
-      typeof after.row.properties.blob_ref !== "string"
+      typeof after.row.properties["blob_ref"] !== "string"
     )
       return "The signed asset could not be kept; retry waits for fresh HTML";
     return;
@@ -267,8 +267,8 @@ export async function preserveFiles(
   );
   const candidates = held.filter((row) => {
     const body =
-      typeof row.properties.body === "string" ? row.properties.body : "";
-    const note = noteOf(row.properties.github_files);
+      typeof row.properties["body"] === "string" ? row.properties["body"] : "";
+    const note = noteOf(row.properties["github_files"]);
     return (
       (note !== undefined ||
         /user-attachments\/|private-user-images\.githubusercontent\.com|github-production-user-asset-|objects\.githubusercontent\.com/.test(
@@ -281,7 +281,7 @@ export async function preserveFiles(
   for (const type of ["github.issue", "github.comment"]) {
     const parents = candidates.filter((row) => row.type === type);
     const byId = new Map(
-      parents.map((row) => [String(row.properties.github_id), row]),
+      parents.map((row) => [String(row.properties["github_id"]), row]),
     );
     const variant = type === "github.issue" ? "Issue" : "IssueComment";
     const operation = type === "github.issue" ? "FileIssues" : "FileComments";
@@ -367,7 +367,7 @@ export async function markFilesPrivate(
   for (const type of fileTypes)
     for (const row of await context.held(type, { state: "any" })) {
       if (row.state === "trashed") continue;
-      const parents = parentsOf(row.properties.github_parents);
+      const parents = parentsOf(row.properties["github_parents"]);
       let changed = false;
       for (const parent of Object.values(parents))
         if (parent.repository === repository && parent.private !== hidden) {
@@ -377,8 +377,7 @@ export async function markFilesPrivate(
       if (changed)
         await context.upsert(type, [
           fileEntry(
-            String(row.properties.github_id),
-            type,
+            String(row.properties["github_id"]),
             properties(row),
             parents,
           ),

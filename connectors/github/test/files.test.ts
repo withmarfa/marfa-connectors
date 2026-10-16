@@ -35,7 +35,7 @@ afterEach(async () => {
   await h?.close();
   h = undefined;
 });
-async function fixture() {
+async function fixture(content = png, mime = "image/png") {
   const active = new Harness(
     await new ScriptedServer("github", {
       types: [parent.id, comment.id],
@@ -56,6 +56,9 @@ async function fixture() {
     queryCount = 0,
     loads = 0,
     revision = 1;
+  let text = body;
+  let assetId = id;
+  let acknowledge = true;
   let parents = [
     { id: "one", type: parent.id, private: false, repository: "owner/repo" },
   ];
@@ -65,7 +68,7 @@ async function fixture() {
       return Promise.resolve({
         nodes: variables.ids.map((node) => ({
           id: node,
-          bodyHTML: `<img src="https://private-user-images.githubusercontent.com/42/123-${id}.png?jwt=signature-${String(revision)}"><a href="https://github.com/user-attachments/files/1/note.txt">Note</a>`,
+          bodyHTML: `<img src="https://private-user-images.githubusercontent.com/42/123-${assetId}.png?jwt=signature-${String(revision)}"><a href="https://github.com/user-attachments/files/1/note.txt">Note</a>`,
         })),
       });
     },
@@ -73,9 +76,9 @@ async function fixture() {
   const fetcher = (() => {
     loads++;
     return Promise.resolve(
-      new Response(response === 200 ? png : null, {
+      new Response(response === 200 ? content : null, {
         status: response,
-        headers: { "content-type": "image/png" },
+        headers: { "content-type": mime },
       }),
     );
   }) as typeof fetch;
@@ -107,7 +110,7 @@ async function fixture() {
                 source_id: p.id,
                 properties: {
                   github_id: p.id,
-                  body,
+                  body: text,
                   repository: p.repository,
                   private: p.private,
                 },
@@ -118,6 +121,7 @@ async function fixture() {
         await preserveFiles(context, client, repository, {
           fetch: fetcher,
           checkpoint: async (parent) =>
+            acknowledge &&
             (await context.state.checkpoint("github-files-last", parent))
               .committed,
         });
@@ -126,6 +130,13 @@ async function fixture() {
   return {
     h: active,
     once: () => start(connector, active.runtime(["--once"])),
+    text: (value: string, uuid = id) => {
+      text = value;
+      assetId = uuid;
+    },
+    acknowledge: (value: boolean) => {
+      acknowledge = value;
+    },
     setStatus: (s: number) => {
       response = s;
     },
@@ -218,20 +229,98 @@ it("keeps one UUID attached to multiple parents and retains the strongest visibi
   expect(await f.mark(false)).toBe(0);
   expect(f.h.server.byId(file.id).properties["private"]).toBe(true);
 });
-it("does not recreate a purged or trashed file", async () => {
+it.each(["purged", "trashed"])(
+  "does not recreate a %s file",
+  async (operation) => {
+    const f = await fixture();
+    await f.once();
+    const file = f.h.server.row(id);
+    if (operation === "purged") f.h.server.purge(id);
+    else f.h.server.trash(file.id);
+    f.parents([
+      { id: "one", type: parent.id, private: false, repository: "owner/repo" },
+      { id: "two", type: comment.id, private: false, repository: "owner/repo" },
+    ]);
+    expect(await f.once()).toBe(0);
+    expect(
+      f.h.server.rows.some(
+        (r) => r.type.startsWith("github.file") && r.state !== "trashed",
+      ),
+    ).toBe(false);
+    expect(f.counts().loads).toBe(1);
+  },
+);
+
+it("keeps a signed non-image as a generic file", async () => {
+  const f = await fixture(
+    new TextEncoder().encode("Retained text"),
+    "text/plain",
+  );
+  expect(await f.once(), f.h.lines.join("\n")).toBe(0);
+  expect(f.h.server.row(id).type).toBe("github.file");
+  expect(f.h.server.row(id).properties["mime_type"]).toBe("text/plain");
+});
+it("preserves the last good asset while a new asset waits, then retries", async () => {
   const f = await fixture();
   await f.once();
-  const file = f.h.server.row(id);
-  f.h.server.purge(id);
-  f.parents([
-    { id: "one", type: parent.id, private: false, repository: "owner/repo" },
-    { id: "two", type: comment.id, private: false, repository: "owner/repo" },
-  ]);
+  const kept = f.h.server.row(id).properties["blob_ref"];
+  const next = "11234567-89ab-4cde-8123-456789abcdef";
+  f.text(body.replace(id, next), next);
+  f.setStatus(403);
+  await f.once();
+  expect(f.h.server.row(id).properties["blob_ref"]).toBe(kept);
+  expect(f.counts().uploads).toBe(1);
+  f.setStatus(200);
+  expect(await f.once()).toBe(0);
+  expect(f.h.server.row(next).properties["blob_ref"]).toBe(kept);
+  expect(f.counts().loads).toBe(3);
+});
+it("does not download an existing UUID when its parent text changes", async () => {
+  const f = await fixture();
+  await f.once();
+  f.text(body + "\nAn edit");
+  expect(await f.once()).toBe(0);
+  expect(f.counts().loads).toBe(1);
+  expect(f.counts().uploads).toBe(1);
+  const before = f.h.server.rows.map((r) => r.version);
+  expect(await f.once()).toBe(0);
+  expect(f.h.server.rows.map((r) => r.version)).toEqual(before);
+});
+it("does not mark attachment work complete without acknowledgement", async () => {
+  const f = await fixture();
+  f.acknowledge(false);
+  await f.once();
+  expect(
+    (f.h.server.row("one").properties["github_files"] as { pending: boolean })
+      .pending,
+  ).toBe(true);
+  f.acknowledge(true);
   expect(await f.once()).toBe(0);
   expect(
-    f.h.server.rows.some(
-      (r) => r.id === file.id || r.type.startsWith("github.file"),
-    ),
+    (f.h.server.row("one").properties["github_files"] as { pending: boolean })
+      .pending,
   ).toBe(false);
+  expect(f.counts().loads).toBe(1);
+});
+it("retries after a blob upload loses its response", async () => {
+  const f = await fixture();
+  f.h.server.resetUploads = true;
+  await f.once();
+  expect(
+    (f.h.server.row("one").properties["github_files"] as { pending: boolean })
+      .pending,
+  ).toBe(true);
+  f.h.server.resetUploads = false;
+  expect(await f.once()).toBe(0);
+  expect(f.counts().uploads).toBe(2);
+  expect(f.h.server.blobs.size).toBe(1);
+});
+it("refreshes retained file visibility without downloading again", async () => {
+  const f = await fixture();
+  await f.once();
+  expect(await f.mark(true)).toBe(0);
+  expect(f.h.server.row(id).properties["private"]).toBe(true);
+  expect(await f.mark(false)).toBe(0);
+  expect(f.h.server.row(id).properties["private"]).toBe(false);
   expect(f.counts().loads).toBe(1);
 });

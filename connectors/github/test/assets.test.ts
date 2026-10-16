@@ -94,3 +94,85 @@ it.each(["declared", "streamed", "incomplete", "empty", "html"])(
     ).rejects.toThrow();
   },
 );
+
+it("bounds redirect cycles and accepts the verified S3 host pattern", async () => {
+  expect(
+    assetUrl(
+      "https://github-production-user-asset-123-456.s3.amazonaws.com/file",
+    ).hostname,
+  ).toContain("s3.amazonaws.com");
+  let calls = 0;
+  const fetcher = (() => {
+    calls++;
+    return Promise.resolve(
+      new Response(null, { status: 302, headers: { location: "/again" } }),
+    );
+  }) as typeof fetch;
+  await expect(
+    openAsset(signed, AbortSignal.timeout(1000), { fetch: fetcher }),
+  ).rejects.toThrow("redirect limit");
+  expect(calls).toBe(5);
+});
+it("cancels an over-limit response before consuming its bytes", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const fetcher = (() =>
+    Promise.resolve(
+      new Response(stream, { headers: { "content-length": "100" } }),
+    )) as typeof fetch;
+  await expect(
+    openAsset(signed, AbortSignal.timeout(1000), {
+      fetch: fetcher,
+      maxBytes: 10,
+    }),
+  ).rejects.toThrow();
+  expect(cancelled).toBe(true);
+});
+it("contains a late stream failure without exposing a signed address", async () => {
+  const large = new Uint8Array(600);
+  large.set(png);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(large);
+    },
+    pull() {
+      throw new Error(signed);
+    },
+  });
+  const fetcher = (() =>
+    Promise.resolve(
+      new Response(stream, { headers: { "content-type": "image/png" } }),
+    )) as typeof fetch;
+  await expect(
+    (async () => {
+      const response = await openAsset(signed, AbortSignal.timeout(1000), {
+        fetch: fetcher,
+      });
+      await new Response(response.bytes).arrayBuffer();
+    })(),
+  ).rejects.toThrow(/GitHub asset/);
+});
+it("bounds a stalled download and contains its transport error", async () => {
+  const fetcher = ((_url: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => {
+          reject(new Error(signed));
+        },
+        {
+          once: true,
+        },
+      );
+    })) as typeof fetch;
+  await expect(
+    openAsset(signed, AbortSignal.timeout(1000), {
+      fetch: fetcher,
+      timeoutMs: 5,
+    }),
+  ).rejects.toThrow("GitHub asset download failed");
+});
