@@ -15,6 +15,7 @@ import { proveInboundRetry } from "./inbound-retry.js";
 import { proveWatchCheckpoint, proveOutbound } from "./watch-checkpoint.js";
 import { proveCheckpoint } from "./checkpoint.js";
 import { proveGitHub } from "./github.js";
+import { proveGitHubRelations } from "./github-relations.js";
 import { proveInbound } from "./inbound.js";
 import { proveKeys } from "./keys.js";
 import { proveReadwise } from "./readwise.js";
@@ -104,6 +105,7 @@ try {
   );
   await proveTracker(marfa, booted.url, manager);
   await proveGitHub(marfa, booted.url, manager, (body) => server.mintKey(body));
+  await proveGitHubRelations(booted.url, (body) => server.mintKey(body));
   await proveCheckpoint(marfa, booted.url);
   await proveWatchCheckpoint(marfa, booted.url);
   await proveOutbound(marfa, booted.url);
