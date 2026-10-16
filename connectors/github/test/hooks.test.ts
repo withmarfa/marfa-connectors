@@ -27,6 +27,8 @@ beforeEach(async () => {
       "github.in-repository",
       "github.sub-issue-of",
       "github.blocked-by",
+      "github.relates-to",
+      "github.duplicate-of",
       "in-thread",
     ],
   }).start();
@@ -190,6 +192,20 @@ describe("a delivery's hints", () => {
     ]);
   });
 
+  it("names both ends of an issue_relates_to event", () => {
+    expect(
+      hints(
+        delivery("issue_relates_to", {
+          issue: { node_id: "I_a" },
+          related_issue: { node_id: "I_b" },
+        }),
+      ),
+    ).toEqual([
+      { type: "github.issue", id: "I_a" },
+      { type: "github.issue", id: "I_b" },
+    ]);
+  });
+
   it("name nothing for a pull request's comment or an event not read", () => {
     expect(
       hints(
@@ -227,6 +243,43 @@ describe("a delivery", () => {
 });
 
 describe("a run for deliveries", () => {
+  it("refreshes both related issues when a cross-repository delivery names only one", async () => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    const a = github.addIssue(first);
+    const b = github.addIssue(second);
+    const low = a.node < b.node ? a : b;
+    const high = a.node < b.node ? b : a;
+    await watching(async () => {
+      a.relates_to = [b.node];
+      b.relates_to = [a.node];
+      deliver("issue_relates_to", {
+        action: "relates_to_added",
+        issue: { node_id: high.node },
+      });
+      await until(
+        () => marfa.deliveries[0]?.outcome === "processed",
+        "the relation add",
+      );
+      expect(marfa.targetsOf(row(low.node).id, "github.relates-to")).toEqual([
+        row(high.node).id,
+      ]);
+      a.relates_to = [];
+      b.relates_to = [];
+      deliver("issue_relates_to", {
+        action: "relates_to_removed",
+        issue: { node_id: high.node },
+      });
+      await until(
+        () => marfa.deliveries[1]?.outcome === "processed",
+        "the relation removal",
+      );
+      expect(marfa.targetsOf(row(low.node).id, "github.relates-to")).toEqual(
+        [],
+      );
+    });
+  });
+
   it("processes healthy hints when the depleted installation has no named changes", async () => {
     const first = github.addRepository("someone/first");
     github.addIssue(first);
@@ -610,3 +663,108 @@ describe("a delivery for a repository GITHUB_REPOSITORIES leaves out", () => {
     );
   });
 });
+
+it.each(["held", "current"])(
+  "retries a single-endpoint delivery when its %s canonical source waits",
+  async (source) => {
+    const first = github.addRepository("someone/first");
+    const second = github.addRepository("someone/second");
+    const a = github.addIssue(first);
+    const b = github.addIssue(second);
+    const low = a.node < b.node ? a : b;
+    const high = a.node < b.node ? b : a;
+    if (source === "held") {
+      a.relates_to = [b.node];
+      b.relates_to = [a.node];
+    }
+    await watching(async () => {
+      a.relates_to = source === "held" ? [] : [b.node];
+      b.relates_to = source === "held" ? [] : [a.node];
+      github.onAsked = (asked) => {
+        const body = asked.body as
+          { query?: string; variables?: { ids?: string[] } } | undefined;
+        if (
+          asked.path === "/graphql" &&
+          body?.query?.includes("query Issues") &&
+          body.variables?.ids?.includes(high.node)
+        )
+          github.budget("graphql").remaining = 500;
+      };
+      deliver("issue_relates_to", {
+        action: source === "held" ? "relates_to_removed" : "relates_to_added",
+        issue: { node_id: high.node },
+      });
+      await until(() => marfa.runs.length > 1, "the partial delivery run");
+      expect(marfa.targetsOf(row(low.node).id, "github.relates-to")).toEqual(
+        source === "held" ? [row(high.node).id] : [],
+      );
+      expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
+      expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+      expect(github.writes()).toEqual([]);
+    });
+    github.onAsked = undefined;
+    github.refill("graphql");
+    await once();
+    expect(marfa.deliveries[0]?.outcome).toBe("processed");
+    expect(marfa.targetsOf(row(low.node).id, "github.relates-to")).toEqual(
+      source === "held" ? [] : [row(high.node).id],
+    );
+    expect(marfa.targetsOf(row(high.node).id, "github.relates-to")).toEqual([]);
+    expect(github.writes()).toEqual([]);
+    const version = row(low.node).version;
+    const edgeIds = marfa.edges.map((edge) => edge.id);
+    await once();
+    expect(row(low.node).version).toBe(version);
+    expect(marfa.edges.map((edge) => edge.id)).toEqual(edgeIds);
+    expect(github.writes()).toEqual([]);
+  },
+);
+
+it.each(["scheduled", "named"])(
+  "refreshes canonical sources reached through older secondary issues (%s)",
+  async (read) => {
+    const repo = github.addRepository("someone/tracker");
+    const older = new Date(Date.now() - 120 * 86_400_000).toISOString();
+    const closed = {
+      state: "closed" as const,
+      state_reason: "completed" as const,
+      closed_at: older,
+      updated_at: older,
+    };
+    const c = github.addIssue(repo, { ...closed, node: "I_a" });
+    const b = github.addIssue(repo, { ...closed, node: "I_b" });
+    const a = github.addIssue(repo, { node: "I_z" });
+    a.blocked_by = [b.node, c.node];
+    await once();
+    a.blocked_by = [b.node];
+    await once();
+    const changed = () => {
+      b.relates_to = [c.node];
+      c.relates_to = [b.node];
+    };
+    if (read === "scheduled") {
+      changed();
+      await once();
+      await once();
+    } else {
+      await watching(async () => {
+        changed();
+        deliver("issues", { action: "edited", issue: { node_id: a.node } });
+        await until(
+          () => marfa.deliveries[0]?.outcome === "processed",
+          "the secondary relation delivery",
+        );
+      });
+    }
+    expect(marfa.targetsOf(row(c.node).id, "github.relates-to")).toEqual([
+      row(b.node).id,
+    ]);
+    expect(marfa.targetsOf(row(b.node).id, "github.relates-to")).toEqual([]);
+    expect(github.writes()).toEqual([]);
+    const version = row(c.node).version;
+    const edgeIds = marfa.edges.map((edge) => edge.id);
+    await once();
+    expect(row(c.node).version).toBe(version);
+    expect(marfa.edges.map((edge) => edge.id)).toEqual(edgeIds);
+  },
+);

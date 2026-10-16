@@ -32,6 +32,7 @@ export const events = [
   "issue_comment",
   "sub_issues",
   "issue_dependencies",
+  "issue_relates_to",
   "repository",
 ];
 

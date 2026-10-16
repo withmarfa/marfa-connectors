@@ -32,6 +32,8 @@ const connections = [
   "github.in-repository",
   "github.sub-issue-of",
   "github.blocked-by",
+  "github.relates-to",
+  "github.duplicate-of",
   "in-thread",
 ];
 
@@ -112,7 +114,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its three types and four connection types, in-thread among them, and the metadata to register them and keep the types current",
+      "github: its key is minted with write on its three types and six connection types, in-thread among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {

@@ -43,6 +43,8 @@ export function hints(delivery: Delivery): readonly Hint[] | "everything" {
     }
     case "sub_issues":
       return named(issueType, payload["sub_issue"], payload["parent_issue"]);
+    case "issue_relates_to":
+      return named(issueType, payload["issue"], payload["related_issue"]);
     case "issue_dependencies":
       return named(
         issueType,

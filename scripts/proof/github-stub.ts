@@ -59,6 +59,8 @@ export interface Issue {
   closed_at: string | null;
   parent: string | null;
   blocked_by: string[];
+  relates_to?: string[];
+  duplicate_of?: string | null;
   pull?: boolean;
   deleted?: boolean;
   moved?: boolean;
@@ -118,6 +120,8 @@ export class GitHubStub {
   personalToken: string | undefined;
   personalRepositories: ReadonlySet<string> | undefined;
   personalDenied = new Map<string, string>();
+  relationsRefused = false;
+  relatedPageSize = 100;
   installations: Installation[] = [{ id: 1, login: "someone" }];
   repositories: Repository[] = [];
   issues: Issue[] = [];
@@ -1187,8 +1191,14 @@ export class GitHubStub {
       "RemoveSubIssue",
       "AddBlockedBy",
       "RemoveBlockedBy",
+      "AddRelatesTo",
+      "RemoveRelatesTo",
     ];
     if (operation !== undefined && relations.includes(operation)) {
+      if (this.relationsRefused) {
+        send(200, refusal("Relationship refused"));
+        return true;
+      }
       if (one === undefined || other === undefined) {
         send(200, notFound);
         return true;
@@ -1212,6 +1222,18 @@ export class GitHubStub {
         if (!one.blocked_by.includes(other.node)) {
           one.blocked_by.push(other.node);
         }
+      } else if (operation === "AddRelatesTo") {
+        one.relates_to = [...new Set([...(one.relates_to ?? []), other.node])];
+        other.relates_to = [
+          ...new Set([...(other.relates_to ?? []), one.node]),
+        ];
+      } else if (operation === "RemoveRelatesTo") {
+        one.relates_to = (one.relates_to ?? []).filter(
+          (node) => node !== other.node,
+        );
+        other.relates_to = (other.relates_to ?? []).filter(
+          (node) => node !== one.node,
+        );
       } else {
         one.blocked_by = one.blocked_by.filter((node) => node !== other.node);
       }
@@ -1316,6 +1338,20 @@ export class GitHubStub {
       blockedBy: {
         nodes: issue.blocked_by.map(related).filter((one) => one !== null),
       },
+      relatesTo: {
+        nodes: (issue.relates_to ?? [])
+          .map(related)
+          .filter((one) => one !== null)
+          .slice(0, this.relatedPageSize),
+        pageInfo: {
+          hasNextPage:
+            (issue.relates_to ?? []).map(related).filter((one) => one !== null)
+              .length > this.relatedPageSize,
+          endCursor: String(this.relatedPageSize),
+        },
+      },
+      duplicateOf:
+        issue.duplicate_of == null ? null : related(issue.duplicate_of),
       subIssues: {
         nodes: this.issues
           .filter((one) => !one.deleted && one.parent === issue.node)
@@ -1373,6 +1409,40 @@ export class GitHubStub {
     if (operation === "Issues" || operation === "Relations") {
       const data = { nodes: nodes(body.variables["ids"], issueNode) };
       send(200, { data, ...(errors.length > 0 && { errors }) });
+      return;
+    }
+    if (operation === "RelatedIssues") {
+      const issue = this.issue(String(body.variables["id"]));
+      if (issue === undefined) {
+        send(200, notFound);
+        return;
+      }
+      const full = this.graphIssue(
+        issue,
+        (where) => !where.private || this.visible(req, where.node),
+      );
+      const saved = this.relatedPageSize;
+      this.relatedPageSize = Number.MAX_SAFE_INTEGER;
+      const all = this.graphIssue(
+        issue,
+        (where) => !where.private || this.visible(req, where.node),
+      )["relatesTo"] as { nodes: unknown[] };
+      this.relatedPageSize = saved;
+      const after = Number(body.variables["after"]);
+      send(200, {
+        data: {
+          node: {
+            ...full,
+            relatesTo: {
+              nodes: all.nodes.slice(after, after + saved),
+              pageInfo: {
+                hasNextPage: all.nodes.length > after + saved,
+                endCursor: String(after + saved),
+              },
+            },
+          },
+        },
+      });
       return;
     }
     if (operation === "Comments") {

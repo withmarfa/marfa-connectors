@@ -12,6 +12,8 @@ const issueFields = `
   repository { id nameWithOwner }
   parent { ${related} }
   blockedBy(first: 50) { nodes { ${related} } }
+  relatesTo(first: 100) { nodes { ${related} } pageInfo { hasNextPage endCursor } }
+  duplicateOf { ${related} }
 `;
 
 const issuesQuery = `query Issues($ids: [ID!]!) {
@@ -25,6 +27,8 @@ const relationsQuery = `query Relations($ids: [ID!]!) {
       id
       parent { ${related} }
       blockedBy(first: 50) { nodes { ${related} } }
+  relatesTo(first: 100) { nodes { ${related} } pageInfo { hasNextPage endCursor } }
+  duplicateOf { ${related} }
       blocking(first: 50) { nodes { id } }
       subIssues(first: 100) { nodes { id } }
     }
@@ -73,6 +77,40 @@ export function loginOf(author: Author | null): string | null {
   return author.__typename === "Bot" ? `${author.login}[bot]` : author.login;
 }
 
+interface RelatedPage {
+  nodes: (Related | null)[];
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+async function allRelated(
+  octokit: Client,
+  node: { id: string; relatesTo: RelatedPage },
+): Promise<Related[]> {
+  let page = node.relatesTo;
+  const found = new Map<string, Related>();
+  const cursors = new Set<string>();
+  for (;;) {
+    for (const one of page.nodes) if (one !== null) found.set(one.id, one);
+    if (!page.pageInfo.hasNextPage) return [...found.values()];
+    const cursor = page.pageInfo.endCursor;
+    if (cursor === null || cursors.has(cursor))
+      throw new Error("GitHub did not advance its related issues cursor");
+    cursors.add(cursor);
+    const answer = (await query(
+      octokit,
+      `query RelatedIssues($id: ID!, $after: String!) {
+      node(id: $id) { ... on Issue { relatesTo(first: 100, after: $after) { nodes { ${related} } pageInfo { hasNextPage endCursor } } } }
+    }`,
+      { id: node.id, after: cursor },
+    )) as { node: { relatesTo: RelatedPage } | null };
+    if (answer.node === null)
+      throw new Error(
+        "GitHub no longer shows an issue while reading its related issues",
+      );
+    page = answer.node.relatesTo;
+  }
+}
+
 interface GraphIssue {
   __typename: string;
   id: string;
@@ -91,6 +129,8 @@ interface GraphIssue {
   repository: { id: string; nameWithOwner: string };
   parent: Related | null;
   blockedBy: { nodes: (Related | null)[] };
+  relatesTo: RelatedPage;
+  duplicateOf: Related | null;
 }
 
 interface GraphRelations {
@@ -98,6 +138,8 @@ interface GraphRelations {
   id: string;
   parent: Related | null;
   blockedBy: { nodes: (Related | null)[] };
+  relatesTo: RelatedPage;
+  duplicateOf: Related | null;
   blocking: { nodes: ({ id: string } | null)[] };
   subIssues: { nodes: ({ id: string } | null)[] };
 }
@@ -163,6 +205,8 @@ export async function issuesByNode(
         },
         relations: {
           parent: node.parent,
+          relatesTo: await allRelated(octokit, node),
+          duplicateOf: node.duplicateOf,
           blockedBy: node.blockedBy.nodes.filter(
             (one): one is Related => one !== null,
           ),
@@ -190,6 +234,8 @@ export async function relationsOf(
     for (const node of known(answer.nodes, "Issue")) {
       found.set(node.id, {
         parent: node.parent,
+        relatesTo: await allRelated(octokit, node),
+        duplicateOf: node.duplicateOf,
         blockedBy: node.blockedBy.nodes.filter(
           (one): one is Related => one !== null,
         ),
@@ -289,6 +335,12 @@ export async function nodesOfNumbers(
 }
 
 const mutations = {
+  addRelatesTo: `mutation AddRelatesTo($issueId: ID!, $other: ID!) {
+    addRelatesTo(input: { issueId: $issueId, relatedIssueId: $other }) { issue { id } }
+  }`,
+  removeRelatesTo: `mutation RemoveRelatesTo($issueId: ID!, $other: ID!) {
+    removeRelatesTo(input: { issueId: $issueId, relatedIssueId: $other }) { issue { id } }
+  }`,
   addSubIssue: `mutation AddSubIssue($issueId: ID!, $other: ID!) {
     addSubIssue(input: { issueId: $issueId, subIssueId: $other, replaceParent: true }) { issue { id } }
   }`,
