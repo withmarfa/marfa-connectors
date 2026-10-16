@@ -25,13 +25,20 @@ beforeAll(() => {
 
 beforeEach(async () => {
   marfa = await new ScriptedServer("github", {
-    types: ["github.repository", "github.issue", "github.comment"],
+    types: [
+      "github.repository",
+      "github.issue",
+      "github.comment",
+      "github.file",
+      "github.file.image",
+    ],
     edges: [
       "github.in-repository",
       "github.sub-issue-of",
       "github.blocked-by",
       "github.relates-to",
       "github.duplicate-of",
+      "attached-to",
       "in-thread",
     ],
   }).start();
@@ -181,6 +188,7 @@ describe("an issue changed in Marfa", () => {
       row(child.node).id,
       row(blocker.node).id,
       "github.blocked-by",
+      "attached-to",
     );
     await ok();
     expect(child.blocked_by).toEqual([blocker.node]);
@@ -208,6 +216,7 @@ describe("an issue changed in Marfa", () => {
       row(child.node).id,
       row(blocker.node).id,
       "github.blocked-by",
+      "attached-to",
     );
     const output = await ok(only);
     expect(child.title).toBe("Child, edited");
@@ -467,6 +476,7 @@ describe("relations drawn in Marfa", () => {
       row(child.node).id,
       row(parent.node).id,
       "github.blocked-by",
+      "attached-to",
     );
     await settled();
     expect(child.parent).toBe(parent.node);
@@ -802,6 +812,7 @@ describe("what the adversarial review found", () => {
       row(child.node).id,
       row(blocker.node).id,
       "github.blocked-by",
+      "attached-to",
     );
     await ok();
     expect(child.blocked_by).toEqual([blocker.node]);
@@ -842,6 +853,7 @@ describe("what the fix review found", () => {
       row(child.node).id,
       row(blocker.node).id,
       "github.blocked-by",
+      "attached-to",
     );
     expect(await ok()).toContain("waits");
     github.mutationsLimited = 0;
@@ -1427,6 +1439,7 @@ describe("a relation GitHub could not make for a passing fault", () => {
       row(child.node).id,
       row(blocker.node).id,
       "github.blocked-by",
+      "attached-to",
     );
     github.mutationsFailing = 1;
     expect(await ok()).toContain("waits");

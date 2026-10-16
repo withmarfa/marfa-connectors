@@ -18,6 +18,7 @@ import {
 import { defaultBase, type App } from "./github.js";
 import { hints } from "./hooks.js";
 import { read } from "./read.js";
+import { fileKinds, filesConnection } from "./files.js";
 import { scopeOf } from "./scope.js";
 import { readOnly, setUp } from "./setup.js";
 import { carry, remake } from "./write.js";
@@ -63,6 +64,7 @@ const connector = defineConnector<typeof env>({
     "Repositories, issues and comments through a personal access token or GitHub App, with sub-issues and blockers. Personal token runs are read only; App runs can carry Marfa edits back.",
   source: "github",
   types: [
+    ...fileKinds,
     {
       // Imported JSON widens every string; the check on start holds the
       // file to the server's.
@@ -93,6 +95,7 @@ const connector = defineConnector<typeof env>({
         "assignees",
         "state_reason",
         "github_updated_at",
+        "github_files",
         "parent_url",
         "blocked_by_urls",
         "related_urls",
@@ -107,6 +110,7 @@ const connector = defineConnector<typeof env>({
         "author",
         "state_reason",
         "github_updated_at",
+        "github_files",
         "parent_url",
         "blocked_by_urls",
         "related_urls",
@@ -114,13 +118,22 @@ const connector = defineConnector<typeof env>({
         inRepository,
         duplicateOf,
       ],
-      derived: ["private"],
+      derived: ["private", "github_files"],
       revive: true,
     },
     {
       type: comment as TypeDefinition,
-      fields: ["github_id", "body", "from", "repository", "private", "url"],
+      fields: [
+        "github_id",
+        "body",
+        "from",
+        "repository",
+        "private",
+        "url",
+        "github_files",
+      ],
       readOnly: [
+        "github_files",
         "from",
         "repository",
         "private",
@@ -128,10 +141,11 @@ const connector = defineConnector<typeof env>({
         inThread,
         inRepository,
       ],
-      derived: ["private"],
+      derived: ["private", "github_files"],
     },
   ],
   connections: [
+    filesConnection,
     {
       id: inRepository,
       label: "In repository",

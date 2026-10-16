@@ -63,6 +63,10 @@
       "type": "string",
       "format": "url",
       "description": "The address of the canonical issue this one is a duplicate of, where that issue's repository is not synced."
+    },
+    "github_files": {
+      "type": "object",
+      "description": "Attachment UUIDs, unavailable links and safe retry outcomes. Signed download addresses are never retained."
     }
   },
   "display_hints": {

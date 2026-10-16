@@ -49,6 +49,7 @@ import {
   relationsOf,
 } from "./graph.js";
 import type { Scope } from "./scope.js";
+import { fileNotes, preserveFiles, markFilesPrivate } from "./files.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
@@ -388,6 +389,16 @@ async function readAll(
       new Set(outside.keys()),
       retained,
     );
+    for (const [node, at] of listed) {
+      const client = clients.get(at.installation);
+      if (
+        client &&
+        !paused.has(node) &&
+        !unsettled.has(node) &&
+        at.repository.has_issues !== false
+      )
+        await preserveFiles(context, client, at.repository.full_name);
+    }
     return;
   }
   const save = async (
@@ -479,6 +490,11 @@ async function readAll(
         retainedRepositories: retained,
         privacy,
         check,
+      });
+      await preserveFiles(scoped, octokit, repository.name, {
+        checkpoint: async (parent) =>
+          (await scoped.state.checkpoint("github-files-last", parent))
+            .committed,
       });
       coverage.reached(`repository-unreadable:${node}`);
     } catch (error) {
@@ -699,32 +715,35 @@ async function syncRepository(
     [...relations.values(), ...beside.map((one) => one.relations)],
     options.retainedRepositories,
   );
-  await upsert(issueType, [
-    ...listed.flatMap((issue) => {
-      const found = relations.get(issue.node_id);
-      if (found === undefined) return [];
-      return [
-        issueEntry(
-          issueOfRest(issue, at),
-          found,
-          options.inside,
-          hidden,
-          knownTargets,
+  await upsert(
+    issueType,
+    await fileNotes(context, issueType, [
+      ...listed.flatMap((issue) => {
+        const found = relations.get(issue.node_id);
+        if (found === undefined) return [];
+        return [
+          issueEntry(
+            issueOfRest(issue, at),
+            found,
+            options.inside,
+            hidden,
+            knownTargets,
+          ),
+        ];
+      }),
+      ...beside
+        .filter(({ issue }) => options.synced.has(issue.repository.node))
+        .map(({ issue, relations: known }) =>
+          issueEntry(
+            issue,
+            known,
+            options.inside,
+            privateIn(options.privacy, issue.repository.node),
+            knownTargets,
+          ),
         ),
-      ];
-    }),
-    ...beside
-      .filter(({ issue }) => options.synced.has(issue.repository.node))
-      .map(({ issue, relations: known }) =>
-        issueEntry(
-          issue,
-          known,
-          options.inside,
-          privateIn(options.privacy, issue.repository.node),
-          knownTargets,
-        ),
-      ),
-  ]);
+    ]),
+  );
 
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
@@ -779,7 +798,7 @@ async function syncRepository(
     new Map(listed.map((issue) => [issue.number, issue.node_id])),
   );
   if (repository.comments !== undefined && repository.private !== hidden) {
-    await markRows(context, node, hidden);
+    await markRows(context, node, hidden, repository.name);
   }
 
   const kept: Kept = {
@@ -873,7 +892,10 @@ async function writeComments(
           ),
         ];
   });
-  await context.upsert(commentType, entries);
+  await context.upsert(
+    commentType,
+    await fileNotes(context, commentType, entries),
+  );
   return new Set(entries.map((entry) => entry.source_id));
 }
 
@@ -883,7 +905,8 @@ async function marked(
   repository: Kept,
   hidden: boolean,
 ): Promise<Kept> {
-  if (repository.private !== hidden) await markRows(context, node, hidden);
+  if (repository.private !== hidden)
+    await markRows(context, node, hidden, repository.name);
   return { ...repository, private: hidden };
 }
 
@@ -893,7 +916,9 @@ async function markRows(
   context: Context,
   node: string,
   hidden: boolean,
+  repositoryName: string,
 ): Promise<void> {
+  await markFilesPrivate(context, repositoryName, hidden);
   const under = { type: repositoryType, id: node };
   for (const type of [issueType, commentType]) {
     const links = (await context.linked(type, inRepository, under)).flatMap(
@@ -1233,20 +1258,28 @@ async function readNamed(
   );
   await upsert(
     issueType,
-    [...issues.values()].map(({ issue, relations }) =>
-      issueEntry(
-        issue,
-        relations,
-        new Set([...synced, ...paused]),
-        privateIn(privacy, issue.repository.node),
-        knownTargets,
+    await fileNotes(
+      context,
+      issueType,
+      [...issues.values()].map(({ issue, relations }) =>
+        issueEntry(
+          issue,
+          relations,
+          new Set([...synced, ...paused]),
+          privateIn(privacy, issue.repository.node),
+          knownTargets,
+        ),
       ),
     ),
   );
   await upsert(
     commentType,
-    [...comments.values()].map((comment) =>
-      commentEntry(comment, privateIn(privacy, comment.repository.node)),
+    await fileNotes(
+      context,
+      commentType,
+      [...comments.values()].map((comment) =>
+        commentEntry(comment, privateIn(privacy, comment.repository.node)),
+      ),
     ),
   );
 
