@@ -25,13 +25,20 @@ export async function proveGitHubRelations(
     const c = github.addIssue(repo, { node: "I_relation_c" });
     a.relates_to = [b.node];
     b.relates_to = [a.node];
-    const types = ["github.repository", "github.issue", "github.comment"];
+    const types = [
+      "github.repository",
+      "github.issue",
+      "github.comment",
+      "github.file",
+      "github.file.image",
+    ];
     const connections = [
       "github.in-repository",
       "github.sub-issue-of",
       "github.blocked-by",
       "github.relates-to",
       "github.duplicate-of",
+      "attached-to",
       "in-thread",
     ];
     const key = await mintKey({

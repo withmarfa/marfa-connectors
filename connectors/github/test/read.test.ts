@@ -8,13 +8,20 @@ import { apiVersion, numbersIn, runsOf } from "../src/github.js";
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
-const types = ["github.repository", "github.issue", "github.comment"];
+const types = [
+  "github.repository",
+  "github.issue",
+  "github.comment",
+  "github.file",
+  "github.file.image",
+];
 const connections = [
   "github.in-repository",
   "github.sub-issue-of",
   "github.blocked-by",
   "github.relates-to",
   "github.duplicate-of",
+  "attached-to",
   "in-thread",
 ];
 
@@ -1797,4 +1804,25 @@ describe("a personal access token run", () => {
       expect(result.output).toContain("issues=read");
     },
   );
+});
+
+it("accounts for unsigned uploads through the App without changing Markdown", async () => {
+  const repository = github.addRepository("someone/files");
+  const body = "[Note](https://github.com/user-attachments/files/1/note.txt)";
+  const issue = github.addIssue(repository, { body });
+  issue.bodyHTML =
+    '<a href="https://github.com/user-attachments/files/1/note.txt">Note</a>';
+  await ok();
+  expect(row(issue.node).properties["body"]).toBe(body);
+  expect(JSON.stringify(row(issue.node).properties["github_files"])).toContain(
+    "did not sign",
+  );
+  const before = marfa.rows.map((row) => ({
+    id: row.id,
+    version: row.version,
+  }));
+  await ok();
+  expect(
+    marfa.rows.map((row) => ({ id: row.id, version: row.version })),
+  ).toEqual(before);
 });

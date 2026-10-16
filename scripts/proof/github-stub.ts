@@ -49,6 +49,7 @@ export interface Issue {
   repository: string;
   title: string;
   body: string | null;
+  bodyHTML?: string;
   state: "open" | "closed";
   state_reason: string | null;
   labels: string[];
@@ -73,6 +74,7 @@ export interface Comment {
   node: string;
   issue: string;
   body: string;
+  bodyHTML?: string;
   user: string;
   created_at: string;
   updated_at: string;
@@ -1274,6 +1276,7 @@ export class GitHubStub {
             __typename: "IssueComment",
             id: comment.node,
             body: comment.body,
+            bodyHTML: comment.bodyHTML ?? "",
             url: `${this.address(repository)}/issues/${String(commentIssue.number)}#issuecomment-${String(comment.id)}`,
             createdAt: comment.created_at,
             updatedAt: comment.updated_at,
@@ -1321,6 +1324,7 @@ export class GitHubStub {
       number: issue.number,
       title: issue.title,
       body: issue.body ?? "",
+      bodyHTML: issue.bodyHTML ?? "",
       state: issue.state === "open" ? "OPEN" : "CLOSED",
       stateReason: issue.state_reason?.toUpperCase() ?? null,
       url: `${this.address(repository)}/issues/${String(issue.number)}`,
@@ -1406,7 +1410,11 @@ export class GitHubStub {
             (where) => !where.private || this.visible(req, where.node),
           );
     };
-    if (operation === "Issues" || operation === "Relations") {
+    if (
+      operation === "Issues" ||
+      operation === "Relations" ||
+      operation === "FileIssues"
+    ) {
       const data = { nodes: nodes(body.variables["ids"], issueNode) };
       send(200, { data, ...(errors.length > 0 && { errors }) });
       return;
@@ -1445,7 +1453,7 @@ export class GitHubStub {
       });
       return;
     }
-    if (operation === "Comments") {
+    if (operation === "Comments" || operation === "FileComments") {
       const data = {
         nodes: nodes(body.variables["ids"], (id) => {
           const comment = this.comments.find((one) => one.node === id);
