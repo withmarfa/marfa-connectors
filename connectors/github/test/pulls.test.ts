@@ -76,6 +76,31 @@ function links(id: string, type: string) {
     .map((target) => marfa.byId(target).properties["github_id"]);
 }
 describe("pull request reading", () => {
+  it("widens the existing repository connection before importing pull requests", async () => {
+    marfa.edgeTypes.set("github.in-repository", {
+      id: "github.in-repository",
+      label: "In repository",
+      cardinality: "many-to-one",
+      source_type_constraints: ["github.issue", "github.comment"],
+      target_type_constraints: ["github.repository"],
+      cascade_on_delete: "orphan",
+      property_schema: {},
+      written_at: "source",
+      shipped: false,
+    });
+    const repo = github.addRepository("someone/upgraded");
+    const pr = github.addPullRequest(repo);
+    await ok();
+    expect(row(pr.node).type).toBe("github.pull_request");
+    expect(links(pr.node, "github.in-repository")).toEqual([repo.node]);
+    expect(
+      marfa.requestsTo("POST", "/edge-types").filter((request) => {
+        const body = request.body as Record<string, unknown>;
+        return body["id"] === "github.in-repository";
+      }),
+    ).toMatchObject([{ body: { evolve_constraints: true } }]);
+  });
+
   it("reads tasks, API closing references and the actual closing pull request", async () => {
     const repo = github.addRepository("someone/tracker");
     const issue = github.addIssue(repo, { state: "closed" });
