@@ -322,6 +322,12 @@ function mapped(
       source_id: enrichment.sourceId ?? canonical,
       properties: values,
       changed_at: date(row.updated_at),
+      ...(enrichment.sourceId !== undefined &&
+        old["canonical_key"] === enrichment.sourceId &&
+        old["reader_managed"] !== true &&
+        enrichment.sourceId !== canonical && {
+          movedFrom: enrichment.sourceId,
+        }),
     },
     textFiles: [],
     conditions: [],
