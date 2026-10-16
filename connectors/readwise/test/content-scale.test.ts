@@ -2,6 +2,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { Entry, Item, PendingInbound } from "@withmarfa/connector";
 import {
   contentQueue,
+  drainContent,
+  ReadwiseAuthorizationError,
+  RateLimited,
   digest,
   enqueueContent,
   mapReaderHighlight,
@@ -668,3 +671,193 @@ it("checkpoints an accepted Reader refusal before a later refusal fills the queu
   expect(f.pending()).toEqual([]);
   expect(contentQueue(f.scope("reader-content-queue").state)).toHaveLength(128);
 });
+
+async function queuedFixture(size: number) {
+  const f = fixture(size);
+  await enqueueContent(
+    f.scope("reader-content").state,
+    f.documents.map((document) => ({
+      id: document.id,
+      canonical: `sample:reader-document:${document.id}`,
+      type: "readwise.source",
+      revision: readerContentRevision(document),
+    })),
+  );
+  return f;
+}
+
+it("reports the final empty content queue after two productive drains", async () => {
+  const f = await queuedFixture(11);
+  const unreached = vi.spyOn(f.context.log, "unreached");
+  await f.run();
+  expect(unreached.mock.calls).toHaveLength(1);
+  expect(unreached).toHaveBeenCalledWith({
+    prefixes: ["readwise:content:"],
+    exceptKeys: f.documents.map(
+      (document) =>
+        `readwise:content:${digest(`sample:reader-document:${document.id}`)}`,
+    ),
+  });
+  expect(contentQueue(f.scope("reader-content").state)).toEqual([]);
+  expect(f.conditions.has("readwise:content-pending")).toBe(false);
+  expect(
+    [...f.rows.values()].filter(
+      (row) => row.properties["preservation"] === "accounted",
+    ),
+  ).toHaveLength(11);
+});
+
+it("reports only the final remaining content count after two drains", async () => {
+  const f = await queuedFixture(17);
+  const condition = vi.spyOn(f.context.log, "condition");
+  await f.run();
+  expect(
+    condition.mock.calls.filter(([key]) => key === "readwise:content-pending"),
+  ).toHaveLength(1);
+  expect(contentQueue(f.scope("reader-content").state)).toHaveLength(1);
+  expect(f.conditions.get("readwise:content-pending")).toContain("1 documents");
+});
+
+it("keeps genuine job failures beside the final pending count", async () => {
+  const f = await queuedFixture(11);
+  const page = f.reader.page.bind(f.reader);
+  f.reader.page = (query) =>
+    query?.id === "0000"
+      ? Promise.reject(new Error("download lookup failed"))
+      : page(query);
+  await f.run();
+  expect(contentQueue(f.scope("reader-content").state)).toHaveLength(1);
+  expect(f.conditions.get("readwise:content-pending")).toContain("1 documents");
+  expect(
+    f.conditions.get(
+      `readwise:content:${digest("sample:reader-document:0000")}`,
+    ),
+  ).toContain("incomplete");
+});
+
+it("reports remaining content when authorization aborts the first drain", async () => {
+  const f = await queuedFixture(11);
+  const page = f.reader.page.bind(f.reader);
+  f.reader.page = (query) =>
+    query?.id === "0000"
+      ? Promise.reject(new ReadwiseAuthorizationError(401))
+      : page(query);
+  await expect(f.run()).rejects.toThrow("HTTP 401");
+  expect(contentQueue(f.scope("reader-content").state)).toHaveLength(11);
+  expect(f.conditions.get("readwise:content-pending")).toContain(
+    "11 documents",
+  );
+});
+
+it("reports without requests, resources, or writes when the job limit is zero", async () => {
+  const f = await queuedFixture(1);
+  const state = f.scope("reader-content").state;
+  const checkpoint = vi.spyOn(state, "checkpoint");
+  const scope = vi.spyOn(f.context, "forScope");
+  const inspect = vi.spyOn(f.context, "inspect");
+  const known = vi.spyOn(f.context, "known");
+  const page = vi.spyOn(f.reader, "page");
+  const document = vi.spyOn(f.reader, "document");
+  const fetch = vi.fn<typeof globalThis.fetch>();
+  if (f.context.known === undefined) throw new Error("missing fixture lookup");
+  const context = { ...f.context, known: f.context.known };
+  await drainContent(context, f.reader, state, { maxJobs: 0, fetch });
+  for (const call of [checkpoint, scope, inspect, known, page, document, fetch])
+    expect(call).not.toHaveBeenCalled();
+  expect(f.conditions.get("readwise:content-pending")).toContain("1 documents");
+  expect(contentQueue(state)).toHaveLength(1);
+  await drainContent(context, f.reader, state, { maxJobs: 1 });
+  expect(page).toHaveBeenCalled();
+  expect(scope).toHaveBeenCalled();
+  expect(inspect).toHaveBeenCalled();
+  expect(checkpoint).toHaveBeenCalled();
+  expect(contentQueue(state)).toEqual([]);
+});
+
+it.each([1, 11])(
+  "clears a prior document warning after successful preservation of %i documents",
+  async (size) => {
+    const { Harness, vendor } = await import("../../../kit/test/harness.js");
+    const harness = await Harness.create();
+    try {
+      const f = await queuedFixture(size);
+      const key = `readwise:content:${digest("sample:reader-document:0000")}`;
+      const message = "Previous document preservation was incomplete";
+      const held = vendor([]);
+      held.conditions = [
+        [key, message],
+        ["readwise:content:unattempted", "Unattempted content remains pending"],
+      ];
+      expect(await harness.once(held)).toBe(0);
+      expect(harness.lastRun().summary).toContain(message);
+      held.conditions = [];
+      held.read = async (context) => {
+        f.context.log = context.log;
+        await f.run();
+      };
+      expect(await harness.once(held)).toBe(0);
+      expect(contentQueue(f.scope("reader-content").state)).toEqual([]);
+      expect(
+        [...f.rows.values()].filter(
+          (row) => row.properties["preservation"] === "accounted",
+        ),
+      ).toHaveLength(size);
+      expect(harness.lastRun().summary).toContain(
+        "Unattempted content remains pending",
+      );
+      expect(harness.lastRun().summary).not.toContain(message);
+    } finally {
+      await harness.close();
+    }
+  },
+);
+
+it.each(["job failure", "hints", "rate limit"])(
+  "retains document warnings through %s",
+  async (mode) => {
+    const { Harness, vendor } = await import("../../../kit/test/harness.js");
+    const harness = await Harness.create();
+    try {
+      const f = await queuedFixture(2);
+      const key = `readwise:content:${digest("sample:reader-document:0000")}`;
+      const prior = "Previous document preservation was incomplete";
+      const unattempted = "Unattempted content remains pending";
+      const held = vendor([]);
+      held.conditions = [
+        [key, prior],
+        ["readwise:content:unattempted", unattempted],
+      ];
+      expect(await harness.once(held)).toBe(0);
+      held.conditions = [];
+      if (mode === "hints") f.context.hints = new Map();
+      else {
+        const page = f.reader.page.bind(f.reader);
+        f.reader.page = (query) => {
+          if (mode === "job failure" && query?.id === "0000")
+            return Promise.reject(new Error("Content unavailable"));
+          if (mode === "rate limit" && query?.id === "0001")
+            return Promise.reject(new RateLimited("2026-10-16T00:00:00Z"));
+          return page(query);
+        };
+      }
+      held.read = async (context) => {
+        f.context.log = context.log;
+        await f.run();
+      };
+      expect(await harness.once(held)).toBe(0);
+      expect(harness.lastRun().summary).toContain(unattempted);
+      if (mode === "job failure") {
+        expect(harness.lastRun().summary).toContain(
+          "Reader preservation is incomplete",
+        );
+        expect(contentQueue(f.scope("reader-content").state)).toHaveLength(1);
+      } else expect(harness.lastRun().summary).toContain(prior);
+      if (mode === "rate limit") {
+        expect(harness.lastRun().summary).toContain("Readwise rate limit");
+        expect(contentQueue(f.scope("reader-content").state)).toHaveLength(1);
+      }
+    } finally {
+      await harness.close();
+    }
+  },
+);

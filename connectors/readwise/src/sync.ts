@@ -346,10 +346,24 @@ export async function sync(
       now,
       waitUntil: (until) => context.waitUntil(until),
     });
+  const reachedContent = new Set<string>();
   const preserve = async () => {
     if (context.known !== undefined)
       await drainContent(
-        { ...context, known: context.known },
+        {
+          ...context,
+          known: context.known,
+          log: {
+            ...context.log,
+            unreached: ({ exceptKeys = [] }) => {
+              for (const key of exceptKeys) reachedContent.add(key);
+            },
+            condition: (key, message) => {
+              if (key !== "readwise:content-pending")
+                context.log.condition(key, message);
+            },
+          },
+        },
         reader,
         content.state,
         { now, exportClient: client, maxBytes: maximumContentBytes },
@@ -450,5 +464,26 @@ export async function sync(
     await checkpoint(scope, { ...acknowledged, retryUntil: error.until });
     context.log.unreached({ prefixes: ["readwise:"] });
     context.log.condition("readwise:rate-limit", error.message);
+  } finally {
+    if (context.known !== undefined)
+      await drainContent(
+        {
+          ...context,
+          known: context.known,
+          log: {
+            ...context.log,
+            // Independent batches must not mask jobs reached by another drain.
+            unreached: (selectors) => {
+              context.log.unreached({
+                ...selectors,
+                exceptKeys: [...reachedContent],
+              });
+            },
+          },
+        },
+        reader,
+        content.state,
+        { maxJobs: 0 },
+      );
   }
 }
