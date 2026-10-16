@@ -485,6 +485,12 @@ export async function runOnce<E extends EnvDeclaration>(
     return next;
   };
   const specs = specsOf(connector, env, setup.narrowed);
+  // The retry guard below must not add ownership lookups for trashed rows.
+  const policyKinds = new Set(
+    [...specs.values()]
+      .filter((kind) => kind.policy !== undefined)
+      .map((kind) => kind.type),
+  );
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
   for (const [type, condition] of setup.narrowed?.conditions ?? []) {
@@ -580,6 +586,41 @@ export async function runOnce<E extends EnvDeclaration>(
     outboundRetryAt = undefined;
   };
   const recovered = new Set<string>();
+  const suspendedOutbound = new Set<string>();
+  // An uncertain write must keep its local row until it can be recovered.
+  // Reuse ownership admission so mirrors, inbound writes and connections
+  // cannot replace it while another kind continues to sync.
+  for (const type of new Set(
+    [...outbound.values()].map((one) => one.change.item.type),
+  )) {
+    const original = specs.get(type);
+    if (original === undefined) continue;
+    specs.set(type, {
+      ...original,
+      policy(item, entry) {
+        const policy = original.policy?.(item, entry);
+        const held = [...outbound.values()].some((one) => {
+          const captured = one.change.item;
+          if (captured.type !== type || !suspendedOutbound.has(captured.id))
+            return false;
+          if (item?.id === captured.id) return true;
+          if (entry === undefined) return false;
+          const link =
+            original.link === undefined
+              ? undefined
+              : (one.agreement?.link ?? captured.properties[original.link]);
+          return (
+            entry.source_id === captured.source_id ||
+            (original.link !== undefined &&
+              typeof link === "string" &&
+              entry.properties[original.link] === link) ||
+            (one.change.kind === "created" && link === undefined)
+          );
+        });
+        return held ? { ...policy, owned: false } : (policy ?? {});
+      },
+    });
+  }
   const refusedOutbound = new Map<
     string,
     { change: Change; reason?: string }
@@ -1811,7 +1852,7 @@ export async function runOnce<E extends EnvDeclaration>(
     if (recovered.has(item.id)) return;
     if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
     const { spec, rows } = lane(item.type);
-    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
+    if (policyKinds.has(item.type) || refusedOutbound.has(item.id)) {
       const fresh = await setup.marfa.item(item.id);
       if (fresh?.type !== item.type) return;
       rows.adopt(fresh);
@@ -2441,8 +2482,30 @@ export async function runOnce<E extends EnvDeclaration>(
       const id = change.item.id;
       recovered.add(id);
       const declared = specs.get(change.item.type);
-      if (declared === undefined || connector.onChange === undefined)
-        throw new Error("a pending outbound intent has no declared handler");
+      const suspend = (reason: string): void => {
+        suspendedOutbound.add(id);
+        raised.set(
+          `outbound-pending:${id}`,
+          `the pending write for ${id} is retained without replay because ${reason}`,
+        );
+      };
+      if (declared === undefined || connector.onChange === undefined) {
+        suspend("its kind has no declared write handler");
+        continue;
+      }
+      if (
+        !record.acknowledged &&
+        record.operation === "remake" &&
+        connector.remake === undefined
+      ) {
+        suspend("its remake handler is no longer declared");
+        continue;
+      }
+      const kind = forRow(declared, change.item);
+      if (!kind.twoWay || kind.owned === false) {
+        suspend("its kind no longer has write authority");
+        continue;
+      }
       if (refusedOutbound.has(id)) {
         const live = await setup.marfa.item(id);
         if (live?.type === change.item.type) {
@@ -2463,19 +2526,19 @@ export async function runOnce<E extends EnvDeclaration>(
         purgeRefusedOf(id, refusal.reason);
         continue;
       }
-      const kind = forRow(declared, change.item);
-      if (!kind.twoWay || kind.owned === false)
-        throw new Error(
-          "a pending outbound intent no longer has write authority",
-        );
       try {
         if (!record.acknowledged) {
           const live = await setup.marfa.item(id);
-          if (live !== undefined && forRow(declared, live).owned === false)
-            throw new Error("a pending outbound intent no longer owns its row");
+          if (
+            (live === undefined && change.kind !== "purged") ||
+            (live !== undefined &&
+              (live.type !== change.item.type ||
+                !forRow(declared, live).twoWay))
+          ) {
+            suspend("the current row does not prove write authority");
+            continue;
+          }
           if (record.operation === "remake") {
-            if (connector.remake === undefined)
-              throw new Error("a pending remake has no handler");
             await invoke(change, "remake", () => callRemake(change));
           } else {
             await invoke(
@@ -2757,7 +2820,13 @@ export async function runOnce<E extends EnvDeclaration>(
       for (const { refused, ...item } of purged.values()) {
         if (recovered.has(item.id)) continue;
         const spec = specs.get(item.type);
-        if (spec !== undefined && forRow(spec, item).owned === false) continue;
+        if (spec !== undefined && !forRow(spec, item).twoWay) {
+          raised.set(
+            `purge-pending:${item.id}`,
+            `the purge of ${item.id} is retained while its kind has no write authority`,
+          );
+          continue;
+        }
         if (setup.fenced?.() === true || setup.signal.aborted) {
           throw new Stopped();
         }
@@ -2773,7 +2842,6 @@ export async function runOnce<E extends EnvDeclaration>(
             `purge-undeclared:${item.id}`,
             `the purge of ${item.id} is not carried, since the connector no longer declares ${item.type}`,
           );
-          purged.delete(item.id);
           continue;
         }
         let answered: Entry | undefined;
