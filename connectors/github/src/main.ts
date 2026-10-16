@@ -65,7 +65,7 @@ function appOf(values: {
 const connector = defineConnector<typeof env>({
   name: "github",
   description:
-    "Repositories, issues and comments through a personal access token or GitHub App, with sub-issues and blockers. Personal token runs are read only; App runs can carry Marfa edits back.",
+    "Repositories, issues, comments and read-only pull requests through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue and comment edits back.",
   source: "github",
   types: [
     ...fileKinds,
@@ -255,8 +255,7 @@ const connector = defineConnector<typeof env>({
     {
       id: githubClosedBy,
       label: "Closed by",
-      description:
-        "A GitHub issue and the synced pull request that closed it.",
+      description: "A GitHub issue and the synced pull request that closed it.",
       cardinality: "many-to-one",
       source_type_constraints: [issueType],
       target_type_constraints: [pullRequestType],

@@ -16,12 +16,28 @@ function named(type: string, ...values: unknown[]): Hint[] {
   });
 }
 
-/** PR node ids from a check_run or check_suite payload's pull_requests
- *  array, which GitHub populates for PRs open at the time of the check. */
-function pullRequestsFromCheck(payload: Payload): readonly Hint[] {
-  const prs = payload["pull_requests"];
+function pullRequestsFromCheck(
+  value: unknown,
+  repository: unknown,
+): readonly Hint[] {
+  if (typeof value !== "object" || value === null) return [];
+  const prs = (value as Payload)["pull_requests"];
   if (!Array.isArray(prs)) return [];
-  return prs.flatMap((pr) => named(pullRequestType, pr));
+  const repo = nodeOf(repository);
+  return prs.flatMap((pr: unknown) => {
+    const node = nodeOf(pr);
+    if (node !== undefined) return [{ type: pullRequestType, id: node }];
+    const number =
+      typeof pr === "object" && pr !== null
+        ? (pr as Payload)["number"]
+        : undefined;
+    return repo !== undefined &&
+      typeof number === "number" &&
+      Number.isSafeInteger(number) &&
+      number > 0
+      ? [{ type: pullRequestType, id: `number:${repo}:${String(number)}` }]
+      : [];
+  });
 }
 
 export function hints(delivery: Delivery): readonly Hint[] | "everything" {
@@ -62,14 +78,21 @@ export function hints(delivery: Delivery): readonly Hint[] | "everything" {
     case "pull_request":
       return named(pullRequestType, payload["pull_request"]);
     case "check_run":
+      return pullRequestsFromCheck(payload["check_run"], payload["repository"]);
     case "check_suite":
-      // check_run and check_suite payloads carry a pull_requests array with
-      // the PRs open against the checked ref at the time of the event.
-      return pullRequestsFromCheck(payload);
-    case "status":
-      // status payloads carry a sha but no PR node ids; a scheduled run
-      // picks up any check-state change on open PRs.
-      return [];
+      return pullRequestsFromCheck(
+        payload["check_suite"],
+        payload["repository"],
+      );
+    case "status": {
+      const repo = nodeOf(payload["repository"]);
+      const sha = payload["sha"];
+      return repo !== undefined &&
+        typeof sha === "string" &&
+        /^[a-f0-9]{6,64}$/i.test(sha)
+        ? [{ type: pullRequestType, id: `commit:${repo}:${sha}` }]
+        : [];
+    }
     default:
       return [];
   }

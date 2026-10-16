@@ -31,6 +31,7 @@ beforeEach(async () => {
       "github.comment",
       "github.file",
       "github.file.image",
+      "github.pull_request",
     ],
     edges: [
       "github.in-repository",
@@ -39,6 +40,8 @@ beforeEach(async () => {
       "github.relates-to",
       "github.duplicate-of",
       "attached-to",
+      "github.closes",
+      "github.closed-by",
       "in-thread",
     ],
   }).start();

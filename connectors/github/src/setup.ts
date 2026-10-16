@@ -80,7 +80,7 @@ export function manifest(options: {
     name: options.name,
     url: "https://github.com/withmarfa/marfa-connectors",
     description:
-      "Keeps issues, their comments and their relations in step with a Marfa instance.",
+      "Syncs issues and comments with Marfa and reads pull requests, closing links and checks.",
     hook_attributes: { url: options.hook, active: options.active },
     redirect_url: options.callback,
     public: false,

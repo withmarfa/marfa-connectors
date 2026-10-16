@@ -175,9 +175,7 @@ export function repositoryEntry(repository: RestRepository): Entry {
  *  the PR's repository is synced so a connection can be made; absent when
  *  only its address is known. */
 export type ClosedByPR =
-  | { node: string; url: string }
-  | { node?: undefined; url: string }
-  | null;
+  { node: string; url: string } | { node?: undefined; url: string } | null;
 
 /** `hidden` is the repository's visibility: named by every read and by the
  *  answers to writes where the last read recorded it. `closedByPR`, when
@@ -195,7 +193,7 @@ export function issueEntry(
     synced.has(one.repository.id) || retainedIssues.has(one.id);
   const target = (one: Related): Target => ({ type: issueType, id: one.id });
   const parent = relations.parent;
-  const prSynced = closedByPR != null && closedByPR.node !== undefined;
+  const prNode = closedByPR?.node;
   return {
     source_id: issue.node,
     properties: {
@@ -225,8 +223,14 @@ export function issueEntry(
       blocked_by_urls: relations.blockedBy
         .filter((one) => !inside(one))
         .map((one) => one.url),
-      closed_by_url:
-        closedByPR != null && !prSynced ? closedByPR.url : null,
+      ...((closedByPR !== undefined || issue.open) && {
+        closed_by_url:
+          closedByPR !== null &&
+          closedByPR !== undefined &&
+          prNode === undefined
+            ? closedByPR.url
+            : null,
+      }),
     },
     occurred_at: issue.createdAt,
     changed_at: issue.updatedAt,
@@ -241,10 +245,10 @@ export function issueEntry(
         relations.duplicateOf !== null && inside(relations.duplicateOf)
           ? [target(relations.duplicateOf)]
           : [],
-      [githubClosedBy]:
-        prSynced && closedByPR?.node !== undefined
-          ? [{ type: pullRequestType, id: closedByPR.node }]
-          : [],
+      ...((closedByPR !== undefined || issue.open) && {
+        [githubClosedBy]:
+          prNode === undefined ? [] : [{ type: pullRequestType, id: prNode }],
+      }),
     },
   };
 }
@@ -275,7 +279,7 @@ export interface PullRequest {
   createdAt: string;
   updatedAt: string;
   repository: { node: string; name: string };
-  closingIssues: Array<{ id: string; url: string; repository: { id: string } }>;
+  closingIssues: { id: string; url: string; repository: { id: string } }[];
 }
 
 export function prStatusOf(prState: "open" | "closed" | "merged"): string {
@@ -293,9 +297,7 @@ export function pullRequestEntry(
     .filter((issue) => syncedRepositories.has(issue.repository.id))
     .map((issue) => ({ type: issueType, id: issue.id }));
   const completedAt =
-    pr.prState === "open"
-      ? null
-      : pr.mergedAt ?? pr.closedAt ?? pr.updatedAt;
+    pr.prState === "open" ? null : (pr.mergedAt ?? pr.closedAt);
   return {
     source_id: pr.node,
     properties: {

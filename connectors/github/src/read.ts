@@ -14,6 +14,9 @@ import {
   issueOfRest,
   issueType,
   pullRequestType,
+  pullRequestEntry,
+  type PullRequest,
+  type ClosedByPR,
   repositoryEntry,
   repositoryType,
   subIssueOf,
@@ -24,11 +27,6 @@ import {
   type RestIssue,
   type RestRepository,
 } from "./entries.js";
-import {
-  pullRequestsByNode,
-  readPullRequests,
-  type PRContext,
-} from "./pulls.js";
 import {
   asApp,
   asInstallation,
@@ -54,6 +52,12 @@ import {
   nodesOfNumbers,
   relationsOf,
 } from "./graph.js";
+import {
+  listPullRequests,
+  pullRequestsByNode,
+  closedByOf,
+  pullNodeOfNumber,
+} from "./pulls.js";
 import type { Scope } from "./scope.js";
 import { fileNotes, preserveFiles, markFilesPrivate } from "./files.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
@@ -292,7 +296,7 @@ async function readAll(
         if (repository.has_issues === false && assessed) {
           log.condition(
             `issues-off:${repository.node_id}`,
-            `${repository.full_name} has its issues turned off on GitHub, so its rows are left as they are, bar the private marker, which follows its visibility`,
+            `${repository.full_name} has its issues turned off on GitHub, so its issues and comments are left as they are, bar the private marker, which follows its visibility`,
           );
         }
         seen.push(repository.full_name);
@@ -512,6 +516,23 @@ async function readAll(
     await scoped.upsert(repositoryType, [repositoryEntry(at.repository)]);
     // GitHub answers each issue of such a repository 410, as if deleted.
     if (at.repository.has_issues === false) {
+      const [owner = "", name = ""] = at.repository.full_name.split("/");
+      const prs = await listPullRequests(
+        octokit,
+        owner,
+        name,
+        day(new Date(Date.now() - windowDays * 86_400_000)),
+      );
+      await scoped.upsert(
+        pullRequestType,
+        prs.map((pr) =>
+          pullRequestEntry(
+            pr,
+            new Set([...synced, ...paused]),
+            privateIn(privacy, node),
+          ),
+        ),
+      );
       next[node] = await marked(
         scoped,
         node,
@@ -624,6 +645,10 @@ async function takeOut(
     links(await linked(commentType, inRepository, under)),
   );
   await archive(issueType, links(await linked(issueType, inRepository, under)));
+  await archive(
+    pullRequestType,
+    links(await linked(pullRequestType, inRepository, under)),
+  );
   await archive(repositoryType, [node]);
   log.info(
     `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived`,
@@ -651,16 +676,14 @@ async function syncRepository(
   );
   const route = "GET /repos/{owner}/{repo}/issues";
   const listing = { owner, repo: name, sort: "created", direction: "asc" };
-  // Keep all items (issues and PRs share the endpoint); split by type after.
-  // This lets PR page ETags and numbers track alongside issues without an
-  // extra API call, and the checkpoint stays backward-safe: old pages with
-  // only issue numbers are re-read fresh on the next run.
+  const isIssue = (issue: RestIssue): boolean =>
+    issue.pull_request === undefined;
   const open = await pagesOf<RestIssue>(
     octokit,
     route,
     { ...listing, state: "open" },
     repository.open,
-    () => true,
+    isIssue,
   );
   const closed = await pagesOf<RestIssue>(
     octokit,
@@ -669,21 +692,23 @@ async function syncRepository(
     repository.closed?.since === windowStart
       ? repository.closed.pages
       : undefined,
-    () => true,
+    isIssue,
   );
-  const allChanged = [...open.changed, ...closed.changed];
-  const isPR = (item: RestIssue): boolean => item.pull_request !== undefined;
-  const listed = allChanged.filter((item) => !isPR(item));
-  const listedPRs = allChanged.filter(isPR);
+  const listed = [...open.changed, ...closed.changed];
   const scope = new Set([...numbersOf(open.pages), ...numbersOf(closed.pages)]);
   const before = new Set([
     ...numbersOf(repository.open),
     ...numbersOf(repository.closed?.pages),
   ]);
-  // byNumber is issue-only so comment lookup does not collide with PR numbers.
   const byNumber = new Map(listed.map((issue) => [issue.number, issue]));
   const at = { node, name: repository.name };
   const hidden = privateIn(options.privacy, node);
+  const prs = await listPullRequests(
+    octokit,
+    owner,
+    name,
+    `${windowStart}T00:00:00Z`,
+  );
 
   // Neutral links need not alter REST data or its ETag. Poll the issues on
   // unchanged pages too, so installations without webhooks still converge.
@@ -722,6 +747,11 @@ async function syncRepository(
   }
   const around = [
     ...held,
+    ...prs.flatMap((pr) =>
+      pr.closingIssues
+        .filter((one) => options.synced.has(one.repository.id))
+        .map((one) => one.id),
+    ),
     ...[...relations.values()].flatMap((one) => [
       ...one.blocking,
       ...one.children,
@@ -767,35 +797,66 @@ async function syncRepository(
     [...relations.values(), ...beside.map((one) => one.relations)],
     options.retainedRepositories,
   );
-  await upsert(
-    issueType,
-    await fileNotes(context, issueType, [
-      ...listed.flatMap((issue) => {
-        const found = relations.get(issue.node_id);
-        if (found === undefined) return [];
-        return [
-          issueEntry(
-            issueOfRest(issue, at),
-            found,
-            options.inside,
-            hidden,
-            knownTargets,
-          ),
-        ];
-      }),
-      ...beside
-        .filter(({ issue }) => options.synced.has(issue.repository.node))
-        .map(({ issue, relations: known }) =>
-          issueEntry(
-            issue,
-            known,
-            options.inside,
-            privateIn(options.privacy, issue.repository.node),
-            knownTargets,
-          ),
-        ),
-    ]),
+  const closedBy = await closedByOf(octokit, [
+    ...listed.filter((one) => one.state === "closed").map((one) => one.node_id),
+    ...beside.filter((one) => !one.issue.open).map((one) => one.issue.node),
+  ]);
+  const allPRs = new Map(prs.map((pr) => [pr.node, pr]));
+  const closingPRs = [...closedBy.values()].filter(
+    (pr) => options.synced.has(pr.repository.id) && !allPRs.has(pr.id),
   );
+  for (const pr of await pullRequestsByNode(
+    octokit,
+    closingPRs.map((pr) => pr.id),
+  )) {
+    if (options.synced.has(pr.repository.node)) allPRs.set(pr.node, pr);
+  }
+  await upsert(
+    pullRequestType,
+    [...allPRs.values()].map((pr) =>
+      pullRequestEntry(
+        pr,
+        options.inside,
+        privateIn(options.privacy, pr.repository.node),
+      ),
+    ),
+  );
+  const closer = (id: string): ClosedByPR => {
+    const pr = closedBy.get(id);
+    return pr === undefined
+      ? null
+      : allPRs.has(pr.id)
+        ? { node: pr.id, url: pr.url }
+        : { url: pr.url };
+  };
+  await upsert(issueType, await fileNotes(context, issueType, [
+    ...listed.flatMap((issue) => {
+      const found = relations.get(issue.node_id);
+      if (found === undefined) return [];
+      return [
+        issueEntry(
+          issueOfRest(issue, at),
+          found,
+          options.inside,
+          hidden,
+          knownTargets,
+          closer(issue.node_id),
+        ),
+      ];
+    }),
+    ...beside
+      .filter(({ issue }) => options.synced.has(issue.repository.node))
+      .map(({ issue, relations: known }) =>
+        issueEntry(
+          issue,
+          known,
+          options.inside,
+          privateIn(options.privacy, issue.repository.node),
+          knownTargets,
+          closer(issue.node),
+        ),
+      ),
+  ]));
 
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
@@ -974,7 +1035,7 @@ async function markRows(
   hidden: boolean,
 ): Promise<void> {
   const under = { type: repositoryType, id: node };
-  for (const type of [issueType, commentType]) {
+  for (const type of [issueType, commentType, pullRequestType]) {
     const links = (await context.linked(type, inRepository, under)).flatMap(
       (row) => linkOf(row) ?? [],
     );
@@ -1235,11 +1296,63 @@ async function readNamed(
   );
   const issues = new Map<string, { issue: Issue; relations: Relations }>();
   const comments = new Map<string, Comment>();
+  const prs = new Map<string, PullRequest>();
   // What GitHub shows anywhere is not gone, though outside the sync.
   const shown = new Set<string>();
   const notApplied = new Set<string>();
   const namedComments = [...(hints?.get(commentType) ?? [])];
   const namedIssues = new Set(hints?.get(issueType) ?? []);
+  const pullHints = [...(hints?.get(pullRequestType) ?? [])];
+  const namedPRs = new Set<string>();
+  const neededPRs = new Set<string>();
+  let closingReadIncomplete = false;
+  for (const hint of pullHints) {
+    const resolved = /^(number|commit):([^:]+):(.+)$/.exec(hint);
+    if (resolved === null) {
+      namedPRs.add(hint);
+      continue;
+    }
+    const [, kind, repoId, value] = resolved;
+    const at = repoId === undefined ? undefined : listed.get(repoId);
+    if (at === undefined) {
+      if (deferred.size === 0 || (repoId !== undefined && excluded.has(repoId)))
+        shown.add(hint);
+      continue;
+    }
+    const client = clients.get(at.installation);
+    if (client === undefined) continue;
+    const [owner = "", name = ""] = at.repository.full_name.split("/");
+    const ids = await attempt(at.installation, async (): Promise<string[]> => {
+      if (kind === "number") {
+        const id = await pullNodeOfNumber(client, owner, name, Number(value));
+        return id === undefined ? [] : [id];
+      }
+      const associated = (await client.paginate(
+        "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+        { owner, repo: name, commit_sha: value ?? "", per_page: 100 },
+      )) as { node_id: string }[];
+      return associated.map((pr) => pr.node_id);
+    });
+    if (ids !== undefined) {
+      shown.add(hint);
+      for (const id of ids) namedPRs.add(id);
+    }
+  }
+  const askPRs = async (ids: readonly string[]): Promise<void> => {
+    for (const id of ids) neededPRs.add(id);
+    for (const [installation, octokit] of clients) {
+      const wanted = ids.filter((id) => !prs.has(id));
+      for (const pr of (await attempt(installation, () =>
+        pullRequestsByNode(octokit, wanted),
+      )) ?? []) {
+        shown.add(pr.node);
+        if (synced.has(pr.repository.node)) prs.set(pr.node, pr);
+        else if (!excluded.has(pr.repository.node)) notApplied.add(pr.node);
+      }
+    }
+  };
+  await askPRs([...namedPRs]);
+
   for (const [installation, octokit] of clients) {
     const wanted = namedComments.filter((id) => !comments.has(id));
     for (const comment of (await attempt(installation, () =>
@@ -1275,7 +1388,14 @@ async function readNamed(
       }
     }
   };
-  await ask([...namedIssues]);
+  await ask([
+    ...namedIssues,
+    ...[...prs.values()].flatMap((pr) =>
+      pr.closingIssues
+        .filter((one) => synced.has(one.repository.id))
+        .map((one) => one.id),
+    ),
+  ]);
   await ask(
     [...issues.values()]
       .flatMap(({ relations }) => [
@@ -1287,13 +1407,49 @@ async function readNamed(
       .filter((one) => synced.has(one.repository.id))
       .map((one) => one.id),
   );
-  const canonicalSources = new Map(
-    [...issues].map(([id, found]) => [id, found.relations]),
+  const closers = new Map<
+    string,
+    { id: string; url: string; repository: { id: string } }
+  >();
+  const closingRead = new Set(
+    [...issues.values()]
+      .filter((one) => one.issue.open)
+      .map((one) => one.issue.node),
   );
-  await readRelatedSources(context, canonicalSources, synced, async (ids) => {
-    await ask(ids);
-    for (const [id, found] of issues) canonicalSources.set(id, found.relations);
-  });
+  for (const [installation, client] of clients) {
+    const ids = [...issues.values()]
+      .filter(
+        (one) =>
+          !one.issue.open &&
+          listed.get(one.issue.repository.node)?.installation === installation,
+      )
+      .map((one) => one.issue.node);
+    const answer = await attempt(installation, () => closedByOf(client, ids));
+    if (answer === undefined) {
+      closingReadIncomplete ||= ids.length > 0;
+      continue;
+    }
+    for (const id of ids) closingRead.add(id);
+    for (const [id, closer] of answer) closers.set(id, closer);
+  }
+  await askPRs(
+    [...closers.values()]
+      .filter((one) => synced.has(one.repository.id))
+      .map((one) => one.id),
+  );
+  const heldPRs = await context.known(
+    pullRequestType,
+    [...closers.values()].map((one) => one.id),
+  );
+  const closerOf = (id: string): ClosedByPR | undefined => {
+    if (!closingRead.has(id)) return undefined;
+    const closer = closers.get(id);
+    return closer === undefined
+      ? null
+      : prs.has(closer.id) || heldPRs.has(closer.id)
+        ? { node: closer.id, url: closer.url }
+        : { url: closer.url };
+  };
   const knownTargets = await retainedTargets(
     context,
     [...issues.values()].map((one) => one.relations),
@@ -1302,6 +1458,7 @@ async function readNamed(
   const touched = new Set([
     ...[...issues.values()].map(({ issue }) => issue.repository.node),
     ...[...comments.values()].map((comment) => comment.repository.node),
+    ...[...prs.values()].map((pr) => pr.repository.node),
   ]);
   await upsert(
     repositoryType,
@@ -1309,6 +1466,16 @@ async function readNamed(
       const at = listed.get(node);
       return at === undefined ? [] : [repositoryEntry(at.repository)];
     }),
+  );
+  await upsert(
+    pullRequestType,
+    [...prs.values()].map((pr) =>
+      pullRequestEntry(
+        pr,
+        new Set([...synced, ...paused]),
+        privateIn(privacy, pr.repository.node),
+      ),
+    ),
   );
   await upsert(
     issueType,
@@ -1322,6 +1489,7 @@ async function readNamed(
           new Set([...synced, ...paused]),
           privateIn(privacy, issue.repository.node),
           knownTargets,
+          closerOf(issue.node),
         ),
       ),
     ),
@@ -1340,9 +1508,13 @@ async function readNamed(
   const unfinished = (): void => {
     if (
       deferred.size > 0 &&
-      [...neededIssues, ...namedComments].some(
-        (id) => !shown.has(id) || notApplied.has(id),
-      )
+      (closingReadIncomplete ||
+        [
+          ...neededIssues,
+          ...namedComments,
+          ...neededPRs,
+          ...pullHints.filter((id) => /^(number|commit):/.test(id)),
+        ].some((id) => !shown.has(id) || notApplied.has(id)))
     )
       throw new RateLimitWaiting("unfinished delivery reads");
   };

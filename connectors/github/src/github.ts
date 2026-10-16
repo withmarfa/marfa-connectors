@@ -164,12 +164,19 @@ function counted(octokit: Client, key: string, guard: boolean): Client {
 }
 
 /** What an installation token is minted for: `list` reads only which
- *  repositories the installation holds; `read` and `write` reach issues. */
+ *  repositories the installation holds; `read` reaches issues and pull
+ *  requests, and `write` carries only issues and their comments. */
 export type Access = "list" | "read" | "write";
 
 const permissions = {
   list: { metadata: "read" },
-  read: { issues: "read", metadata: "read" },
+  read: {
+    issues: "read",
+    pull_requests: "read",
+    checks: "read",
+    statuses: "read",
+    metadata: "read",
+  },
   write: { issues: "write", metadata: "read" },
 } as const;
 

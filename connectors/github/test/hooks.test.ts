@@ -28,6 +28,7 @@ beforeEach(async () => {
       "github.comment",
       "github.file",
       "github.file.image",
+      "github.pull_request",
     ],
     edges: [
       "github.in-repository",
@@ -36,6 +37,8 @@ beforeEach(async () => {
       "github.relates-to",
       "github.duplicate-of",
       "attached-to",
+      "github.closes",
+      "github.closed-by",
       "in-thread",
     ],
   }).start();
@@ -213,6 +216,30 @@ describe("a delivery's hints", () => {
     ]);
   });
 
+  it("reads pull requests from nested check payloads and resolves status commits", () => {
+    expect(
+      hints(
+        delivery("check_run", {
+          check_run: { pull_requests: [{ node_id: "PR_a" }] },
+          repository: { node_id: "R_a" },
+        }),
+      ),
+    ).toEqual([{ type: "github.pull_request", id: "PR_a" }]);
+    expect(
+      hints(
+        delivery("check_suite", {
+          check_suite: { pull_requests: [{ number: 3 }] },
+          repository: { node_id: "R_a" },
+        }),
+      ),
+    ).toEqual([{ type: "github.pull_request", id: "number:R_a:3" }]);
+    expect(
+      hints(
+        delivery("status", { sha: "abc123", repository: { node_id: "R_a" } }),
+      ),
+    ).toEqual([{ type: "github.pull_request", id: "commit:R_a:abc123" }]);
+  });
+
   it("name nothing for a pull request's comment or an event not read", () => {
     expect(
       hints(
@@ -287,6 +314,86 @@ describe("a run for deliveries", () => {
     });
   });
 
+  it("retains a pull request delivery when its issue closing-event read is deferred", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repo, { state: "closed" });
+    const pr = github.addPullRequest(repo, {
+      pr_state: "merged",
+      closing_issues: [issue.node],
+    });
+    issue.closed_by = pr.node;
+    await watching(async () => {
+      github.edit(pr, { title: "After" });
+      github.budget("graphql").remaining = 501;
+      deliver("pull_request", { pull_request: { node_id: pr.node } });
+      await until(() => marfa.runs.length > 1, "the limited pull request read");
+      expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
+      expect(marfa.runs.at(-1)?.outcome).toBe("failed");
+      expect(marfa.targetsOf(row(issue.node).id, "github.closed-by")).toEqual([
+        row(pr.node).id,
+      ]);
+    });
+    github.refill("graphql");
+    await once();
+    expect(marfa.deliveries[0]?.outcome).toBe("processed");
+    expect(row(pr.node).properties["title"]).toBe("After");
+  });
+  it("refreshes pull requests on nested check events and commit statuses without reading listings", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: {
+        state: "PENDING",
+        check_runs: { IN_PROGRESS: 1 },
+        statuses: {},
+      },
+    });
+    await watching(async () => {
+      const before = github.asked.length;
+      pr.checks = {
+        state: "SUCCESS",
+        check_runs: { COMPLETED: 1 },
+        statuses: { SUCCESS: 1 },
+      };
+      deliver("check_run", {
+        repository: { node_id: repo.node },
+        check_run: { pull_requests: [{ number: pr.number }] },
+      });
+      await until(
+        () => marfa.deliveries[0]?.outcome === "processed",
+        "the check delivery",
+      );
+      expect(row(pr.node).properties["checks"]).toEqual(pr.checks);
+      pr.checks = {
+        state: "FAILURE",
+        check_runs: { COMPLETED: 1 },
+        statuses: { FAILURE: 1 },
+      };
+      deliver("status", {
+        repository: { node_id: repo.node },
+        sha: pr.head_sha,
+      });
+      await until(
+        () => marfa.deliveries[1]?.outcome === "processed",
+        "the status delivery",
+      );
+      expect(row(pr.node).properties["checks"]).toEqual(pr.checks);
+      const version = row(pr.node).version;
+      deliver("status", { repository: { node_id: repo.node }, sha: "def456" });
+      await until(
+        () => marfa.deliveries[2]?.outcome === "processed",
+        "the unrelated status",
+      );
+      expect(row(pr.node).version).toBe(version);
+      expect(
+        github.asked
+          .slice(before)
+          .filter((one) =>
+            /^\/repos\/[^/]+\/[^/]+\/(issues|pulls)$/.test(one.path),
+          ),
+      ).toEqual([]);
+    });
+  });
+
   it("processes healthy hints when the depleted installation has no named changes", async () => {
     const first = github.addRepository("someone/first");
     github.addIssue(first);
@@ -354,10 +461,10 @@ describe("a run for deliveries", () => {
         installation: 2,
       });
       const secondIssue = github.addIssue(second, { title: "B before" });
-      if (limited === "budget") github.budget("graphql", 1).remaining = 100;
       let healthyUpdatedAt: string | undefined;
       await watching(async () => {
         if (limited === "metadata") github.exhaust("core", 1);
+        if (limited === "budget") github.exhaust("graphql", 1);
         github.edit(firstIssue, { title: "A after" });
         github.edit(secondIssue, { title: "B after" });
         deliver("issues", {
