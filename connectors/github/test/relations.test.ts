@@ -31,7 +31,7 @@ afterEach(async () => {
   await marfa.stop();
   await github.stop();
 });
-async function once() {
+async function once(env: Record<string, string> = {}) {
   const result = await run(
     "node",
     [resolve(import.meta.dirname, "../dist/main.js"), "--once"],
@@ -44,6 +44,7 @@ async function once() {
         GITHUB_PRIVATE_KEY: key,
         GITHUB_WEBHOOK_SECRET: "test-secret",
         GITHUB_API_URL: github.url,
+        ...env,
       },
     },
   );
@@ -150,6 +151,34 @@ describe("related and duplicate issues", () => {
           (one.body as { query: string }).query.includes("query RelatedIssues"),
       ),
     ).toBe(true);
+  });
+  it("restores issue relations selected read-only while carrying a comment edit", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const a = github.addIssue(repo);
+    const b = github.addIssue(repo);
+    const c = github.addIssue(repo);
+    a.relates_to = [b.node];
+    b.relates_to = [a.node];
+    const comment = github.addComment(a, "Before", "marfa-connectors[bot]");
+    comment.app = true;
+    await once();
+    const canonical = marfa.edges.find(
+      (one) => one.edge_type === "github.relates-to",
+    );
+    if (canonical === undefined) throw new Error("No canonical edge");
+    marfa.removeEdge(canonical.id);
+    marfa.drawEdge(row(a.node).id, row(c.node).id, "github.relates-to");
+    marfa.edit(row(comment.node).id, { body: "After" });
+    await once({ GITHUB_READ_ONLY: "issue" });
+    expect(links(a.node, "github.relates-to")).toEqual([b.node]);
+    expect(a.relates_to).toEqual([b.node]);
+    expect(c.relates_to ?? []).toEqual([]);
+    expect(comment.body).toBe("After");
+    const writes = github.writes().length;
+    marfa.drawEdge(row(a.node).id, row(c.node).id, "github.relates-to");
+    await once();
+    expect(a.relates_to).toEqual([b.node, c.node]);
+    expect(github.writes().length).toBe(writes + 1);
   });
   it("removes a redundant reverse drawing immediately without writing GitHub", async () => {
     const repo = github.addRepository("someone/tracker");
