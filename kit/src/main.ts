@@ -13,6 +13,7 @@ import {
   readEnvironment,
   type Environment,
 } from "./environment.js";
+import { withoutBodies } from "./exception-text.js";
 import { cap, Logger } from "./log.js";
 import {
   causeOf,
@@ -405,8 +406,27 @@ function helpOf<E extends EnvDeclaration>(connector: Connector<E>): string[] {
     `  MARFA_API_KEY (a key minted for this connector, as ${keyGuide(connector)} says)`,
     ...named,
     "  OTEL_EXPORTER_OTLP_ENDPOINT (optional: where to send logs, traces and errors over OTLP; nothing is sent while it is unset)",
-    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: the PostHog host and project token a failed run's error is sent to for error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
+    "  MARFA_POSTHOG_HOST, MARFA_POSTHOG_PROJECT_TOKEN (optional, and only together: the PostHog host and project token the error of a failed run, or of a start that ends the process, is sent to for error tracking; they need OTEL_EXPORTER_OTLP_ENDPOINT set too)",
+    "  Startup failures found before telemetry starts, including missing variables and malformed settings, are logged only.",
   ];
+}
+
+/**
+ * Says why the connector cannot start and the process is ending, once, to the
+ * log and to error tracking. The text is made safe to leave the machine
+ * first, with the secrets removed, any JSON value replaced and its length
+ * bounded, so the log line, its copy in the OpenTelemetry logs and the
+ * exception are the same text. A start that is tried again is not told to
+ * error tracking, however many times it fails.
+ */
+function cannotStart(
+  logger: Logger,
+  telemetry: Telemetry,
+  problem: string,
+): void {
+  const said = cap(withoutBodies(logger.redact(problem)));
+  logger.error(said);
+  telemetry.startFailed(said);
 }
 
 function addressProblem(error: unknown, server: string): string {
@@ -569,7 +589,7 @@ async function started<E extends EnvDeclaration>(
       await connector.checkEnv?.(environment.values as EnvValues<E>);
     }
   } catch (error) {
-    logger.error(`cannot start: ${describe(error)}`);
+    cannotStart(logger, telemetry, `cannot start: ${describe(error)}`);
     return 2;
   }
 
@@ -643,11 +663,15 @@ async function serve<E extends EnvDeclaration>(
       started = await registerAndCheck(connector, marfa, again, logger);
     } catch (error) {
       if (causeOf(error) === "address" || faultOf(error) !== undefined) {
-        logger.error(addressProblem(error, environment.url));
+        cannotStart(logger, telemetry, addressProblem(error, environment.url));
         return 2;
       }
       if (schedule.mode !== "every" || causeOf(error) !== "marfa") {
-        logger.error(startProblem(error, environment.url, keyGuide(connector)));
+        cannotStart(
+          logger,
+          telemetry,
+          startProblem(error, environment.url, keyGuide(connector)),
+        );
         return 1;
       }
       const wait = Math.max(
@@ -668,7 +692,7 @@ async function serve<E extends EnvDeclaration>(
   // A start that cannot go on is the registration's failed run.
   const refuseStart = async (problem: string): Promise<void> => {
     const at = clock.now().toISOString();
-    logger.error(problem);
+    cannotStart(logger, telemetry, problem);
     try {
       await marfa.report(connectorId, {
         outcome: "failed",

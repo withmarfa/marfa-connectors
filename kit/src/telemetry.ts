@@ -29,14 +29,19 @@ export interface TelemetrySettings {
   readonly logsHeaders: Readonly<Record<string, string>>;
   /** The share of succeeded runs whose trace is exported. */
   readonly sampleRatio: number;
-  /** Where a failed run's error is sent for PostHog's error tracking, when
-   *  both of its settings are given. */
+  /** Where the error of a failed run, or of a start that ends the process, is
+   *  sent for PostHog's error tracking, when both of its settings are
+   *  given. */
   readonly exceptions: ExceptionSettings | undefined;
 }
 
 export interface Telemetry {
   /** Does the run inside a trace of its own, which records how it ended. */
   run(trigger: Trigger, work: () => Promise<RunResult>): Promise<RunResult>;
+  /** Reports, to error tracking only, that the connector cannot start and
+   *  the process is ending. `problem` is the text the log carries. Waiting
+   *  for it to be sent is {@link Telemetry.shutdown}'s. */
+  startFailed(problem: string): void;
   /** Sends what waits, giving up after {@link telemetryBoundMs}. */
   shutdown(): Promise<void>;
 }
@@ -44,6 +49,7 @@ export interface Telemetry {
 /** Off: nothing is loaded, and a run is only the run. */
 export const noTelemetry: Telemetry = {
   run: (_trigger, work) => work(),
+  startFailed: () => undefined,
   shutdown: () => Promise.resolve(),
 };
 
