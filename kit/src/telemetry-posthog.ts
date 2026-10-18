@@ -98,16 +98,13 @@ export function reporting(
     fetch: sendWith(failed),
     requestTimeout: exportTimeoutMs + 500,
     fetchRetryCount: 0,
-    before_send: (event) =>
-      event === null
-        ? null
-        : {
-            ...event,
-            properties: redactedDeep(event.properties, redact) as Record<
-              string,
-              unknown
-            >,
-          },
+    before_send: (event) => ({
+      ...event,
+      properties: redactedDeep(event.properties, redact) as Record<
+        string,
+        unknown
+      >,
+    }),
   });
   return {
     report(error, properties) {
