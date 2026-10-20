@@ -10,8 +10,12 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A draft and a ready pull request have groups of their own. A draft pushed
+  # and marked ready a moment later starts two runs, and in one group the later
+  # queued cancels the other, which can leave `Full CI` unreported. A push to
+  # `main` gets a group of its own, so a later push never cancels its verdict.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && format('{0}-{1}', github.ref, github.event.pull_request.draft && 'draft' || 'ready') || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
