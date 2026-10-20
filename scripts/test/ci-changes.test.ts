@@ -314,6 +314,27 @@ function filterMatches(pattern: string, path: string): boolean {
   return new RegExp(`^${source}$`).test(path);
 }
 
+describe("concurrency", () => {
+  const group = (name: string) =>
+    (
+      parse(readFileSync(join(root, ".github", "workflows", name), "utf8")) as {
+        concurrency: { group: string; "cancel-in-progress": string };
+      }
+    ).concurrency;
+
+  it.each(["ci.yml", "codeql.yml"])(
+    "%s keeps a draft apart from a ready pull request, and never cancels a push to main",
+    (name) => {
+      const { group: expression, "cancel-in-progress": cancel } = group(name);
+      expect(expression).toContain(
+        "github.event.pull_request.draft && 'draft' || 'ready'",
+      );
+      expect(expression).toContain("|| github.run_id }}");
+      expect(cancel).toBe("${{ github.event_name == 'pull_request' }}");
+    },
+  );
+});
+
 describe("CodeQL", () => {
   const { on, jobs } = parse(
     readFileSync(join(root, ".github", "workflows", "codeql.yml"), "utf8"),
