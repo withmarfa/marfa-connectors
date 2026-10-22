@@ -794,8 +794,12 @@ describe("what GitHub no longer lists", () => {
     const repository = github.addRepository("someone/tracker");
     const moved = github.addIssue(repository, { title: "Moved" });
     const hidden = github.addIssue(repository, { title: "Hidden" });
+    const away = github.addRepository("stranger/private", {
+      installation: 99,
+      private: true,
+    });
     await ok();
-    moved.moved = true;
+    github.transfer(moved, away);
     hidden.repository = "R_nowhere";
     checkDue();
     const output = await ok();

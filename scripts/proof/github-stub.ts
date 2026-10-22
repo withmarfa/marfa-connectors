@@ -72,7 +72,11 @@ export interface Issue {
   closed_by?: string | null;
   pull?: boolean;
   deleted?: boolean;
-  moved?: boolean;
+  // Set on the issue a transfer left behind: the node of the issue it
+  // became. The old node no longer resolves and its address answers 301.
+  movedTo?: string;
+  // Set on the issue a transfer made: the repository it came from.
+  transferred?: { from: string; at: string };
   app?: boolean;
   unlisted?: number;
 }
@@ -565,7 +569,98 @@ export class GitHubStub {
   }
 
   issue(node: string): Issue | undefined {
-    return this.issues.find((one) => one.node === node);
+    return this.issues.find(
+      (one) => one.node === node && one.movedTo === undefined,
+    );
+  }
+
+  /** Transfers an issue as GitHub does: the new issue has a new id, node and
+   *  number, keeps the old one's times, author and text, and gets copies of
+   *  its comments with new ids and the old times. The old node stops
+   *  resolving, its comments answer 404 and its address answers 301. */
+  transfer(issue: Issue, target: Repository): Issue {
+    const id = this.ids++;
+    const at = this.now();
+    const number =
+      Math.max(
+        0,
+        ...this.issues
+          .filter((one) => one.repository === target.node)
+          .map((one) => one.number),
+      ) + 1;
+    const made: Issue = {
+      ...issue,
+      id,
+      node: `I_${String(id)}`,
+      number,
+      repository: target.node,
+      updated_at: at,
+      transferred: { from: issue.repository, at },
+    };
+    delete made.movedTo;
+    this.issues.push(made);
+    for (const comment of this.comments.filter(
+      (one) => one.issue === issue.node && one.deleted !== true,
+    )) {
+      const copy = this.ids++;
+      this.comments.push({
+        ...comment,
+        id: copy,
+        node: `IC_${String(copy)}`,
+        issue: made.node,
+      });
+      comment.deleted = true;
+    }
+    // What pointed at the old issue points at the new one.
+    for (const other of this.issues) {
+      if (other.parent === issue.node) other.parent = made.node;
+      other.blocked_by = other.blocked_by.map((one) =>
+        one === issue.node ? made.node : one,
+      );
+      if (other.relates_to !== undefined) {
+        other.relates_to = other.relates_to.map((one) =>
+          one === issue.node ? made.node : one,
+        );
+      }
+      if (other.duplicate_of === issue.node) other.duplicate_of = made.node;
+    }
+    issue.movedTo = made.node;
+    return made;
+  }
+
+  /** The two deliveries GitHub sends for a transfer, in the order it sends
+   *  them: `issues.opened` in the target, then `issues.transferred` in the
+   *  source. Only the second exists where the source lies outside the
+   *  installation. */
+  transferDeliveries(
+    from: Issue,
+    to: Issue,
+  ): {
+    opened: Record<string, unknown>;
+    transferred: Record<string, unknown>;
+  } {
+    const source = this.repositoryOf(from);
+    const target = this.repositoryOf(to);
+    const ref = (one: Issue): Record<string, unknown> => ({
+      node_id: one.node,
+      number: one.number,
+    });
+    const repo = (one: Repository): Record<string, unknown> => ({
+      node_id: one.node,
+      full_name: `${one.owner}/${one.name}`,
+    });
+    return {
+      opened: { action: "opened", issue: ref(to), repository: repo(target) },
+      transferred: {
+        action: "transferred",
+        issue: ref(from),
+        changes: {
+          new_issue: ref(to),
+          new_repository: repo(target),
+        },
+        repository: repo(source),
+      },
+    };
   }
 
   /** Counts a listing against what is still to be left out of them. */
@@ -1347,12 +1442,14 @@ export class GitHubStub {
         send(410, { message: "Issues are disabled for this repo" });
       } else if (issue.deleted === true) {
         send(410, { message: "This issue was deleted" });
-      } else if (issue.moved === true) {
+      } else if (issue.movedTo !== undefined) {
+        const next = this.issues.find((one) => one.node === issue.movedTo);
+        const home = next === undefined ? undefined : this.repositoryOf(next);
         send(
           301,
           { message: "Moved Permanently" },
           {
-            location: `${this.url}/repositories/0/issues/1`,
+            location: `${this.url}/repos/${home?.owner ?? ""}/${home?.name ?? ""}/issues/${String(next?.number ?? 0)}`,
           },
         );
       } else {
@@ -1388,7 +1485,7 @@ export class GitHubStub {
             (one) =>
               one.repository === repository.node &&
               !one.deleted &&
-              !one.moved &&
+              one.movedTo === undefined &&
               (state === "all" || one.state === state) &&
               (since === null || one.updated_at >= since) &&
               this.listed(one),
@@ -2449,6 +2546,43 @@ export class GitHubStub {
       });
       return;
     }
+    if (operation === "Transfers") {
+      const data = {
+        nodes: nodes(body.variables["ids"], (id) => {
+          const issue = this.issue(id);
+          if (issue === undefined || !this.visible(req, issue.repository))
+            return undefined;
+          const from = this.repositories.find(
+            (one) => one.node === issue.transferred?.from,
+          );
+          return {
+            __typename: "Issue",
+            id: issue.node,
+            timelineItems: {
+              nodes:
+                issue.transferred === undefined
+                  ? []
+                  : [
+                      {
+                        __typename: "TransferredEvent",
+                        createdAt: issue.transferred.at,
+                        fromRepository:
+                          from === undefined ||
+                          (from.private && !this.visible(req, from.node))
+                            ? null
+                            : {
+                                id: from.node,
+                                nameWithOwner: `${from.owner}/${from.name}`,
+                              },
+                      },
+                    ],
+            },
+          };
+        }),
+      };
+      send(200, { data, ...(errors.length > 0 && { errors }) });
+      return;
+    }
     if (operation === "Comments" || operation === "FileComments") {
       const data = {
         nodes: nodes(body.variables["ids"], (id) => {
@@ -2515,7 +2649,10 @@ export class GitHubStub {
       for (const [key, value] of Object.entries(body.variables)) {
         if (!key.startsWith("n")) continue;
         const issue = this.issues.find(
-          (one) => one.repository === repository?.node && one.number === value,
+          (one) =>
+            one.repository === repository?.node &&
+            one.number === value &&
+            one.movedTo === undefined,
         );
         found[`i${key.slice(1)}`] =
           issue === undefined ? null : { id: issue.node };

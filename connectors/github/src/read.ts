@@ -75,6 +75,16 @@ import {
 } from "./notifications.js";
 import { Stars, starsKept, type Reader } from "./stars.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
+import {
+  askIssue,
+  commentsOf,
+  follow,
+  movedFrom,
+  movedComments,
+  withMovedComments,
+  withMoves,
+  type Follower,
+} from "./transfer.js";
 
 export const windowDays = 90;
 
@@ -994,37 +1004,66 @@ async function syncRepository(
         ? { node: pr.id, url: pr.url }
         : { url: pr.url };
   };
+  const written = [
+    ...listed.map((issue) => issueOfRest(issue, at)),
+    ...beside
+      .filter(({ issue }) => options.synced.has(issue.repository.node))
+      .map(({ issue }) => issue),
+  ];
+  const moves = await movedFrom(context, octokit, written);
   await upsert(
     issueType,
-    await fileNotes(context, issueType, [
-      ...listed.flatMap((issue) => {
-        const found = relations.get(issue.node_id);
-        if (found === undefined) return [];
-        return [
-          issueEntry(
-            issueOfRest(issue, at),
-            found,
-            options.inside,
-            hidden,
-            knownTargets,
-            closer(issue.node_id),
-          ),
-        ];
-      }),
-      ...beside
-        .filter(({ issue }) => options.synced.has(issue.repository.node))
-        .map(({ issue, relations: known }) =>
-          issueEntry(
-            issue,
-            known,
-            options.inside,
-            privateIn(options.privacy, issue.repository.node),
-            knownTargets,
-            closer(issue.node),
-          ),
-        ),
-    ]),
+    await fileNotes(
+      context,
+      issueType,
+      withMoves(
+        [
+          ...listed.flatMap((issue) => {
+            const found = relations.get(issue.node_id);
+            if (found === undefined) return [];
+            return [
+              issueEntry(
+                issueOfRest(issue, at),
+                found,
+                options.inside,
+                hidden,
+                knownTargets,
+                closer(issue.node_id),
+              ),
+            ];
+          }),
+          ...beside
+            .filter(({ issue }) => options.synced.has(issue.repository.node))
+            .map(({ issue, relations: known }) =>
+              issueEntry(
+                issue,
+                known,
+                options.inside,
+                privateIn(options.privacy, issue.repository.node),
+                knownTargets,
+                closer(issue.node),
+              ),
+            ),
+        ],
+        moves,
+      ),
+    ),
   );
+  // The copies of a moved issue's comments keep their old times, so no
+  // listing of what changed names them.
+  const movedIssues = written.filter((issue) => moves.has(issue.node));
+  if (movedIssues.length > 0) {
+    await upsert(
+      commentType,
+      await fileNotes(
+        context,
+        commentType,
+        await movedComments(context, octokit, movedIssues, (repositoryNode) =>
+          privateIn(options.privacy, repositoryNode),
+        ),
+      ),
+    );
+  }
 
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
@@ -1097,13 +1136,22 @@ async function syncRepository(
     private: hidden,
   };
   if (options.check || open.fresh || closed.fresh) {
-    await checkIssues(context, octokit, {
-      node,
-      owner,
-      name,
-      scope,
-      windowStart,
-    });
+    await checkIssues(
+      context,
+      octokit,
+      { node, owner, name, scope, windowStart },
+      {
+        synced: options.synced,
+        entry: ({ issue, relations: known }) =>
+          issueEntry(
+            issue,
+            known,
+            options.inside,
+            privateIn(options.privacy, issue.repository.node),
+          ),
+        hidden: (repositoryNode) => privateIn(options.privacy, repositoryNode),
+      },
+    );
   }
   if (!options.check) return kept;
   await checkComments(context, octokit, where, wrote);
@@ -1263,6 +1311,7 @@ async function checkIssues(
     scope: ReadonlySet<number>;
     windowStart: string;
   },
+  follower: Follower,
 ): Promise<void> {
   const under = { type: repositoryType, id: where.node };
   const unlisted = (
@@ -1277,7 +1326,7 @@ async function checkIssues(
     );
     return !closed || quiet >= where.windowStart;
   });
-  await archiveGone(context, octokit, where, unlisted);
+  await archiveGone(context, octokit, where, unlisted, follower);
 }
 
 async function archiveGone(
@@ -1285,27 +1334,60 @@ async function archiveGone(
   octokit: Client,
   where: { owner: string; name: string },
   rows: readonly Item[],
+  follower: Follower,
 ): Promise<void> {
   const { log } = context;
   const gone: string[] = [];
+  const followed: NonNullable<Awaited<ReturnType<typeof follow>>>[] = [];
   for (const row of rows) {
     const number = row.properties["number"];
     const link = linkOf(row);
     if (typeof number !== "number" || link === undefined) continue;
     const said = await askIssue(octokit, where.owner, where.name, number);
-    if (said === "deleted") gone.push(link);
-    else if (said === "moved") {
+    if (said.kind === "deleted") gone.push(link);
+    else if (said.kind === "moved") {
+      const next =
+        said.to === undefined
+          ? undefined
+          : await follow(context, octokit, row, said.to, follower);
+      if (next !== undefined) {
+        followed.push(next);
+        continue;
+      }
       gone.push(link);
       log.condition(
         `issue-moved:${link}`,
         `${where.owner}/${where.name}#${String(number)} was moved to another repository, so its row here is archived`,
       );
-    } else if (said === "missing") {
+    } else if (said.kind === "missing") {
       log.condition(
         `issue-missing:${link}`,
         `${where.owner}/${where.name}#${String(number)} answered 404 though its repository reads, so its row is left as it is`,
       );
     }
+  }
+  if (followed.length > 0) {
+    await context.upsert(
+      issueType,
+      await fileNotes(
+        context,
+        issueType,
+        followed.map((next) => next.entry),
+      ),
+    );
+    await context.upsert(
+      commentType,
+      await fileNotes(
+        context,
+        commentType,
+        await movedComments(
+          context,
+          octokit,
+          followed.map((next) => next.issue),
+          follower.hidden,
+        ),
+      ),
+    );
   }
   await context.archive(issueType, gone);
 }
@@ -1362,29 +1444,6 @@ async function checkComments(
     commentType,
     absent.filter((link) => !still.has(link)),
   );
-}
-
-async function askIssue(
-  octokit: Client,
-  owner: string,
-  repo: string,
-  number: number,
-): Promise<"present" | "deleted" | "moved" | "missing"> {
-  try {
-    const answer = await octokit.request(
-      "GET /repos/{owner}/{repo}/issues/{issue_number}",
-      { owner, repo, issue_number: number, request: { redirect: "manual" } },
-    );
-    // Asked not to follow, a move answers its own status.
-    const code: number = answer.status;
-    return code >= 300 && code < 400 ? "moved" : "present";
-  } catch (error) {
-    const code = status(error);
-    if (code === 410) return "deleted";
-    if (code === 301 || code === 302 || code === 307) return "moved";
-    if (code === 404) return "missing";
-    throw error;
-  }
 }
 
 async function retainedTargets(
@@ -1645,6 +1704,27 @@ async function readNamed(
     [...issues.values()].map((one) => one.relations),
     retainedRepositories,
   );
+  const moves = new Map<string, string>();
+  for (const [installation, client] of clients) {
+    const mine = [...issues.values()]
+      .map(({ issue }) => issue)
+      .filter(
+        (issue) =>
+          listed.get(issue.repository.node)?.installation === installation,
+      );
+    for (const [fresh, old] of (await attempt(installation, () =>
+      movedFrom(context, client, mine),
+    )) ?? []) {
+      moves.set(fresh, old);
+    }
+    for (const issue of mine.filter((one) => moves.has(one.node))) {
+      for (const comment of (await attempt(installation, () =>
+        commentsOf(client, issue),
+      )) ?? []) {
+        comments.set(comment.node, comment);
+      }
+    }
+  }
   const touched = new Set([
     ...[...issues.values()].map(({ issue }) => issue.repository.node),
     ...[...comments.values()].map((comment) => comment.repository.node),
@@ -1672,15 +1752,18 @@ async function readNamed(
     await fileNotes(
       context,
       issueType,
-      [...issues.values()].map(({ issue, relations }) =>
-        issueEntry(
-          issue,
-          relations,
-          new Set([...synced, ...paused]),
-          privateIn(privacy, issue.repository.node),
-          knownTargets,
-          closerOf(issue.node),
+      withMoves(
+        [...issues.values()].map(({ issue, relations }) =>
+          issueEntry(
+            issue,
+            relations,
+            new Set([...synced, ...paused]),
+            privateIn(privacy, issue.repository.node),
+            knownTargets,
+            closerOf(issue.node),
+          ),
         ),
+        moves,
       ),
     ),
   );
@@ -1689,8 +1772,12 @@ async function readNamed(
     await fileNotes(
       context,
       commentType,
-      [...comments.values()].map((comment) =>
-        commentEntry(comment, privateIn(privacy, comment.repository.node)),
+      await withMovedComments(
+        context,
+        [...comments.values()].map((comment) =>
+          commentEntry(comment, privateIn(privacy, comment.repository.node)),
+        ),
+        new Set(moves.keys()),
       ),
     ),
   );
@@ -1770,7 +1857,17 @@ async function readNamed(
         );
         return;
       }
-      await archiveGone(context, octokit, { owner, name }, issueRows);
+      await archiveGone(context, octokit, { owner, name }, issueRows, {
+        synced,
+        entry: ({ issue, relations }) =>
+          issueEntry(
+            issue,
+            relations,
+            new Set([...synced, ...paused]),
+            privateIn(privacy, issue.repository.node),
+          ),
+        hidden: (repositoryNode) => privateIn(privacy, repositoryNode),
+      });
       await context.archive(
         commentType,
         commentRows.flatMap((row) => linkOf(row) ?? []),
