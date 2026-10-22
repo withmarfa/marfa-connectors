@@ -556,7 +556,7 @@ export class Marfa {
     }
   }
 
-  /** Makes a webhook endpoint, answering its path in full this once. */
+  /** Makes an inbound endpoint, answering its path in full this once. */
   async createEndpoint(
     id: string,
     options: { label?: string; duplicateHeader?: string },

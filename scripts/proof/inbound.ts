@@ -159,7 +159,7 @@ export async function proveInbound(
         await runOnce();
         connectorId = (await registration(manager, key.id)).id;
         const unmade = (await lastRun(manager, key.id)).summary ?? "";
-        if (!unmade.includes("no webhook endpoint is live")) {
+        if (!unmade.includes("no inbound endpoint is live")) {
           throw new Error(`the first run's report said: ${unmade}`);
         }
         const { data, error } = await own.POST("/connectors/{id}/endpoints", {
@@ -528,7 +528,7 @@ async function proveSetup(
           Object.keys(written).join() !== "PROOF_WEBHOOK_SECRET" ||
           newest?.retired_at !== null ||
           !/^stub vendor, set up \d{4}-/.test(newest.label ?? "") ||
-          !output.includes(`setup made the webhook endpoint ${newest.id}`) ||
+          !output.includes(`setup made the inbound endpoint ${newest.id}`) ||
           answer.status !== 202
         ) {
           throw new Error(
@@ -562,7 +562,7 @@ async function proveSetup(
           existsSync(file) ||
           newest?.retired_at == null ||
           !output.includes(
-            `the webhook endpoint ${newest.id} it made was retired`,
+            `the inbound endpoint ${newest.id} it made was retired`,
           ) ||
           answer.status !== 404 ||
           after !== before

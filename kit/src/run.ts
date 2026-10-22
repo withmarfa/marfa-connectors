@@ -2279,7 +2279,7 @@ export async function runOnce<E extends EnvDeclaration>(
       const endpoints = whole
         ? await bookkeeping(
             "endpoints-unread",
-            "the webhook endpoints could not be read, so whether one is live is not known",
+            "the inbound endpoints could not be read, so whether one is live is not known",
             () => setup.marfa.endpoints(setup.connectorId),
           )
         : undefined;
@@ -2289,7 +2289,7 @@ export async function runOnce<E extends EnvDeclaration>(
       ) {
         raised.set(
           "no-endpoint",
-          `no webhook endpoint is live, so nothing reaches this connector but its schedule; make one with \`marfa connectors endpoints create ${setup.connectorId}\``,
+          `no inbound endpoint is live, so nothing reaches this connector but its schedule; make one with \`marfa connectors endpoints create ${setup.connectorId}\``,
         );
       }
     }
