@@ -81,9 +81,12 @@ import {
   follow,
   movedFrom,
   movedComments,
+  movedNamed,
   withMovedComments,
   withMoves,
+  type Followed,
   type Follower,
+  unreadable,
 } from "./transfer.js";
 
 export const windowDays = 90;
@@ -1338,7 +1341,7 @@ async function archiveGone(
 ): Promise<void> {
   const { log } = context;
   const gone: string[] = [];
-  const followed: NonNullable<Awaited<ReturnType<typeof follow>>>[] = [];
+  const followed: Extract<Followed, { kind: "followed" }>[] = [];
   for (const row of rows) {
     const number = row.properties["number"];
     const link = linkOf(row);
@@ -1346,18 +1349,20 @@ async function archiveGone(
     const said = await askIssue(octokit, where.owner, where.name, number);
     if (said.kind === "deleted") gone.push(link);
     else if (said.kind === "moved") {
-      const next =
+      // GitHub answers an empty address for a move to a repository the
+      // token cannot see.
+      const next: Followed =
         said.to === undefined
-          ? undefined
-          : await follow(context, octokit, row, said.to, follower);
-      if (next !== undefined) {
+          ? { kind: "away", why: unreadable }
+          : await follow(octokit, row, link, said.to, follower);
+      if (next.kind === "followed") {
         followed.push(next);
         continue;
       }
       gone.push(link);
       log.condition(
         `issue-moved:${link}`,
-        `${where.owner}/${where.name}#${String(number)} was moved to another repository, so its row here is archived`,
+        `${where.owner}/${where.name}#${String(number)} was moved to ${next.why}, so its row here is archived`,
       );
     } else if (said.kind === "missing") {
       log.condition(
@@ -1495,6 +1500,30 @@ async function readRelatedSources(
     for (const id of ids) asked.add(id);
     await read(ids);
   }
+}
+
+/** The rows of the issues that hold these comment rows, found by the number
+ *  in each comment's address, other than those already asked about. */
+async function issuesOfComments(
+  context: Context,
+  under: { type: string; id: string },
+  commentRows: readonly Item[],
+  asked: ReadonlySet<string | undefined>,
+): Promise<Item[]> {
+  const numbers = new Set(
+    commentRows.flatMap((row) => {
+      const url = row.properties["url"];
+      const found =
+        typeof url === "string"
+          ? /\/(?:issues|pull)\/(\d+)#issuecomment-/.exec(url)
+          : null;
+      return found?.[1] === undefined ? [] : [Number(found[1])];
+    }),
+  );
+  return (await context.linked(issueType, inRepository, under)).filter(
+    (row) =>
+      numbers.has(Number(row.properties["number"])) && !asked.has(linkOf(row)),
+  );
 }
 
 async function readNamed(
@@ -1704,7 +1733,27 @@ async function readNamed(
     [...issues.values()].map((one) => one.relations),
     retainedRepositories,
   );
-  const moves = new Map<string, string>();
+  const installationOf = new Map(
+    [...listed.values()].map(({ repository, installation }) => [
+      repository.full_name.toLowerCase(),
+      installation,
+    ]),
+  );
+  // A delivery that names an old issue as well as the new one shows the move
+  // at once, though the new issue's timeline may not yet.
+  const moves = await movedNamed(
+    context,
+    [...namedIssues].filter((id) => !shown.has(id)),
+    [...issues.values()].map(({ issue }) => issue),
+    async (repository, number) => {
+      const installation = installationOf.get(repository.toLowerCase());
+      const client =
+        installation === undefined ? undefined : clients.get(installation);
+      if (installation === undefined || client === undefined) return undefined;
+      const [owner = "", name = ""] = repository.split("/");
+      return attempt(installation, () => askIssue(client, owner, name, number));
+    },
+  );
   for (const [installation, client] of clients) {
     const mine = [...issues.values()]
       .map(({ issue }) => issue)
@@ -1848,6 +1897,18 @@ async function readNamed(
             unseenComments,
           );
     if (issueRows.length === 0 && commentRows.length === 0) continue;
+    // A transfer copies a comment, so the old one is gone with the issue's
+    // old address answering 301. Ask it, so the row follows the copy before
+    // it is archived with an edit waiting.
+    const owners =
+      commentRows.length === 0
+        ? []
+        : await issuesOfComments(
+            context,
+            under,
+            commentRows,
+            new Set(issueRows.map((row) => linkOf(row))),
+          );
     const [owner = "", name = ""] = repository.full_name.split("/");
     await attempt(installation, async () => {
       if (!(await reads(octokit, owner, name))) {
@@ -1857,17 +1918,23 @@ async function readNamed(
         );
         return;
       }
-      await archiveGone(context, octokit, { owner, name }, issueRows, {
-        synced,
-        entry: ({ issue, relations }) =>
-          issueEntry(
-            issue,
-            relations,
-            new Set([...synced, ...paused]),
-            privateIn(privacy, issue.repository.node),
-          ),
-        hidden: (repositoryNode) => privateIn(privacy, repositoryNode),
-      });
+      await archiveGone(
+        context,
+        octokit,
+        { owner, name },
+        [...issueRows, ...owners],
+        {
+          synced,
+          entry: ({ issue, relations }) =>
+            issueEntry(
+              issue,
+              relations,
+              new Set([...synced, ...paused]),
+              privateIn(privacy, issue.repository.node),
+            ),
+          hidden: (repositoryNode) => privateIn(privacy, repositoryNode),
+        },
+      );
       await context.archive(
         commentType,
         commentRows.flatMap((row) => linkOf(row) ?? []),

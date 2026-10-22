@@ -139,6 +139,7 @@ const connector = defineConnector<typeof env>({
       ],
       derived: ["private", "github_files"],
       revive: true,
+      mergeMoved: true,
     },
     {
       type: comment as TypeDefinition,
@@ -162,6 +163,7 @@ const connector = defineConnector<typeof env>({
         inRepository,
       ],
       derived: ["private", "github_files"],
+      mergeMoved: true,
     },
     {
       type: discussion as TypeDefinition,

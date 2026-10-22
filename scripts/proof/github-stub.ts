@@ -75,8 +75,10 @@ export interface Issue {
   // Set on the issue a transfer left behind: the node of the issue it
   // became. The old node no longer resolves and its address answers 301.
   movedTo?: string;
-  // Set on the issue a transfer made: the repository it came from.
-  transferred?: { from: string; at: string };
+  // Set on the issue a transfer made: the repository it came from. While
+  // `late`, its timeline does not yet show the TransferredEvent, which GitHub
+  // records about when it sends `issues.opened` for the new issue.
+  transferred?: { from: string; at: string; late?: boolean };
   app?: boolean;
   unlisted?: number;
 }
@@ -577,8 +579,14 @@ export class GitHubStub {
   /** Transfers an issue as GitHub does: the new issue has a new id, node and
    *  number, keeps the old one's times, author and text, and gets copies of
    *  its comments with new ids and the old times. The old node stops
-   *  resolving, its comments answer 404 and its address answers 301. */
-  transfer(issue: Issue, target: Repository): Issue {
+   *  resolving, its comments answer 404 and its address answers 301, with an
+   *  empty Location where the asker cannot read the target. With `late`, the
+   *  new issue's timeline lacks the TransferredEvent until `settleTransfers`. */
+  transfer(
+    issue: Issue,
+    target: Repository,
+    options: { late?: boolean } = {},
+  ): Issue {
     const id = this.ids++;
     const at = this.now();
     const number =
@@ -595,7 +603,11 @@ export class GitHubStub {
       number,
       repository: target.node,
       updated_at: at,
-      transferred: { from: issue.repository, at },
+      transferred: {
+        from: issue.repository,
+        at,
+        ...(options.late === true && { late: true }),
+      },
     };
     delete made.movedTo;
     this.issues.push(made);
@@ -628,10 +640,17 @@ export class GitHubStub {
     return made;
   }
 
+  /** Shows the TransferredEvent of every transfer made `late`. */
+  settleTransfers(): void {
+    for (const one of this.issues) {
+      if (one.transferred !== undefined) delete one.transferred.late;
+    }
+  }
+
   /** The two deliveries GitHub sends for a transfer, in the order it sends
    *  them: `issues.opened` in the target, then `issues.transferred` in the
-   *  source. Only the first exists where the source lies outside the
-   *  installation. */
+   *  source. The installation gets only the first where the source lies
+   *  outside it, and only the second where the target does. */
   transferDeliveries(
     from: Issue,
     to: Issue,
@@ -1445,11 +1464,15 @@ export class GitHubStub {
       } else if (issue.movedTo !== undefined) {
         const next = this.issues.find((one) => one.node === issue.movedTo);
         const home = next === undefined ? undefined : this.repositoryOf(next);
+        // The address of a repository the asker cannot read is left out.
+        const open = home !== undefined && this.visible(req, home.node);
         send(
           301,
           { message: "Moved Permanently" },
           {
-            location: `${this.url}/repos/${home?.owner ?? ""}/${home?.name ?? ""}/issues/${String(next?.number ?? 0)}`,
+            location: open
+              ? `${this.url}/repos/${home.owner}/${home.name}/issues/${String(next?.number ?? 0)}`
+              : "",
           },
         );
       } else {
@@ -2560,7 +2583,8 @@ export class GitHubStub {
             id: issue.node,
             timelineItems: {
               nodes:
-                issue.transferred === undefined
+                issue.transferred === undefined ||
+                issue.transferred.late === true
                   ? []
                   : [
                       {

@@ -87,16 +87,22 @@ A listing with `all=true` still holds what the person has read, but GitHub drops
 
 ## Transferred issues
 
-GitHub gives a transferred issue a new node id, number and address, and copies its comments with new node ids and their old times. Its creation time, author, title and text stay. The old node id stops resolving, and the old address answers 301 with the new issue's address. In the same installation, `issues.opened` arrives in the target about a second before `issues.transferred` arrives in the source; from a repository outside the installation only `issues.opened` arrives.
+GitHub gives a transferred issue a new node id, number and address, and copies its comments with new node ids and their old times. Its creation time, author, title and text stay. The old node id stops resolving, and the old address answers 301 with the new issue's address, or with an empty address when the App cannot read the repository the issue moved to. In the same installation, `issues.opened` arrives for the new issue and, about two seconds later, `issues.transferred` arrives for the old one and names both. GitHub records the transfer on the new issue's timeline at about the time it sends `issues.opened`, so a read made then can find no transfer.
 
-The connector keeps the Marfa row, so the issue keeps its Marfa ID, its comments and its connections to other rows:
+The connector keeps the Marfa row, so the issue keeps its Marfa ID, its comments and its connections to other rows. The proof is the old address answering 301 to the new issue's own address. The title is never compared, since either side may have been edited. The old row is found in one of three ways:
 
-- On the first read of an issue Marfa does not hold, the connector asks GitHub whether the issue has a transfer on its timeline. If the repository it came from is one whose rows Marfa holds, it looks there for a row created at the same time, and asks the old address for the row's issue. Only an answer of 301 to the new issue's own address makes it the same item; the title is never compared, since either side may have been edited. A copy of each comment replaces the row of the comment it copies, found by author, time and text, or by author and time alone where only one row matches them.
-- When the old repository is read first, its check of rows it no longer lists (daily, and whenever its listing changes) asks the old address, follows the 301, and does the same.
-- If the new issue cannot be read, or is in a repository the connector does not sync, the row is archived and the run says so. An issue transferred in from a repository outside the installation has no row to keep and is added once.
-- A webhook run does the same for `issues.opened` and `issues.transferred` in either order, and reads all the comments of the moved issue, because their copies keep the old times and no listing of what changed names them.
+- The first read of an issue Marfa does not hold asks GitHub whether the issue has a transfer on its timeline. If the repository it came from is one whose rows Marfa holds, the connector looks there for a row created at the same time and asks the old address.
+- A delivery that names the old issue and the new one, such as `issues.transferred`, asks the old address of the row it holds before the new issue is written, so the timeline does not matter.
+- When the old repository is read first, its check of rows it no longer lists (daily, and whenever its listing changes) asks the old address and follows the 301.
 
-A transfer is not a reason to lose an edit waiting in Marfa: it is sent to the issue in its new repository.
+A copy of each comment replaces the row of the comment it copies. The connector finds it by author, time and text. A row whose text was edited in Marfa is found by author and time alone, where it is the only row left once all the exact matches are made, so the order of the copies does not matter. The comments of a moved issue are all read, because their copies keep the old times and no listing of what changed names them. A comment named alone by a delivery, after its issue moved, first asks its issue's old address, so the comment row is not archived with an edit waiting in it.
+
+What happens to the item:
+
+- **Kept.** The issue moves to another repository the connector syncs and reads: the row keeps its ID, comments, connections and edits waiting in Marfa, and the edit is sent to the issue in its new repository. An issue transferred in from a repository outside the installation has no row to keep and is added once.
+- **Merged.** The new issue was written as a row of its own before the move was known, such as when the timeline had no transfer yet. The connector keeps the older row, with its ID, connections and Marfa edits, gives it the new issue's node id, and archives the other row. Its comments are merged the same way. This happens only if the connector wrote the other row and nobody has changed it in Marfa since.
+- **Kept as two items.** The other row was edited in Marfa, was made there, or has a change waiting. The connector leaves both rows and names them, and why, in a `duplicate:` condition on each run. A person decides which to keep.
+- **Archived.** The issue moved to a repository the connector cannot read or does not sync, or the address no longer leads to the same issue. The row is archived, and an `issue-moved:` condition says which of these it was. Nothing is archived on a 404: an issue the old address does not know, in a repository that reads, is left as it is under `issue-missing:`.
 
 ## Setting it up
 

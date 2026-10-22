@@ -347,7 +347,9 @@ describe("a transferred issue", () => {
     const output = await once();
     expect(row(moving.node).state).toBe("archived");
     expect(row(staying.node).state).toBe("active");
-    expect(output).toContain("was moved to another repository");
+    expect(output).toContain(
+      "was moved to a repository the App cannot read, so its row here is archived",
+    );
     expect(rowsOf("github.issue")).toHaveLength(2);
   });
 
@@ -412,4 +414,197 @@ describe("a transferred issue", () => {
     expect(rowsOf("github.issue").length).toBeGreaterThanOrEqual(2);
     expect(row(moved.node).id).not.toBe(row(stays.node).id);
   });
+});
+
+function conditions(): Record<string, string> {
+  return Object.assign({}, ...marfa.problems.values()) as Record<
+    string,
+    string
+  >;
+}
+
+describe("a transferred issue whose transfer record is late", () => {
+  /** Edited in Marfa, on an issue and a comment the App may carry back. */
+  function editedInMarfa(moving: Issue) {
+    const said = github.addComment(moving, "Said", "marfa-connectors[bot]");
+    said.app = true;
+    return said;
+  }
+
+  it("is merged into the older row when the target is read first", async () => {
+    repositories(false);
+    const moving = github.addIssue(source, { title: "Original" });
+    const said = editedInMarfa(moving);
+    await once();
+    const issueId = row(moving.node).id;
+    const commentId = row(said.node).id;
+    marfa.edit(issueId, { title: "Edited in Marfa" });
+    marfa.edit(commentId, { body: "Comment edited in Marfa" });
+
+    const moved = github.transfer(moving, target, { late: true });
+    await once();
+
+    // The copy the target's read made stays as an archived row of the old node.
+    expect(
+      rowsOf("github.issue")
+        .map((one) => one.state)
+        .sort(),
+    ).toEqual(["active", "archived"]);
+    expect(row(moved.node).id).toBe(issueId);
+    expect(row(moved.node).properties["title"]).toBe("Edited in Marfa");
+    expect(moved.title).toBe("Edited in Marfa");
+    const copy = github.comments.find(
+      (one) => one.issue === moved.node && one.deleted !== true,
+    );
+    expect(copy?.body).toBe("Comment edited in Marfa");
+    expect(
+      rowsOf("github.comment")
+        .map((one) => one.state)
+        .sort(),
+    ).toEqual(["active", "archived"]);
+    expect(row(copy?.node ?? "").id).toBe(commentId);
+    expect(conditions()).toEqual({});
+
+    const before = marfa.log.length;
+    await once();
+    expect(lastWrites(before)).toEqual([]);
+  });
+
+  it.each([
+    ["opened, then transferred", ["opened", "transferred"]],
+    ["transferred, then opened", ["transferred", "opened"]],
+  ])(
+    "stays one item, with its edits, when the webhooks arrive %s",
+    async (_, order) => {
+      repositories(true);
+      const moving = github.addIssue(source, { title: "Original" });
+      const said = editedInMarfa(moving);
+      await watching(async () => {
+        const issueId = row(moving.node).id;
+        const commentId = row(said.node).id;
+        marfa.edit(issueId, { title: "Edited in Marfa" });
+        marfa.edit(commentId, { body: "Comment edited in Marfa" });
+        const moved = github.transfer(moving, target, { late: true });
+        const sent = github.transferDeliveries(moving, moved);
+        // One delivery at a time, so the first is read before the second.
+        let sentSoFar = 0;
+        for (const action of order) {
+          deliver("issues", sent[action as "opened" | "transferred"]);
+          sentSoFar += 1;
+          await until(
+            () =>
+              marfa.deliveries.filter((one) => one.outcome === "processed")
+                .length === sentSoFar,
+            "the delivery",
+          );
+        }
+        const copy = github.comments.find(
+          (one) => one.issue === moved.node && one.deleted !== true,
+        );
+        await until(
+          () => moved.title === "Edited in Marfa" && copy?.body !== "Said",
+          "the edits to reach GitHub",
+        );
+        expect(
+          rowsOf("github.issue").filter((one) => one.state === "active"),
+        ).toHaveLength(1);
+        expect(row(moved.node).id).toBe(issueId);
+        expect(rowsOf("github.comment").map((one) => one.state)).toEqual([
+          "active",
+        ]);
+        expect(row(copy?.node ?? "").id).toBe(commentId);
+        expect(copy?.body).toBe("Comment edited in Marfa");
+      });
+    },
+    60_000,
+  );
+
+  it("keeps both items, and says why, where the copy was edited in Marfa", async () => {
+    repositories(true);
+    const moving = github.addIssue(source, { title: "Original" });
+    await watching(async () => {
+      const olderId = row(moving.node).id;
+      const moved = github.transfer(moving, target, { late: true });
+      const sent = github.transferDeliveries(moving, moved);
+      deliver("issues", sent.opened);
+      await until(() => rowsOf("github.issue").length === 2, "the copy");
+      const copyId = row(moved.node).id;
+      marfa.edit(copyId, { title: "Edited in Marfa" });
+      deliver("issues", sent.transferred);
+      await until(
+        () => marfa.deliveries.every((one) => one.outcome === "processed"),
+        "the deliveries",
+      );
+      await until(
+        () => conditions()[`duplicate:${copyId}`] !== undefined,
+        "the condition",
+      );
+      expect(rowsOf("github.issue").map((one) => one.state)).toEqual([
+        "active",
+        "active",
+      ]);
+      expect(row(moved.node).id).toBe(copyId);
+      expect(conditions()[`duplicate:${copyId}`]).toContain(olderId);
+      expect(conditions()[`duplicate:${copyId}`]).toContain("title");
+    });
+  }, 60_000);
+
+  it("keeps the edit of a comment named alone after its issue moved", async () => {
+    repositories(true);
+    const moving = github.addIssue(source, { title: "Original" });
+    const said = editedInMarfa(moving);
+    await watching(async () => {
+      const issueId = row(moving.node).id;
+      const commentId = row(said.node).id;
+      marfa.edit(commentId, { body: "Comment edited in Marfa" });
+      const moved = github.transfer(moving, target);
+      deliver("issue_comment", {
+        action: "edited",
+        comment: { node_id: said.node },
+        repository: {
+          node_id: source.node,
+          full_name: "someone/source",
+        },
+      });
+      await until(
+        () => marfa.deliveries.every((one) => one.outcome === "processed"),
+        "the delivery",
+      );
+      const copy = github.comments.find(
+        (one) => one.issue === moved.node && one.deleted !== true,
+      );
+      await until(
+        () => copy?.body === "Comment edited in Marfa",
+        "the edit to reach GitHub",
+      );
+      expect(row(copy?.node ?? "").id).toBe(commentId);
+      expect(row(copy?.node ?? "").state).toBe("active");
+      expect(row(moved.node).id).toBe(issueId);
+      expect(rowsOf("github.issue")).toHaveLength(1);
+      expect(rowsOf("github.comment")).toHaveLength(1);
+    });
+  }, 60_000);
+
+  it("archives the row of an issue that moved out of reach, with its true reason", async () => {
+    repositories(true);
+    const moving = github.addIssue(source, { title: "Leaving" });
+    const outside = github.addRepository("stranger/private", {
+      installation: 99,
+      private: true,
+    });
+    await watching(async () => {
+      const id = row(moving.node).id;
+      const moved = github.transfer(moving, outside);
+      deliver("issues", github.transferDeliveries(moving, moved).transferred);
+      await until(
+        () => marfa.byId(id).state === "archived",
+        "the row to be archived",
+      );
+      const gone = Object.entries(conditions()).filter(([key]) =>
+        key.startsWith("issue-"),
+      );
+      expect(gone.map(([key]) => key)).toEqual([`issue-moved:${moving.node}`]);
+      expect(gone[0]?.[1]).toContain("a repository the App cannot read");
+    });
+  }, 60_000);
 });
