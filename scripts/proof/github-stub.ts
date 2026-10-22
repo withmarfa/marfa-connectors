@@ -630,7 +630,7 @@ export class GitHubStub {
 
   /** The two deliveries GitHub sends for a transfer, in the order it sends
    *  them: `issues.opened` in the target, then `issues.transferred` in the
-   *  source. Only the second exists where the source lies outside the
+   *  source. Only the first exists where the source lies outside the
    *  installation. */
   transferDeliveries(
     from: Issue,
