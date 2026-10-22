@@ -120,7 +120,7 @@ export async function setUp<E extends EnvDeclaration>(
     );
     for (const endpoint of made) {
       logger.info(
-        `setup made the webhook endpoint ${endpoint.id} (${endpoint.label}); once the vendor posts to it, retire any endpoint it replaces with \`marfa connectors endpoints retire ${connectorId} <endpoint-id>\``,
+        `setup made the inbound endpoint ${endpoint.id} (${endpoint.label}); once the vendor posts to it, retire any endpoint it replaces with \`marfa connectors endpoints retire ${connectorId} <endpoint-id>\``,
       );
     }
     const declared = Object.keys(connector.env ?? {});
@@ -155,10 +155,10 @@ async function retire(
   for (const { id } of made) {
     try {
       await marfa.retireEndpoint(connectorId, id);
-      logger.info(`the webhook endpoint ${id} it made was retired`);
+      logger.info(`the inbound endpoint ${id} it made was retired`);
     } catch (error) {
       logger.error(
-        `the webhook endpoint ${id} it made could not be retired, and still takes deliveries: retire it with \`marfa connectors endpoints retire ${connectorId} ${id}\`: ${describe(error)}`,
+        `the inbound endpoint ${id} it made could not be retired, and still takes deliveries: retire it with \`marfa connectors endpoints retire ${connectorId} ${id}\`: ${describe(error)}`,
       );
     }
   }

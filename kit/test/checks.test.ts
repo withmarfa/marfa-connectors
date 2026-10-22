@@ -73,7 +73,7 @@ describe("the type check", () => {
   });
 
   it("compares prototype-named fields as opaque own keys", () => {
-    const carried = {
+    const carried: TypeDefinition = {
       ...testType,
       fields: {
         ...testType.fields,
@@ -82,7 +82,7 @@ describe("the type check", () => {
           ["__proto__", { type: "string" }],
         ]),
       },
-    } as TypeDefinition;
+    };
     expect(compare(carried, served).missing).toEqual(["__proto__", "toString"]);
     const matched = { ...served, fields: carried.fields };
     expect(compare(carried, matched)).toEqual(none);

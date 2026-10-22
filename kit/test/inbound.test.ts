@@ -114,7 +114,7 @@ describe("deliveries a scheduled run takes", () => {
     ];
     expect(await harness.inbound(vendor([one]))).toBe(0);
     expect(harness.lastRun().summary).toContain(
-      "no webhook endpoint is live, so nothing reaches this connector but its schedule; make one with `marfa connectors endpoints create connector-1`",
+      "no inbound endpoint is live, so nothing reaches this connector but its schedule; make one with `marfa connectors endpoints create connector-1`",
     );
   });
 
@@ -141,7 +141,7 @@ describe("deliveries a scheduled run takes", () => {
       "the waiting deliveries could not be read, so this run read the vendor whole without them",
     );
     expect(run.summary).toContain(
-      "the webhook endpoints could not be read, so whether one is live is not known",
+      "the inbound endpoints could not be read, so whether one is live is not known",
     );
     expect(outcomes()).toEqual([null]);
   });
@@ -501,7 +501,7 @@ describe("between scheduled runs", () => {
     const held = vendor([one]);
     const exit = harness.inbound(held, ["--every", "15m"]);
     await harness.clock.sleeping(10_000);
-    const missing = "no webhook endpoint is live";
+    const missing = "no inbound endpoint is live";
     expect(harness.lastRun().summary).toContain(missing);
 
     const said = signed({ ids: ["a:1"] });

@@ -116,7 +116,7 @@ describe("--setup", () => {
     const endpoint = harness.server.endpoints.at(-1);
     expect(endpoint?.retired_at).toBeNull();
     expect(lines).toContain(
-      `setup made the webhook endpoint ${endpoint?.id ?? ""} (test, set up 2026-09-25T09:00:00.000Z)`,
+      `setup made the inbound endpoint ${endpoint?.id ?? ""} (test, set up 2026-09-25T09:00:00.000Z)`,
     );
     expect(lines).not.toContain(made);
     expect(lines).not.toContain(held.endpoint?.path ?? "");
@@ -334,7 +334,7 @@ describe("--setup", () => {
     const lines = harness.lines.join("\n");
     for (const endpoint of made) {
       expect(lines).toContain(
-        `the webhook endpoint ${endpoint.id} it made was retired`,
+        `the inbound endpoint ${endpoint.id} it made was retired`,
       );
     }
   });

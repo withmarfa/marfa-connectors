@@ -23,7 +23,8 @@ export interface RowPolicy {
 }
 
 /** Nothing cascades, so a trash in Marfa never takes a vendor's row with it. */
-export type ConnectionDefinition = components["schemas"]["EdgeTypeRequest"];
+export type ConnectionDefinition =
+  components["schemas"]["EdgeTypeRegistrationRequest"];
 
 export interface Target {
   readonly type: string;
@@ -446,7 +447,7 @@ export interface SetupContext<E extends EnvDeclaration> {
     page?: string | ((callback: string) => string),
   ) => Promise<LocalCallback>;
   /**
-   * Makes a webhook endpoint for the connector: its path in full this once,
+   * Makes an inbound endpoint for the connector: its path in full this once,
    * and the address as the kit reaches the instance, which a vendor may
    * need replaced with the instance's public one.
    */

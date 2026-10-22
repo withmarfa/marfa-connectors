@@ -1733,7 +1733,7 @@ describe("a personal access token run", () => {
     expect(github.writes()).toHaveLength(0);
     expect(github.asked.some((one) => one.path.startsWith("/app"))).toBe(false);
     expect(marfa.endpoints).toEqual([]);
-    expect(second.output).not.toContain("no webhook endpoint");
+    expect(second.output).not.toContain("no inbound endpoint");
   });
 
   it("keeps an unchanged second token run from writing rows", async () => {
