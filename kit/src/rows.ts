@@ -1,5 +1,6 @@
 import {
   agreedState,
+  changedInMarfa,
   held,
   laterThan,
   mark,
@@ -125,6 +126,7 @@ export interface Spec {
   readonly derived: ReadonlySet<string>;
   readonly twoWay: boolean;
   readonly revive: boolean;
+  readonly mergeMoved?: boolean;
   readonly connections: ReadonlySet<string>;
 }
 
@@ -314,6 +316,16 @@ export interface Hooks {
   fenced(): boolean;
 }
 
+/** A duplicate being merged into an older row: the link it held, freed for
+ *  the older row, and the link it takes in exchange. */
+interface Fold {
+  readonly entry: Entry;
+  readonly duplicate: string;
+  readonly older: string;
+  readonly link: string;
+  readonly given: string;
+}
+
 export class Rows {
   private readonly attempts = new WeakMap<Entry, UpsertAttempt>();
   readonly counts: Counts = {
@@ -420,6 +432,7 @@ export class Rows {
     });
     const matched: [Entry, Item][] = [];
     const creates: [Entry, NewRow][] = [];
+    const folds: Fold[] = [];
     for (const entry of latest.values()) {
       const properties = cleaned(entry.properties);
       const stray = [
@@ -461,7 +474,7 @@ export class Rows {
         );
         continue;
       }
-      const row = this.find(value, earlier(entry), entry.source_id);
+      let row = this.find(value, earlier(entry), entry.source_id);
       if (row === "elsewhere") {
         this.counts.skipped += 1;
         this.hooks.omitted?.();
@@ -482,6 +495,14 @@ export class Rows {
         continue;
       }
       if (row !== undefined) {
+        const older =
+          value === undefined ? undefined : await this.folding(entry, row);
+        if (older !== undefined && value !== undefined) {
+          const fold = await this.vacate(entry, row, older, value);
+          if (fold === undefined) continue;
+          folds.push(fold);
+          row = older;
+        }
         matched.push([entry, row]);
         continue;
       }
@@ -517,6 +538,7 @@ export class Rows {
     }
     await this.store.fetch(matched.map(([, row]) => row.id));
     for (const [entry, row] of matched) await this.apply(entry, row);
+    for (const fold of folds) await this.settleFold(fold);
     const made = new Map<NewRow, Entry>();
     for (const [entry, row] of creates) {
       const loaded = await this.uploaded(entry);
@@ -527,6 +549,134 @@ export class Rows {
       await this.createPage(page, made);
     }
     this.judge();
+  }
+
+  /** The older row to merge a duplicate into, where the type asks for it and
+   *  the duplicate may be: the connector's own, active, and unchanged by
+   *  anyone since it wrote it. Where it may not, both rows stay and a
+   *  condition says why. */
+  private async folding(
+    entry: Entry,
+    duplicate: Item,
+  ): Promise<Item | undefined> {
+    if (this.kind.mergeMoved !== true) return undefined;
+    const own = this.linkOf(duplicate.properties);
+    const older = earlier(entry)
+      .filter((key) => key !== own)
+      .map((key) => this.byLink.get(key))
+      .map((id) => (id === undefined ? undefined : this.byId.get(id)))
+      .find((row) => row !== undefined && row.id !== duplicate.id);
+    if (
+      older?.type !== this.kind.type ||
+      older.state === "trashed" ||
+      forRow(this.kind, older, entry).owned === false ||
+      // Merged already, or the other way about: the row under the old link
+      // is the later made.
+      !(Date.parse(older.created_at) < Date.parse(duplicate.created_at))
+    ) {
+      return undefined;
+    }
+    await this.store.fetch([duplicate.id, older.id]);
+    const agreement = this.store.get(duplicate.id);
+    const why: string[] = [];
+    if (duplicate.source !== this.kind.source || agreement === undefined) {
+      why.push("the connector has no record of writing it");
+    } else {
+      if (agreement.made !== undefined || agreement.attempted !== undefined) {
+        why.push("it was made in Marfa");
+      }
+      const changed = changedInMarfa(
+        agreement,
+        this.kind.fields,
+        duplicate.properties,
+      );
+      if (changed.length > 0) {
+        why.push(`${changed.join(", ")} changed in Marfa`);
+      }
+      if (Object.keys(agreement.waiting ?? {}).length > 0) {
+        why.push("a change made in Marfa waits to be carried");
+      }
+      const settled =
+        duplicate.state === "active" ||
+        (duplicate.state === "archived" &&
+          agreement.state === "archived" &&
+          agreement.stateBy === "vendor");
+      if (!settled) why.push(`it is ${duplicate.state}`);
+    }
+    if (why.length === 0) return older;
+    this.hooks.condition(
+      `duplicate:${duplicate.id}`,
+      `the entry ${entry.source_id} is the item of ${older.id}, which the vendor moved, but ${duplicate.id} already holds its link and ${why.join(" and ")}, so both rows are kept`,
+    );
+    return undefined;
+  }
+
+  /** Frees the duplicate's link for the older row: the duplicate is archived
+   *  and without a link until the older row has taken it. */
+  private async vacate(
+    entry: Entry,
+    duplicate: Item,
+    older: Item,
+    link: string,
+  ): Promise<Fold | undefined> {
+    const field = this.kind.link;
+    const given = this.linkOf(older.properties);
+    if (field === undefined || given === undefined) return undefined;
+    this.checkStopped();
+    this.batch.tried += 1;
+    try {
+      let row = duplicate;
+      if (row.state === "active") {
+        const archived = await this.transition(row, "archived", entry);
+        if (archived === undefined) return undefined;
+        this.index(archived);
+        const agreement = this.store.get(row.id);
+        if (agreement !== undefined) {
+          this.store.set(row.id, {
+            ...agreement,
+            state: "archived",
+            stateBy: "vendor",
+            stateAt: archived.updated_at,
+          });
+        }
+        this.counts.archived += 1;
+        row = archived;
+      }
+      const left: Record<string, unknown> = { ...cleaned(row.properties) };
+      Reflect.deleteProperty(left, field);
+      this.index(
+        await this.marfa.update(
+          row.id,
+          row.version,
+          left,
+          undefined,
+          undefined,
+          this.kind.policy !== undefined,
+        ),
+      );
+    } catch (error) {
+      await this.absorb(error, entry.source_id, false, entry);
+      return undefined;
+    }
+    this.reached.add(duplicate.id);
+    return { entry, duplicate: duplicate.id, older: older.id, link, given };
+  }
+
+  /** Gives the duplicate the older row's former link where the older row took
+   *  its own, and gives it back its own where it did not. */
+  private async settleFold(fold: Fold): Promise<void> {
+    const duplicate = this.byId.get(fold.duplicate);
+    if (duplicate === undefined) return;
+    const landed = this.byLink.get(fold.link) === fold.older;
+    try {
+      await this.setLink(duplicate, landed ? fold.given : fold.link);
+    } catch (error) {
+      if (!(error instanceof LinkTaken)) throw error;
+      this.hooks.condition(
+        `duplicate:${fold.duplicate}`,
+        `${fold.duplicate} was merged into ${fold.older} and cannot be given the link it should now hold: ${error.message}`,
+      );
+    }
   }
 
   private agreedFile(

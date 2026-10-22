@@ -562,6 +562,14 @@ export async function start<E extends EnvDeclaration>(
         `${unlinked.map((spec) => spec.type).join(", ")} ${unlinked.length === 1 ? "is" : "are"} carried back, so ${unlinked.length === 1 ? "its type needs" : "their types need"} a link_field`,
       );
     }
+    const unmergeable = connector.types.filter(
+      (kind) => kind.mergeMoved === true && kind.type.link_field === undefined,
+    );
+    if (unmergeable.length > 0) {
+      throw new ConfigurationError(
+        `${unmergeable.map((kind) => kind.type.id).join(", ")} sets mergeMoved, which needs a link_field`,
+      );
+    }
     if (
       schedule.mode === "every" &&
       schedule.lookGiven &&
