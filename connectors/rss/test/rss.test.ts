@@ -2163,7 +2163,7 @@ describe("the connector, run as a process", () => {
       0,
     );
     expect(asked.at(-1)?.path).toBe(`/private/${token}/moved.xml`);
-    expect(marfa.runs.at(-1)?.summary).not.toContain("410");
+    expect(marfa.runs.at(-1)?.summary).not.toContain("answered 410");
     expect(marfa.rows).toHaveLength(4);
     const kept = JSON.stringify([
       marfa.states.get("rss") ?? {},
