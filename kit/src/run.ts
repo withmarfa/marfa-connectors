@@ -2678,7 +2678,8 @@ export async function runOnce<E extends EnvDeclaration>(
       ...outbound.keys(),
     ]);
     const connected = new Map(read.connected);
-    for (const [id, since] of await connections.leftBehind(read.updated)) {
+    const left = await connections.leftBehind(read.updated);
+    for (const [id, since] of left) {
       if (!connected.has(id)) connected.set(id, since);
     }
     for (const record of outbound.values()) {
@@ -2811,6 +2812,20 @@ export async function runOnce<E extends EnvDeclaration>(
         },
       });
       order.add(id);
+    }
+    // No frame names a row a move left, and once the row the move reached
+    // is carried it agrees with the move, so a replay would not look for the
+    // row again: its mark is kept before anything is carried.
+    const leaving = [...left.keys()].filter(
+      (id) => store.get(id)?.waiting?.[connectionsKey] !== undefined,
+    );
+    if (leaving.length > 0) {
+      try {
+        await store.flush(leaving, check);
+      } catch (error) {
+        phase.failedPrerequisite = true;
+        throw error;
+      }
     }
     for (const id of waitingIds) {
       if (carriable(store.get(id)?.waiting)) order.add(id);

@@ -360,6 +360,63 @@ describe("connections, whatever order the rows come in", () => {
     ).toEqual([]);
   });
 
+  it("carry the row a child left after a run that stopped once the row it reached was carried", async () => {
+    const held = parenting([child(1, [3]), child(2, []), child(3, [])]);
+    const edge = await settled(held);
+    const one = harness.server.row("a:1");
+    const three = harness.server.row("a:3");
+    held.entries = [];
+    held.journaled = true;
+    held.vendorIdFor = (change) =>
+      change.kind === "created" ? "v4" : undefined;
+    // A row made in Marfa is carried before the vendor is read, and its
+    // agreement kept as soon as the vendor takes it.
+    const four = harness.server.insert(
+      undefined,
+      { title: "Four" },
+      "test.entry",
+      "person",
+    );
+    harness.server.updateEdge(edge.id, { source_id: four.id });
+    const route = "POST /connectors/connector-1/agreements";
+    let kept = false;
+    held.answer = (change) => {
+      if (change.item.id !== four.id) return undefined;
+      // The process stops once the new row's agreement is kept: nothing
+      // after it reaches the instance.
+      harness.server.beforeAnswer = (request) => {
+        if (`${request.method} ${request.path}` !== route) return;
+        if (kept) harness.server.refuseNext(route, 503, "internal_error");
+        kept = true;
+      };
+      return undefined;
+    };
+
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(held.changes.map((change) => change.item.id)).toEqual([four.id]);
+    expect(harness.agreement(four.id)?.["connections"]).toEqual({
+      "test.parent-of": [three.id],
+    });
+    harness.server.beforeAnswer = undefined;
+    held.answer = undefined;
+    held.changes.length = 0;
+
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(
+      held.changes.map((change) => {
+        const carried = change.connections?.["test.parent-of"];
+        return [
+          change.item.id,
+          carried?.added.map((row) => row.id),
+          carried?.removed.map((row) => row.id),
+        ];
+      }),
+    ).toEqual([[one.id, [], [three.id]]]);
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+
   it("carry nothing, and read no agreements, for a change to an edge's properties alone", async () => {
     const held = parenting([child(1, [3]), child(2, []), child(3, [])]);
     const edge = await settled(held);

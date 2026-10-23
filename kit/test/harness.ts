@@ -128,6 +128,11 @@ export interface Vendor {
   runs: number;
   changes: Change[];
   answer?: ((change: Change) => Entry | undefined) | undefined;
+  /** Called before onChange takes the change; what it throws, onChange does. */
+  beforeChange?: ((change: Change) => void) | undefined;
+  /** onChange keeps each change in the outbound journal before the vendor
+   *  takes it, and acknowledges it after. */
+  journaled?: boolean;
   duringRemake?: (() => void) | undefined;
   failAfter?: Error | undefined;
   pushFail?: { id: string; error: Error } | undefined;
@@ -240,7 +245,15 @@ function twoWayConnector(held: Vendor) {
       if (held.failAfter !== undefined) throw held.failAfter;
     },
     async onChange(change, context) {
+      held.beforeChange?.(change);
       held.changes.push(change);
+      const intent =
+        held.journaled === true
+          ? await context.outbound.save(change, {
+              request: { id: change.item.id },
+              baseline: null,
+            })
+          : undefined;
       if (held.unreachable?.has(change.item.id) === true) {
         throw new Unreachable(`${change.item.id} cannot be reached`);
       }
@@ -265,6 +278,8 @@ function twoWayConnector(held: Vendor) {
         held.failAfterLink = undefined;
         throw error;
       }
+      if (intent !== undefined)
+        await context.outbound.acknowledge(change.item.id, intent.token);
       return held.answer?.(change);
     },
     async remake(change, context) {
