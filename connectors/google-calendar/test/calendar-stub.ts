@@ -155,6 +155,12 @@ export class CalendarStub {
     });
   }
 
+  /** Time passes in Google, so the next change is later than one made in
+   *  Marfa meanwhile. */
+  advance(seconds: number): void {
+    this.clock += seconds;
+  }
+
   /** Google's `updated` for a change now: later with every change. */
   private updated(): string {
     return new Date(Date.UTC(2026, 8, 1, 8) + this.clock * 1000).toISOString();

@@ -97,15 +97,21 @@ export interface Replacing {
   readonly seriesId: string;
   /** The occurrence's own id. */
   readonly eventId: string;
+  /** The patch, as first sent. */
+  readonly fields: Readonly<Record<string, JsonValue>>;
+  /** The version of the occurrence the patch was made against. */
+  readonly etag: string | null;
 }
 
 export function replacingOf(request: JsonValue): Replacing | undefined {
   if (!isJson(request)) return undefined;
-  const { calendarId, seriesId, eventId } = request;
+  const { calendarId, seriesId, eventId, fields, etag } = request;
   if (
     typeof calendarId !== "string" ||
     typeof seriesId !== "string" ||
-    typeof eventId !== "string"
+    typeof eventId !== "string" ||
+    !isJson(fields) ||
+    (etag !== null && typeof etag !== "string")
   ) {
     return undefined;
   }

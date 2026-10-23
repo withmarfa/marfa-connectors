@@ -425,6 +425,35 @@ describe("an edit made in Marfa", () => {
     expect(writes("PATCH")).toHaveLength(2);
   });
 
+  it("sends nothing again when an edit's answer was lost and Google changed the event since", async () => {
+    const one = await read();
+    server.edit(one.id, { title: "Long lunch", place: "Roof" });
+    calendar.loseAnswer((call) => call.method === "PATCH");
+
+    await once();
+    expect(calendar.event(me, "e1")).toMatchObject({
+      summary: "Long lunch",
+      location: "Roof",
+    });
+    calendar.advance(60 * 86_400);
+    calendar.put(me, { ...calendar.event(me, "e1"), location: "Garden" });
+
+    await landed();
+    await landed();
+
+    expect(writes("PATCH")).toHaveLength(1);
+    expect(calendar.event(me, "e1")).toMatchObject({
+      summary: "Long lunch",
+      location: "Garden",
+    });
+    expect(server.byId(one.id).properties).toMatchObject({
+      title: "Long lunch",
+      place: "Garden",
+      etag: calendar.event(me, "e1")?.["etag"],
+    });
+    expect(conditions()).toEqual({});
+  });
+
   it("switches an event between timed and all day, clearing the key Google held", async () => {
     const one = await read();
 
@@ -1341,6 +1370,110 @@ describe("a series", () => {
       title: "Planning, later",
     });
     expect(writes("POST")).toEqual([]);
+  });
+
+  it("settles a changed occurrence whose change landed though its answer was lost, sending nothing again", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    const instance = "weekly_20261026T100000Z";
+    calendar.loseAnswer(
+      (call) =>
+        call.method === "PATCH" && call.path === eventPath(me, instance),
+    );
+
+    await once();
+    expect(calendar.event(me, instance)?.["summary"]).toBe("Planning, later");
+
+    await landed();
+    await landed();
+    expect(writes("PATCH")).toHaveLength(1);
+    expect(server.byId(one.id).properties).toMatchObject({
+      google_id: `${me}/${instance}`,
+      title: "Planning, later",
+      etag: calendar.event(me, instance)?.["etag"],
+    });
+    expect(conditions()).toEqual({});
+  });
+
+  it("does not send a changed occurrence again over a change made in Google after its answer was lost", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    const instance = "weekly_20261026T100000Z";
+    calendar.loseAnswer(
+      (call) =>
+        call.method === "PATCH" && call.path === eventPath(me, instance),
+    );
+    await once();
+    calendar.advance(60 * 86_400);
+    calendar.put(me, {
+      ...calendar.event(me, instance),
+      summary: "Planning, with Kim",
+    });
+
+    await landed();
+    await landed();
+
+    expect(writes("PATCH")).toHaveLength(1);
+    expect(calendar.event(me, instance)).toMatchObject({
+      summary: "Planning, with Kim",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+    });
+    expect(server.byId(one.id).properties).toMatchObject({
+      google_id: `${me}/${instance}`,
+      title: "Planning, with Kim",
+      starts_at: "2026-10-26T14:00:00Z",
+      etag: calendar.event(me, instance)?.["etag"],
+    });
+    expect(conditions()).toEqual({});
+  });
+
+  it("sends a changed occurrence that never landed only where Google kept the value it was made against", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    const instance = "weekly_20261026T100000Z";
+    failPatch();
+    await landed();
+    const first = writes("PATCH")[0];
+    calendar.advance(60 * 86_400);
+    calendar.put(
+      me,
+      occurrence("2026-10-26T10:00:00Z", {
+        summary: "Planning, with Kim",
+        description: "Agenda: hiring",
+        start: { dateTime: "2026-10-26T10:00:00Z", timeZone: london },
+        end: { dateTime: "2026-10-26T11:00:00Z", timeZone: london },
+        organizer: { email: me, self: true },
+      }),
+    );
+
+    await landed();
+    await landed();
+
+    expect(first?.body).toMatchObject({ summary: "Planning, later" });
+    expect(writes("PATCH").slice(1)).toEqual([
+      expect.objectContaining({
+        path: eventPath(me, instance),
+        ifMatch: expect.any(String) as unknown,
+        body: {
+          start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+          end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+        },
+      }),
+    ]);
+    expect(calendar.event(me, instance)).toMatchObject({
+      summary: "Planning, with Kim",
+      description: "Agenda: hiring",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+    });
+    expect(server.byId(one.id).properties).toMatchObject({
+      title: "Planning, with Kim",
+      description: "Agenda: hiring",
+      starts_at: "2026-10-26T14:00:00Z",
+    });
+    expect(conditions()).toEqual({});
   });
 
   function failPatch(): void {

@@ -17,7 +17,7 @@ import {
   toChangeError,
   type GoogleOptions,
 } from "@withmarfa/google";
-import { CalendarApi, isGone, object, text, type Json } from "./api.js";
+import { CalendarApi, isGone, isJson, object, text, type Json } from "./api.js";
 import {
   calendarListScope,
   childOf,
@@ -537,9 +537,10 @@ function calendarsNamed(change: Change): Set<string> {
  * A changed occurrence made in Marfa: a row beneath a series, naming the
  * start it replaces. Google holds every occurrence of a series already, so
  * the row changes that occurrence rather than making an event of its own.
- * The change is kept in the outbound journal before anything is sent, so one
- * that fails is sent again as it was, and the read leaves the occurrence's
- * row alone until it lands.
+ * The change is kept in the outbound journal before anything is sent, with
+ * the occurrence's values it replaces as its baseline, so one that fails is
+ * settled against them, and the read leaves the occurrence's row alone until
+ * it lands.
  */
 async function replaceOccurrence(
   change: Change,
@@ -590,32 +591,44 @@ async function replaceOccurrence(
     session,
   );
   // Decided before the journal, so a row the patch refuses keeps nothing.
-  occurrencePatch(item, found.instance, { ...calendar, zone: found.zone });
+  const fields = occurrencePatch(item, found.instance, {
+    ...calendar,
+    zone: found.zone,
+  }) as Record<string, JsonValue>;
   const replacing: Replacing = {
     calendarId: calendar.id,
     seriesId: parts.eventId,
     eventId: found.id,
+    fields,
+    etag: text(found.instance, "etag") ?? null,
   };
   const held = await context.outbound.save(change, {
     request: replacing as unknown as JsonValue,
-    baseline: null,
+    baseline: Object.fromEntries(
+      Object.keys(fields).map((key) => [key, heldValue(found.instance, key)]),
+    ),
   });
-  return replace(held, replacing, session, context, found);
+  return replace(held, replacing, session, context, found.instance);
 }
 
 /**
  * Sends a journaled change of a changed occurrence made in Marfa and keeps
  * it as done. The row is linked first, so an occurrence another row holds is
- * refused before anything is sent. A change sent again finds the occurrence
- * anew, cancelled or not, and an occurrence cancelled in Google comes back,
- * as the first try would have brought it.
+ * refused before anything is sent.
+ *
+ * A change sent again finds the occurrence anew, cancelled or not, and
+ * settles each field against what Google holds now: a field at the value
+ * sent has landed, a field still at the value the change was made against
+ * is sent, and a field Google changed since keeps Google's value. What is
+ * sent is held to the version compared, and an occurrence cancelled in
+ * Google comes back, as the first try would have brought it.
  */
 async function replace(
   held: OutboundIntent,
   replacing: Replacing,
   session: Session,
   context: WriteContext,
-  first?: { instance: Json; id: string; zone: string },
+  first?: Json,
 ): Promise<Entry | undefined> {
   if (held.acknowledged) return undefined;
   if (held.requestNotApplied === true) {
@@ -623,24 +636,24 @@ async function replace(
   }
   const { item } = held.change;
   const calendar = await calendarIn(session, replacing.calendarId, item);
-  // The journal keeps the change as `replaceOccurrence` checked it.
-  const { instance, id, zone } =
-    first ??
-    (await occurrenceFor(
+  const target = linkOf(calendar.id, replacing.eventId);
+  let instance = first;
+  if (instance === undefined) {
+    const found = await occurrenceFor(
       item,
       Date.parse(textOf(item, "original_starts_at") ?? ""),
       { calendarId: replacing.calendarId, eventId: replacing.seriesId },
       linkOf(replacing.calendarId, replacing.seriesId),
       calendar,
       session,
-    ));
-  const target = linkOf(calendar.id, replacing.eventId);
-  if (id !== replacing.eventId) {
-    throw new Refused(
-      `Google Calendar no longer has the occurrence ${target}, so ${named(item)} is not carried`,
     );
+    if (found.id !== replacing.eventId) {
+      throw new Refused(
+        `Google Calendar no longer has the occurrence ${target}, so ${named(item)} is not carried`,
+      );
+    }
+    instance = found.instance;
   }
-  const fields = occurrencePatch(item, instance, { ...calendar, zone });
   try {
     await context.setLink(item, target);
   } catch (error) {
@@ -649,15 +662,53 @@ async function replace(
       `Another row already holds the occurrence ${target}, so ${named(item)} does not replace it`,
     );
   }
-  const changed = await session.api.patch(
-    calendar.id,
-    id,
-    fields,
-    text(instance, "etag"),
-  );
-  const entry = entryOf(session, calendar, changed);
+  const before = isJson(held.baseline) ? held.baseline : {};
+  const fields: Record<string, JsonValue> = {};
+  let overruled = false;
+  for (const [key, value] of Object.entries(replacing.fields)) {
+    if (first !== undefined || holds(instance, key, before[key] ?? null)) {
+      fields[key] = value;
+    } else if (!holds(instance, key, value)) {
+      overruled = true;
+    }
+  }
+  const changed =
+    Object.keys(fields).length === 0
+      ? instance
+      : await session.api.patch(
+          calendar.id,
+          replacing.eventId,
+          fields,
+          text(instance, "etag"),
+        );
+  // A field Google changed since keeps Google's value. Without an answer
+  // the kit takes what was sent as Google's, so the read that follows
+  // finds Google's value changed and brings it to the row.
+  const entry = overruled ? undefined : entryOf(session, calendar, changed);
   await context.outbound.acknowledge(item.id, held.token, entry);
   return entry;
+}
+
+/** An occurrence's value of a field its patch sets, as the patch compares
+ *  it: no status is confirmed, and no title is empty. */
+function heldValue(raw: Json, key: string): JsonValue {
+  if (key === "status") return text(raw, "status") ?? "confirmed";
+  if (key === "summary") return text(raw, "summary") ?? "";
+  const value = raw[key];
+  return value === undefined || value === "" ? null : (value as JsonValue);
+}
+
+/** Whether an occurrence holds a field at a value, with times compared by
+ *  their date or instant, whatever zone Google answers them in. */
+function holds(raw: Json, key: string, value: JsonValue): boolean {
+  const held = heldValue(raw, key);
+  if (key !== "start" && key !== "end") return same(held, value);
+  if (!isJson(held) || !isJson(value)) return same(held, value);
+  const at = (time: Json): number | undefined => {
+    const stamp = text(time, "dateTime");
+    return stamp === undefined ? undefined : Date.parse(stamp);
+  };
+  return text(held, "date") === text(value, "date") && at(held) === at(value);
 }
 
 function seriesRefused(series: string, item: Item, reason: string): Refused {
