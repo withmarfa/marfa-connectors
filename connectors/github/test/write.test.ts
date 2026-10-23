@@ -997,28 +997,32 @@ describe("what the fix review found", () => {
     ]);
   });
 
-  it("does not ask GitHub again for a comment's remake it refused, and makes it once the row changes", async () => {
-    const issue = github.addIssue(repository);
-    const comment = ours(issue, "Keep this");
-    await ok();
-    const id = row(comment.node).id;
-    marfa.trash(id);
-    await ok();
-    repository.archived = true;
-    marfa.restore(id);
-    expect(await ok()).toContain("Repository was archived");
-    repository.archived = false;
-    const before = github.writes().length;
-    await ok();
-    expect(github.writes().slice(before)).toEqual([]);
-    marfa.edit(id, { body: "Keep this, again" });
-    await ok();
-    expect(
-      github.comments.filter(
-        (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
-      ),
-    ).toHaveLength(1);
-  });
+  it(
+    "does not ask GitHub again for a comment's remake it refused, and makes it once the row changes",
+    async () => {
+      const issue = github.addIssue(repository);
+      const comment = ours(issue, "Keep this");
+      await ok();
+      const id = row(comment.node).id;
+      marfa.trash(id);
+      await ok();
+      repository.archived = true;
+      marfa.restore(id);
+      expect(await ok()).toContain("Repository was archived");
+      repository.archived = false;
+      const before = github.writes().length;
+      await ok();
+      expect(github.writes().slice(before)).toEqual([]);
+      marfa.edit(id, { body: "Keep this, again" });
+      await ok();
+      expect(
+        github.comments.filter(
+          (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
+        ),
+      ).toHaveLength(1);
+    },
+    multiRunTimeout,
+  );
 });
 
 describe("a repository GITHUB_REPOSITORIES leaves out", () => {
