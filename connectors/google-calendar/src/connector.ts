@@ -59,7 +59,7 @@ function names(value: string | undefined): Set<string> {
 export function createConnector(options?: GoogleOptions) {
   const base = `${options?.endpoints?.api ?? "https://www.googleapis.com"}/calendar/v3`;
   const now = options?.now ?? Date.now;
-  const writing: Writing = { options, base, now };
+  const writing: Writing = { options, base };
   return defineConnector({
     name: "google-calendar",
     description:

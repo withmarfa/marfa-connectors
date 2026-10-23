@@ -1975,6 +1975,98 @@ describe("a series", () => {
       }),
     ]);
   });
+
+  it("cancels an occurrence past the five years a read looks ahead, and brings it back when the date goes", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = row(`${me}/weekly`);
+    const far = "weekly_20331031T100000Z";
+
+    server.edit(one.id, {
+      recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE:20331031T100000Z"],
+    });
+    await landed();
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(me, far),
+        body: { status: "cancelled" },
+      }),
+    ]);
+    await landed();
+    expect(row(`${me}/weekly`).properties["recurrence"]).toEqual([
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+      "EXDATE:20331031T100000Z",
+    ]);
+
+    server.edit(one.id, { recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"] });
+    await landed();
+    expect(writes().at(-1)).toMatchObject({
+      method: "PATCH",
+      path: eventPath(me, far),
+      body: { status: "confirmed" },
+    });
+    expect(calendar.event(me, far)?.["status"]).toBe("confirmed");
+  });
+
+  it("brings back an occurrence Google cancelled past the five years a read looks ahead", async () => {
+    calendar.put(me, series);
+    const { id, ...rest } = occurrence("2033-10-31T10:00:00Z");
+    calendar.cancel(me, id, rest);
+    await landed();
+    const one = row(`${me}/weekly`);
+    expect(one.properties["recurrence"]).toEqual([
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+      "EXDATE:20331031T100000Z",
+    ]);
+
+    server.edit(one.id, { recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"] });
+    await landed();
+
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(me, id),
+        body: { status: "confirmed" },
+      }),
+    ]);
+    expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+    await landed();
+    expect(row(`${me}/weekly`).properties["recurrence"]).toEqual([
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+    ]);
+  });
+
+  it("waits rather than settle a restore when Google can't find the cancelled occurrence", async () => {
+    calendar.put(me, series);
+    const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+    calendar.cancel(me, id, rest);
+    await landed();
+    const one = row(`${me}/weekly`);
+
+    server.edit(one.id, { recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"] });
+    let lookups = 0;
+    calendar.failNext(
+      (call) =>
+        call.query["originalStart"] !== undefined && (lookups += 1) === 2,
+      200,
+      { items: [] },
+    );
+    await once();
+
+    expect(writes()).toEqual([]);
+    expect(server.byId(one.id).properties["recurrence"]).toEqual([
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+    ]);
+    await landed();
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(me, id),
+        body: { status: "confirmed" },
+      }),
+    ]);
+  });
 });
 
 describe("the safety stop", () => {

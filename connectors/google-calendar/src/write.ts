@@ -56,9 +56,6 @@ import { dayStart, iso, localDate, nextDay, validZone } from "./time.js";
 
 export type WriteContext = WatchContext<typeof env>;
 
-const day = 86_400_000;
-const horizonYears = 5;
-
 /** What a write needs of Google, asked once for each context the kit hands. */
 interface Session {
   readonly api: CalendarApi;
@@ -73,7 +70,6 @@ interface Session {
 export interface Writing {
   readonly options: GoogleOptions | undefined;
   readonly base: string;
-  readonly now: () => number;
 }
 
 const sessions = new WeakMap<object, Promise<Session>>();
@@ -986,7 +982,6 @@ async function update(
       zone,
       rowLines,
       session,
-      writing,
     );
     // Decided before anything is sent, so a declined change sends nothing.
     await checkSeries(item, plan, parts, from, session);
@@ -1062,7 +1057,6 @@ async function planSeries(
   zone: string,
   rowLines: readonly string[],
   session: Session,
-  writing: Writing,
 ): Promise<SeriesPlan> {
   const own = event.recurrence;
   const rules = rowLines.filter((line) => !isExdate(line));
@@ -1085,23 +1079,15 @@ async function planSeries(
     : [...wanted.instants]
         .filter((one) => !sent.instants.has(one))
         .map((one) => ({ kind: "instant", ms: one }));
-  const starts = Date.parse(
-    text(object(event.raw, "start"), "dateTime") ??
-      text(object(event.raw, "start"), "date") ??
-      "",
-  );
-  const first = Number.isFinite(starts) ? starts : writing.now();
-  const horizon = Math.max(writing.now(), first) + horizonYears * 365 * day;
-  const asked = await session.api.cancelled(
-    calendarId,
-    event.id,
-    iso(first - day),
-    iso(horizon),
-  );
+  // Every cancelled occurrence, in whatever year: the row no longer says
+  // which dates it held, so a window would miss one removed beyond it.
   const atGoogle = new Map<string, Cancellation>();
-  for (const raw of asked) {
+  for (const raw of await session.api.inventory(calendarId)) {
     const one = eventOf(raw);
-    const at = one === undefined ? undefined : cancellationOf(one);
+    if (one?.recurringEventId !== event.id || one.status !== "cancelled") {
+      continue;
+    }
+    const at = cancellationOf(one);
     if (at !== undefined) atGoogle.set(keyOf(at), at);
   }
   const wantedKeys = new Set(want.map(keyOf));
@@ -1161,6 +1147,9 @@ async function checkSeries(
   const refused: string[] = [];
   for (const [one, status] of stepsOf(plan)) {
     const found = await occurrenceOf(session, parts, one);
+    if (found === undefined && status === "confirmed") {
+      throw unfound(parts, one);
+    }
     const reason =
       found === undefined ? undefined : stepRefused(found, status, calendar);
     if (reason !== undefined) {
@@ -1170,6 +1159,17 @@ async function checkSeries(
     }
   }
   if (refused.length > 0) throw decline(item, refused.join("; "));
+}
+
+/** A cancelled occurrence the calendar's listing holds that the lookup by its
+ *  start does not find: bringing it back waits, rather than counting as done. */
+function unfound(
+  parts: { calendarId: string; eventId: string },
+  one: Cancellation,
+): Unreachable {
+  return new Unreachable(
+    `Google Calendar lists a cancelled occurrence of ${linkOf(parts.calendarId, parts.eventId)} at ${startParam(one)} but did not find it by its start, so bringing it back waits for a later run`,
+  );
 }
 
 async function applySeries(
@@ -1184,8 +1184,9 @@ async function applySeries(
   for (const [one, status] of stepsOf(plan)) {
     const found = await occurrenceOf(session, parts, one);
     if (found === undefined) {
+      if (status === "confirmed") throw unfound(parts, one);
       context.log.info(
-        `Google Calendar holds no occurrence of ${linkOf(calendarId, seriesId)} at ${startParam(one)}, so there is none to ${status === "cancelled" ? "cancel" : "bring back"}`,
+        `Google Calendar holds no occurrence of ${linkOf(calendarId, seriesId)} at ${startParam(one)}, so there is none to cancel`,
       );
       continue;
     }

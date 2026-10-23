@@ -212,7 +212,7 @@ When Google says a token has expired (`410`), or something that changes how rows
 
 When a run writes eight or more events of one calendar, the kit finds each changed occurrence's series by listing every `parent-of` connection in the Marfa instance, 500 to a page, including those of other connectors and of people's own items. The first read of a large calendar therefore costs one Marfa request for every 500 `parent-of` connections, or one for each event where that is fewer. After the first read, a run in which no event changed reads none of the event rows from Marfa.
 
-For a change to a series, the connector asks Google for the series and its instances, from a day before its start to five years past today or past its start, whichever is later, to find cancelled occurrences. Cancelled occurrences further out stay as they were.
+When a read since the last token finds a series, or one of its occurrences, changed in Google, the connector asks Google for the series and its instances, from a day before its start to five years past today or past its start, whichever is later, to find cancelled occurrences. Cancelled occurrences further out stay as the row held them. A change to a series' `recurrence` made in Marfa instead lists the calendar's events, which include every cancelled occurrence of the series in whatever year it falls, so removing an `EXDATE` brings back a cancelled occurrence however far out it is. If Google lists a cancelled occurrence that it then doesn't find by its start, bringing it back waits for a later run.
 
 ## Limits
 
