@@ -402,6 +402,23 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(changes(before)).toEqual([]);
   });
 
+  it("puts back an edit to the star fields, on a run that listed stars and on one that could not", async () => {
+    const tracker = listed("someone/tracker");
+    github.star(tracker);
+    await sync();
+    const at = repositoryRow(tracker).properties["starred_at"];
+
+    marfa.edit(repositoryRow(tracker).id, { starred: false, starred_at: null });
+    await sync();
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).properties["starred_at"]).toBe(at);
+
+    marfa.edit(repositoryRow(tracker).id, { starred: false });
+    github.starsFailAt = { page: 1, status: 403 };
+    await sync();
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+  });
+
   it("holds the fields on a repository type the server held without them", async () => {
     const repository = starOnly("someone/starred");
     await sync();
