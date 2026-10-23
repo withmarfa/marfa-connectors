@@ -29,6 +29,9 @@
       "path": "connectors/readwise-reader"
     },
     {
+      "path": "connectors/google-calendar"
+    },
+    {
       "path": "scripts"
     }
   ]

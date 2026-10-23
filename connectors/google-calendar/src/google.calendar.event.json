@@ -1,0 +1,58 @@
+{
+  "id": "google.calendar.event",
+  "label": "Google Calendar Event",
+  "description": "An event of a Google calendar, as the Google Calendar connector reads it through the Calendar API: the core event's title, times, place and recurrence, with Google's own facts beside them. A series is one row carrying its rule, and a changed occurrence is its own row, connected to the series.",
+  "parent": "core.event",
+  "link_field": "google_id",
+  "fields": {
+    "google_id": {
+      "type": "string",
+      "description": "The event's calendar and Google id, as <calendar id>/<event id>. The same event id can sit on two calendars, so the calendar is part of it."
+    },
+    "calendar_id": {
+      "type": "string",
+      "description": "The Google id of the calendar the event sits on."
+    },
+    "recurring_event_id": {
+      "type": "string",
+      "description": "For a changed occurrence of a series, the Google id of the series on the same calendar."
+    },
+    "organizer": {
+      "type": "object",
+      "description": "Who organizes the event: email, name where Google gives one, and self when it is the signed-in account."
+    },
+    "guests": {
+      "type": "array",
+      "items_type": "object",
+      "description": "The people invited, each with email, name where given, response (needsAction, declined, tentative or accepted), and optional, organizer, self and resource where true."
+    },
+    "event_kind": {
+      "type": "string",
+      "description": "Google's kind of event: default, outOfOffice, focusTime, fromGmail or birthday."
+    },
+    "visibility": {
+      "type": "string",
+      "description": "Google's visibility of the event: default, public, private or confidential."
+    },
+    "ical_uid": {
+      "type": "string",
+      "description": "The event's iCalendar UID, the same on every copy of it."
+    },
+    "etag": {
+      "type": "string",
+      "description": "Google's version of the event as last read."
+    },
+    "editable": {
+      "type": "boolean",
+      "description": "Whether Marfa may change the event in Google: false for an event on a calendar the account can only read, a kind of event Google reserves, a locked event, an event someone else organizes and an event with any guest other than the account."
+    },
+    "uneditable_reason": {
+      "type": "string",
+      "description": "Why editable is false."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "description"
+  }
+}

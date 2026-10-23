@@ -257,7 +257,9 @@ describe("signing in", () => {
     seen.redirect({ code, state: consent.searchParams.get("state") ?? "" });
     const thrown = await failure(result);
     expect(thrown.message).toMatch(/no refresh token/);
-    expect(thrown.message).toMatch(/myaccount\.google\.com\/permissions/);
+    expect(thrown.message).toMatch(
+      /https:\/\/myaccount\.google\.com\/linkedapps/,
+    );
   });
 
   it("explains a code Google refuses", async () => {

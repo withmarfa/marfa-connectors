@@ -180,7 +180,7 @@ export async function signIn(
   }
   if (tokens.refreshToken === undefined) {
     throw new Error(
-      "Google returned no refresh token. Remove this app's access at myaccount.google.com/permissions, then run setup again",
+      "Google returned no refresh token. Remove this app's access at https://myaccount.google.com/linkedapps (Access to your Google Account, then the app, then Remove access), then run setup again",
     );
   }
   context.secret(tokens.refreshToken);

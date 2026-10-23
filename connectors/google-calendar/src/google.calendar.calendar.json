@@ -1,0 +1,42 @@
+{
+  "id": "google.calendar.calendar",
+  "label": "Google Calendar",
+  "description": "A calendar of a Google account, as the Google Calendar connector reads it. Read only; its events are connected to it.",
+  "link_field": "calendar_id",
+  "fields": {
+    "title": {
+      "type": "string",
+      "required": true,
+      "description": "The calendar's name, as the account shows it: the account's own name for it where it set one."
+    },
+    "description": {
+      "type": "string",
+      "description": "The calendar's description."
+    },
+    "calendar_id": {
+      "type": "string",
+      "description": "The calendar's Google id. The account's primary calendar is named by its address, not by the word primary."
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA time zone of the calendar. An event that names no zone of its own, and an all-day event, takes it."
+    },
+    "access_role": {
+      "type": "enum",
+      "enum_values": ["owner", "writer", "reader", "freeBusyReader"],
+      "description": "What the account may do on the calendar: owner and writer calendars are read by default, and reader calendars only where the connector is told to."
+    },
+    "primary": {
+      "type": "boolean",
+      "description": "Whether this is the account's primary calendar."
+    },
+    "color": {
+      "type": "string",
+      "description": "The calendar's color as the account shows it, as a hex code such as #9fe1e7."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "description"
+  }
+}
