@@ -1,7 +1,7 @@
 {
   "id": "github.notification",
   "label": "GitHub Notification",
-  "description": "A thread in the notifications of the person who owns the GitHub token the connector reads them with. Read only; its body is the title of what it concerns and its sender the repository, and it is connected to the synced issue or pull request it concerns.",
+  "description": "A thread in the notifications of the person who owns the GitHub token the connector reads them with. Read only; its body is the title of what it concerns and its sender the repository, and it is connected to the synced issue, pull request or discussion it concerns.",
   "parent": "core.message",
   "link_field": "github_id",
   "fields": {

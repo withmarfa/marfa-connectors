@@ -593,6 +593,30 @@ describe("notifications", () => {
     expect(held()).toHaveLength(2);
   });
 
+  it("does not count a listing read for other settings as the one that confirms a missing thread", async () => {
+    const repo = github.addRepository("someone/tracker");
+    github.notifications.add(repo, {
+      type: "Issue",
+      title: "Stays",
+      number: 1,
+    });
+    const gone = github.notifications.add(repo, {
+      type: "Issue",
+      title: "Done",
+      number: 2,
+    });
+    await ok();
+    github.notifications.remove(gone);
+    await ok();
+    expect(saved().missing).toEqual([gone.id]);
+    await ok({ GITHUB_REPOSITORIES: "someone/*" });
+    expect(row(gone.id).state).toBe("active");
+    expect(saved().missing).toEqual([gone.id]);
+    // The witness: a second listing under the same settings confirms it.
+    await ok({ GITHUB_REPOSITORIES: "someone/*" });
+    expect(row(gone.id).state).toBe("archived");
+  });
+
   it("does not archive a thread that moved past a page while the listing was read", async () => {
     const repo = github.addRepository("someone/tracker");
     const threads = Array.from({ length: 5 }, (_, at) =>
