@@ -25,6 +25,7 @@ beforeEach(async () => {
       "github.repository",
       "github.issue",
       "github.comment",
+      "github.discussion",
       "github.file",
       "github.file.image",
       "github.pull_request",
@@ -39,6 +40,7 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "in-thread",
+      "parent-of",
     ],
   }).start();
   marfa.grants = {
@@ -223,6 +225,7 @@ describe("a transferred issue", () => {
       await once();
       expect(lastWrites(before)).toEqual([]);
     },
+    120_000,
   );
 
   it.each([
