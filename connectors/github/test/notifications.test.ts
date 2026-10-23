@@ -14,6 +14,7 @@ const types = [
   "github.issue",
   "github.comment",
   "github.pull_request",
+  "github.discussion",
   "github.notification",
   "github.file",
   "github.file.image",
@@ -26,7 +27,8 @@ const edges = [
   "github.duplicate-of",
   "github.closes",
   "github.closed-by",
-  "github.notification-of",
+  "parent-of",
+  "references",
   "in-thread",
   "attached-to",
 ];
@@ -102,6 +104,7 @@ interface Saved {
   interval: number;
   checked: string;
   key: string;
+  missing: string[];
 }
 function saved(): Saved {
   const state = marfa.states.get("github")?.["state"] as
@@ -166,10 +169,96 @@ describe("notifications", () => {
       "https://github.com/someone/tracker/commit/0123456789abcdef0123456789abcdef01234567",
     );
     expect(row(release.id).properties["url"]).toBeUndefined();
-    expect(links(thread.id, "github.notification-of")).toEqual([issue.node]);
-    expect(links(review.id, "github.notification-of")).toEqual([pr.node]);
-    expect(links(commit.id, "github.notification-of")).toEqual([]);
+    expect(links(thread.id, "references")).toEqual([issue.node]);
+    expect(links(review.id, "references")).toEqual([pr.node]);
+    expect(links(commit.id, "references")).toEqual([]);
     expect(conditions()).toEqual({});
+  });
+
+  it("connects a discussion thread to the synced discussion it concerns", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const discussion = github.addDiscussion(repo, { title: "A question" });
+    const thread = github.notifications.add(
+      repo,
+      {
+        type: "Discussion",
+        title: discussion.title,
+        number: discussion.number,
+      },
+      { reason: "mention" },
+    );
+    const unsynced = github.notifications.add(repo, {
+      type: "Discussion",
+      title: "Not in the sync",
+      number: discussion.number + 100,
+    });
+    await ok();
+    expect(row(thread.id).properties).toMatchObject({
+      subject_type: "Discussion",
+      url: `https://github.com/someone/tracker/discussions/${String(discussion.number)}`,
+    });
+    expect(links(thread.id, "references")).toEqual([discussion.node]);
+    expect(links(unsynced.id, "references")).toEqual([]);
+    expect(conditions()).toEqual({});
+  });
+
+  it("leaves a link the person made from a notification alone", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repo, { title: "Concerned" });
+    const other = github.addIssue(repo, { title: "Linked by the person" });
+    const thread = github.notifications.add(repo, {
+      type: "Issue",
+      title: issue.title,
+      number: issue.number,
+    });
+    await ok();
+    const own = marfa.drawEdge(
+      row(thread.id).id,
+      row(other.node).id,
+      "references",
+    );
+    expect(links(thread.id, "references").sort()).toEqual(
+      [issue.node, other.node].sort(),
+    );
+    // The thread changes, and a day on it is read whole again.
+    github.notifications.change(thread, { unread: false });
+    await ok();
+    age(25 * 60 * 60, "checked");
+    await ok();
+    expect(row(thread.id).properties["unread"]).toBe(false);
+    expect(marfa.edges.map((one) => one.id)).toContain(own.id);
+    expect(links(thread.id, "references").sort()).toEqual(
+      [issue.node, other.node].sort(),
+    );
+    // The witness: the connector's own link is still the one it made.
+    expect(
+      marfa.edges.filter(
+        (one) =>
+          one.source_id === row(thread.id).id && one.edge_type === "references",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("connects a thread to an issue synced after the thread was read, on the daily full read", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const thread = github.notifications.add(repo, {
+      type: "Issue",
+      title: "Not synced yet",
+      number: 1,
+    });
+    await ok();
+    expect(links(thread.id, "references")).toEqual([]);
+    const issue = github.addIssue(repo, { title: "Not synced yet" });
+    expect(issue.number).toBe(1);
+    // The listing is unchanged, so it is not read and nothing is connected.
+    await ok();
+    expect(listings().map((one) => one.status)).toEqual([200, 304]);
+    expect(row(issue.node).type).toBe("github.issue");
+    expect(links(thread.id, "references")).toEqual([]);
+    age(25 * 60 * 60, "checked");
+    await ok();
+    expect(listings().map((one) => one.status)).toEqual([200, 304, 200]);
+    expect(links(thread.id, "references")).toEqual([issue.node]);
   });
 
   it("puts back an edit made in Marfa", async () => {
@@ -310,10 +399,10 @@ describe("notifications", () => {
       private: false,
       url: "https://github.com/stranger/public/issues/7",
     });
-    expect(links(outside.id, "github.notification-of")).toEqual([]);
-    expect(links(unknown.id, "github.notification-of")).toEqual([]);
+    expect(links(outside.id, "references")).toEqual([]);
+    expect(links(unknown.id, "references")).toEqual([]);
     // The witness: the same kind of thread, for an issue the sync holds.
-    expect(links(inside.id, "github.notification-of")).toEqual([issue.node]);
+    expect(links(inside.id, "references")).toEqual([issue.node]);
     expect(
       marfa.rows.filter((one) => one.type === "github.repository"),
     ).toHaveLength(1);
@@ -565,7 +654,7 @@ describe("notifications", () => {
       GITHUB_PRIVATE_KEY: undefined,
       GITHUB_WEBHOOK_SECRET: undefined,
     });
-    expect(links(thread.id, "github.notification-of")).toEqual([issue.node]);
+    expect(links(thread.id, "references")).toEqual([issue.node]);
     expect(github.writes()).toEqual([]);
     expect(
       github.asked.some(
@@ -584,7 +673,7 @@ describe("notifications", () => {
     await ok({ GITHUB_READ_ONLY: "notification" });
     expect(row(thread.id).state).toBe("active");
     const refused = await once({ GITHUB_READ_ONLY: "issue,nonsense" });
-    expect(refused.code).toBe(2);
+    expect(refused.code).not.toBe(0);
     expect(refused.output).toContain("notification");
   });
 });

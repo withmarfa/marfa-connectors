@@ -55,7 +55,7 @@ export async function proveGitHubPullRequests(
       "github.closes",
       "github.closed-by",
       "parent-of",
-      "github.notification-of",
+      "references",
       "in-thread",
       "attached-to",
     ];

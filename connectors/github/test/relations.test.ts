@@ -30,7 +30,7 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "parent-of",
-      "github.notification-of",
+      "references",
       "in-thread",
       "attached-to",
     ],

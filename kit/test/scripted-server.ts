@@ -241,6 +241,19 @@ export class ScriptedServer {
       },
     ],
     [
+      "references",
+      {
+        id: "references",
+        cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
       "parent-of",
       {
         id: "parent-of",

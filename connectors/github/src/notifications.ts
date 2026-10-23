@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { Entry, EnvDeclaration, RunContext } from "@withmarfa/connector";
-import { issueType, pullRequestType } from "./entries.js";
+import {
+  discussionType,
+  issueType,
+  pullRequestType,
+  references,
+} from "./entries.js";
 import {
   asPersonalToken,
   PermissionRequired,
@@ -11,7 +16,6 @@ import {
 import type { Scope } from "./scope.js";
 
 export const notificationType = "github.notification";
-export const notificationOf = "github.notification-of";
 
 export const tokenName = "GITHUB_NOTIFICATIONS_TOKEN";
 
@@ -119,6 +123,7 @@ function addressOf(thread: RestThread): string | undefined {
 const concerned: Record<string, { type: string; path: string } | undefined> = {
   Issue: { type: issueType, path: "issues" },
   PullRequest: { type: pullRequestType, path: "pulls" },
+  Discussion: { type: discussionType, path: "discussions" },
 };
 
 function numberOf(thread: RestThread, path: string): number | undefined {
@@ -166,7 +171,7 @@ function entryOf(
     occurred_at: thread.updated_at,
     changed_at: thread.updated_at,
     connections: {
-      [notificationOf]:
+      [references]:
         node === undefined || kind === undefined
           ? []
           : [{ type: kind.type, id: node }],
@@ -326,7 +331,7 @@ export async function readNotifications(
         (one) => concerned[one.subject?.type ?? ""] !== undefined,
       )
     ) {
-      for (const type of [issueType, pullRequestType]) {
+      for (const type of [issueType, pullRequestType, discussionType]) {
         for (const row of await scoped.held(type, { state: "active" })) {
           const id = row.properties["github_id"];
           const repository = row.properties["repository"];

@@ -17,13 +17,14 @@ import {
   inThread,
   issueType,
   pullRequestType,
+  references,
   repositoryType,
   subIssueOf,
 } from "./entries.js";
 import { carryDiscussions, remakeDiscussions } from "./discussion-write.js";
 import { defaultBase, type App } from "./github.js";
 import { hints } from "./hooks.js";
-import { notificationOf, notificationType } from "./notifications.js";
+import { notificationType } from "./notifications.js";
 import { read } from "./read.js";
 import { fileKinds, filesConnection } from "./files.js";
 import { scopeOf } from "./scope.js";
@@ -258,20 +259,20 @@ const connector = defineConnector<typeof env>({
         "subject_type",
         "url",
         "private",
-        notificationOf,
+        references,
       ],
     },
   ],
   connections: [
     filesConnection,
     {
-      id: notificationOf,
-      label: "Notification of",
+      id: references,
+      label: "References",
       description:
-        "A GitHub notification and the synced issue or pull request it concerns.",
-      cardinality: "many-to-one",
+        "A GitHub notification and the synced issue, pull request or discussion it concerns.",
+      cardinality: "many-to-many",
       source_type_constraints: [notificationType],
-      target_type_constraints: [issueType, pullRequestType],
+      target_type_constraints: [issueType, pullRequestType, discussionType],
     },
     {
       id: inRepository,
