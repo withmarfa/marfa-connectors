@@ -128,8 +128,6 @@ export interface Vendor {
   runs: number;
   changes: Change[];
   answer?: ((change: Change) => Entry | undefined) | undefined;
-  /** Called before onChange takes the change; what it throws, onChange does. */
-  beforeChange?: ((change: Change) => void) | undefined;
   /** onChange keeps each change in the outbound journal before the vendor
    *  takes it, and acknowledges it after. */
   journaled?: boolean;
@@ -245,7 +243,6 @@ function twoWayConnector(held: Vendor) {
       if (held.failAfter !== undefined) throw held.failAfter;
     },
     async onChange(change, context) {
-      held.beforeChange?.(change);
       held.changes.push(change);
       const intent =
         held.journaled === true
