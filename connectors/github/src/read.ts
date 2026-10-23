@@ -1768,6 +1768,8 @@ async function readNamed(
   const prs = new Map<string, PullRequest>();
   // What GitHub shows anywhere is not gone, though outside the sync.
   const shown = new Set<string>();
+  // Named comments the issue read was refused or found to be a discussion's.
+  const notIssueComments = new Set<string>();
   const notApplied = new Set<string>();
   const namedComments = [...(hints?.get(commentType) ?? [])];
   const namedIssues = new Set(hints?.get(issueType) ?? []);
@@ -1828,10 +1830,10 @@ async function readNamed(
       commentsByNode(octokit, wanted),
     );
     // A discussion comment is not an issue's, and the token that reads issues
-    // may not show it: it is not gone, and the read of its discussion deals
-    // with it.
+    // may not show it: it is not gone, but only the read of its discussion
+    // counts it as read.
     for (const id of [...(asked?.refused ?? []), ...(asked?.elsewhere ?? [])])
-      shown.add(id);
+      notIssueComments.add(id);
     for (const comment of asked?.found ?? []) {
       shown.add(comment.node);
       if (!synced.has(comment.repository.node)) {
@@ -2123,7 +2125,9 @@ async function readNamed(
     return;
   }
   const unseenIssues = new Set([...namedIssues].filter((id) => !shown.has(id)));
-  const unseenComments = new Set(namedComments.filter((id) => !shown.has(id)));
+  const unseenComments = new Set(
+    namedComments.filter((id) => !shown.has(id) && !notIssueComments.has(id)),
+  );
   for (const [node, { repository, installation }] of listed) {
     if (unseenIssues.size === 0 && unseenComments.size === 0) break;
     if (deferred.size > 0) break;

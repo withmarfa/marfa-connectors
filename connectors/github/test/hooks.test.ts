@@ -906,6 +906,31 @@ describe("a run for deliveries", () => {
     });
   });
 
+  it("keeps a discussion comment delivery unfinished while the limit stops its installation, though another installation's issue read sees the comment", async () => {
+    const first = github.addRepository("someone/first", { private: false });
+    const discussion = github.addDiscussion(first);
+    const comment = github.addDiscussionComment(discussion, "Before");
+    github.installations.push({ id: 2, login: "another" });
+    github.addRepository("another/second", { installation: 2 });
+    await watching(async () => {
+      github.editDiscussionComment(comment, "After");
+      github.exhaust("core", 1);
+      deliver("discussion_comment", {
+        action: "edited",
+        comment: { node_id: comment.node },
+        discussion: { node_id: discussion.node },
+      });
+      await until(() => marfa.runs.length > 1, "the hinted run");
+      expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
+      expect(row(comment.node).properties["body"]).toBe("Before");
+      expect(row(comment.node).state).toBe("active");
+    });
+    github.refill("core", 1);
+    await once();
+    expect(marfa.deliveries[0]?.outcome).toBe("processed");
+    expect(row(comment.node).properties["body"]).toBe("After");
+  });
+
   it("archives only the comments a delivery names, though it read others of the discussion gone too", async () => {
     const repository = github.addRepository("someone/tracker");
     const discussion = github.addDiscussion(repository);
