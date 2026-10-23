@@ -130,3 +130,13 @@ export function iso(ms: number): string {
 export function compact(ms: number): string {
   return iso(ms).replace(/[-:]/g, "");
 }
+
+/** The calendar date, as `YYYY-MM-DD`, the zone's clocks show at the instant. */
+export function localDate(zone: string, ms: number): string {
+  const parts = new Map<string, string>();
+  for (const part of formatter(zone).formatToParts(new Date(ms))) {
+    parts.set(part.type, part.value);
+  }
+  const two = (value: string | undefined) => (value ?? "").padStart(2, "0");
+  return `${parts.get("year") ?? ""}-${two(parts.get("month"))}-${two(parts.get("day"))}`;
+}

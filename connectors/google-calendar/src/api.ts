@@ -122,6 +122,146 @@ export class CalendarApi {
     }
   }
 
+  private async write(
+    method: "POST" | "PATCH" | "DELETE",
+    path: string,
+    query: Record<string, string>,
+    body?: Json,
+    etag?: string,
+  ): Promise<Json | undefined> {
+    const url = new URL(`${this.base}${path}`);
+    // Google never emails guests about a change Marfa makes.
+    url.searchParams.set("sendUpdates", "none");
+    for (const [key, value] of Object.entries(query)) {
+      url.searchParams.set(key, value);
+    }
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (etag !== undefined) headers["If-Match"] = etag;
+    const answer = await this.google.json(url, {
+      method,
+      headers,
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+    });
+    return isJson(answer) ? answer : undefined;
+  }
+
+  private eventPath(calendarId: string, eventId?: string): string {
+    const events = `/calendars/${encodeURIComponent(calendarId)}/events`;
+    return eventId === undefined
+      ? events
+      : `${events}/${encodeURIComponent(eventId)}`;
+  }
+
+  /** Makes an event under the id given, which Google answers 409 where the
+   *  calendar already holds it, deleted or not. */
+  async insert(calendarId: string, event: Json): Promise<Json> {
+    const made = await this.write(
+      "POST",
+      this.eventPath(calendarId),
+      {},
+      event,
+    );
+    if (made === undefined) {
+      throw new GoogleError("Google answered an empty event", "passing");
+    }
+    return made;
+  }
+
+  /** Changes the fields named, and only those, while the event is still at
+   *  `etag`; Google answers 412 where it changed since. */
+  async patch(
+    calendarId: string,
+    eventId: string,
+    fields: Json,
+    etag: string | undefined,
+  ): Promise<Json> {
+    const changed = await this.write(
+      "PATCH",
+      this.eventPath(calendarId, eventId),
+      {},
+      fields,
+      etag,
+    );
+    if (changed === undefined) {
+      throw new GoogleError("Google answered an empty event", "passing");
+    }
+    return changed;
+  }
+
+  /** Deletes an event while it is still at `etag`. One Google no longer has
+   *  is already deleted. */
+  async remove(
+    calendarId: string,
+    eventId: string,
+    etag: string | undefined,
+  ): Promise<void> {
+    try {
+      await this.write(
+        "DELETE",
+        this.eventPath(calendarId, eventId),
+        {},
+        undefined,
+        etag,
+      );
+    } catch (error) {
+      if (!isGone(error)) throw error;
+    }
+  }
+
+  /** Moves an event to another calendar, keeping its id. */
+  async move(
+    calendarId: string,
+    eventId: string,
+    destination: string,
+  ): Promise<Json> {
+    const moved = await this.write(
+      "POST",
+      `${this.eventPath(calendarId, eventId)}/move`,
+      { destination },
+    );
+    if (moved === undefined) {
+      throw new GoogleError("Google answered an empty event", "passing");
+    }
+    return moved;
+  }
+
+  /** The occurrences of a series that began at `originalStart`, cancelled
+   *  ones included. */
+  async occurrence(
+    calendarId: string,
+    seriesId: string,
+    originalStart: string,
+  ): Promise<Json[]> {
+    try {
+      const { items } = await this.pages(
+        `${this.eventPath(calendarId, seriesId)}/instances`,
+        { showDeleted: "true", originalStart, maxResults: "2500" },
+      );
+      return items;
+    } catch (error) {
+      if (isGone(error)) return [];
+      throw error;
+    }
+  }
+
+  /** The ids of the events a calendar still holds. */
+  async live(calendarId: string): Promise<Set<string>> {
+    const { items } = await this.pages(this.eventPath(calendarId), {
+      singleEvents: "false",
+      showDeleted: "true",
+      maxResults: "2500",
+      fields: "items(id,status),nextPageToken,nextSyncToken",
+    });
+    return new Set(
+      items.flatMap((item) =>
+        item["status"] !== "cancelled" && typeof item["id"] === "string"
+          ? [item["id"]]
+          : [],
+      ),
+    );
+  }
+
   /** The cancelled occurrences of a series between two moments. */
   async cancelled(
     calendarId: string,

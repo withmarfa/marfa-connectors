@@ -27,6 +27,7 @@ import {
   eventEntry,
   eventOf,
   linkOf,
+  makingOf,
   owned,
   splitLink,
   type CalendarInfo,
@@ -489,6 +490,18 @@ function recurrenceOf(row: Item | undefined): string[] {
     : [];
 }
 
+/** The events of a calendar a write from Marfa is still making, which that
+ *  write links to its row. */
+function waitingOn(context: Context, calendarId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const intent of context.pendingOutbound()) {
+    if (intent.acknowledged) continue;
+    const making = makingOf(intent.request);
+    if (making?.calendarId === calendarId) ids.add(making.eventId);
+  }
+  return ids;
+}
+
 async function planEvents(
   run: Run,
   scoped: Scoped,
@@ -527,7 +540,9 @@ async function planEvents(
     touched.add(series);
   };
 
+  const waiting = waitingOn(run.context, calendar.id);
   for (const event of byId.values()) {
+    if (waiting.has(event.id)) continue;
     if (event.kind === "workingLocation") {
       plan.archive.add(linkOf(calendar.id, event.id));
       continue;
