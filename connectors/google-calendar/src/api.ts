@@ -209,16 +209,20 @@ export class CalendarApi {
     }
   }
 
-  /** Moves an event to another calendar, keeping its id. */
+  /** Moves an event to another calendar, keeping its id, while it is still
+   *  at `etag`; Google answers 412 where it changed since. */
   async move(
     calendarId: string,
     eventId: string,
     destination: string,
+    etag: string | undefined,
   ): Promise<Json> {
     const moved = await this.write(
       "POST",
       `${this.eventPath(calendarId, eventId)}/move`,
       { destination },
+      undefined,
+      etag,
     );
     if (moved === undefined) {
       throw new GoogleError("Google answered an empty event", "passing");

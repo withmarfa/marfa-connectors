@@ -462,6 +462,7 @@ describe("an edit made in Marfa", () => {
 
   it("moves the event to the calendar it is drawn to, and keeps the row", async () => {
     const one = await read();
+    const etag = one.properties["etag"];
     const edge = server.edges.find(
       (e) => e.source_id === one.id && e.edge_type === inCalendar,
     );
@@ -476,6 +477,7 @@ describe("an edit made in Marfa", () => {
         method: "POST",
         path: `${eventPath(me, "e1")}/move`,
         query: { destination: team, sendUpdates: "none" },
+        ifMatch: etag,
       }),
     ]);
     expect(server.byId(one.id).properties).toMatchObject({
@@ -489,6 +491,50 @@ describe("an edit made in Marfa", () => {
     expect(
       server.rows.filter((r) => r.type === eventType && r.state === "active"),
     ).toHaveLength(1);
+  });
+
+  it("does not move an event that Google changed after the connector checked it", async () => {
+    const one = await read();
+    const etag = one.properties["etag"];
+    const edge = server.edges.find(
+      (e) => e.source_id === one.id && e.edge_type === inCalendar,
+    );
+    if (edge === undefined) throw new Error("no edge");
+    server.removeEdge(edge.id);
+    server.drawEdge(one.id, calendarRow(team).id, inCalendar);
+    // A guest is added between the connector's check and its move.
+    calendar.failNext((call) => {
+      if (call.method !== "POST" || !call.path.endsWith("/move")) {
+        return false;
+      }
+      calendar.put(me, {
+        ...calendar.event(me, "e1"),
+        attendees: [
+          { email: me, self: true, organizer: true },
+          { email: "kim@example.com" },
+        ],
+      });
+      return false;
+    }, 500);
+
+    await landed();
+
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        path: `${eventPath(me, "e1")}/move`,
+        ifMatch: etag,
+      }),
+    ]);
+    expect(calendar.event(me, "e1")?.["status"]).toBe("confirmed");
+    expect(calendar.event(team, "e1")).toBeUndefined();
+    expect(server.byId(one.id).properties["google_id"]).toBe(`${me}/e1`);
+    expect(Object.values(conditions()).join(" ")).toContain('changed "Lunch"');
+
+    await landed();
+    expect(writes()).toHaveLength(1);
+    expect(calendar.event(team, "e1")).toBeUndefined();
+    expect(conditions()[`declined:${one.id}`]).toContain("guests");
   });
 
   it("is carried again after Google limits the rate or fails", async () => {

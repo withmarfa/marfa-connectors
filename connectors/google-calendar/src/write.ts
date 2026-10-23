@@ -886,6 +886,7 @@ async function update(
       parts.calendarId,
       parts.eventId,
       destination,
+      etag,
     );
     await context.setLink(item, linkOf(destination, parts.eventId));
     here = destination;

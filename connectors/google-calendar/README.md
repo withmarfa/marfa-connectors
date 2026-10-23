@@ -158,7 +158,7 @@ The connector refuses to make an event on a calendar the account can only read, 
 
 ### When both sides change
 
-Each change sends only the fields changed in Marfa that differ from Google's event, held to Google's version of the event (its `etag`) that Marfa last read. If Google changed the event since, the change waits: the next read brings Google's change, and the kit decides between the two field by field. A field changed on one side only keeps that change.
+Each change sends only the fields changed in Marfa that differ from Google's event, held to Google's version of the event (its `etag`) that Marfa last read. A move to another calendar is held to that version too. If Google changed the event since, the change waits and the event isn't moved: the next read brings Google's change, and the kit decides between the two field by field. A field changed on one side only keeps that change.
 
 ### Events Marfa may not change
 
