@@ -22,32 +22,37 @@ The refresh token is the only value setup produces. A Google connector reads all
 import { connectGoogle, googleEnv, signIn } from "@withmarfa/google";
 
 const scopes = ["https://www.googleapis.com/auth/calendar.readonly"];
+const needs = { scopes, types: ["google.calendar.event"] };
 
 export default defineConnector({
   // ...
   env: googleEnv,
   setup: (context) => signIn(context, scopes),
   async run(context) {
-    const google = connectGoogle(context, scopes);
+    const google = connectGoogle(context, needs);
     const access = await google.ready();
     const body = await google.json(
       "https://www.googleapis.com/calendar/v3/...",
     );
   },
+  async onChange(change, context) {
+    const google = connectGoogle(context, needs);
+    // google.fetch and google.json check the account before they send.
+  },
 });
 ```
 
 - `signIn(context, scopes, options?)` is a connector's `setup`.
-- `connectGoogle(context, scopes, options?)` returns a `Google` for one run or one `onChange`. It takes the same `env`, `signal`, `state`, `log` and `secret` the kit hands both.
+- `connectGoogle(context, { scopes, types }, options?)` returns a `Google` for one run, `onChange`, `remake` or `preflight`. It takes the context the kit hands each of them. `scopes` lists every scope the connector needs. `types` lists the connector's own types, whose rows hold the account in their `source_id`; see [One account per instance](#one-account-per-instance).
 - `options` can replace the Google endpoints, the clock and the request timeout. Tests use it to point a connector at a local stub.
 
 ### `google.ready()`
 
-Call it once at the start of a run. It:
+Call it at the start of a run, before the run writes anything. It:
 
 1. Gets an access token, refreshing it when the process holds none or it is near its end. A grant Google already refused stops the run here.
 2. Learns the signed-in account. It reads `sub` from the ID token and asks Google's userinfo endpoint where there is no ID token.
-3. Checks the account against the one saved in the connector's state under `google_account`. The first account is kept, and a later run for another account fails with the account condition.
+3. Checks the account as [One account per instance](#one-account-per-instance) describes. Where the connector keeps no account yet, it keeps this one, with a checkpoint of the connector's state, before the run writes a row.
 4. Raises the notices and conditions below, and returns `Access`.
 
 `Access` holds `account` (the account's `sub`), `granted` (the scopes the grant holds, or `undefined` where Google did not say), `missing` (the connector's scopes the grant lacks) and `has(scope)`.
@@ -56,7 +61,7 @@ Put `account` in each `source_id`, as `<account>:<id>`, so that two accounts nev
 
 ### `google.fetch` and `google.json`
 
-`fetch` sends a request with a bearer token. It accepts only `https` addresses on `googleapis.com` or a subdomain of it, so a link inside a response cannot send the token elsewhere. It does not follow redirects, and it times out. On a `401` it refreshes the access token once and sends the request once more.
+`fetch` checks the account first, once for each `Google`, as `ready` does, so a call from `onChange`, `remake` or `preflight` is never sent for another account than the one the connector keeps. It then sends the request with a bearer token. It accepts only `https` addresses on `googleapis.com` or a subdomain of it, so a link inside a response cannot send the token elsewhere. It does not follow redirects, and it times out. On a `401` it refreshes the access token once and sends the request once more.
 
 `json` calls `fetch` and returns the parsed body, or `undefined` for an empty one. For an error answer it throws a `GoogleError`.
 
@@ -66,7 +71,7 @@ Put `account` in each `source_id`, as `<account>:<id>`, so that two accounts nev
 
 1. It stops if `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing.
 2. If `GOOGLE_REFRESH_TOKEN` is already set, it asks Google which scopes that grant holds and requests those together with the connector's own. See [How a second connector widens the grant](#how-a-second-connector-widens-the-grant).
-3. It serves a page with a link to Google's consent screen, using PKCE with the `S256` method, a random `state`, `access_type=offline`, `prompt=consent` and `include_granted_scopes=true`. The log also names the consent address, for a browser on another machine.
+3. It serves a page with a link to Google's consent screen, using PKCE with the `S256` method, a random `state`, `access_type=offline`, `prompt=consent` and `include_granted_scopes=true`. It also asks the kit to take the redirect by paste, so the log names the consent address for a browser on another machine.
 4. After the redirect it checks `state`, shows Google's own error if there is one, and exchanges the code for tokens.
 5. It checks that Google sent a refresh token, and writes the one value, `GOOGLE_REFRESH_TOKEN`, to `<file>`.
 
@@ -76,7 +81,7 @@ The authorization code, the PKCE verifier, the client secret and every token pas
 
 ### Signing in from a browser on another machine
 
-Google redirects the browser to an address on the machine that runs setup. From a browser on another machine, that redirect reaches nothing. The page then shows an error, but its address bar holds the whole address Google sent. Paste that address into the terminal where setup runs and press Enter. Setup treats it as the redirect.
+The log names Google's consent address beside the instruction to paste. Open that address in the browser on the other machine and sign in. Google then redirects the browser to an address on the machine that runs setup, which from the other machine reaches nothing. The page shows an error, but its address bar holds the whole address Google sent. Paste that address into the terminal where setup runs and press Enter. Setup treats it as the redirect.
 
 A pasted line is used only if it is a web address whose path is the callback's. Anything else draws one warning, and setup keeps waiting. The kit reads the terminal only while setup waits.
 
@@ -104,7 +109,15 @@ If the grant in the environment no longer works (`invalid_grant`), setup warns a
 
 ## One account per instance
 
-A Marfa instance supports one Google account for its Google connectors. The account is kept in each connector's state, and a grant for another account fails that connector's runs. To use another Google account, use another Marfa instance.
+A Marfa instance supports one Google account for its Google connectors. To use another Google account, use another Marfa instance.
+
+Each connector keeps the account's `sub` in its state, under `google_account`, and checks every grant against it before anything reaches Google or Marfa:
+
+- **The first run.** Where the connector keeps no account, `ready` reads the rows of the connector's `types`, in every state. If one holds a `source_id` that begins with another account, as `<sub>:`, the run fails with the account condition. Otherwise `ready` keeps the account at once, with a checkpoint of the connector's state, so it holds even if the run fails after writing rows.
+- **After the state was cleared.** Clearing a connector's state also clears the kept account, but not its rows. The next run reads the rows as the first run does, so a grant for another account is refused while the first account's rows remain.
+- **A later run.** A grant for another account fails the run with the account condition, and nothing is read or written.
+- **`onChange`, `remake` and `preflight`.** These run before the run's own `ready`, so `fetch` and `json` check the grant against the kept account first. A grant for another account raises the account condition and throws a `GoogleError` of kind `account`, which fails the run, and nothing is sent. Where the connector keeps no account yet, they throw `Unreachable` with the scope `google:account`, so the change is sent again on a later run, once a run has kept the account.
+- **A run started by a delivery.** It cannot take a checkpoint, so where no account is kept, it fails, and the next scheduled run keeps the account.
 
 ## Scopes are matched exactly
 
@@ -121,7 +134,7 @@ A condition appears on the connector in Marfa until a run no longer raises it. E
 | `google:reconnect`             | Google answers `invalid_grant`: access was revoked, went unused for six months, ended, or the project is still in Testing. | Run `--setup <file>`, put the new `GOOGLE_REFRESH_TOKEN` in every Google connector's environment, restart. |
 | `google:client`                | Google answers `invalid_client`.                                                                                           | Check `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are those of the Desktop app client, restart.          |
 | `google:scope:<scope>`         | The grant lacks a scope the connector needs. One condition per scope.                                                      | Run `--setup <file>`, leave every permission ticked, put the new token in every Google connector.          |
-| `google:account`               | The grant belongs to another account than the one the connector's rows came from.                                          | Sign in again with the original account, or use another instance.                                          |
+| `google:account`               | The grant belongs to another account than the one the connector keeps, or than the connector's rows came from.             | Sign in again with the original account, or use another instance.                                          |
 | `google:refresh-token-changed` | Google issued a new refresh token during a run. The connector keeps it in memory only.                                     | Run `--setup <file>` before the connector restarts, then update every Google connector.                    |
 | `google:refresh-token-expires` | Google granted time-based access, which ends on a stated date.                                                             | Before that date, run `--setup <file>`, choose ongoing access, update every Google connector.              |
 
@@ -131,14 +144,14 @@ After `google:reconnect` or `google:client`, the connector makes no further Goog
 
 `google.json` and `google.fetch` callers see `GoogleError`, with a `kind`:
 
-| Kind        | Google answered                                                                                                      | Meaning                                        |
-| ----------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `reconnect` | `invalid_grant`                                                                                                      | The grant is over. Raises `google:reconnect`.  |
-| `client`    | `invalid_client`                                                                                                     | The client is wrong. Raises `google:client`.   |
-| `account`   | (not an answer)                                                                                                      | The grant belongs to another account.          |
-| `passing`   | `429`, any `5xx`, a `403` with `rateLimitExceeded` or `userRateLimitExceeded`, no answer, or a body that is not JSON | It can pass. Try again later.                  |
-| `quota`     | A `403` with `quotaExceeded` or `dailyLimitExceeded`                                                                 | The usage limit holds until Google resets it.  |
-| `refused`   | Anything else                                                                                                        | Google will not take the request as it stands. |
+| Kind        | Google answered                                                                                                      | Meaning                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `reconnect` | `invalid_grant`                                                                                                      | The grant is over. Raises `google:reconnect`.                  |
+| `client`    | `invalid_client`                                                                                                     | The client is wrong. Raises `google:client`.                   |
+| `account`   | (not an answer)                                                                                                      | The grant belongs to another account. Raises `google:account`. |
+| `passing`   | `429`, any `5xx`, a `403` with `rateLimitExceeded` or `userRateLimitExceeded`, no answer, or a body that is not JSON | It can pass. Try again later.                                  |
+| `quota`     | A `403` with `quotaExceeded` or `dailyLimitExceeded`                                                                 | The usage limit holds until Google resets it.                  |
+| `refused`   | Anything else                                                                                                        | Google will not take the request as it stands.                 |
 
 A `Retry-After` header, as seconds or an HTTP date, sets `retryAt`. A past or invalid value is ignored, and no wait is believed beyond 24 hours.
 

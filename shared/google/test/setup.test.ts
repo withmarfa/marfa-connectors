@@ -40,7 +40,10 @@ interface Driven {
   readonly lines: string[];
   readonly secrets: string[];
   readonly page: () => string;
-  /** The address Google's consent screen is at, once setup logged it. */
+  /** The address a browser on another machine opens, where setup asked the
+   *  kit to take a pasted redirect. */
+  readonly elsewhere: () => string | undefined;
+  /** The address Google's consent screen is at, once setup gave it. */
   consent(): Promise<URL>;
   redirect(query: Record<string, string>): void;
   abort(): void;
@@ -62,6 +65,7 @@ function driven(env: Record<string, string | undefined>): Driven {
     fail(new Error("stopped before the vendor redirected back"));
   });
   let shown = "";
+  let elsewhere: string | undefined;
   const callback = "http://127.0.0.1:50123/0b1a2c3d/callback";
   const context: GoogleSetupContext = {
     env,
@@ -74,8 +78,9 @@ function driven(env: Record<string, string | undefined>): Driven {
       if (value.length < 8) throw new Error("too short to keep secret");
       secrets.push(value);
     },
-    listen: (page) => {
+    listen: (page, listening) => {
       shown = typeof page === "function" ? page(callback) : (page ?? "");
+      elsewhere = listening?.paste?.(callback);
       const local: LocalCallback = {
         url: "http://127.0.0.1:50123/0b1a2c3d",
         callback,
@@ -91,13 +96,13 @@ function driven(env: Record<string, string | undefined>): Driven {
     lines,
     secrets,
     page: () => shown,
+    elsewhere: () => elsewhere,
     consent: async () => {
       const deadline = Date.now() + 3000;
       for (;;) {
-        const line = lines.find((one) => one.includes(`${stub.url}/auth?`));
-        if (line !== undefined) {
-          const found = /(http\S+\/auth\?\S+)/.exec(line);
-          return new URL(found?.[1] ?? "");
+        const found = /href="([^"]+)"/.exec(shown)?.[1];
+        if (found !== undefined) {
+          return new URL(found.replaceAll("&amp;", "&"));
         }
         if (Date.now() > deadline)
           throw new Error("setup never gave the address");
@@ -173,13 +178,11 @@ describe("signing in", () => {
     expect(logged).toContain("every Google connector");
   });
 
-  it("logs Google's consent address for a browser on another machine", async () => {
+  it("asks the kit to take a pasted redirect, from a browser on another machine that opens Google's consent address", async () => {
     const seen = driven(env());
     const result = signIn(seen.context, [A], options());
     const consent = await seen.consent();
-    const line =
-      seen.lines.find((one) => one.includes(consent.toString())) ?? "";
-    expect(line).toMatch(/another machine/);
+    expect(seen.elsewhere()).toBe(consent.toString());
     seen.redirect({ code, state: consent.searchParams.get("state") ?? "" });
     await result;
   });

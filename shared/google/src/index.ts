@@ -1,11 +1,11 @@
 export { googleEnv } from "./env.js";
 export {
   connectGoogle,
-  checkAccount,
   missingScopes,
   Google,
   type Access,
   type GoogleContext,
+  type GoogleNeeds,
 } from "./google.js";
 export {
   classify,

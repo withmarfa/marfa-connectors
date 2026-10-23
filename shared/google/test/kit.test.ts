@@ -5,7 +5,12 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineConnector } from "@withmarfa/connector";
 import { start } from "../../../kit/src/main.js";
-import { Harness, testFields, testType } from "../../../kit/test/harness.js";
+import {
+  Harness,
+  linkedType,
+  testFields,
+  testType,
+} from "../../../kit/test/harness.js";
 import { connectGoogle, googleEnv, signIn } from "../src/index.js";
 import { clientEnv, freshToken, GoogleStub } from "./stub.js";
 
@@ -28,6 +33,8 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+const types = [testType.id];
+
 function connector(scopes: string[], reads?: () => void) {
   return defineConnector({
     name: "test",
@@ -35,15 +42,68 @@ function connector(scopes: string[], reads?: () => void) {
     types: [{ type: testType, fields: testFields }],
     env: googleEnv,
     async run(context) {
-      const google = connectGoogle(context, scopes, {
-        endpoints: stub.endpoints,
-      });
+      const google = connectGoogle(
+        context,
+        { scopes, types },
+        { endpoints: stub.endpoints },
+      );
       await google.ready();
       reads?.();
     },
     setup: (context) => signIn(context, scopes, { endpoints: stub.endpoints }),
   });
 }
+
+/** A two-way connector that writes one row for the account, then fails
+ *  where asked, and sends each row made in Marfa to Google. */
+function writer(fails = false) {
+  return defineConnector({
+    name: "test",
+    source: "test",
+    types: [{ type: linkedType, fields: testFields }],
+    env: googleEnv,
+    async run(context) {
+      const google = connectGoogle(
+        context,
+        { scopes: [A], types },
+        { endpoints: stub.endpoints },
+      );
+      const { account } = await google.ready();
+      await context.upsert(testType.id, [
+        {
+          source_id: `${account}:event-1`,
+          properties: { title: "Event", vendor_id: `${account}:event-1` },
+        },
+      ]);
+      if (fails) throw new Error("Google stopped answering halfway");
+    },
+    async onChange(change, context) {
+      const google = connectGoogle(
+        context,
+        { scopes: [A], types },
+        { endpoints: stub.endpoints },
+      );
+      await google.json(`${stub.url}/calendars/primary/events`, {
+        method: "POST",
+        body: JSON.stringify({ summary: change.item.properties["title"] }),
+      });
+      await context.setLink(change.item, `made-${change.item.id}`);
+      return undefined;
+    },
+  });
+}
+
+const other = "sub-2222222222";
+
+function signedIn(token = freshToken()) {
+  return harness.runtime(["--once"], {
+    ...clientEnv,
+    GOOGLE_REFRESH_TOKEN: token,
+  });
+}
+
+const posts = (): number =>
+  stub.api.filter((call) => call.method === "POST").length;
 
 async function until(holds: () => boolean): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -95,7 +155,10 @@ describe("through the kit", () => {
     for (const value of [clientEnv.GOOGLE_CLIENT_SECRET, issued, code]) {
       expect(said).not.toContain(value);
     }
-    expect(said).toContain("paste the address it ended on");
+    expect(said).toContain("paste the address it ends on");
+    expect(said).toContain(
+      `from a browser on another machine, open ${consent.toString()} there`,
+    );
   });
 
   it("fails the run with one condition to reconnect where Google ends the grant, and leaks nothing", async () => {
@@ -149,5 +212,64 @@ describe("through the kit", () => {
     const said = reported();
     expect(said).not.toContain(token);
     expect(said).not.toContain("ya29.");
+  });
+
+  it("keeps the account before writing a row, so a run that fails after writing still holds it against another account", async () => {
+    expect(await start(writer(true), signedIn())).toBe(1);
+    expect(harness.server.row(`${stub.sub}:event-1`)).toBeDefined();
+    expect(harness.kept()["state"]).toEqual({ google_account: stub.sub });
+
+    stub.sub = other;
+    expect(await start(writer(), signedIn())).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(Object.keys(harness.problems())).toContain("google:account");
+    expect(
+      harness.server.rows.filter((row) =>
+        row.source_id?.startsWith(`${other}:`),
+      ),
+    ).toEqual([]);
+    expect(harness.kept()["state"]).toEqual({
+      google_account: "sub-1111111111",
+    });
+  });
+
+  it("refuses another account after the connector's state was cleared, by the rows it holds", async () => {
+    expect(await start(writer(), signedIn())).toBe(0);
+    const cleared = (): void => {
+      harness.server.states.delete(harness.server.keySource);
+      harness.server.agreements.clear();
+      harness.server.problems.delete(harness.server.keySource);
+    };
+    cleared();
+    stub.sub = other;
+    expect(await start(writer(), signedIn())).toBe(1);
+    expect(Object.keys(harness.problems())).toContain("google:account");
+    expect(
+      harness.server.rows.filter((row) =>
+        row.source_id?.startsWith(`${other}:`),
+      ),
+    ).toEqual([]);
+
+    // The witness: the account the rows came from is kept again.
+    cleared();
+    stub.sub = "sub-1111111111";
+    expect(await start(writer(), signedIn())).toBe(0);
+    expect(harness.kept()["state"]).toEqual({
+      google_account: "sub-1111111111",
+    });
+  });
+
+  it("sends nothing from the watch phase once the account changed, and raises the account condition", async () => {
+    expect(await start(writer(), signedIn())).toBe(0);
+    harness.server.insert(undefined, { title: "Mine" }, testType.id, "person");
+    stub.sub = other;
+    expect(await start(writer(), signedIn())).toBe(1);
+    expect(posts()).toBe(0);
+    expect(Object.keys(harness.problems())).toContain("google:account");
+
+    // The witness: the account the rows came from sends the queued create.
+    stub.sub = "sub-1111111111";
+    expect(await start(writer(), signedIn())).toBe(0);
+    expect(posts()).toBe(1);
   });
 });

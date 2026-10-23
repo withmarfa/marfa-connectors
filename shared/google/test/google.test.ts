@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Refused, Unreachable } from "@withmarfa/connector";
 import {
-  checkAccount,
   connectGoogle,
   GoogleError,
   missingScopes,
@@ -34,9 +33,24 @@ function options(extra: Partial<GoogleOptions> = {}): GoogleOptions {
   return { endpoints: stub.endpoints, now: () => time, ...extra };
 }
 
+const rowType = "google.test.entry";
+
+function needs(scopes: string[]) {
+  return { scopes, types: [rowType] };
+}
+
 function run(token: string, state = new Map<string, unknown>()) {
   const seen = captured({ ...clientEnv, GOOGLE_REFRESH_TOKEN: token }, state);
   return seen;
+}
+
+/** What `onChange`, `remake` or `preflight` is handed. */
+function watch(token: string, state = new Map<string, unknown>()) {
+  return captured(
+    { ...clientEnv, GOOGLE_REFRESH_TOKEN: token },
+    state,
+    "watch",
+  );
 }
 
 async function failure(promise: Promise<unknown>): Promise<GoogleError> {
@@ -60,7 +74,7 @@ function everything(seen: ReturnType<typeof run>, ...errors: Error[]): string {
 describe("the access token", () => {
   it("is refreshed when missing, kept until near its end, and refreshed again then", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     await google.ready();
     await google.ready();
     expect(stub.token).toHaveLength(1);
@@ -88,14 +102,14 @@ describe("the access token", () => {
 
   it("is kept for the whole process, so a later run's handle does not refresh it again", async () => {
     const token = freshToken();
-    await connectGoogle(run(token).context, [A], options()).ready();
-    await connectGoogle(run(token).context, [A], options()).ready();
+    await connectGoogle(run(token).context, needs([A]), options()).ready();
+    await connectGoogle(run(token).context, needs([A]), options()).ready();
     expect(stub.token).toHaveLength(1);
   });
 
   it("is refreshed once and the call sent once more where Google answers 401, never in a loop", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     stub.onApi = (call) =>
       stub.api.length === 1
         ? { status: 401, json: {} }
@@ -120,7 +134,7 @@ describe("the access token", () => {
 
   it("is sent only to Google's own API hosts", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     await expect(google.fetch("https://evil.example/steal")).rejects.toThrow(
       /will not send a Google access token to https:\/\/evil\.example/,
     );
@@ -136,7 +150,11 @@ describe("the access token", () => {
 
   it("gives up on a call that outlasts its time limit, as a passing failure", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options({ timeoutMs: 80 }));
+    const google = connectGoogle(
+      seen.context,
+      needs([A]),
+      options({ timeoutMs: 80 }),
+    );
     await google.ready();
     stub.onApi = () => ({ hang: true });
     const error = await failure(google.json(`${stub.url}/slow`));
@@ -146,7 +164,7 @@ describe("the access token", () => {
 
   it("stops with the run's own signal, not as a Google failure", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     await google.ready();
     stub.onApi = () => ({ hang: true });
     const pending = google.json(`${stub.url}/slow`).catch((e: unknown) => e);
@@ -169,7 +187,7 @@ describe("a grant Google no longer accepts", () => {
       },
     });
     const seen = run(token);
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     const error = await failure(google.ready());
     expect(error.kind).toBe("reconnect");
     expect([...seen.conditions.keys()]).toEqual(["google:reconnect"]);
@@ -181,7 +199,7 @@ describe("a grant Google no longer accepts", () => {
     // Under --every, each later run fails fast with the same condition.
     for (let again = 0; again < 3; again += 1) {
       const later = run(token);
-      const handle = connectGoogle(later.context, [A], options());
+      const handle = connectGoogle(later.context, needs([A]), options());
       const same = await failure(handle.ready());
       expect(same.kind).toBe("reconnect");
       expect(later.conditions.get("google:reconnect")).toBe(text);
@@ -194,14 +212,18 @@ describe("a grant Google no longer accepts", () => {
 
     // Restarted with a new refresh token, it signs in again.
     stub.onToken = () => undefined;
-    await connectGoogle(run(freshToken()).context, [A], options()).ready();
+    await connectGoogle(
+      run(freshToken()).context,
+      needs([A]),
+      options(),
+    ).ready();
     expect(stub.token).toHaveLength(2);
   });
 
   it("stops at the first invalid_grant that comes from a 401 retry too", async () => {
     const token = freshToken();
     const seen = run(token);
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     await google.ready();
     stub.onApi = () => ({ status: 401, json: {} });
     stub.onToken = () => ({ status: 400, json: { error: "invalid_grant" } });
@@ -224,7 +246,7 @@ describe("a grant Google no longer accepts", () => {
     });
     const seen = run(token);
     const error = await failure(
-      connectGoogle(seen.context, [A], options()).ready(),
+      connectGoogle(seen.context, needs([A]), options()).ready(),
     );
     expect(error.kind).toBe("client");
     expect([...seen.conditions.keys()]).toEqual(["google:client"]);
@@ -232,14 +254,20 @@ describe("a grant Google no longer accepts", () => {
     expect(text).toContain("GOOGLE_CLIENT_ID");
     expect(text).toContain("GOOGLE_CLIENT_SECRET");
     expect(text).not.toMatch(/reconnect/i);
-    await failure(connectGoogle(run(token).context, [A], options()).ready());
+    await failure(
+      connectGoogle(run(token).context, needs([A]), options()).ready(),
+    );
     expect(stub.token).toHaveLength(1);
   });
 
   it("is told apart from a server error, a rate limit, a timeout and a body that is not JSON, which pass", async () => {
     const token = freshToken();
     const seen = run(token);
-    const google = connectGoogle(seen.context, [A], options({ timeoutMs: 80 }));
+    const google = connectGoogle(
+      seen.context,
+      needs([A]),
+      options({ timeoutMs: 80 }),
+    );
 
     stub.onToken = () => ({ status: 500, text: "<html>boom</html>" });
     let error = await failure(google.ready());
@@ -272,7 +300,7 @@ describe("a grant Google no longer accepts", () => {
 
   it("waits out a Retry-After from the token endpoint without asking again, then asks again", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     stub.onToken = () => ({
       status: 429,
       headers: { "Retry-After": "120" },
@@ -294,7 +322,7 @@ describe("a grant Google no longer accepts", () => {
 
   it("fails a 429 with no Retry-After as passing, asking again next time", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     stub.onToken = () => ({ status: 429, json: {} });
     const error = await failure(google.ready());
     expect(error.kind).toBe("passing");
@@ -313,7 +341,7 @@ describe("a refresh that answers more than an access token", () => {
         ? stub.granted({ refresh_token: issued })
         : undefined;
     const seen = run(original);
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     await google.ready();
     const text = seen.conditions.get("google:refresh-token-changed") ?? "";
     expect(text).toContain("--setup <file>");
@@ -326,7 +354,7 @@ describe("a refresh that answers more than an access token", () => {
 
     // The next run raises it again, since the process still holds it.
     const later = run(original);
-    await connectGoogle(later.context, [A], options()).ready();
+    await connectGoogle(later.context, needs([A]), options()).ready();
     expect(later.conditions.has("google:refresh-token-changed")).toBe(true);
     expect(everything(seen)).not.toContain(issued);
     expect(everything(later)).not.toContain(issued);
@@ -335,7 +363,7 @@ describe("a refresh that answers more than an access token", () => {
   it("raises a condition with the date time-based access ends, and says ongoing access avoids it", async () => {
     stub.onToken = () => stub.granted({ refresh_token_expires_in: 7 * 86_400 });
     const seen = run(freshToken());
-    await connectGoogle(seen.context, [A], options()).ready();
+    await connectGoogle(seen.context, needs([A]), options()).ready();
     const text = seen.conditions.get("google:refresh-token-expires") ?? "";
     expect(text).toContain("2026-10-30 at 09:00 UTC");
     expect(text).toMatch(/ongoing access/);
@@ -347,7 +375,7 @@ describe("the scopes granted", () => {
   it("raises one condition for each wanted scope Google did not grant, naming it and the setup that fixes it", async () => {
     stub.scope = `openid ${A}`;
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A, B], options());
+    const google = connectGoogle(seen.context, needs([A, B]), options());
     const access = await google.ready();
     expect(access.missing).toEqual([B]);
     expect(access.has(A)).toBe(true);
@@ -360,7 +388,11 @@ describe("the scopes granted", () => {
 
   it("raises none where every wanted scope was granted", async () => {
     const seen = run(freshToken());
-    const access = await connectGoogle(seen.context, [A, B], options()).ready();
+    const access = await connectGoogle(
+      seen.context,
+      needs([A, B]),
+      options(),
+    ).ready();
     expect(access.missing).toEqual([]);
     expect(seen.conditions.size).toBe(0);
   });
@@ -368,7 +400,11 @@ describe("the scopes granted", () => {
   it("goes on where Google sends no scope, saying it could not check", async () => {
     stub.scope = undefined;
     const seen = run(freshToken());
-    const access = await connectGoogle(seen.context, [A, B], options()).ready();
+    const access = await connectGoogle(
+      seen.context,
+      needs([A, B]),
+      options(),
+    ).ready();
     expect(access.missing).toEqual([]);
     expect(access.granted).toBeUndefined();
     expect(seen.conditions.size).toBe(0);
@@ -385,11 +421,15 @@ describe("the Google account", () => {
   it("keeps the first sub in the connector's state and accepts it on later runs", async () => {
     const state = new Map<string, unknown>();
     const first = run(freshToken(), state);
-    const access = await connectGoogle(first.context, [A], options()).ready();
+    const access = await connectGoogle(
+      first.context,
+      needs([A]),
+      options(),
+    ).ready();
     expect(access.account).toBe(stub.sub);
     expect([...state.values()]).toEqual([stub.sub]);
     const second = run(freshToken(), state);
-    await connectGoogle(second.context, [A], options()).ready();
+    await connectGoogle(second.context, needs([A]), options()).ready();
     expect(second.conditions.size).toBe(0);
   });
 
@@ -397,12 +437,12 @@ describe("the Google account", () => {
     const state = new Map<string, unknown>();
     await connectGoogle(
       run(freshToken(), state).context,
-      [A],
+      needs([A]),
       options(),
     ).ready();
     stub.sub = "sub-2222222222";
     const seen = run(freshToken(), state);
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     const error = await failure(google.ready());
     expect(error.kind).toBe("account");
     expect(seen.conditions.get("google:account")).toMatch(
@@ -417,7 +457,11 @@ describe("the Google account", () => {
     stub.sub = "sub-3333333333";
     const state = new Map<string, unknown>();
     const seen = run(freshToken(), state);
-    const access = await connectGoogle(seen.context, [A], options()).ready();
+    const access = await connectGoogle(
+      seen.context,
+      needs([A]),
+      options(),
+    ).ready();
     expect(access.account).toBe("sub-3333333333");
     expect(stub.userinfo).toHaveLength(1);
     expect(stub.userinfo[0]?.authorization).toMatch(/^Bearer ya29\./);
@@ -427,7 +471,11 @@ describe("the Google account", () => {
   it("asks userinfo, and does not trust the token, where the id_token is not one", async () => {
     stub.onToken = () => stub.granted({ id_token: "not.a.jwt" });
     const seen = run(freshToken());
-    const access = await connectGoogle(seen.context, [A], options()).ready();
+    const access = await connectGoogle(
+      seen.context,
+      needs([A]),
+      options(),
+    ).ready();
     expect(access.account).toBe(stub.sub);
     expect(stub.userinfo).toHaveLength(1);
   });
@@ -436,29 +484,115 @@ describe("the Google account", () => {
     stub.withIdToken = false;
     stub.onUserinfo = () => ({ json: {} });
     const error = await failure(
-      connectGoogle(run(freshToken()).context, [A], options()).ready(),
+      connectGoogle(run(freshToken()).context, needs([A]), options()).ready(),
     );
     expect(error.message).toMatch(/which Google account/);
   });
 
-  it("checks an account on its own", () => {
-    const state = new Map<string, unknown>();
-    const kept = {
-      get: (key: string) => state.get(key),
-      set: (key: string, value: unknown) => {
-        state.set(key, value);
-      },
+  it("refuses, where no account is kept, rows the connector wrote for another account, as after its state was cleared", async () => {
+    const seen = run(freshToken());
+    seen.rows.set(rowType, ["sub-2222222222:event-1"]);
+    const error = await failure(
+      connectGoogle(seen.context, needs([A]), options()).ready(),
+    );
+    expect(error.kind).toBe("account");
+    expect(seen.conditions.has("google:account")).toBe(true);
+    expect(seen.state.size).toBe(0);
+    // The witness: rows of its own account, or without one, are taken.
+    const own = run(freshToken());
+    own.rows.set(rowType, [`${stub.sub}:event-1`, "made-by-hand"]);
+    await connectGoogle(own.context, needs([A]), options()).ready();
+    expect([...own.state.values()]).toEqual([stub.sub]);
+  });
+
+  it("does not keep an account in a run started by a delivery", async () => {
+    const seen = captured(
+      { ...clientEnv, GOOGLE_REFRESH_TOKEN: freshToken() },
+      new Map(),
+    );
+    const context = { ...seen.context, hints: new Map() };
+    await expect(
+      connectGoogle(context, needs([A]), options()).ready(),
+    ).rejects.toThrow(/next scheduled run keeps it/);
+    expect(seen.state.size).toBe(0);
+  });
+
+  it("fails before reading where the instance would not keep the account", async () => {
+    const seen = run(freshToken());
+    const context = {
+      ...seen.context,
+      forScope: () => ({
+        state: {
+          checkpoint: () =>
+            Promise.resolve({ committed: false, reason: "state-oversized" }),
+        },
+      }),
     };
-    const conditions: string[] = [];
-    const log = { condition: (key: string) => conditions.push(key) };
-    checkAccount(kept, "sub-a", log);
-    checkAccount(kept, "sub-a", log);
-    expect(conditions).toEqual([]);
-    expect(() => {
-      checkAccount(kept, "sub-b", log);
-    }).toThrow(GoogleError);
-    expect(conditions).toEqual(["google:account"]);
-    expect(idToken("x")).toContain(".");
+    const google = connectGoogle(context, needs([A]), options());
+    await expect(google.ready()).rejects.toThrow(/state-oversized/);
+    await expect(google.json(`${stub.url}/items`)).rejects.toThrow(
+      /state-oversized/,
+    );
+    expect(stub.api).toHaveLength(0);
+  });
+});
+
+describe("a call outside a run", () => {
+  it("is not sent, and raises the account condition, where the grant is another account's than the one kept", async () => {
+    const state = new Map<string, unknown>([["google_account", "sub-a"]]);
+    const seen = watch(freshToken(), state);
+    const google = connectGoogle(seen.context, needs([A]), options());
+    const error = await failure(
+      google.json(`${stub.url}/items`, { method: "POST", body: "{}" }),
+    );
+    expect(error.kind).toBe("account");
+    expect(toChangeError(error)).toBeUndefined();
+    expect(seen.conditions.has("google:account")).toBe(true);
+    expect(stub.api).toHaveLength(0);
+    // The witness: the kept account's own call is sent.
+    const own = watch(freshToken(), new Map([["google_account", stub.sub]]));
+    await connectGoogle(own.context, needs([A]), options()).json(
+      `${stub.url}/items`,
+      { method: "POST", body: "{}" },
+    );
+    expect(stub.api).toHaveLength(1);
+  });
+
+  it("waits, unsent, until a run keeps an account, and keeps none itself", async () => {
+    const state = new Map<string, unknown>();
+    const seen = watch(freshToken(), state);
+    const google = connectGoogle(seen.context, needs([A]), options());
+    const error = await google
+      .fetch(`${stub.url}/items`, { method: "POST" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+    expect(error).toBeInstanceOf(Unreachable);
+    expect((error as Unreachable).scope).toBe("google:account");
+    expect(stub.api).toHaveLength(0);
+    expect(state.size).toBe(0);
+    await connectGoogle(
+      run(freshToken(), state).context,
+      needs([A]),
+      options(),
+    ).ready();
+    await google.fetch(`${stub.url}/items`, { method: "POST" });
+    expect(stub.api).toHaveLength(1);
+  });
+
+  it("checks the account once for a handle, before its first call", async () => {
+    const state = new Map<string, unknown>([["google_account", stub.sub]]);
+    stub.withIdToken = false;
+    const seen = watch(freshToken(), state);
+    const google = connectGoogle(seen.context, needs([A]), options());
+    await Promise.all([
+      google.json(`${stub.url}/one`),
+      google.json(`${stub.url}/two`),
+    ]);
+    await google.json(`${stub.url}/three`);
+    expect(stub.userinfo).toHaveLength(1);
+    expect(stub.api).toHaveLength(3);
   });
 });
 
@@ -492,7 +626,7 @@ describe("what Google answers to an API call", () => {
   }
   it.each(cases)("classifies %s", async (_name, status, body, kind) => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     stub.onApi = () =>
       typeof body === "string"
         ? { status, text: body }
@@ -508,7 +642,7 @@ describe("what Google answers to an API call", () => {
 
   it("names Google's reason and message, and honors Retry-After in seconds and as a date", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     stub.onApi = () => ({
       status: 429,
       headers: { "Retry-After": "30" },
@@ -545,7 +679,7 @@ describe("what Google answers to an API call", () => {
 
   it("becomes what onChange throws: a passing failure Unreachable with its deadline, a refusal Refused", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     stub.onApi = () => ({
       status: 429,
       headers: { "Retry-After": "30" },
@@ -567,14 +701,14 @@ describe("what Google answers to an API call", () => {
     expect(toChangeError(new Error("not Google's"))).toBeUndefined();
     stub.onToken = () => ({ status: 400, json: { error: "invalid_grant" } });
     const reconnect = await failure(
-      connectGoogle(run(freshToken()).context, [A], options()).ready(),
+      connectGoogle(run(freshToken()).context, needs([A]), options()).ready(),
     );
     expect(toChangeError(reconnect)).toBeUndefined();
   });
 
   it("answers JSON, and an empty body as undefined", async () => {
     const seen = run(freshToken());
-    const google = connectGoogle(seen.context, [A], options());
+    const google = connectGoogle(seen.context, needs([A]), options());
     expect(await google.json(`${stub.url}/x`)).toEqual({ ok: true });
     stub.onApi = () => ({ status: 204, text: "" });
     expect(await google.json(`${stub.url}/x`)).toBeUndefined();
@@ -590,7 +724,7 @@ describe("secrets", () => {
     const seen = run(original);
     const google = connectGoogle(
       seen.context,
-      [A, "https://www.googleapis.com/auth/c"],
+      needs([A, "https://www.googleapis.com/auth/c"]),
       options(),
     );
     await google.ready();

@@ -116,15 +116,22 @@ export interface Captured {
   readonly lines: string[];
   readonly conditions: Map<string, string>;
   readonly secrets: string[];
+  /** What the instance keeps of the connector's state, durable at once. */
   readonly state: Map<string, unknown>;
+  /** The `source_id`s of the rows the instance holds, by type. */
+  readonly rows: Map<string, string[]>;
   abort(): void;
 }
 
-/** What a run hands a connector, with everything it logs and keeps captured. */
+/** What a run hands a connector, with everything it logs and keeps
+ *  captured; `watch` hands what `onChange` is handed instead, without
+ *  `forScope`, `held` and `hints`. */
 export function captured(
   env: Record<string, string | undefined>,
   state = new Map<string, unknown>(),
+  as: "run" | "watch" = "run",
 ): Captured {
+  const rows = new Map<string, string[]>();
   const lines: string[] = [];
   const conditions = new Map<string, string>();
   const secrets: string[] = [];
@@ -136,11 +143,21 @@ export function captured(
       conditions.set(key, message);
     },
   };
-  const kept: State = {
-    get: (key) => state.get(key),
-    set: (key, value) => {
-      state.set(key, value);
-    },
+  const kept: Pick<State, "get"> = { get: (key) => state.get(key) };
+  const ran: Pick<GoogleContext, "forScope" | "held" | "hints"> = {
+    forScope: () => ({
+      state: {
+        checkpoint: (key, value) => {
+          state.set(key, value);
+          return Promise.resolve({ committed: true });
+        },
+      },
+    }),
+    held: (type) =>
+      Promise.resolve(
+        (rows.get(type) ?? []).map((sourceId) => ({ source_id: sourceId })),
+      ),
+    hints: undefined,
   };
   return {
     context: {
@@ -152,11 +169,13 @@ export function captured(
         if (value.length < 8) throw new Error("too short to keep secret");
         secrets.push(value);
       },
+      ...(as === "run" && ran),
     },
     lines,
     conditions,
     secrets,
     state,
+    rows,
     abort: () => {
       controller.abort();
     },

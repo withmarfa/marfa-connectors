@@ -116,10 +116,7 @@ export async function signIn(
   const verifier = randomBytes(64).toString("base64url");
   context.secret(verifier);
   const challenge = createHash("sha256").update(verifier).digest("base64url");
-  let redirectUri = "";
-  let consent = "";
-  const local = await context.listen((callback) => {
-    redirectUri = callback;
+  const consentFor = (callback: string): string => {
     const address = new URL(used.endpoints.authorization);
     for (const [name, value] of Object.entries({
       client_id: clientId,
@@ -135,12 +132,14 @@ export async function signIn(
     })) {
       address.searchParams.set(name, value);
     }
-    consent = address.toString();
-    return `<!doctype html><title>Sign in to Google</title><p><a href="${escaped(consent)}">Continue to Google</a> to sign in.</p>`;
-  });
-  context.log.info(
-    `to sign in from a browser on another machine, open this address there: ${consent}`,
+    return address.toString();
+  };
+  const local = await context.listen(
+    (callback) =>
+      `<!doctype html><title>Sign in to Google</title><p><a href="${escaped(consentFor(callback))}">Continue to Google</a> to sign in.</p>`,
+    { paste: consentFor },
   );
+  const redirectUri = local.callback;
 
   const query = await local.redirected;
   if (query.get("state") !== state) {
