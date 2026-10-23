@@ -111,7 +111,7 @@ GitHub names at most 500 repositories to a token, so past that many synced or pa
 
 An installation token GitHub refuses after it was kept, as when it is revoked, is replaced and the request sent once more. A personal token is never replaced automatically: a 401 fails the run and names `GITHUB_PERSONAL_TOKEN`. Its REST and GraphQL budgets are tracked separately under a hash of the token, without retaining the token in a budget key.
 
-A clock out of step with GitHub's by up to ten minutes is allowed for: what GitHub's answer says of its time is used to sign the App's requests from then on. Past ten minutes the connector asks GitHub nothing, and each run says so until the clock is set right; a change made in Marfa meanwhile waits.
+A clock out of step with GitHub's by up to ten minutes is allowed for: what GitHub's answer says of its time is used to sign the App's requests from then on, and the look for a create whose answer was lost reaches back further than that. Past ten minutes the connector asks GitHub nothing, and each run says so until the clock is set right; a change made in Marfa meanwhile waits.
 
 ## Retained attachments
 

@@ -37,6 +37,7 @@ import {
   rateLimited,
   ClockSkew,
   reads,
+  skewAtMost,
   status,
   type Access,
   type App,
@@ -57,8 +58,9 @@ import { everywhere, unsettle } from "./unsettled.js";
 
 export type Context = WatchContext<EnvDeclaration>;
 
-/** A try's time asked a little early, as GitHub's clock is not ours. */
-export const margin = 5 * 60 * 1000;
+/** A try's time asked early by as far as the connector lets GitHub's clock
+ *  be from ours, and a little more. */
+export const margin = (skewAtMost + 5 * 60) * 1000;
 
 function wanted(
   value: unknown,
