@@ -176,7 +176,7 @@ A rate limit, a server error or no answer from Google leaves the change in Marfa
 
 ### The safety stop
 
-Before it deletes anything for purged rows, the connector counts, for each calendar, the events Google still holds that the purges would delete. If one calendar would lose more than 10 events and more than a quarter of its events at once, nothing is carried to Google, the run fails, and the connector raises the condition `purges-held` with the numbers.
+Before it deletes anything for purged rows, the connector counts, for each calendar, the events Google still holds that the purges would delete. It counts only the deletes it would send: it skips a row whose `editable` is `false`, and a calendar that has left the account's list or that the account can only read. A calendar Google no longer has holds nothing to delete. If one calendar would lose more than 10 events and more than a quarter of its events at once, nothing is carried to Google, the run fails, and the connector raises the condition `purges-held` with the numbers.
 
 To let that batch through, set `GOOGLE_CALENDAR_CONFIRM_PURGES` to the number of events the condition names, run once, and remove the setting. A different number holds the batch again.
 

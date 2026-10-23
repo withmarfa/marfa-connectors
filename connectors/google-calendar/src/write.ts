@@ -825,6 +825,9 @@ async function remove(
   }
   const calendar = session.calendars.get(parts.calendarId);
   if (calendar === undefined) return;
+  if (!owned.has(calendar.role)) {
+    throw decline(item, "the account can only read this calendar");
+  }
   const found = await session.api.event(parts.calendarId, parts.eventId);
   if (found === "gone" || found["status"] === "cancelled") return;
   const event = eventOf(found);
@@ -931,21 +934,29 @@ async function remade(
 
 // --- The safety stop ----------------------------------------------------------
 
+/** The events of one calendar a batch would delete, among those it holds. */
+interface Deleting {
+  readonly title: string;
+  readonly doomed: number;
+  readonly live: number;
+}
+
 /**
- * Holds a batch of purges that would delete more than `purgeLimit` events
- * of one calendar and more than `purgeShare` of the events it holds, unless
- * `GOOGLE_CALENDAR_CONFIRM_PURGES` names the number the batch deletes.
- * Only events Google still holds count: a purge after a trash that reached
- * Google deletes nothing.
+ * The events a batch of changes would delete in Google, by calendar, for
+ * each calendar where that is more than `purgeLimit`. Only a delete Marfa
+ * would send counts: a row Marfa may not change, or one on a calendar the
+ * account no longer has or can only read, sends none, and neither does an
+ * event Google no longer holds.
  */
-export async function preflight(
-  purges: readonly Change[],
+async function deleting(
+  changes: readonly Change[],
   context: WriteContext,
   writing: Writing,
-): Promise<void> {
+): Promise<Deleting[]> {
   const byCalendar = new Map<string, Set<string>>();
-  for (const change of purges) {
-    const link = textOf(change.item, "google_id");
+  for (const { item } of changes) {
+    if (item.properties["editable"] === false) continue;
+    const link = textOf(item, "google_id");
     const parts = link === undefined ? undefined : splitLink(link);
     if (parts === undefined) continue;
     const ids = byCalendar.get(parts.calendarId) ?? new Set<string>();
@@ -953,29 +964,47 @@ export async function preflight(
     byCalendar.set(parts.calendarId, ids);
   }
   const large = [...byCalendar].filter(([, ids]) => ids.size > purgeLimit);
-  if (large.length === 0) return;
+  if (large.length === 0) return [];
   const session = await sessionFor(context, writing);
-  const held: string[] = [];
-  let total = 0;
+  const found: Deleting[] = [];
   for (const [calendarId, ids] of large) {
+    const calendar = session.calendars.get(calendarId);
+    if (calendar === undefined || !owned.has(calendar.role)) continue;
     const live = await session.api.live(calendarId);
     const doomed = [...ids].filter((id) => live.has(id)).length;
-    if (doomed > purgeLimit && doomed > live.size * purgeShare) {
-      const title = session.calendars.get(calendarId)?.title ?? calendarId;
-      held.push(
-        `${String(doomed)} of the ${String(live.size)} events on ${title}`,
-      );
-      total += doomed;
+    if (doomed > purgeLimit) {
+      found.push({ title: calendar.title, doomed, live: live.size });
     }
   }
+  return found;
+}
+
+/**
+ * Holds a batch of purges that would delete more than `purgeLimit` events
+ * of one calendar and more than `purgeShare` of the events it holds, unless
+ * `GOOGLE_CALENDAR_CONFIRM_PURGES` names the number the batch deletes.
+ */
+export async function preflight(
+  purges: readonly Change[],
+  context: WriteContext,
+  writing: Writing,
+): Promise<void> {
+  const held = (await deleting(purges, context, writing)).filter(
+    (one) => one.doomed > one.live * purgeShare,
+  );
   if (held.length === 0) return;
+  const total = held.reduce((sum, one) => sum + one.doomed, 0);
   if (context.env.GOOGLE_CALENDAR_CONFIRM_PURGES === String(total)) {
     context.log.info(
       `GOOGLE_CALENDAR_CONFIRM_PURGES confirms deleting ${String(total)} events from Google Calendar`,
     );
     return;
   }
-  const message = `Purging these rows would delete ${held.join(" and ")} in Google Calendar, more than ${String(purgeLimit)} events and a quarter of a calendar at once, so nothing is carried to Google and the connector stops. To delete them, set GOOGLE_CALENDAR_CONFIRM_PURGES=${String(total)} for one run, then remove it.`;
+  const listed = held.map(
+    (one) =>
+      `${String(one.doomed)} of the ${String(one.live)} events on ${one.title}`,
+  );
+  const message = `Purging these rows would delete ${listed.join(" and ")} in Google Calendar, more than ${String(purgeLimit)} events and a quarter of a calendar at once, so nothing is carried to Google and the connector stops. To delete them, set GOOGLE_CALENDAR_CONFIRM_PURGES=${String(total)} for one run, then remove it.`;
   context.log.condition("purges-held", message);
   throw new Error(message);
 }

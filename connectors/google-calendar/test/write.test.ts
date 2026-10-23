@@ -815,20 +815,86 @@ describe("a series", () => {
 });
 
 describe("the safety stop", () => {
-  async function many(count: number): Promise<void> {
+  async function many(
+    count: number,
+    on = me,
+    rest: Record<string, unknown> = {},
+  ): Promise<void> {
     for (let n = 0; n < count; n += 1) {
       calendar.put(
-        me,
+        on,
         timed(
           `e${String(n)}`,
           `E${String(n)}`,
           "2026-11-02T12:00:00Z",
           "2026-11-02T13:00:00Z",
+          rest,
         ),
       );
     }
     await landed();
   }
+
+  function purgeFirst(count: number, on = me): void {
+    for (let n = 0; n < count; n += 1) {
+      server.purge(`${sub}:${on}/e${String(n)}`);
+    }
+  }
+
+  it("does not count the events of a calendar that left the account's list", async () => {
+    await many(12, team);
+    calendar.calendars = calendar.calendars.filter((one) => one["id"] !== team);
+    await landed();
+    purgeFirst(12, team);
+
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(conditions()["purges-held"]).toBeUndefined();
+    expect(calendar.event(team, "e0")?.["status"]).toBe("confirmed");
+  });
+
+  it("does not count the events of a calendar the account can now only read", async () => {
+    await many(12, team);
+    calendar.calendars = calendar.calendars.map((one) =>
+      one["id"] === team ? { ...one, accessRole: "reader" } : one,
+    );
+    purgeFirst(12, team);
+
+    await landed({
+      GOOGLE_CALENDAR_READ_ONLY_CALENDARS: `${holidays},${team}`,
+    });
+
+    expect(writes()).toEqual([]);
+    expect(conditions()["purges-held"]).toBeUndefined();
+  });
+
+  it("does not count events Marfa may not change", async () => {
+    await many(12, me, { locked: true });
+    purgeFirst(12);
+
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(conditions()["purges-held"]).toBeUndefined();
+  });
+
+  it("takes a calendar Google no longer has as holding nothing to delete", async () => {
+    await many(12);
+    purgeFirst(12);
+    calendar.failNext(
+      (call) =>
+        call.method === "GET" &&
+        call.path === eventPath(me) &&
+        call.query["fields"] !== undefined,
+      404,
+      { error: { code: 404, message: "Not Found" } },
+    );
+
+    await landed();
+
+    expect(conditions()["purges-held"]).toBeUndefined();
+  });
 
   it("holds a purge that would delete most of a calendar until a person confirms its size", async () => {
     await many(20);
