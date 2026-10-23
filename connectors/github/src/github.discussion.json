@@ -40,7 +40,7 @@
     },
     "state_reason": {
       "type": "string",
-      "description": "Why GitHub says the discussion is closed or was reopened: resolved, outdated, duplicate or reopened. Set it with state closed to close for that reason; a discussion closed without one is closed as resolved."
+      "description": "Why GitHub says the discussion is closed or was reopened: resolved, outdated, duplicate or reopened. Set it with status closed to close for that reason; a discussion closed without one is closed as resolved."
     },
     "answered": {
       "type": "boolean",
