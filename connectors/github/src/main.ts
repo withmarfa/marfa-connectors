@@ -6,6 +6,7 @@ import {
 } from "@withmarfa/connector";
 import {
   blockedBy,
+  childOf,
   relatesTo,
   duplicateOf,
   commentType,
@@ -16,7 +17,6 @@ import {
   inThread,
   issueType,
   pullRequestType,
-  replyTo,
   repositoryType,
   subIssueOf,
 } from "./entries.js";
@@ -150,7 +150,7 @@ const connector = defineConnector<typeof env>({
         "private",
         "url",
         inThread,
-        replyTo,
+        childOf,
         inRepository,
       ],
       derived: ["private", "github_files"],
@@ -286,10 +286,9 @@ const connector = defineConnector<typeof env>({
       target_type_constraints: [issueType, discussionType],
     },
     {
-      id: replyTo,
-      label: "Reply to",
-      description: "A reply on a GitHub discussion and the comment it answers.",
+      id: childOf,
       cardinality: "many-to-one",
+      cascade_on_delete: "cascade",
       source_type_constraints: [commentType],
       target_type_constraints: [commentType],
     },

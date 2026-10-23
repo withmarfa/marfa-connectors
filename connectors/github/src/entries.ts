@@ -34,7 +34,7 @@ export const issueType = "github.issue";
 export const commentType = "github.comment";
 export const pullRequestType = "github.pull_request";
 export const discussionType = "github.discussion";
-export const replyTo = "github.reply-to";
+export const childOf = "child-of";
 export const inRepository = "github.in-repository";
 export const subIssueOf = "github.sub-issue-of";
 export const blockedBy = "github.blocked-by";
@@ -440,7 +440,7 @@ export function discussionCommentEntry(
     connections: {
       [inThread]: [{ type: discussionType, id: comment.discussion }],
       [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
-      [replyTo]:
+      [childOf]:
         comment.replyTo === null
           ? []
           : [{ type: commentType, id: comment.replyTo }],

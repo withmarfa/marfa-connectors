@@ -43,7 +43,7 @@ export async function proveGitHubRelations(
       "attached-to",
       "github.closes",
       "github.closed-by",
-      "github.reply-to",
+      "parent-of",
       "in-thread",
     ];
     const key = await mintKey({

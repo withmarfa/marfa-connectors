@@ -25,7 +25,7 @@ const edges = [
   "github.duplicate-of",
   "github.closes",
   "github.closed-by",
-  "github.reply-to",
+  "parent-of",
   "in-thread",
   "attached-to",
 ];

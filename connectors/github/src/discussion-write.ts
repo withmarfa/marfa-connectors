@@ -8,13 +8,13 @@ import {
   type Item,
 } from "@withmarfa/connector";
 import {
+  childOf,
   commentType,
   discussionCommentEntry,
   discussionEntry,
   discussionType,
   inRepository,
   inThread,
-  replyTo,
   unmarked,
   type Discussion,
   type DiscussionComment,
@@ -517,7 +517,7 @@ async function createComment(
     return undefined;
   }
   const answering =
-    change.connections?.[replyTo]?.added[0] ?? change.placement?.[replyTo]?.[0];
+    change.connections?.[childOf]?.added[0] ?? change.placement?.[childOf]?.[0];
   const replyNode =
     answering === undefined ? undefined : text(answering, "github_id");
   const { attempted } = change;

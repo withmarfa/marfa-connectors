@@ -45,7 +45,7 @@ beforeEach(async () => {
       "attached-to",
       "github.closes",
       "github.closed-by",
-      "github.reply-to",
+      "parent-of",
       "in-thread",
     ],
   }).start();

@@ -44,7 +44,7 @@ beforeEach(async () => {
       "github.duplicate-of",
       "github.closes",
       "github.closed-by",
-      "github.reply-to",
+      "parent-of",
       "attached-to",
       "in-thread",
     ],
@@ -108,6 +108,16 @@ function links(link: string, type: string): unknown[] {
   return marfa
     .targetsOf(row(link).id, type)
     .map((target) => marfa.byId(target).properties["github_id"]);
+}
+
+/** The comment a reply answers: Marfa's `parent-of` runs from it to the reply. */
+function parents(link: string): unknown[] {
+  return marfa.edges
+    .filter(
+      (edge) =>
+        edge.edge_type === "parent-of" && edge.target_id === row(link).id,
+    )
+    .map((edge) => marfa.byId(edge.source_id).properties["github_id"]);
 }
 
 function written(): string[] {
@@ -181,9 +191,9 @@ describe("reading discussions", () => {
       from: "ana",
     });
     expect(links(first.node, "in-thread")).toEqual([discussion.node]);
-    expect(links(first.node, "github.reply-to")).toEqual([]);
+    expect(parents(first.node)).toEqual([]);
     expect(links(reply.node, "in-thread")).toEqual([discussion.node]);
-    expect(links(reply.node, "github.reply-to")).toEqual([first.node]);
+    expect(parents(reply.node)).toEqual([first.node]);
     const versions = marfa.rows.map((one) => one.version);
     await ok();
     expect(marfa.rows.map((one) => one.version)).toEqual(versions);
@@ -207,9 +217,7 @@ describe("reading discussions", () => {
     for (const one of [...comments, ...replies]) {
       expect(row(one.node).properties["body"]).toBe(one.body);
     }
-    expect(links(replies[4]?.node ?? "", "github.reply-to")).toEqual([
-      comments[4]?.node,
-    ]);
+    expect(parents(replies[4]?.node ?? "")).toEqual([comments[4]?.node]);
   });
 
   it("keeps a deleted comment that has replies as an empty row, and archives one deleted outright at the daily check", async () => {
@@ -553,7 +561,7 @@ describe("a comment on a discussion", () => {
       "person",
     );
     marfa.drawEdge(reply.id, row(discussion.node).id, "in-thread");
-    marfa.drawEdge(reply.id, top.id, "github.reply-to");
+    marfa.drawEdge(top.id, reply.id, "parent-of");
     await settled();
     expect(
       github.discussionComments.find(
@@ -573,6 +581,93 @@ describe("a comment on a discussion", () => {
       "UpdateDiscussionComment",
       "DeleteDiscussionComment",
     ]);
+  }, 60_000);
+
+  // Each write waits a second behind the one before it, as in the test above.
+  it("trashed with replies sends one delete, and the replies the bin took with it send none", async () => {
+    await ok();
+    const top = marfa.insert(
+      undefined,
+      { body: "Parent", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    await settled();
+    const parent = github.discussionComments.find(
+      (one) => unmarked(one.body) === "Parent",
+    );
+    const reply = marfa.insert(
+      undefined,
+      { body: "Ours", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(reply.id, row(discussion.node).id, "in-thread");
+    marfa.drawEdge(top.id, reply.id, "parent-of");
+    await settled();
+    const ours = github.discussionComments.find(
+      (one) => unmarked(one.body) === "Ours",
+    );
+    const theirs = github.addDiscussionComment(
+      discussion,
+      "Theirs",
+      "bo",
+      parent ?? null,
+    );
+    await settled();
+    expect(parents(theirs.node)).toEqual([parent?.node]);
+    expect(written()).toEqual(["AddDiscussionComment", "AddDiscussionComment"]);
+
+    marfa.trash(top.id);
+    const trashed = await settled();
+    expect(written().slice(2)).toEqual(["DeleteDiscussionComment"]);
+    expect(parent?.blanked).toBe(true);
+    for (const id of [top.id, reply.id, row(theirs.node).id]) {
+      expect(marfa.byId(id).state).toBe("trashed");
+    }
+    expect(ours?.deleted).toBeUndefined();
+    expect(theirs.deleted).toBeUndefined();
+    expect(trashed).not.toContain("stays there though it is in the bin");
+
+    marfa.restore(top.id);
+    await settled();
+    for (const id of [top.id, reply.id, row(theirs.node).id]) {
+      expect(marfa.byId(id).state).toBe("active");
+    }
+    expect(written().slice(3)).toEqual([]);
+
+    marfa.trash(reply.id);
+    await settled();
+    expect(written().slice(3)).toEqual(["DeleteDiscussionComment"]);
+    expect(ours?.deleted).toBe(true);
+  }, 90_000);
+
+  it("trashed with replies, but written by someone else, stays on GitHub with its replies, and sends nothing", async () => {
+    const theirs = github.addDiscussionComment(discussion, "Theirs");
+    await ok();
+    const reply = marfa.insert(
+      undefined,
+      { body: "Ours", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(reply.id, row(discussion.node).id, "in-thread");
+    marfa.drawEdge(row(theirs.node).id, reply.id, "parent-of");
+    await settled();
+    expect(written()).toEqual(["AddDiscussionComment"]);
+
+    marfa.trash(row(theirs.node).id);
+    const trashed = await settled();
+    expect(written()).toEqual(["AddDiscussionComment"]);
+    expect(trashed).toContain("so it stays there though it is in the bin");
+    expect(theirs.blanked).toBeUndefined();
+    expect(marfa.byId(reply.id).state).toBe("trashed");
+
+    marfa.restore(row(theirs.node).id);
+    await settled();
+    expect(marfa.byId(reply.id).state).toBe("active");
+    expect(written()).toEqual(["AddDiscussionComment"]);
   }, 60_000);
 
   it("made in Marfa is posted once where a lost answer hides it from the next listing", async () => {
