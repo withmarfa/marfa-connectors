@@ -516,6 +516,62 @@ export class Marfa {
     return edges;
   }
 
+  /** The edges of one type that point at a row, which a lookup does not
+   *  carry. */
+  async edgesInto(id: string, edgeType: string): Promise<Edge[]> {
+    const edges: Edge[] = [];
+    const walk = pages(async (cursor) => {
+      const { data, error, response } = await this.client.GET(
+        "/items/{id}/backrefs",
+        {
+          params: {
+            path: { id },
+            query: {
+              edge_type: edgeType,
+              limit: 200,
+              ...(cursor !== undefined && { cursor }),
+            },
+          },
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      return data;
+    });
+    for await (const edge of walk) edges.push(edge);
+    return edges;
+  }
+
+  /**
+   * Every edge of one type that the key may read, or `undefined` once
+   * `budget` pages were read and the listing went on. The server cuts pages
+   * of 500 from every edge of the type before it leaves out the ones the key
+   * may not read, so a page can be short or empty. It holds edges whatever
+   * the type of their ends, so a caller keeps the ones it asked about.
+   */
+  async edgesOfType(
+    edgeType: string,
+    budget: number,
+  ): Promise<Edge[] | undefined> {
+    const edges: Edge[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < budget; page += 1) {
+      const { data, error, response } = await this.client.GET("/edges", {
+        params: {
+          query: {
+            edge_type: edgeType,
+            limit: 500,
+            ...(cursor !== undefined && { cursor }),
+          },
+        },
+      });
+      if (data === undefined) throw refusal(response, error);
+      edges.push(...data.data);
+      if (data.next_cursor === null) return edges;
+      cursor = data.next_cursor;
+    }
+    return undefined;
+  }
+
   async connect(
     edges: readonly {
       source_id: string;
@@ -636,10 +692,13 @@ export class Marfa {
     return rows;
   }
 
+  /** The rows of a type that hold an edge to the target, or with `inbound`
+   *  that the target holds an edge to. */
   async connectedTo(
     type: string,
     edgeType: string,
     targetId: string,
+    inbound = false,
   ): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -647,7 +706,7 @@ export class Marfa {
         params: {
           query: {
             type,
-            filter: `edge[${edgeType}] eq ${JSON.stringify(targetId)}`,
+            filter: `${inbound ? "backref" : "edge"}[${edgeType}] eq ${JSON.stringify(targetId)}`,
             limit: 200,
             ...(cursor !== undefined && { cursor }),
           },

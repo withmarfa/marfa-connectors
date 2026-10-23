@@ -16,6 +16,7 @@ import {
   type Rows,
   type Spec,
 } from "./rows.js";
+import { wireOf } from "./shipped.js";
 import type { Store } from "./store.js";
 
 export const connectionsKey = "@connections";
@@ -27,6 +28,125 @@ function keyOf(target: Target): string {
 function targetOf(key: string): Target {
   const at = key.indexOf(" ");
   return { type: key.slice(0, at), id: key.slice(at + 1) };
+}
+
+/** Rows read at once for their inbound edges, one by one. */
+const inboundReads = 8;
+
+/** Fewer rows than this are read one by one, all in one batch at once,
+ *  rather than through a listing whose pages are read in turn. */
+const listedFrom = 8;
+
+interface Inbound {
+  readonly kind: ConnectionDefinition;
+  readonly item: Item;
+  readonly edges: Edge[];
+}
+
+/** An edge turned about, as the declaration reads it from the row's side. */
+function turnedAbout(edge: Edge, kind: ConnectionDefinition): Edge {
+  return {
+    ...edge,
+    edge_type: kind.id,
+    source_id: edge.target_id,
+    target_id: edge.source_id,
+  };
+}
+
+/**
+ * The inbound edges of the rows, which a lookup does not carry. A listing of
+ * the edge type, indexed by target, costs a request for every 500 edges of
+ * that type in the instance, the ones the key may not read included, and so
+ * serves many rows; one request for each row serves few. The listing is given
+ * up when it takes more pages than the rows would take requests, so a small
+ * run in an instance with many edges of the type never costs more than twice
+ * the rows. Only the edges that point at a row asked about are kept, whatever
+ * else the listing holds.
+ */
+async function readInbound(
+  marfa: Marfa,
+  reads: readonly Inbound[],
+): Promise<void> {
+  const byEdge = new Map<string, Inbound[]>();
+  for (const read of reads) {
+    const edgeType = wireOf(read.kind.id).edge;
+    const group = byEdge.get(edgeType);
+    if (group === undefined) byEdge.set(edgeType, [read]);
+    else group.push(read);
+  }
+  for (const [edgeType, group] of byEdge) {
+    const listed =
+      group.length < listedFrom
+        ? undefined
+        : await marfa.edgesOfType(edgeType, group.length);
+    if (listed !== undefined) {
+      const into = new Map<string, Edge[]>();
+      for (const edge of listed) {
+        into.set(edge.target_id, [...(into.get(edge.target_id) ?? []), edge]);
+      }
+      for (const { kind, item, edges } of group) {
+        for (const edge of into.get(item.id) ?? []) {
+          edges.push(turnedAbout(edge, kind));
+        }
+      }
+      continue;
+    }
+    for (let at = 0; at < group.length; at += inboundReads) {
+      const batch = group.slice(at, at + inboundReads);
+      // Every read of the batch is answered before one's failure is raised,
+      // so none is left running.
+      const answers = await Promise.allSettled(
+        batch.map(({ item }) => marfa.edgesInto(item.id, edgeType)),
+      );
+      for (const [index, answer] of answers.entries()) {
+        if (answer.status === "rejected") throw answer.reason;
+        const read = batch[index];
+        if (read === undefined) continue;
+        for (const edge of answer.value) {
+          read.edges.push(turnedAbout(edge, read.kind));
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The edges of the declared connections at each row, every one read from the
+ * row's side as the declaration is: an edge the row is the target of, for a
+ * connection that is the reverse name of a shipped type, comes back turned
+ * about, naming the other row as its target, with the edge's own id.
+ */
+export async function readEdges(
+  marfa: Marfa,
+  type: string,
+  ids: readonly string[],
+  kinds: Iterable<ConnectionDefinition>,
+): Promise<Map<string, { item: Item; edges: Edge[] }>> {
+  const declared = [...kinds];
+  const found = await marfa.edgesFrom(
+    type,
+    ids,
+    new Set(
+      declared
+        .filter((kind) => !wireOf(kind.id).inbound)
+        .map((kind) => kind.id),
+    ),
+  );
+  // A lookup carries only the edges that start at a row.
+  await readInbound(
+    marfa,
+    declared
+      .filter((kind) => wireOf(kind.id).inbound)
+      .flatMap((kind) =>
+        [...found.values()]
+          .filter(
+            ({ item }) =>
+              kind.source_type_constraints?.includes(item.type) === true,
+          )
+          .map(({ item, edges }) => ({ kind, item, edges })),
+      ),
+  );
+  return found;
 }
 
 export interface Carried {
@@ -63,7 +183,7 @@ export class Connections {
   ): Promise<Map<string, { item: Item; edges: Edge[] }>> {
     const [type] = this.lanes.keys();
     if (ids.length === 0 || type === undefined) return new Map();
-    return this.marfa.edgesFrom(type, ids, new Set(this.kinds.keys()));
+    return readEdges(this.marfa, type, ids, this.kinds.values());
   }
 
   /** Removals go first, so a target with one source moves, not refused. */
@@ -614,11 +734,12 @@ export class Connections {
       refused.push({ id: add.item.id, type: add.type, target: add.target });
     }
     const results = await this.marfa.connect(
-      plain.map(({ item, type, target }) => ({
-        source_id: item.id,
-        target_id: target,
-        edge_type: type,
-      })),
+      plain.map(({ item, type, target }) => {
+        const wire = wireOf(type);
+        return wire.inbound
+          ? { source_id: target, target_id: item.id, edge_type: wire.edge }
+          : { source_id: item.id, target_id: target, edge_type: wire.edge };
+      }),
     );
     for (const result of results) {
       const add = plain[result.index];

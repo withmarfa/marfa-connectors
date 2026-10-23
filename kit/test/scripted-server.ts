@@ -241,6 +241,20 @@ export class ScriptedServer {
       },
     ],
     [
+      "parent-of",
+      {
+        id: "parent-of",
+        cardinality: "one-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "cascade",
+        property_schema: {},
+        reverse_name: "child-of",
+        written_at: "target",
+        shipped: true,
+      },
+    ],
+    [
       "in-thread",
       {
         id: "in-thread",
@@ -293,6 +307,8 @@ export class ScriptedServer {
    *  value that is no number, or none at all. */
   ttlAnswer: { value: unknown } | undefined;
   bodyCap: number | undefined;
+  /** The most edges a page of `GET /edges` holds, below the server's 500. */
+  edgeListCap = 500;
   tooOld = false;
   /** The cursor asked for is past the head, as after a restore. */
   cursorAhead = false;
@@ -494,7 +510,25 @@ export class ScriptedServer {
     row.state = "trashed";
     row.updated_at = this.now();
     this.announce("item.deleted", before);
+    this.cascadeFrom(id, id);
     return row;
+  }
+
+  /** What the server does with an edge type that cascades: every target
+   *  still active goes into the bin, at every depth, marked with the root. */
+  private cascadeFrom(id: string, root: string): void {
+    for (const edge of this.edges) {
+      if (
+        edge.source_id !== id ||
+        this.edgeTypes.get(edge.edge_type)?.["cascade_on_delete"] !== "cascade"
+      ) {
+        continue;
+      }
+      const target = this.byId(edge.target_id);
+      if (target.state === "trashed") continue;
+      this.cascadeTrash(target.id, root);
+      this.cascadeFrom(target.id, root);
+    }
   }
 
   cascadeTrash(id: string, root: string): Row {
@@ -520,6 +554,14 @@ export class ScriptedServer {
     this.leaveBin(row);
     row.updated_at = this.now();
     this.announce("item.restored", row);
+    for (const taken of this.rows.filter(
+      (candidate) =>
+        candidate.state === "trashed" &&
+        candidate.trashed_by_cascade === true &&
+        candidate.trashed_with === id,
+    )) {
+      this.restore(taken.id);
+    }
     return row;
   }
 
@@ -1486,10 +1528,35 @@ export class ScriptedServer {
       send(200, { ok: true });
       return;
     }
+    if (method === "GET" && url.pathname === "/edges") {
+      const types = (url.searchParams.get("edge_type") ?? "")
+        .split(",")
+        .filter((type) => type !== "");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      if (limit < 1 || limit > 500) {
+        refuse(400, "validation_error", "limit is 1 to 500", {});
+        return;
+      }
+      // Newest first. Pages are cut from every edge of the type, and then an
+      // edge whose source the key may not read is left out, whatever its
+      // target, so a page can be short or empty with a cursor to follow.
+      const all = this.edges
+        .filter((edge) => types.length === 0 || types.includes(edge.edge_type))
+        .reverse();
+      const size = Math.min(limit, this.edgeListCap);
+      send(200, {
+        data: all
+          .slice(from, from + size)
+          .filter((edge) => this.readsSourceOf(edge)),
+        next_cursor: from + size < all.length ? String(from + size) : null,
+      });
+      return;
+    }
     if (
       method === "GET" &&
       parts[0] === "items" &&
-      parts[2] === "edges" &&
+      (parts[2] === "edges" || parts[2] === "backrefs") &&
       parts[1] !== undefined
     ) {
       const type = url.searchParams.get("edge_type");
@@ -1497,7 +1564,9 @@ export class ScriptedServer {
       const limit = Number(url.searchParams.get("limit") ?? "50");
       const all = this.edges.filter(
         (edge) =>
-          edge.source_id === parts[1] &&
+          (parts[2] === "edges"
+            ? edge.source_id === parts[1]
+            : edge.target_id === parts[1] && this.readsSourceOf(edge)) &&
           (type === null || edge.edge_type === type),
       );
       send(200, {
@@ -1651,7 +1720,7 @@ export class ScriptedServer {
   private listItems(query: URLSearchParams, send: Send): void {
     const state = query.get("state") ?? "active";
     const type = query.get("type");
-    const filter = /^edge\[([^\]]+)\] eq "([^"]+)"$/.exec(
+    const filter = /^(edge|backref)\[([^\]]+)\] eq "([^"]+)"$/.exec(
       query.get("filter") ?? "",
     );
     if (query.get("filter") !== null && filter === null) {
@@ -1664,11 +1733,14 @@ export class ScriptedServer {
         (query.get("source") === null || row.source === query.get("source")) &&
         (state === "any" || row.state === state) &&
         (filter === null ||
-          this.edges.some(
-            (edge) =>
-              edge.source_id === row.id &&
-              edge.edge_type === filter[1] &&
-              edge.target_id === filter[2],
+          this.edges.some((edge) =>
+            filter[1] === "edge"
+              ? edge.source_id === row.id &&
+                edge.edge_type === filter[2] &&
+                edge.target_id === filter[3]
+              : edge.target_id === row.id &&
+                edge.edge_type === filter[2] &&
+                edge.source_id === filter[3],
           )),
     );
     const limit = Number(query.get("limit") ?? "50");
@@ -2000,6 +2072,10 @@ export class ScriptedServer {
         (row) => reaches(row.type) && Object.hasOwn(row.properties, name),
       ),
     );
+  }
+
+  private readsSourceOf(edge: EdgeRow): boolean {
+    return this.permission(this.byId(edge.source_id).type) !== "none";
   }
 
   /** What the key holds on a type, as marfa's `resolveTypePermission`
