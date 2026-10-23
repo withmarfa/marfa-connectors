@@ -1,6 +1,6 @@
 # marfa-connectors
 
-The connectors for Marfa: a small kit that makes a connector a page of code, a template to copy, and the connectors themselves, one folder each. A connector is a process with a key: it registers itself with an instance, heartbeats, pulls from its vendor, reads what its vendor posts to its inbound endpoints, writes what it finds at the feed tier under its own type, carries changes made in Marfa back to the vendor where its brief says so, and reports each run. It writes to the vendor only through the kit's watch phase, and never writes into library types; promoting is a person's or an app's act.
+The connectors for Marfa: a small kit that makes a connector a page of code, a template to copy, and the connectors themselves, one folder each. A connector is a process with a key: it registers itself with an instance, heartbeats, pulls from its vendor, reads what its vendor posts to its inbound endpoints, writes what it finds at the feed tier under its own type, carries changes made in Marfa back to the vendor where its brief says so, and reports each run. It writes to the vendor only through the kit's watch phase, and never writes into library types; moving a row to the library is a person's or an app's act.
 
 ## Layout
 

@@ -344,7 +344,7 @@ export async function purge(marfa: MarfaClient, id: string): Promise<void> {
     throw new Error(`the purge was refused: ${JSON.stringify(error)}`);
 }
 
-export async function promote(
+export async function deriveLibraryItem(
   marfa: MarfaClient,
   type: string,
   properties: Record<string, unknown>,
@@ -359,20 +359,20 @@ export async function promote(
     },
   });
   if (data === undefined)
-    throw new Error(`the promotion was refused: ${JSON.stringify(error)}`);
+    throw new Error(`the library item was refused: ${JSON.stringify(error)}`);
   return data.item;
 }
 
-export async function promoteAndFind(
+export async function deriveAndFind(
   marfa: MarfaClient,
   type: string,
   properties: Record<string, unknown>,
   from: Item,
   other: Item,
 ): Promise<{ copy: Item; found: Item[] }> {
-  await promote(marfa, type, properties, undefined);
-  await promote(marfa, type, properties, other);
-  const copy = await promote(marfa, type, properties, from);
+  await deriveLibraryItem(marfa, type, properties, undefined);
+  await deriveLibraryItem(marfa, type, properties, other);
+  const copy = await deriveLibraryItem(marfa, type, properties, from);
   const found = await derivedFrom(marfa, type, from);
   const everyOne = await marfa.GET("/items", { params: { query: { type } } });
   const count = everyOne.data?.data.length ?? 0;
