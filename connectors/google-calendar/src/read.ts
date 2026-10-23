@@ -491,7 +491,7 @@ function recurrenceOf(row: Item | undefined): string[] {
 }
 
 /** The events of a calendar a write from Marfa is still making, which that
- *  write links to its row. */
+ *  write links to its row, or deletes once the row is trashed or purged. */
 function waitingOn(context: Context, calendarId: string): Set<string> {
   const ids = new Set<string>();
   for (const intent of context.pendingOutbound()) {
