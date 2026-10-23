@@ -318,7 +318,10 @@ async function readAll(
       : await asApp(app, signal).paginate("GET /app/installations");
   coverage.reached("clock-skew");
   // A person who archived or trashed a row has settled a duplicate it was in.
-  coverage.reached(...(await settledDuplicates(context)));
+  // This reads every issue and comment row, so a delivery leaves it to the
+  // scheduled run.
+  if (context.hints === undefined)
+    coverage.reached(...(await settledDuplicates(context)));
   const clients = new Map<number, Client>();
   // Discussions are read with their own token, so an installation that has
   // not accepted their permission still reads everything else.
@@ -1436,8 +1439,9 @@ async function checkIssues(
   const comments = (
     await context.linked(commentType, inRepository, under)
   ).filter((row) => {
-    const number = issueNumberOf(row) ?? Number.NaN;
-    return numbers.has(number) || !active.has(number);
+    // A discussion comment's address names no issue.
+    const number = issueNumberOf(row);
+    return number !== undefined && (numbers.has(number) || !active.has(number));
   });
   reached([
     ...checked.flatMap((row) => {
@@ -1961,6 +1965,7 @@ async function readNamed(
         (issue) =>
           listed.get(issue.repository.node)?.installation === installation,
       );
+    if (mine.length === 0) continue;
     const found = await attempt(installation, () =>
       movedFrom(
         context,
@@ -1998,10 +2003,13 @@ async function readNamed(
       (issue) =>
         !checked.has(listed.get(issue.repository.node)?.installation ?? -1),
     );
-  const have = await context.known(
-    issueType,
-    unchecked.map((issue) => issue.node),
-  );
+  const have =
+    unchecked.length === 0
+      ? new Set<string>()
+      : await context.known(
+          issueType,
+          unchecked.map((issue) => issue.node),
+        );
   for (const issue of unchecked) {
     if (moves.has(issue.node) || !have.has(issue.node)) stall(issue.node);
   }
