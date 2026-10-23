@@ -580,10 +580,11 @@ export interface Kind {
    * connections and edits made in Marfa, and takes the link. The other row is
    * archived and given the older row's link, as the row of an item the vendor
    * no longer has. This happens only where the other row is the connector's
-   * own and active, was not changed in Marfa since the connector wrote it and
-   * has no change waiting, and the older row is the earlier made and not in
-   * the bin. Otherwise both rows stay, the entry updates the row holding its
-   * link, and a condition names both rows and why.
+   * own and active (or archived by the connector), was not made or changed in
+   * Marfa since the connector wrote it and has no change waiting, and the
+   * older row is the earlier made and not in the bin. Otherwise both rows
+   * stay, the entry updates the row holding its link, and a condition names
+   * both rows and why.
    */
   readonly mergeMoved?: boolean;
 }
