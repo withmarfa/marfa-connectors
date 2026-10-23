@@ -25,7 +25,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 ## Versions
 
 - Every version is the previous one plus 0.0.1, whatever the size of the change. Numbering starts from 0: the first version is 0.0.1.
-- A version exists only as a git tag. A tag is created only when a release is called for, never on a session's own initiative, and no one writes a version into a file.
+- A version exists only as a git tag. A tag is created when a logical set of merged work is ready, by the session that finishes that set unless its brief says not to, and no one writes a version into a file.
 
 ## Writing
 
