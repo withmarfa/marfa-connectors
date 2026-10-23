@@ -136,7 +136,7 @@ A condition stands while the run doesn't reach its check, such as when a scope i
 
 When Google says a token has expired (`410`), or something that changes how rows are written has changed, such as the calendar's time zone, the connector reads the calendar whole. In a whole read, a row the listing no longer returns is looked up directly, and only an answer of "gone" or "cancelled" archives it. A lookup that fails keeps the row: if Google refuses it, the connector raises `calendar-refused:<ID>`, and any other failure stops the run.
 
-A run that writes eight or more events has the kit find each changed occurrence's series by listing every `parent-of` connection in the Marfa instance, 500 to a page, including those of other connectors and of people's own items. The first read of a large calendar therefore costs one Marfa request for every 500 `parent-of` connections, or one for each event where that is fewer. After the first read, a run in which no event changed reads none of the event rows from Marfa.
+When a run writes eight or more events of one calendar, the kit finds each changed occurrence's series by listing every `parent-of` connection in the Marfa instance, 500 to a page, including those of other connectors and of people's own items. The first read of a large calendar therefore costs one Marfa request for every 500 `parent-of` connections, or one for each event where that is fewer. After the first read, a run in which no event changed reads none of the event rows from Marfa.
 
 For a change to a series, the connector asks Google for the series and its instances, from a day before its start to five years past today or past its start, whichever is later, to find cancelled occurrences. Cancelled occurrences further out stay as they were.
 
