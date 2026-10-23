@@ -1085,16 +1085,20 @@ export class Marfa {
     return data.data;
   }
 
-  async waitingAgreements(id: string, signal: AbortSignal): Promise<string[]> {
-    const ids: string[] = [];
-    const walk = pages(async (cursor) => {
+  /** The connector's agreements, page by page, or only those waiting. */
+  agreements(
+    id: string,
+    signal: AbortSignal,
+    { waiting = false }: { waiting?: boolean } = {},
+  ): AsyncIterable<{ item_id: string; record: unknown }> {
+    return pages(async (cursor) => {
       const { data, error, response } = await this.client.GET(
         "/connectors/{id}/agreements",
         {
           params: {
             path: { id },
             query: {
-              waiting: "true",
+              ...(waiting && { waiting: "true" as const }),
               limit: 200,
               ...(cursor !== undefined && { cursor }),
             },
@@ -1105,8 +1109,6 @@ export class Marfa {
       if (data === undefined) throw refusal(response, error);
       return data;
     });
-    for await (const row of walk) ids.push(row.item_id);
-    return ids;
   }
 
   async writeAgreements(

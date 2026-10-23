@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ScriptedServer } from "./scripted-server.js";
+import { ScriptedRefusal, ScriptedServer } from "./scripted-server.js";
 
 // The scripted server stands in for the pinned server in every other test, so
 // each answer here is held to what the pinned server (`vendor/marfa`) gives.
@@ -185,6 +185,102 @@ describe("a stale update to a link", () => {
     const landed = await stale(mine.id, { vendor_id: "c3" });
     expect(landed.status).toBe(200);
     expect(mine.properties).toEqual({ vendor_id: "c3", title: "t1" });
+  });
+});
+
+describe("a move of an edge's end", () => {
+  function kind(id: string, cardinality: string, targets = ["*"]) {
+    server.edgeTypes.set(id, {
+      id,
+      cardinality,
+      source_type_constraints: ["*"],
+      target_type_constraints: targets,
+      cascade_on_delete: "orphan",
+      property_schema: {},
+    });
+  }
+
+  function refusal(move: () => unknown): Record<string, unknown> {
+    try {
+      move();
+    } catch (error) {
+      if (!(error instanceof ScriptedRefusal)) throw error;
+      return { status: error.status, code: error.code, ...error.details };
+    }
+    throw new Error("the move was not refused");
+  }
+
+  const rows = () =>
+    ["a", "b", "c", "d"].map(
+      (name) => server.insert(`${name}:1`, {}, "test.entry").id,
+    );
+
+  it("refuses an end whose other end may hold many of the type, or both ends at once, and moves nothing", () => {
+    const [a = "", b = "", c = "", d = ""] = rows();
+    kind("test.many", "many-to-many");
+    const many = server.drawEdge(a, b, "test.many");
+    for (const end of ["source_id", "target_id"] as const) {
+      expect(refusal(() => server.updateEdge(many.id, { [end]: c }))).toEqual({
+        status: 400,
+        code: "validation_error",
+        errors: [{ path: end }],
+      });
+    }
+    const parent = server.drawEdge(a, c, "parent-of");
+    expect(
+      refusal(() => server.updateEdge(parent.id, { target_id: d })),
+    ).toMatchObject({ code: "validation_error" });
+    expect(
+      refusal(() =>
+        server.updateEdge(parent.id, { source_id: b, target_id: d }),
+      ),
+    ).toMatchObject({ code: "validation_error" });
+    kind("test.in", "many-to-one");
+    const placed = server.drawEdge(a, b, "test.in");
+    expect(
+      refusal(() => server.updateEdge(placed.id, { source_id: c })),
+    ).toMatchObject({ code: "validation_error" });
+    expect(
+      server.edges.map((edge) => [edge.source_id, edge.target_id]),
+    ).toEqual([
+      [a, b],
+      [a, c],
+      [a, b],
+    ]);
+
+    // The witness: the end each type lets move does.
+    expect(server.updateEdge(parent.id, { source_id: b }).source_id).toBe(b);
+    expect(server.updateEdge(placed.id, { target_id: d }).target_id).toBe(d);
+  });
+
+  it("refuses a one-to-one end onto a row that holds one, a target its constraint refuses, a missing row and a self-loop", () => {
+    const [a = "", b = "", c = "", d = ""] = rows();
+    kind("test.one", "one-to-one");
+    const one = server.drawEdge(a, b, "test.one");
+    server.drawEdge(c, d, "test.one");
+    expect(refusal(() => server.updateEdge(one.id, { target_id: d }))).toEqual({
+      status: 400,
+      code: "edge_constraint_violation",
+      constraint: "cardinality",
+      edge_type: "test.one",
+      target_id: d,
+    });
+    expect(
+      refusal(() => server.updateEdge(one.id, { source_id: "missing" })),
+    ).toMatchObject({ status: 404, code: "item_not_found" });
+    expect(
+      refusal(() => server.updateEdge(one.id, { source_id: b })),
+    ).toMatchObject({ code: "edge_cycle" });
+    kind("test.narrow", "many-to-one", ["test.other"]);
+    const other = server.insert("e:1", {}, "test.other").id;
+    const narrow = server.drawEdge(a, other, "test.narrow");
+    expect(
+      refusal(() => server.updateEdge(narrow.id, { target_id: b })),
+    ).toMatchObject({
+      code: "edge_constraint_violation",
+      target_type: "test.entry",
+    });
+    expect(server.updateEdge(one.id, { properties: {} }).target_id).toBe(b);
   });
 });
 
