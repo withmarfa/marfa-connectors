@@ -9,6 +9,7 @@ import type { Readable } from "node:stream";
 import type {
   Connector,
   EnvDeclaration,
+  ListenOptions,
   LocalCallback,
   SetupContext,
 } from "./define.js";
@@ -161,7 +162,8 @@ export async function setUp<E extends EnvDeclaration>(
     secret: (value) => {
       keepSecret(logger, value);
     },
-    listen: (page) => serve(page, servers, logger, signal, pasted),
+    listen: (page, options) =>
+      serve(page, options, servers, logger, signal, pasted),
     endpoint: async (options = {}) => {
       // The listing shows an address by its last four characters, so the
       // label is what tells this setup's endpoint from an earlier one's.
@@ -248,6 +250,7 @@ async function retire(
 
 function serve(
   page: string | ((callback: string) => string) | undefined,
+  options: ListenOptions | undefined,
   servers: Served[],
   logger: Logger,
   signal: AbortSignal,
@@ -330,17 +333,20 @@ function serve(
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
       const url = `http://127.0.0.1:${String(port)}${base}`;
+      const callback = `${url}/callback`;
+      let elsewhere: string | undefined;
       try {
-        shown = typeof page === "function" ? page(`${url}/callback`) : page;
+        shown = typeof page === "function" ? page(callback) : page;
+        elsewhere = options?.paste?.(callback);
       } catch (error) {
         server.close();
         reject(error instanceof Error ? error : new Error(String(error)));
         return;
       }
       logger.info(`open ${url} in a browser`);
-      if (pasted.possible) {
+      if (elsewhere !== undefined && pasted.possible) {
         logger.info(
-          "from a browser on another machine, paste the address it ended on into this terminal and press Enter",
+          `from a browser on another machine, open ${elsewhere} there, then paste the address it ends on into this terminal and press Enter`,
         );
         stopWaiting = pasted.wait(
           (address) =>
@@ -348,7 +354,7 @@ function serve(
             arrive("paste", address.searchParams),
         );
       }
-      resolve({ url, callback: `${url}/callback`, redirected, onward });
+      resolve({ url, callback, redirected, onward });
     });
   });
 }

@@ -15,7 +15,7 @@ export interface Runtime {
   readonly random: () => number;
   onStop(listener: () => void): void;
   /** What a person types or pastes into the terminal. Read only during
-   *  setup, and only while it waits for a redirect. */
+   *  setup, and only while a `listen` that takes a paste waits. */
   readonly stdin?: Readable | undefined;
 }
 

@@ -31,9 +31,12 @@ interface Held {
   query?: URLSearchParams;
 }
 
+const consent = "https://vendor.example/consent?client=connector";
+
 function connector(
   held: Held,
   after?: (context: SetupContext<typeof env>, local: LocalCallback) => void,
+  paste = true,
 ) {
   return defineConnector({
     name: "test",
@@ -44,7 +47,10 @@ function connector(
       // Nothing to read in these tests.
     },
     async setup(context) {
-      held.opened = await context.listen("<form></form>");
+      held.opened = await context.listen(
+        "<form></form>",
+        paste ? { paste: () => consent } : undefined,
+      );
       held.query = await held.opened.redirected;
       after?.(context, held.opened);
       return { TEST_APP_KEY: made };
@@ -93,18 +99,41 @@ describe("a redirect that arrives by paste", () => {
     expect(warnings()).toEqual([]);
   });
 
-  it("says, beside the address to open, that a browser on another machine pastes the address it ended on", async () => {
+  it("says, beside the address to open, which address a browser on another machine opens and that it pastes the address it ends on", async () => {
     const input = new PassThrough();
     const held: Held = {};
     const exit = start(connector(held), withInput(input, join(dir, "a.json")));
     await until(() => held.opened !== undefined);
     const lines = harness.lines.join("\n");
     expect(lines).toContain(`open ${held.opened?.url ?? ""} in a browser`);
-    expect(lines).toMatch(
-      /from a browser on another machine, paste the address it ended on/,
+    expect(lines).toContain(
+      `from a browser on another machine, open ${consent} there, then paste the address it ends on into this terminal and press Enter`,
     );
     input.write(`${elsewhere(opened(held), "code=abc")}\n`);
     expect(await exit).toBe(0);
+  });
+
+  it("reads nothing and says nothing of pasting where the connector does not ask for it", async () => {
+    const input = new PassThrough();
+    const held: Held = {};
+    const exit = start(
+      connector(held, undefined, false),
+      withInput(input, join(dir, "a.json")),
+    );
+    await until(() => held.opened !== undefined);
+    expect(input.listenerCount("data") + input.listenerCount("readable")).toBe(
+      0,
+    );
+    input.write(`${elsewhere(opened(held), "code=pasted")}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(held.query).toBeUndefined();
+    expect((await fetch(`${opened(held).callback}?code=abc`)).status).toBe(200);
+    expect(await exit).toBe(0);
+    expect(held.query?.get("code")).toBe("abc");
+    const lines = harness.lines.join("\n");
+    expect(lines).toContain(`open ${opened(held).url} in a browser`);
+    expect(lines).not.toContain("paste the address");
+    expect(lines).not.toContain(consent);
   });
 
   it("warns once for a wrong path, a garbage line and an address with another base, and goes on waiting", async () => {
@@ -170,7 +199,9 @@ describe("a redirect that arrives by paste", () => {
     await until(() => held.opened !== undefined);
     await fetch(`${held.opened?.callback ?? ""}?code=abc`);
     expect(await exit).toBe(0);
-    expect(harness.lines.join("\n")).not.toContain("paste the address");
+    const lines = harness.lines.join("\n");
+    expect(lines).not.toContain("paste the address");
+    expect(lines).not.toContain(consent);
   });
 
   it("stops reading when asked to stop while it waits", async () => {
