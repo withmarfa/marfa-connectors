@@ -204,6 +204,23 @@ describe("the tree", () => {
     ).toEqual([]);
   });
 
+  it("copies every shared package into the image without naming one", () => {
+    const dockerfile = readFileSync(
+      resolve(root, "template/Dockerfile"),
+      "utf8",
+    );
+    const copied = [...dockerfile.matchAll(/^COPY\s+(\S+)/gm)].map(
+      ([, source = ""]) => source,
+    );
+    expect(copied).toContain("shared");
+    expect(copied.filter((source) => source.startsWith("shared/"))).toEqual([]);
+    const shared = trackedPaths()
+      .filter((path) => /^shared\/[^/]+\/package\.json$/.test(path))
+      .map((path) => path.split("/")[1]);
+    expect(shared).toContain("google");
+    expect(shared).toContain("readwise");
+  });
+
   it("runs every workflow job on standard hosted Linux", () => {
     expect(
       offHosted(

@@ -10,3 +10,5 @@ _archive
 _tmp
 _local
 _ignore
+**/test
+**/*.md
