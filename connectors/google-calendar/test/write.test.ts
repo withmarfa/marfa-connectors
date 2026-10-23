@@ -822,6 +822,119 @@ describe("a series", () => {
     });
   });
 
+  function madeUnder(parent: Row, properties: Record<string, unknown>): Row {
+    const one = server.insert(undefined, properties, eventType, "person");
+    server.drawEdge(parent.id, one.id, "parent-of");
+    return one;
+  }
+
+  const moved = {
+    title: "Planning, later",
+    starts_at: "2026-10-26T14:00:00Z",
+    ends_at: "2026-10-26T15:00:00Z",
+    timezone: london,
+    original_starts_at: "2026-10-26T10:00:00Z",
+  };
+
+  it("changes the occurrence it replaces when a changed occurrence is made in Marfa", async () => {
+    calendar.put(me, series);
+    await landed();
+    const parent = row(`${me}/weekly`);
+    const one = madeUnder(parent, moved);
+
+    await landed();
+
+    const instance = "weekly_20261026T100000Z";
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(me, instance),
+        body: expect.objectContaining({
+          summary: "Planning, later",
+          start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+          end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+        }) as unknown,
+      }),
+    ]);
+    expect(writes()[0]?.ifMatch).toMatch(/^"\d+"$/);
+    expect(calendar.event(me, instance)).toMatchObject({
+      summary: "Planning, later",
+      recurringEventId: "weekly",
+    });
+    expect(server.byId(one.id).properties).toMatchObject({
+      google_id: `${me}/${instance}`,
+      original_starts_at: "2026-10-26T10:00:00Z",
+      recurring_event_id: "weekly",
+    });
+
+    await landed();
+    expect(writes()).toHaveLength(1);
+    expect(eventRows().sort()).toEqual([parent.id, one.id].sort());
+  });
+
+  it("changes the occurrence on the next run when Google fails the first change", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    calendar.failNext((call) => call.method === "PATCH", 503, {
+      error: { code: 503, message: "Backend Error" },
+    });
+
+    await landed();
+    const instance = "weekly_20261026T100000Z";
+    expect(calendar.event(me, instance)?.["summary"]).not.toBe(
+      "Planning, later",
+    );
+    expect(Object.keys(conditions()).length).toBeGreaterThan(0);
+
+    await landed();
+    expect(calendar.event(me, instance)).toMatchObject({
+      summary: "Planning, later",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+    });
+    expect(server.byId(one.id).properties).toMatchObject({
+      google_id: `${me}/${instance}`,
+      title: "Planning, later",
+    });
+    expect(writes("POST")).toEqual([]);
+  });
+
+  it("refuses a changed occurrence of a series Marfa may not change", async () => {
+    calendar.put(me, { ...series, locked: true });
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(server.byId(one.id).properties["google_id"]).toBeUndefined();
+    expect(Object.values(conditions()).join(" ")).toContain("locked");
+  });
+
+  it("refuses a changed occurrence for a slot another row already holds, and leaves that occurrence alone", async () => {
+    calendar.put(me, series);
+    calendar.put(me, {
+      ...occurrence("2026-10-26T10:00:00Z"),
+      summary: "Planning, earlier",
+      start: { dateTime: "2026-10-26T08:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T09:00:00Z", timeZone: london },
+      organizer: { email: me, self: true },
+    });
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, "weekly_20261026T100000Z")?.["summary"]).toBe(
+      "Planning, earlier",
+    );
+    expect(server.byId(one.id).properties["google_id"]).toBeUndefined();
+    expect(Object.values(conditions()).join(" ")).toContain(
+      "weekly_20261026T100000Z",
+    );
+  });
+
   it("edits a changed occurrence on its own", async () => {
     calendar.put(me, series);
     calendar.put(me, {

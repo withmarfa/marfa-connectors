@@ -20,6 +20,7 @@ import {
 import { CalendarApi, isGone, object, text, type Json } from "./api.js";
 import {
   calendarListScope,
+  childOf,
   env,
   eventsScope,
   inCalendar,
@@ -415,12 +416,11 @@ async function create(
 ): Promise<Entry | undefined> {
   const { item } = change;
   const session = await sessionFor(context, writing);
-  const targets = new Set(
-    (change.connections?.[inCalendar]?.added ?? []).flatMap((row) => {
-      const id = calendarIdOf(row);
-      return id === undefined ? [] : [id];
-    }),
-  );
+  const targets = calendarsNamed(change);
+  const series = change.connections?.[childOf]?.added ?? [];
+  if (series.length > 0) {
+    return replaceOccurrence(change, series, targets, session, context);
+  }
   if (targets.size > 1) {
     throw new Refused(
       `${named(item)} is on ${String(targets.size)} calendars; a Google Calendar event sits on one`,
@@ -442,6 +442,114 @@ async function create(
     );
   }
   return make(change, makingFor(item, calendar), context, writing);
+}
+
+/** The calendars a change draws the row to. */
+function calendarsNamed(change: Change): Set<string> {
+  return new Set(
+    (change.connections?.[inCalendar]?.added ?? []).flatMap((row) => {
+      const id = calendarIdOf(row);
+      return id === undefined ? [] : [id];
+    }),
+  );
+}
+
+/**
+ * A changed occurrence made in Marfa: a row beneath a series, naming the
+ * start it replaces. Google holds every occurrence of a series already, so
+ * the row changes that occurrence rather than making an event of its own.
+ * The row is linked before the occurrence is changed, so an occurrence
+ * another row holds is refused before anything is sent.
+ */
+async function replaceOccurrence(
+  change: Change,
+  parents: readonly Item[],
+  targets: ReadonlySet<string>,
+  session: Session,
+  context: WriteContext,
+): Promise<Entry | undefined> {
+  const { item } = change;
+  const [parent] = parents;
+  if (parent === undefined || parents.length > 1) {
+    throw new Refused(
+      `${named(item)} is beneath ${String(parents.length)} series; a changed occurrence belongs to one`,
+    );
+  }
+  const link = textOf(parent, "google_id");
+  const parts = link === undefined ? undefined : splitLink(link);
+  if (parts === undefined) {
+    throw new Refused(
+      `The series ${named(item)} is beneath has no Google id, so the occurrence it changes cannot be found`,
+    );
+  }
+  const original = Date.parse(textOf(item, "original_starts_at") ?? "");
+  if (!Number.isFinite(original)) {
+    throw new Refused(
+      `${named(item)} is beneath a series but names no start it replaces in original_starts_at`,
+    );
+  }
+  if ([...targets].some((id) => id !== parts.calendarId)) {
+    throw new Refused(
+      `${named(item)} is drawn to another calendar than its series; an occurrence sits on its series' calendar`,
+    );
+  }
+  const refuse = (reason: string): Refused =>
+    new Refused(
+      `Marfa does not change the series ${named(parent)} in Google Calendar (${reason}), so ${named(item)} is not carried`,
+    );
+  if (parent.properties["editable"] === false) {
+    throw refuse(
+      textOf(parent, "uneditable_reason") ?? "Google does not let it",
+    );
+  }
+  const calendar = calendarIn(session, parts.calendarId, item);
+  const found = await session.api.event(parts.calendarId, parts.eventId);
+  const event = found === "gone" ? undefined : eventOf(found);
+  if (
+    found === "gone" ||
+    event === undefined ||
+    event.status === "cancelled" ||
+    event.recurrence.length === 0
+  ) {
+    throw new Refused(
+      `Google Calendar no longer has the series ${named(parent)}, so ${named(item)} is not carried`,
+    );
+  }
+  const reason = uneditable(event, calendar);
+  if (reason !== undefined) throw refuse(reason);
+  const start = object(found, "start");
+  const zone = zoneOf(text(start, "timeZone"), calendar.zone);
+  const wanted: Cancellation =
+    text(start, "date") !== undefined
+      ? { kind: "day", day: localDate(zone, original) }
+      : { kind: "instant", ms: original };
+  const instance = await occurrenceOf(session, parts, wanted);
+  const instanceId = instance === undefined ? undefined : text(instance, "id");
+  if (instance === undefined || instanceId === undefined) {
+    throw new Refused(
+      `The series ${named(parent)} has no occurrence at ${startParam(wanted)} in Google Calendar, so ${named(item)} replaces none`,
+    );
+  }
+  const occurrence = eventOf(instance);
+  const own =
+    occurrence === undefined ? undefined : uneditable(occurrence, calendar);
+  if (own !== undefined) throw refuse(own);
+  const target = linkOf(calendar.id, instanceId);
+  try {
+    await context.setLink(item, target);
+  } catch (error) {
+    if (!(error instanceof LinkTaken)) throw error;
+    throw new Refused(
+      `Another row already holds the occurrence ${target}, so ${named(item)} does not replace it`,
+    );
+  }
+  const changed = await session.api.patch(
+    calendar.id,
+    instanceId,
+    whole(item, calendar),
+    text(instance, "etag"),
+  );
+  return entryOf(session, calendar, changed);
 }
 
 /**
@@ -677,13 +785,7 @@ async function update(
 
 /** The calendar a change moves the event to, or nothing where it stays. */
 function destinationOf(change: Change, from: string): string | undefined {
-  const added = change.connections?.[inCalendar]?.added ?? [];
-  const ids = new Set(
-    added.flatMap((row) => {
-      const id = calendarIdOf(row);
-      return id === undefined ? [] : [id];
-    }),
-  );
+  const ids = calendarsNamed(change);
   if (ids.size > 1) {
     throw decline(
       change.item,

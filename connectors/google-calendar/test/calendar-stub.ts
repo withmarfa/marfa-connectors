@@ -230,7 +230,7 @@ export class CalendarStub {
         });
       return this.page(call, items, undefined, {});
     }
-    const found = store.get(id);
+    const found = store.get(id) ?? this.madeUp(store, id);
     if (found === undefined) {
       return [404, { error: { code: 404, message: "Not Found" } }];
     }
@@ -259,11 +259,9 @@ export class CalendarStub {
       if (call.method !== "POST") return refusal(405, "method");
       return this.insert(calendar, store, call.body ?? {});
     }
-    let found = store.get(id);
-    if (found === undefined && call.method === "PATCH") {
-      const virtual = this.virtual(store, id);
-      if (virtual !== undefined) found = { event: virtual, version: 0 };
-    }
+    const found =
+      store.get(id) ??
+      (call.method === "PATCH" ? this.madeUp(store, id) : undefined);
     if (found === undefined) return refusal(404, "Not Found");
     if (call.ifMatch !== undefined && call.ifMatch !== found.event["etag"]) {
       return refusal(412, "Precondition Failed", "conditionNotMet");
@@ -378,6 +376,11 @@ export class CalendarStub {
           .replace(/[-:]/g, "");
     const virtual = this.virtual(store, `${series}_${suffix}`);
     return virtual === undefined ? [] : [virtual];
+  }
+
+  private madeUp(store: Map<string, Stored>, id: string): Stored | undefined {
+    const event = this.virtual(store, id);
+    return event === undefined ? undefined : { event, version: 0 };
   }
 
   /** An occurrence Google makes up from its series, which holds no instance
