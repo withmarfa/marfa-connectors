@@ -702,6 +702,64 @@ describe("stars read with the notifications token", { timeout: 90_000 }, () => {
     expect(conditions()["stars-kept"]).toContain("someone/secret-only");
   });
 
+  it("makes no read of a private star-only row, which this token can only be answered 404", async () => {
+    const secretOnly = listed("someone/secret-only", { private: true });
+    github.star(secretOnly);
+    await sync();
+    secretOnly.installation = 99;
+    for (let at = 0; at < 3; at += 1) await syncWithClassic();
+    expect(checks("someone/secret-only")).toBe(0);
+    expect(repositoryRow(secretOnly).state).toBe("active");
+    expect(conditions()["stars-kept"]).toContain("someone/secret-only");
+    // The witness: a public star-only row lacking a listing is read.
+    const open = starOnly("someone/open", elsewhere);
+    await syncWithClassic();
+    github.unstar(open);
+    await syncWithClassic();
+    await syncWithClassic();
+    expect(checks("someone/open")).toBe(1);
+  });
+
+  describe.each([
+    ["synced", {}],
+    ["star-only", { installation: 99 }],
+  ])(
+    "the star of a private %s repository that the personal token stops listing",
+    (_kind, reach) => {
+      it("stays marked through two runs with the notifications token and one personal miss, and goes on the second", async () => {
+        const secret = listed("someone/secret", { private: true });
+        github.star(secret);
+        await sync();
+        expect(repositoryRow(secret).properties["starred"]).toBe(true);
+        Object.assign(secret, reach);
+        github.unstar(secret);
+        await syncWithClassic();
+        await syncWithClassic();
+        await sync();
+        expect(repositoryRow(secret).state).toBe("active");
+        expect(repositoryRow(secret).properties["starred"]).toBe(true);
+        await sync();
+        const row = held(secret);
+        expect(
+          row?.state === "archived" || row?.properties["starred"] === false,
+        ).toBe(true);
+      });
+    },
+  );
+
+  it("does not count a miss under the notifications token as the first miss under the personal token", async () => {
+    const open = starOnly("someone/open", elsewhere);
+    await syncWithClassic();
+    github.unstar(open);
+    await syncWithClassic();
+    expect(repositoryRow(open).state).toBe("active");
+    await sync();
+    expect(repositoryRow(open).state).toBe("active");
+    expect(repositoryRow(open).properties["starred"]).toBe(true);
+    await sync();
+    expect(repositoryRow(open).state).toBe("archived");
+  });
+
   it("archives a public star after two listings and a 200, and unmarks a public synced one", async () => {
     const open = starOnly("someone/open", elsewhere);
     const synced = github.addRepository("someone/tracker", { private: false });

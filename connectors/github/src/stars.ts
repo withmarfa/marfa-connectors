@@ -24,7 +24,8 @@ type Context = Pick<
 
 /** The saved state: the repositories the last complete listing lacked, which
  *  GitHub's offset paging can do to a star that is still there when a star
- *  removed meanwhile shifts the pages. */
+ *  removed meanwhile shifts the pages, with the setting of the token that
+ *  listed them, since two tokens do not list the same stars. */
 const missedKey = "stars-missed";
 
 /** The condition for rows kept because GitHub would not say the repository is
@@ -95,10 +96,14 @@ export interface Reader {
   readonly publicOnly: boolean;
 }
 
-function missedOf(value: unknown): Set<string> {
+/** The repositories the last listing lacked, or none where another token
+ *  made that listing. */
+function missedOf(value: unknown, by: string): Set<string> {
+  if (typeof value !== "object" || value === null) return new Set();
+  const { by: was, nodes } = value as { by?: unknown; nodes?: unknown };
   return new Set(
-    Array.isArray(value)
-      ? value.filter((one): one is string => typeof one === "string")
+    was === by && Array.isArray(nodes)
+      ? nodes.filter((one): one is string => typeof one === "string")
       : [],
   );
 }
@@ -164,7 +169,9 @@ export class Stars {
     return new Stars(
       read,
       rows,
-      read === undefined ? new Set() : missedOf(state.get(missedKey)),
+      read === undefined || reader === undefined
+        ? new Set()
+        : missedOf(state.get(missedKey), reader.name),
       reader,
       state,
     );
@@ -258,7 +265,10 @@ export class Stars {
       return typeof name === "string" ? name : node;
     };
     for (const node of lacking) {
-      if (this.shielded.has(node)) {
+      if (
+        this.shielded.has(node) ||
+        (publicOnly && this.rows.get(node)?.properties["private"] === true)
+      ) {
         reasons.push(`${nameOf(node)} (private, and it is not listed)`);
       } else if (!this.missed.has(node)) {
         unresolved.add(node);
@@ -307,7 +317,11 @@ export class Stars {
         }`,
       );
     }
-    this.state.set(missedKey, [...unresolved]);
+    if (this.reader !== undefined)
+      this.state.set(missedKey, {
+        by: this.reader.name,
+        nodes: [...unresolved],
+      });
   }
 
   /** Why the repository's row must stay, or nothing where the token's own
