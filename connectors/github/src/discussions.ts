@@ -653,8 +653,7 @@ async function missingComments(
  *  returns, a discussion or a comment, once a lookup by its own node agrees.
  *  An edit to a comment does not move its discussion's time, so only that
  *  full read and a delivery find the edit on a discussion otherwise quiet.
- *  Returns
- *  the time the next read lists down to. */
+ *  Returns the time the next read lists down to. */
 export async function syncDiscussions(
   context: Reading,
   octokit: Client,
