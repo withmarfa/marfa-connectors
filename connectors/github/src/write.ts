@@ -377,11 +377,17 @@ async function commentAt(
   app: App,
   node: string,
 ): Promise<{ place: Place; comment: Comment } | undefined> {
-  const comment = await seek(
-    context,
-    app,
-    async (octokit) => (await commentsByNode(octokit, [node]))[0],
-  );
+  const unplaced = new Set<string>();
+  const comment = await seek(context, app, async (octokit) => {
+    const answer = await commentsByNode(octokit, [node]);
+    for (const id of [...answer.refused, ...answer.elsewhere]) unplaced.add(id);
+    return answer.found[0];
+  });
+  if (comment === undefined && unplaced.has(node)) {
+    throw new Unreachable(
+      `GitHub did not show ${node} as an issue comment to the App, so the change to it waits`,
+    );
+  }
   return comment === undefined
     ? undefined
     : { place: placeIn(context, app, comment.repository), comment };

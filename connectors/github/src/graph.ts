@@ -6,7 +6,7 @@ import type {
   Transfer,
 } from "./entries.js";
 import { GraphqlResponseError } from "@octokit/graphql";
-import { batches, query, reads, type Client } from "./github.js";
+import { batches, query, queryNodes, reads, type Client } from "./github.js";
 
 const related = "id url repository { id }";
 
@@ -289,16 +289,33 @@ export async function relationsOf(
   return found;
 }
 
+/** The issue comments among the nodes, and the nodes that are not known to be
+ *  gone: `refused`, which GitHub would not show the token (a discussion
+ *  comment in a private repository, to a token without the Discussions
+ *  permission), and `elsewhere`, which it showed as another kind of node (a
+ *  discussion comment in a public repository, which any token reads). Both
+ *  belong to a read of their discussion, not to this one. */
 export async function commentsByNode(
   octokit: Client,
   ids: readonly string[],
-): Promise<Comment[]> {
+): Promise<{
+  found: Comment[];
+  refused: Set<string>;
+  elsewhere: Set<string>;
+}> {
   const found: Comment[] = [];
+  const refused = new Set<string>();
+  const elsewhere = new Set<string>();
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await query(octokit, commentsQuery, {
-      ids: batch,
-    })) as Nodes<GraphComment>;
-    for (const node of known(answer.nodes, "IssueComment")) {
+    const answer = await queryNodes(octokit, commentsQuery, batch);
+    for (const id of answer.refused) refused.add(id);
+    (answer.nodes as (GraphComment | null)[]).forEach((node, at) => {
+      if (node === null) return;
+      if (node.__typename !== "IssueComment") {
+        const id = batch[at];
+        if (id !== undefined) elsewhere.add(id);
+        return;
+      }
       found.push({
         node: node.id,
         body: node.body,
@@ -312,9 +329,9 @@ export async function commentsByNode(
           name: node.issue.repository.nameWithOwner,
         },
       });
-    }
+    });
   }
-  return found;
+  return { found, refused, elsewhere };
 }
 
 export async function repositoriesByNode(
@@ -465,6 +482,15 @@ export async function updateComment(
   };
 }
 
+async function commentIsGone(octokit: Client, id: string): Promise<boolean> {
+  const answer = await commentsByNode(octokit, [id]);
+  return (
+    answer.found.length === 0 &&
+    answer.refused.size === 0 &&
+    answer.elsewhere.size === 0
+  );
+}
+
 /** GraphQL answers NOT_FOUND alike for a comment gone and for one it will
  *  not let the App touch, so it counts as gone only where the comment no
  *  longer reads in a repository that still does. */
@@ -479,7 +505,7 @@ export async function deleteComment(
     if (
       error instanceof GraphqlResponseError &&
       error.errors?.every((one) => one.type === "NOT_FOUND") === true &&
-      (await commentsByNode(octokit, [id])).length === 0 &&
+      (await commentIsGone(octokit, id)) &&
       (await reads(octokit, where.owner, where.repo))
     ) {
       return;

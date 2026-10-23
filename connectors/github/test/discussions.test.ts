@@ -273,6 +273,41 @@ describe("reading discussions", () => {
     expect(row(late.node).properties["body"]).toBe("Late");
   });
 
+  it("finds an edit to a comment, which GitHub does not count as a change of its discussion, at the daily check", async () => {
+    const discussion = github.addDiscussion(repository, {
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    });
+    const comment = github.addDiscussionComment(discussion, "Before");
+    await ok();
+    github.editDiscussionComment(comment, "After");
+    await ok();
+    expect(row(comment.node).properties["body"]).toBe("Before");
+    checkDue();
+    await ok();
+    expect(row(comment.node).properties["body"]).toBe("After");
+  });
+
+  it.each([true, false])(
+    "leaves a discussion comment's upload link out of the attachment import (private: %s)",
+    async (hidden) => {
+      repository.private = hidden;
+      const discussion = github.addDiscussion(repository);
+      const comment = github.addDiscussionComment(
+        discussion,
+        "![Image](https://github.com/user-attachments/assets/01234567-89ab-4cde-8123-456789abcdef)",
+      );
+      await ok();
+      await ok();
+      expect(row(comment.node).state).toBe("active");
+      expect(
+        Object.keys(marfa.problems.get("github") ?? {}).filter((key) =>
+          key.startsWith("github-files:"),
+        ),
+      ).toEqual([]);
+    },
+  );
+
   it("passes over a repository with Discussions off without a report", async () => {
     github.addDiscussion(repository);
     repository.discussionsOff = true;
