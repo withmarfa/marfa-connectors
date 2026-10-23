@@ -48,7 +48,7 @@ const commentsQuery = `query Comments($ids: [ID!]!) {
 
 const repositoriesQuery = `query Repositories($ids: [ID!]!) {
   nodes(ids: $ids) {
-    __typename ... on Repository { id nameWithOwner hasIssuesEnabled }
+    __typename ... on Repository { id nameWithOwner hasIssuesEnabled hasDiscussionsEnabled }
   }
 }`;
 
@@ -282,8 +282,13 @@ export async function commentsByNode(
 export async function repositoriesByNode(
   octokit: Client,
   ids: readonly string[],
-): Promise<Map<string, { name: string; issues: boolean }>> {
-  const found = new Map<string, { name: string; issues: boolean }>();
+): Promise<
+  Map<string, { name: string; issues: boolean; discussions: boolean }>
+> {
+  const found = new Map<
+    string,
+    { name: string; issues: boolean; discussions: boolean }
+  >();
   for (const batch of batches([...new Set(ids)])) {
     const answer = (await query(octokit, repositoriesQuery, {
       ids: batch,
@@ -292,11 +297,13 @@ export async function repositoriesByNode(
       id: string;
       nameWithOwner: string;
       hasIssuesEnabled: boolean;
+      hasDiscussionsEnabled: boolean;
     }>;
     for (const node of known(answer.nodes, "Repository")) {
       found.set(node.id, {
         name: node.nameWithOwner,
         issues: node.hasIssuesEnabled,
+        discussions: node.hasDiscussionsEnabled,
       });
     }
   }

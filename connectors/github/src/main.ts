@@ -6,9 +6,11 @@ import {
 } from "@withmarfa/connector";
 import {
   blockedBy,
+  childOf,
   relatesTo,
   duplicateOf,
   commentType,
+  discussionType,
   githubClosedBy,
   githubCloses,
   inRepository,
@@ -18,6 +20,7 @@ import {
   repositoryType,
   subIssueOf,
 } from "./entries.js";
+import { carryDiscussions, remakeDiscussions } from "./discussion-write.js";
 import { defaultBase, type App } from "./github.js";
 import { hints } from "./hooks.js";
 import { read } from "./read.js";
@@ -26,6 +29,7 @@ import { scopeOf } from "./scope.js";
 import { readOnly, setUp } from "./setup.js";
 import { carry, remake } from "./write.js";
 import comment from "./github.comment.json" with { type: "json" };
+import discussion from "./github.discussion.json" with { type: "json" };
 import issue from "./github.issue.json" with { type: "json" };
 import pullRequest from "./github.pull_request.json" with { type: "json" };
 import repository from "./github.repository.json" with { type: "json" };
@@ -65,7 +69,7 @@ function appOf(values: {
 const connector = defineConnector<typeof env>({
   name: "github",
   description:
-    "Repositories, issues, comments and read-only pull requests through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue and comment edits back.",
+    "Repositories, issues, discussions, comments and read-only pull requests through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue, discussion and comment edits back.",
   source: "github",
   types: [
     ...fileKinds,
@@ -146,9 +150,42 @@ const connector = defineConnector<typeof env>({
         "private",
         "url",
         inThread,
+        childOf,
         inRepository,
       ],
       derived: ["private", "github_files"],
+    },
+    {
+      type: discussion as TypeDefinition,
+      fields: [
+        "github_id",
+        "title",
+        "body",
+        "number",
+        "repository",
+        "private",
+        "author",
+        "category",
+        "status",
+        "state_reason",
+        "answered",
+        "locked",
+        "url",
+        "github_updated_at",
+      ],
+      readOnly: [
+        "number",
+        "repository",
+        "private",
+        "author",
+        "category",
+        "answered",
+        "locked",
+        "url",
+        "github_updated_at",
+        inRepository,
+      ],
+      derived: ["private"],
     },
     {
       type: pullRequest as TypeDefinition,
@@ -200,9 +237,14 @@ const connector = defineConnector<typeof env>({
       id: inRepository,
       label: "In repository",
       description:
-        "An issue, comment or pull request in the GitHub repository it belongs to.",
+        "An issue, discussion, comment or pull request in the GitHub repository it belongs to.",
       cardinality: "many-to-one",
-      source_type_constraints: [issueType, commentType, pullRequestType],
+      source_type_constraints: [
+        issueType,
+        commentType,
+        discussionType,
+        pullRequestType,
+      ],
       target_type_constraints: [repositoryType],
     },
     {
@@ -241,7 +283,14 @@ const connector = defineConnector<typeof env>({
       id: inThread,
       cardinality: "many-to-one",
       source_type_constraints: [commentType],
-      target_type_constraints: [issueType],
+      target_type_constraints: [issueType, discussionType],
+    },
+    {
+      id: childOf,
+      cardinality: "many-to-one",
+      cascade_on_delete: "cascade",
+      source_type_constraints: [commentType],
+      target_type_constraints: [commentType],
     },
     {
       id: githubCloses,
@@ -265,7 +314,7 @@ const connector = defineConnector<typeof env>({
   carries: (values) =>
     values.GITHUB_PERSONAL_TOKEN !== undefined
       ? []
-      : [issueType, commentType].filter(
+      : [issueType, commentType, discussionType].filter(
           (kind) =>
             !readOnly(values.GITHUB_READ_ONLY, kind.slice("github.".length)),
         ),
@@ -303,11 +352,17 @@ const connector = defineConnector<typeof env>({
       scopeOf(context.env.GITHUB_REPOSITORIES),
     );
   },
-  onChange(change, context) {
-    return carry(change, context, appOf(context.env));
+  async onChange(change, context) {
+    const app = appOf(context.env);
+    const handled = await carryDiscussions(change, context, app);
+    return handled === undefined ? carry(change, context, app) : handled.entry;
   },
-  remake(change, context) {
-    return remake(change, context, appOf(context.env));
+  async remake(change, context) {
+    const app = appOf(context.env);
+    return (
+      (await remakeDiscussions(change, context, app)) ??
+      remake(change, context, app)
+    );
   },
   ...(process.env["GITHUB_PERSONAL_TOKEN"]?.trim()
     ? {}

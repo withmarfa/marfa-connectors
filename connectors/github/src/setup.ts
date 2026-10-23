@@ -30,6 +30,8 @@ interface Conversion {
 export const events = [
   "issues",
   "issue_comment",
+  "discussion",
+  "discussion_comment",
   "sub_issues",
   "issue_dependencies",
   "issue_relates_to",
@@ -50,29 +52,27 @@ export function hookUrl(publicUrl: string, path: string): string {
   return address.toString();
 }
 
+const kindsOf = [
+  "repository",
+  "issue",
+  "comment",
+  "discussion",
+  "pull_request",
+  "file",
+  "image",
+];
+
 export function readOnly(value: string | undefined, kind?: string): boolean {
   if (value === undefined || value === "false") return false;
   if (value === "true") return true;
   const kinds = value.split(",").map((one) => one.trim());
-  if (
-    kind === undefined &&
-    kinds.some(
-      (one) =>
-        ![
-          "repository",
-          "issue",
-          "comment",
-          "pull_request",
-          "file",
-          "image",
-        ].includes(one),
-    )
-  )
+  const unknown = kinds.filter((one) => !kindsOf.includes(one));
+  if (unknown.length > 0)
     throw new Error(
-      `GITHUB_READ_ONLY holds an unknown kind (${kinds.filter((one) => !["repository", "issue", "comment", "pull_request", "file", "image"].includes(one)).join(", ")}); use true, false, or a comma-separated list of repository, issue, comment, pull_request, file, image`,
+      `GITHUB_READ_ONLY holds an unknown kind (${unknown.join(", ")}); use true, false, or a comma-separated list of ${kindsOf.join(", ")}`,
     );
   return kind === undefined
-    ? ["issue", "comment"].every((one) => kinds.includes(one))
+    ? ["issue", "comment", "discussion"].every((one) => kinds.includes(one))
     : kinds.includes(kind);
 }
 
@@ -81,18 +81,21 @@ export function manifest(options: {
   callback: string;
   hook: string;
   active: boolean;
+  /** Whether issues and their comments are read only. */
   readOnly: boolean;
+  discussionsReadOnly: boolean;
 }): Record<string, unknown> {
   return {
     name: options.name,
     url: "https://github.com/withmarfa/marfa-connectors",
     description:
-      "Syncs issues and comments with Marfa and reads pull requests, closing links and checks.",
+      "Syncs issues, discussions and their comments with Marfa and reads pull requests, closing links and checks.",
     hook_attributes: { url: options.hook, active: options.active },
     redirect_url: options.callback,
     public: false,
     default_permissions: {
       issues: options.readOnly ? "read" : "write",
+      discussions: options.discussionsReadOnly ? "read" : "write",
       metadata: "read",
       pull_requests: "read",
       checks: "read",
@@ -204,7 +207,12 @@ export async function setUp<E extends EnvDeclaration>(
         callback,
         hook: hook ?? made.url,
         active: hook !== undefined,
-        readOnly: readOnly(env.GITHUB_READ_ONLY),
+        readOnly:
+          readOnly(env.GITHUB_READ_ONLY, "issue") &&
+          readOnly(env.GITHUB_READ_ONLY, "comment"),
+        discussionsReadOnly:
+          readOnly(env.GITHUB_READ_ONLY, "discussion") &&
+          readOnly(env.GITHUB_READ_ONLY, "comment"),
       }),
     ),
   );

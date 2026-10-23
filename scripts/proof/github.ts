@@ -34,6 +34,7 @@ const types = [
   "github.file",
   "github.file.image",
   "github.pull_request",
+  "github.discussion",
 ];
 const connections = [
   "github.in-repository",
@@ -44,6 +45,7 @@ const connections = [
   "attached-to",
   "github.closes",
   "github.closed-by",
+  "parent-of",
   "in-thread",
 ];
 
@@ -124,7 +126,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its six types and nine connection types, in-thread among them, and the metadata to register them and keep the types current",
+      "github: its key is minted with write on its seven types and ten connection types, in-thread among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -206,7 +208,7 @@ export async function proveGitHub(
           .map((kind) => `${kind.id} ${kind.cascade_on_delete}`);
         if (
           parents.join() !==
-            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image,github.pull_request on core.task" ||
+            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image,github.pull_request on core.task,github.discussion on core.note" ||
           inRepo.join() !== repo.id ||
           subOf.join() !== top.id ||
           blockedBy.join() !== blockerRow.id ||
@@ -681,7 +683,7 @@ export async function proveGitHub(
     );
 
     await check(
-      "github: with GITHUB_REPOSITORIES naming one of the installation's repositories, the token that lists them names none, those that read name it and the paused ones but never the one left out and never synced, those that write name it alone, all by id, and a token revoked mid-run is replaced",
+      "github: with GITHUB_REPOSITORIES naming one of the installation's repositories, the token that lists them names none, those that read name it and the paused ones but never the one left out and never synced, the one that reads Discussions and those that write name it alone, all by id, and a token revoked mid-run is replaced",
       async () => {
         const other = github.addRepository("someone/other");
         github.addIssue(other, { title: "Left out" });
@@ -706,11 +708,16 @@ export async function proveGitHub(
             (one) =>
               one.body as {
                 repository_ids?: number[];
-                permissions?: { issues?: string };
+                permissions?: { issues?: string; discussions?: string };
               },
           );
         const lists = minted.filter(
-          (one) => one.permissions?.issues === undefined,
+          (one) =>
+            one.permissions?.issues === undefined &&
+            one.permissions?.discussions === undefined,
+        );
+        const discussed = minted.filter(
+          (one) => one.permissions?.discussions === "read",
         );
         const reads = minted.filter(
           (one) => one.permissions?.issues === "read",
@@ -726,6 +733,10 @@ export async function proveGitHub(
             (one) =>
               !one.repository_ids?.includes(repository.id) ||
               one.repository_ids.includes(other.id),
+          ) ||
+          discussed.length === 0 ||
+          discussed.some(
+            (one) => one.repository_ids?.join() !== String(repository.id),
           ) ||
           writes.length === 0 ||
           writes.some(

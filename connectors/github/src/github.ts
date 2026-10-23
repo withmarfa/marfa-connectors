@@ -165,8 +165,11 @@ function counted(octokit: Client, key: string, guard: boolean): Client {
 
 /** What an installation token is minted for: `list` reads only which
  *  repositories the installation holds; `read` reaches issues and pull
- *  requests, and `write` carries only issues and their comments. */
-export type Access = "list" | "read" | "write";
+ *  requests, and `write` carries only issues and their comments. The two
+ *  Discussions accesses are separate so an installation that has not yet
+ *  accepted the Discussions permission still mints every other token. */
+export type Access =
+  "list" | "read" | "write" | "discussions" | "discussions-write";
 
 const permissions = {
   list: { metadata: "read" },
@@ -178,6 +181,8 @@ const permissions = {
     metadata: "read",
   },
   write: { issues: "write", metadata: "read" },
+  discussions: { discussions: "read", metadata: "read" },
+  "discussions-write": { discussions: "write", metadata: "read" },
 } as const;
 
 /** GitHub's cap on the repositories one token can name. */
@@ -325,7 +330,7 @@ async function tokenFor(
     return await signed(options);
   } catch (error) {
     if (
-      reach.access !== "read" ||
+      (reach.access !== "read" && reach.access !== "discussions") ||
       reach.orWhole !== true ||
       status(error) !== 422 ||
       options.repositoryIds === undefined
@@ -409,7 +414,7 @@ export function asInstallation(
   const octokit = counted(
     client(app.base, signal),
     `${app.base} ${app.appId} ${String(installationId)}`,
-    reach.access !== "write",
+    reach.access !== "write" && reach.access !== "discussions-write",
   );
   octokit.hook.wrap("request", async (request, options) => {
     const sign = async (refresh: boolean): Promise<string> => {

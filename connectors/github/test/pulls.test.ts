@@ -13,6 +13,7 @@ const types = [
   "github.issue",
   "github.comment",
   "github.pull_request",
+  "github.discussion",
   "github.file",
   "github.file.image",
 ];
@@ -24,6 +25,7 @@ const edges = [
   "github.duplicate-of",
   "github.closes",
   "github.closed-by",
+  "parent-of",
   "in-thread",
   "attached-to",
 ];

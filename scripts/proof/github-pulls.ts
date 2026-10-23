@@ -41,6 +41,7 @@ export async function proveGitHubPullRequests(
       "github.issue",
       "github.comment",
       "github.pull_request",
+      "github.discussion",
       "github.file",
       "github.file.image",
     ];
@@ -52,6 +53,7 @@ export async function proveGitHubPullRequests(
       "github.duplicate-of",
       "github.closes",
       "github.closed-by",
+      "parent-of",
       "in-thread",
       "attached-to",
     ];

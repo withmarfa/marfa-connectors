@@ -8,7 +8,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
 - [`shared/`](./shared): private packages that related connectors share: Readwise's schemas and mappings, and the Google sign-in in [`shared/google`](./shared/google/README.md). They are never published.
 - [`template/`](./template): what a new connector starts from. Its [README](./template/README.md) is the guide to writing one, minting its key, running it, and deploying it with launchd or Docker.
 - [`connectors/`](./connectors): the connectors, one folder each, run and never published.
-  - [`github`](./connectors/github/README.md): repositories, issues, comments, read-only pull requests and retained issue/comment files from a personal token or GitHub App, with relations, closing issues and checks; App runs carry issue and comment edits back.
+  - [`github`](./connectors/github/README.md): repositories, issues, discussions, comments, read-only pull requests and retained issue/comment files from a personal token or GitHub App, with relations, closing issues and checks; App runs carry issue, discussion and comment edits back.
   - [`todoist`](./connectors/todoist/README.md): a Todoist account's tasks, with changes carried back.
   - [`readwise`](./connectors/readwise/README.md): sources and complete highlights from one Readwise account, read only, with resumable export checkpoints.
   - [`readwise-reader`](./connectors/readwise-reader/README.md): Reader documents, highlights, retained content, and supported two-way edits, with independent registration and shared identities.

@@ -25,6 +25,9 @@ export interface Installation {
   login: string;
   suspended?: boolean;
   lost?: boolean;
+  /** Answers 404 to a token that asks for Discussions, as GitHub does for a
+   *  token it will not mint, while every other token still mints. */
+  discussionsLost?: boolean;
 }
 
 export interface Repository {
@@ -40,6 +43,9 @@ export interface Repository {
   // Answers 404 though listed, as a repository GitHub hides does.
   hidden?: boolean;
   issuesOff?: boolean;
+  discussionsOff?: boolean;
+  /** Category names, in the order GitHub lists them. */
+  categories?: string[];
 }
 
 export interface Issue {
@@ -99,6 +105,44 @@ export interface Comment {
   unlisted?: number;
 }
 
+export interface Discussion {
+  id: number;
+  node: string;
+  number: number;
+  repository: string;
+  title: string;
+  body: string;
+  category: string;
+  user: string;
+  state: "open" | "closed";
+  state_reason: string | null;
+  answered: boolean;
+  locked: boolean;
+  created_at: string;
+  updated_at: string;
+  deleted?: boolean;
+  app?: boolean;
+  unlisted?: number;
+}
+
+export interface DiscussionComment {
+  id: number;
+  node: string;
+  discussion: string;
+  /** The node of the comment this one answers; absent for a top-level one. */
+  parent: string | null;
+  body: string;
+  user: string;
+  created_at: string;
+  updated_at: string;
+  /** Gone outright, as a deleted comment with no replies is. */
+  deleted?: boolean;
+  /** Deleted but kept as an empty shell for its replies, as GitHub does. */
+  blanked?: boolean;
+  app?: boolean;
+  unlisted?: number;
+}
+
 type Access = "read" | "write";
 
 /** What an installation token reaches: its repositories by node, or every
@@ -108,6 +152,8 @@ interface Grant {
   repositories: Set<string> | undefined;
   permissions: Record<string, Access>;
 }
+
+const defaultCategories = ["General", "Ideas", "Q&A"];
 
 export type Resource = "core" | "graphql";
 
@@ -148,6 +194,18 @@ export class GitHubStub {
   closingPageSize = 100;
   missingPullRepository = false;
   comments: Comment[] = [];
+  discussions: Discussion[] = [];
+  discussionComments: DiscussionComment[] = [];
+  /** How many comments or replies one page of a discussion holds. */
+  discussionPageSize = 50;
+  /** Answers every Discussions query of the personal token as refused. */
+  personalNoDiscussions = false;
+  /** Answers every Discussions query of the App as FORBIDDEN, though its
+   *  token mints: the installation holds the permission, GitHub still says no. */
+  discussionsForbidden = false;
+  /** Shows a discussion by its node though its repository turned Discussions
+   *  off, as GitHub may: it does not say. */
+  discussionsOffStillShown = false;
   asked: Asked[] = [];
   manifestCode: string | undefined = "manifest-code";
   /** The App's private key. GitHub holds its public half to check the App's
@@ -186,6 +244,7 @@ export class GitHubStub {
     checks: "read",
     statuses: "read",
     metadata: "read",
+    discussions: "write",
   };
   /** Seconds GitHub's clock runs ahead of this machine's. */
   clockAhead = 0;
@@ -195,6 +254,8 @@ export class GitHubStub {
   private budgets = new Map<string, Budget>();
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
+  /** How far behind the machine's clock GitHub's own runs, in milliseconds. */
+  private behind = 0;
   private ids = 1000;
   private tokens = 0;
 
@@ -219,14 +280,20 @@ export class GitHubStub {
     });
   }
 
+  /** A second on from the last, and never behind the machine's own time less
+   *  `behind`, so a long run does not leave what is made far in the past. */
   now(): string {
-    this.clock += 1000;
+    this.clock = Math.max(
+      this.clock + 1000,
+      Math.floor((Date.now() - this.behind) / 1000) * 1000,
+    );
     return new Date(this.clock).toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
   /** GitHub's own clock, which every answer's Date header tells, run this
    *  far behind the machine's. */
   runBehind(milliseconds: number): void {
+    this.behind = milliseconds;
     this.clock = Math.floor((Date.now() - milliseconds) / 1000) * 1000;
   }
 
@@ -370,6 +437,91 @@ export class GitHubStub {
     comment.updated_at = this.now();
   }
 
+  addDiscussion(
+    repository: Repository,
+    fields: Partial<Discussion> = {},
+  ): Discussion {
+    const id = this.ids++;
+    const at = this.now();
+    const number =
+      Math.max(
+        0,
+        ...this.discussions
+          .filter((one) => one.repository === repository.node)
+          .map((one) => one.number),
+      ) + 1;
+    const made: Discussion = {
+      id,
+      node: `D_${String(id)}`,
+      number,
+      repository: repository.node,
+      title: `Discussion ${String(number)}`,
+      body: "",
+      category: (repository.categories ?? defaultCategories)[0] ?? "General",
+      user: "someone",
+      state: "open",
+      state_reason: null,
+      answered: false,
+      locked: false,
+      created_at: at,
+      updated_at: at,
+      ...fields,
+    };
+    this.discussions.push(made);
+    return made;
+  }
+
+  /** A new comment does not move its discussion's time here: GitHub does not
+   *  say that it does, and the connector must not depend on it. */
+  addDiscussionComment(
+    discussion: Discussion,
+    body: string,
+    user = "someone",
+    parent: DiscussionComment | null = null,
+  ): DiscussionComment {
+    const id = this.ids++;
+    const at = this.now();
+    const made: DiscussionComment = {
+      id,
+      node: `DC_${String(id)}`,
+      discussion: discussion.node,
+      parent: parent?.node ?? null,
+      body,
+      user,
+      created_at: at,
+      updated_at: at,
+    };
+    this.discussionComments.push(made);
+    return made;
+  }
+
+  editDiscussionComment(comment: DiscussionComment, body: string): void {
+    comment.body = body;
+    comment.updated_at = this.now();
+  }
+
+  editDiscussion(discussion: Discussion, fields: Partial<Discussion>): void {
+    Object.assign(discussion, fields, { updated_at: this.now() });
+  }
+
+  /** Removes a comment as GitHub does: outright when nothing answers it,
+   *  else as a blank shell its replies hang from. */
+  removeDiscussionComment(comment: DiscussionComment): void {
+    const answered = this.discussionComments.some(
+      (one) => one.parent === comment.node && one.deleted !== true,
+    );
+    if (answered) {
+      comment.blanked = true;
+      comment.body = "";
+    } else {
+      comment.deleted = true;
+    }
+  }
+
+  discussion(node: string): Discussion | undefined {
+    return this.discussions.find((one) => one.node === node);
+  }
+
   repositoryOf(issue: Issue): Repository {
     const found = this.repositories.find(
       (one) => one.node === issue.repository,
@@ -505,9 +657,17 @@ export class GitHubStub {
     );
   }
 
-  private allows(req: IncomingMessage, wanted: Access): boolean {
-    if (this.isPersonal(req)) return wanted === "read";
-    const held = this.grantOf(req)?.permissions["issues"];
+  private allows(
+    req: IncomingMessage,
+    wanted: Access,
+    scope: "issues" | "discussions" = "issues",
+  ): boolean {
+    if (this.isPersonal(req))
+      return (
+        wanted === "read" && (scope === "issues" || !this.personalNoDiscussions)
+      );
+    if (scope === "discussions" && this.discussionsForbidden) return false;
+    const held = this.grantOf(req)?.permissions[scope];
     return held === "write" || held === wanted;
   }
 
@@ -780,9 +940,14 @@ export class GitHubStub {
           : method === "GET"
             ? "read"
             : "write";
+      const scope = /^\s*(?:query|mutation)\s+\w*Discussion/.test(
+        String((body as { query?: unknown } | undefined)?.query),
+      )
+        ? "discussions"
+        : "issues";
       if (
         (path === "/graphql" || /^\/repos\/[^/]+\/[^/]+\/./.test(path)) &&
-        !this.allows(req, wanted)
+        !this.allows(req, wanted, scope)
       ) {
         if (path === "/graphql") {
           send(200, {
@@ -790,7 +955,9 @@ export class GitHubStub {
             errors: [
               {
                 type: "FORBIDDEN",
-                message: "Resource not accessible by integration",
+                message: this.isPersonal(req)
+                  ? "Resource not accessible by personal access token"
+                  : "Resource not accessible by integration",
               },
             ],
           });
@@ -875,7 +1042,13 @@ export class GitHubStub {
       const installation = this.installations.find(
         (one) => one.id === Number(match?.[1]),
       );
-      if (installation === undefined || installation.lost === true) {
+      if (
+        installation === undefined ||
+        installation.lost === true ||
+        (installation.discussionsLost === true &&
+          (body as { permissions?: Record<string, unknown> } | null)
+            ?.permissions?.["discussions"] !== undefined)
+      ) {
         send(404, { message: "Not Found" });
         return;
       }
@@ -1256,6 +1429,7 @@ export class GitHubStub {
       limit(true);
       return true;
     }
+    if (this.mutateDiscussion(req, operation, variables, send)) return true;
     const one = issue("issueId");
     const other = issue("other");
     const relations = [
@@ -1363,6 +1537,436 @@ export class GitHubStub {
       },
     });
     return true;
+  }
+
+  private repositoryByNode(node: string): Repository {
+    const found = this.repositories.find((one) => one.node === node);
+    if (found === undefined) throw new Error(`no repository ${node}`);
+    return found;
+  }
+
+  private seesDiscussion(
+    req: IncomingMessage,
+    discussion: Discussion,
+  ): boolean {
+    const repository = this.repositoryByNode(discussion.repository);
+    return (
+      discussion.deleted !== true &&
+      (repository.discussionsOff !== true || this.discussionsOffStillShown) &&
+      (this.visible(req, repository.node) || !repository.private)
+    );
+  }
+
+  private graphDiscussion(discussion: Discussion): Record<string, unknown> {
+    const repository = this.repositoryByNode(discussion.repository);
+    return {
+      __typename: "Discussion",
+      id: discussion.node,
+      number: discussion.number,
+      title: discussion.title,
+      body: discussion.body,
+      url: `${this.address(repository)}/discussions/${String(discussion.number)}`,
+      closed: discussion.state === "closed",
+      stateReason:
+        discussion.state_reason === null
+          ? null
+          : discussion.state_reason.toUpperCase(),
+      isAnswered: discussion.answered,
+      locked: discussion.locked,
+      createdAt: discussion.created_at,
+      updatedAt: discussion.updated_at,
+      author: this.author(discussion.user),
+      category: { name: discussion.category },
+      repository: {
+        id: repository.node,
+        nameWithOwner: `${repository.owner}/${repository.name}`,
+      },
+    };
+  }
+
+  private graphDiscussionComment(
+    comment: DiscussionComment,
+  ): Record<string, unknown> {
+    const discussion = this.discussion(comment.discussion);
+    if (discussion === undefined) throw new Error("no discussion");
+    const repository = this.repositoryByNode(discussion.repository);
+    return {
+      __typename: "DiscussionComment",
+      id: comment.node,
+      body: comment.body,
+      url: `${this.address(repository)}/discussions/${String(discussion.number)}#discussioncomment-${String(comment.id)}`,
+      createdAt: comment.created_at,
+      updatedAt: comment.updated_at,
+      deletedAt: comment.blanked === true ? comment.updated_at : null,
+      author: comment.blanked === true ? null : this.author(comment.user),
+      replyTo: comment.parent === null ? null : { id: comment.parent },
+      discussion: {
+        id: discussion.node,
+        repository: {
+          id: repository.node,
+          nameWithOwner: `${repository.owner}/${repository.name}`,
+        },
+      },
+    };
+  }
+
+  private cut(all: unknown[], after: unknown): Record<string, unknown> {
+    const at = Number(after ?? 0);
+    const size = this.discussionPageSize;
+    return {
+      nodes: all.slice(at, at + size),
+      pageInfo: {
+        hasNextPage: all.length > at + size,
+        endCursor: String(at + size),
+      },
+    };
+  }
+
+  private repliesOf(comment: DiscussionComment): DiscussionComment[] {
+    return this.discussionComments.filter(
+      (one) =>
+        one.parent === comment.node && one.deleted !== true && this.listed(one),
+    );
+  }
+
+  private discussionQuery(
+    req: IncomingMessage,
+    operation: string | undefined,
+    variables: Record<string, unknown>,
+    send: (status: number, data?: unknown) => void,
+    nodes: (ids: unknown, find: (id: string) => unknown) => unknown[],
+    withComments: boolean,
+  ): boolean {
+    if (!operation?.includes("Discussion")) return false;
+    const shown = (one: Discussion): Record<string, unknown> => ({
+      ...this.graphDiscussion(one),
+      ...(withComments && { comments: this.commentsPage(one, 0) }),
+    });
+    if (operation === "DiscussionsSwitch") {
+      const repository = this.repositories.find(
+        (one) =>
+          one.owner === variables["owner"] &&
+          one.name === variables["name"] &&
+          this.visible(req, one.node),
+      );
+      send(200, {
+        data: {
+          repository:
+            repository === undefined
+              ? null
+              : { hasDiscussionsEnabled: repository.discussionsOff !== true },
+        },
+      });
+      return true;
+    }
+    if (
+      operation === "DiscussionList" ||
+      operation === "DiscussionCategories"
+    ) {
+      const repository = this.repositories.find(
+        (one) =>
+          one.owner === variables["owner"] &&
+          one.name === variables["name"] &&
+          this.visible(req, one.node),
+      );
+      if (repository === undefined) {
+        send(200, { data: { repository: null } });
+        return true;
+      }
+      if (operation === "DiscussionCategories") {
+        send(200, {
+          data: {
+            repository: {
+              discussionCategories: this.cut(
+                (repository.categories ?? defaultCategories).map((name) => ({
+                  id: `CAT_${repository.node}_${name}`,
+                  name,
+                })),
+                variables["after"],
+              ),
+            },
+          },
+        });
+        return true;
+      }
+      const all = this.discussions
+        .filter(
+          (one) =>
+            one.repository === repository.node &&
+            one.deleted !== true &&
+            this.listed(one),
+        )
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      const page = this.cut(
+        repository.discussionsOff === true ? [] : all,
+        variables["after"],
+      );
+      send(200, {
+        data: {
+          repository: {
+            hasDiscussionsEnabled: repository.discussionsOff !== true,
+            discussions: {
+              ...page,
+              nodes: (page["nodes"] as Discussion[]).map(shown),
+            },
+          },
+        },
+      });
+      return true;
+    }
+    if (operation === "DiscussionNodes") {
+      send(200, {
+        data: {
+          nodes: nodes(variables["ids"], (id) => {
+            const found = this.discussion(id);
+            return found === undefined || !this.seesDiscussion(req, found)
+              ? undefined
+              : shown(found);
+          }),
+        },
+      });
+      return true;
+    }
+    if (operation === "DiscussionCommentNodes") {
+      send(200, {
+        data: {
+          nodes: nodes(variables["ids"], (id) => {
+            const found = this.discussionComments.find(
+              (one) => one.node === id,
+            );
+            const discussion =
+              found === undefined
+                ? undefined
+                : this.discussion(found.discussion);
+            return found === undefined ||
+              found.deleted === true ||
+              discussion === undefined ||
+              !this.seesDiscussion(req, discussion)
+              ? undefined
+              : this.graphDiscussionComment(found);
+          }),
+        },
+      });
+      return true;
+    }
+    if (operation === "DiscussionComments") {
+      const discussion = this.discussion(String(variables["id"]));
+      if (discussion === undefined || !this.seesDiscussion(req, discussion)) {
+        send(200, { data: { node: null } });
+        return true;
+      }
+      send(200, {
+        data: {
+          node: { comments: this.commentsPage(discussion, variables["after"]) },
+        },
+      });
+      return true;
+    }
+    if (operation === "DiscussionReplies") {
+      const parent = this.discussionComments.find(
+        (one) => one.node === variables["id"],
+      );
+      const discussion =
+        parent === undefined ? undefined : this.discussion(parent.discussion);
+      if (
+        parent === undefined ||
+        discussion === undefined ||
+        !this.seesDiscussion(req, discussion)
+      ) {
+        send(200, { data: { node: null } });
+        return true;
+      }
+      send(200, {
+        data: {
+          node: { replies: this.repliesPage(parent, variables["after"]) },
+        },
+      });
+      return true;
+    }
+    return false;
+  }
+
+  private commentsPage(
+    discussion: Discussion,
+    after: unknown,
+  ): Record<string, unknown> {
+    const top = this.discussionComments.filter(
+      (one) =>
+        one.discussion === discussion.node &&
+        one.parent === null &&
+        one.deleted !== true &&
+        this.listed(one),
+    );
+    const page = this.cut(top, after);
+    return {
+      ...page,
+      nodes: (page["nodes"] as DiscussionComment[]).map((one) => ({
+        ...this.graphDiscussionComment(one),
+        replies: this.repliesPage(one, 0),
+      })),
+    };
+  }
+
+  private repliesPage(
+    comment: DiscussionComment,
+    after: unknown,
+  ): Record<string, unknown> {
+    const page = this.cut(this.repliesOf(comment), after);
+    return {
+      ...page,
+      nodes: (page["nodes"] as DiscussionComment[]).map((one) =>
+        this.graphDiscussionComment(one),
+      ),
+    };
+  }
+
+  private mutateDiscussion(
+    req: IncomingMessage,
+    operation: string | undefined,
+    variables: Record<string, unknown>,
+    send: (status: number, data?: unknown) => void,
+  ): boolean {
+    if (!operation?.includes("Discussion")) return false;
+    const bot = `${this.appSlug}[bot]`;
+    const discussionOf = (key: string): Discussion | undefined => {
+      const found = this.discussion(String(variables[key]));
+      return found !== undefined && this.seesDiscussion(req, found)
+        ? found
+        : undefined;
+    };
+    const commentOf = (key: string): DiscussionComment | undefined => {
+      const found = this.discussionComments.find(
+        (one) => one.node === variables[key] && one.deleted !== true,
+      );
+      const discussion =
+        found === undefined ? undefined : this.discussion(found.discussion);
+      return discussion !== undefined && this.seesDiscussion(req, discussion)
+        ? found
+        : undefined;
+    };
+    const lose = (made: { unlisted?: number }): boolean => {
+      if (!this.loseNextCreate) return false;
+      this.loseNextCreate = false;
+      if (this.listLate) made.unlisted = 1;
+      this.listLate = false;
+      send(502, { message: "Server Error" });
+      return true;
+    };
+    if (operation === "CreateDiscussion") {
+      const repository = this.repositories.find(
+        (one) => one.node === variables["repositoryId"],
+      );
+      const name = String(variables["categoryId"]).replace(
+        `CAT_${String(variables["repositoryId"])}_`,
+        "",
+      );
+      if (
+        repository === undefined ||
+        !this.visible(req, repository.node) ||
+        repository.discussionsOff === true ||
+        !(repository.categories ?? defaultCategories).includes(name)
+      ) {
+        send(200, notFound);
+        return true;
+      }
+      const made = this.addDiscussion(repository, {
+        title: String(variables["title"]),
+        body: String(variables["body"]),
+        category: name,
+        user: bot,
+        app: true,
+      });
+      if (lose(made)) return true;
+      send(200, {
+        data: { createDiscussion: { discussion: this.graphDiscussion(made) } },
+      });
+      return true;
+    }
+    if (
+      operation === "UpdateDiscussion" ||
+      operation === "CloseDiscussion" ||
+      operation === "ReopenDiscussion"
+    ) {
+      const discussion = discussionOf("id");
+      if (discussion === undefined) {
+        send(200, notFound);
+        return true;
+      }
+      if (operation === "UpdateDiscussion") {
+        const next: Partial<Discussion> = {};
+        if (typeof variables["title"] === "string") {
+          next.title = variables["title"];
+        }
+        if (typeof variables["body"] === "string")
+          next.body = variables["body"];
+        this.editDiscussion(discussion, next);
+      } else if (operation === "CloseDiscussion") {
+        this.editDiscussion(discussion, {
+          state: "closed",
+          state_reason: String(variables["reason"]).toLowerCase(),
+        });
+      } else {
+        this.editDiscussion(discussion, {
+          state: "open",
+          state_reason: "reopened",
+        });
+      }
+      const field = operation.charAt(0).toLowerCase() + operation.slice(1);
+      send(200, {
+        data: { [field]: { discussion: this.graphDiscussion(discussion) } },
+      });
+      return true;
+    }
+    if (operation === "AddDiscussionComment") {
+      const discussion = discussionOf("discussionId");
+      const parent =
+        variables["replyToId"] === undefined || variables["replyToId"] === null
+          ? null
+          : commentOf("replyToId");
+      if (discussion === undefined || parent === undefined) {
+        send(200, notFound);
+        return true;
+      }
+      const made = this.addDiscussionComment(
+        discussion,
+        String(variables["body"]),
+        bot,
+        parent,
+      );
+      made.app = true;
+      if (lose(made)) return true;
+      send(200, {
+        data: {
+          addDiscussionComment: { comment: this.graphDiscussionComment(made) },
+        },
+      });
+      return true;
+    }
+    const comment = commentOf("id");
+    if (comment === undefined) {
+      send(200, notFound);
+      return true;
+    }
+    if (operation === "UpdateDiscussionComment") {
+      comment.body = String(variables["body"]);
+      comment.updated_at = this.now();
+      send(200, {
+        data: {
+          updateDiscussionComment: {
+            comment: this.graphDiscussionComment(comment),
+          },
+        },
+      });
+      return true;
+    }
+    if (operation === "DeleteDiscussionComment") {
+      this.removeDiscussionComment(comment);
+      send(200, {
+        data: { deleteDiscussionComment: { comment: { id: comment.node } } },
+      });
+      return true;
+    }
+    return false;
   }
 
   /** GraphQL names a bot by its login without the suffix REST gives it. */
@@ -1761,6 +2365,7 @@ export class GitHubStub {
                 id,
                 nameWithOwner: `${repository.owner}/${repository.name}`,
                 hasIssuesEnabled: repository.issuesOff !== true,
+                hasDiscussionsEnabled: repository.discussionsOff !== true,
               };
         }),
       };
@@ -1786,6 +2391,18 @@ export class GitHubStub {
       send(200, {
         data: { repository: repository === undefined ? null : found },
       });
+      return;
+    }
+    if (
+      this.discussionQuery(
+        req,
+        operation,
+        body.variables,
+        send,
+        nodes,
+        body.query.includes("comments("),
+      )
+    ) {
       return;
     }
     if (this.mutate(req, operation, body.variables, send, limit)) return;
