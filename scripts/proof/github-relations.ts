@@ -32,6 +32,7 @@ export async function proveGitHubRelations(
       "github.file",
       "github.file.image",
       "github.pull_request",
+      "github.discussion",
     ];
     const connections = [
       "github.in-repository",
@@ -42,6 +43,7 @@ export async function proveGitHubRelations(
       "attached-to",
       "github.closes",
       "github.closed-by",
+      "github.reply-to",
       "in-thread",
     ];
     const key = await mintKey({
