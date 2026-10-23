@@ -424,11 +424,20 @@ export interface WatchContext<E extends EnvDeclaration> {
 export interface LocalCallback {
   readonly url: string;
   readonly callback: string;
+  /**
+   * Resolves with the query of the vendor's redirect to `callback`, from the
+   * browser on this machine or, whichever comes first, from the address the
+   * person pastes into the terminal when the browser runs on another
+   * machine and its redirect to this one could not load. A pasted address
+   * counts when its path is the callback's; its host and port are ignored,
+   * since the other browser shows them as they were.
+   */
   readonly redirected: Promise<URLSearchParams>;
   /**
-   * Throws when asked before the browser arrives. A browser not sent on is
+   * Throws when asked before the redirect arrives. A browser not sent on is
    * told when setup ends that it is done, or that it failed. The callback
-   * answers once.
+   * answers once. After a redirect that arrived by paste there is no
+   * browser to send on, so the address is logged for the person to open.
    */
   readonly onward: (address: string) => void;
 }
