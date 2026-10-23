@@ -22,10 +22,12 @@ The refresh token is the only value setup produces. A Google connector reads all
 import { connectGoogle, googleEnv, signIn } from "@withmarfa/google";
 
 const scopes = ["https://www.googleapis.com/auth/calendar.readonly"];
-const needs = { scopes, types: ["google.calendar.event"] };
+const source = "google-calendar";
+const needs = { source, scopes, types: ["google.calendar.event"] };
 
 export default defineConnector({
   // ...
+  source,
   env: googleEnv,
   setup: (context) => signIn(context, scopes),
   async run(context) {
@@ -43,12 +45,12 @@ export default defineConnector({
 ```
 
 - `signIn(context, scopes, options?)` is a connector's `setup`.
-- `connectGoogle(context, { scopes, types }, options?)` returns a `Google` for one run, `onChange`, `remake` or `preflight`. It takes the context the kit hands each of them. `scopes` lists every scope the connector needs. `types` lists the connector's own types, whose rows hold the account in their `source_id`; see [One account per instance](#one-account-per-instance).
+- `connectGoogle(context, { source, scopes, types }, options?)` returns a `Google` for one run, `onChange`, `remake` or `preflight`. It takes the context the kit hands each of them, never a context from the run's `forScope`, which cannot keep the account: passing one throws. `source` is the connector's own `source`. `scopes` lists every scope the connector needs. `types` lists the connector's own types, whose rows hold the account in their `source_id`; see [One account per instance](#one-account-per-instance). An empty `source`, `scopes` or `types` throws.
 - `options` can replace the Google endpoints, the clock and the request timeout. Tests use it to point a connector at a local stub.
 
 ### `google.ready()`
 
-Call it at the start of a run, before the run writes anything. It:
+Call it once in a run, and await it before any other work with Marfa or Google, including reads. Where no account is kept, `ready` keeps it with a checkpoint that goes through the kit's serial scope operations, and the kit fails that checkpoint if any other row operation of the run, such as an `upsert` or a `held` read, is in progress at the same time. It:
 
 1. Gets an access token, refreshing it when the process holds none or it is near its end. A grant Google already refused stops the run here.
 2. Learns the signed-in account. It reads `sub` from the ID token and asks Google's userinfo endpoint where there is no ID token.
@@ -113,7 +115,7 @@ A Marfa instance supports one Google account for its Google connectors. To use a
 
 Each connector keeps the account's `sub` in its state, under `google_account`, and checks every grant against it before the connector sends Google a request or writes to Marfa:
 
-- **The first run.** Where the connector keeps no account, `ready` reads the rows of the connector's `types`, in every state. If one holds a `source_id` that begins with another account, as `<sub>:`, the run fails with the account condition. Otherwise `ready` keeps the account at once, with a checkpoint of the connector's state, so it holds even if the run fails after writing rows.
+- **The first run.** Where the connector keeps no account, `ready` reads the rows of the connector's `types`, in every state, and judges only those written under the connector's `source`. If one of those holds a `source_id` that begins with another account, as `<sub>:`, the run fails with the account condition. A row from another source, such as one a person made, is never read for the account, whatever its `source_id` holds. Otherwise `ready` keeps the account at once, with a checkpoint of the connector's state, so it holds even if the run fails after writing rows.
 - **After the state was cleared.** Clearing a connector's state also clears the kept account, but not its rows. The next run reads the rows as the first run does, so a grant for another account is refused while the first account's rows remain.
 - **A later run.** A grant for another account fails the run with the account condition, and nothing is read or written.
 - **`onChange`, `remake` and `preflight`.** Each makes its own `Google`, and some run before the run's own `ready`, so `fetch` and `json` check the grant against the kept account first. A grant for another account raises the account condition and throws a `GoogleError` of kind `account`, which fails the run, and nothing is sent. Where the connector keeps no account yet, they throw `Unreachable` with the scope `google:account`, so nothing is sent until a run has kept the account.
