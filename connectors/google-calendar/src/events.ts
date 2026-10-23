@@ -61,11 +61,6 @@ export function linkOf(calendarId: string, eventId: string): string {
   return `${calendarId}/${eventId}`;
 }
 
-/** The id an event row's link holds after the calendar's. */
-export function eventIdOf(calendarId: string, link: string): string {
-  return link.slice(calendarId.length + 1);
-}
-
 /** The calendar a link names, and the event after it. */
 export function splitLink(
   link: string,
@@ -212,11 +207,9 @@ export function originalStartOf(
 
 export interface Mapped {
   readonly entry: Entry;
-  readonly link: string;
   /** Where the event begins, for ordering a series' cancellations. */
   readonly startMs: number;
   readonly zone: string;
-  readonly allDay: boolean;
 }
 
 /**
@@ -254,10 +247,8 @@ export function eventEntry(
     ];
   }
   return {
-    link,
     startMs: times.first,
     zone: times.zone,
-    allDay: times.allDay,
     entry: {
       source_id: `${account}:${link}`,
       properties: {

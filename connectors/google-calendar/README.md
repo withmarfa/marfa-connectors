@@ -13,7 +13,7 @@ For how to build, deploy and run a connector, see the [template README](../../te
 
 Each event row connects to its calendar with the `google.calendar.in-calendar` connection. That connection orphans: if you trash a calendar in Marfa, its events stay.
 
-A row's `source_id` is `<account>:<calendar ID>/<event ID>`, where `<account>` is the signed-in Google account. The calendar ID is part of the name because one event ID can appear on several calendars.
+A row's `source_id` is `<account>:<calendar ID>/<event ID>`, where `<account>` is the signed-in Google account's ID. The calendar ID is part of the name because one event ID can appear on several calendars.
 
 ### Which calendars
 
@@ -23,7 +23,7 @@ The connector reads every calendar in the account's calendar list, including hid
 - A calendar with a slash in its ID, which a row can't be named by. The connector raises the condition `calendar-id:<ID>`.
 - A calendar the account can only read, unless you name it in `GOOGLE_CALENDAR_READ_ONLY_CALENDARS`.
 
-A calendar that leaves the list, or a read-only calendar you stop naming, is archived with its events.
+A calendar that leaves the list, one whose access drops to read only, or a read-only calendar you stop naming, is archived with its events.
 
 ### Which events
 
@@ -130,7 +130,7 @@ The connector keeps a sync token for each calendar, so after the first read it a
 
 When Google says a token has expired (`410`), or something that changes how rows are written has changed, such as the calendar's time zone, the connector reads the calendar whole. In a whole read, a row the listing no longer returns is looked up directly, and only an answer of "gone" or "cancelled" archives it. A failed lookup stops the run and keeps the row.
 
-For a change to a series, the connector asks Google for the series and its instances, from a day before its start to five years past today, to find cancelled occurrences. Cancelled occurrences further out stay as they were.
+For a change to a series, the connector asks Google for the series and its instances, from a day before its start to five years past today or past its start, whichever is later, to find cancelled occurrences. Cancelled occurrences further out stay as they were.
 
 ## Limits
 

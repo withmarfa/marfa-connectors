@@ -95,10 +95,9 @@ function holding(items: readonly Item[]): Held {
     const parts = link === undefined ? undefined : splitLink(link);
     if (link === undefined || parts === undefined) continue;
     held.links.add(link);
-    held.byCalendar.set(parts.calendarId, [
-      ...(held.byCalendar.get(parts.calendarId) ?? []),
-      item,
-    ]);
+    const rows = held.byCalendar.get(parts.calendarId) ?? [];
+    rows.push(item);
+    held.byCalendar.set(parts.calendarId, rows);
     const where = held.byEvent.get(parts.eventId) ?? new Set<string>();
     where.add(parts.calendarId);
     held.byEvent.set(parts.eventId, where);

@@ -26,11 +26,10 @@ export function list(from: Json | undefined, key: string): unknown[] {
   return Array.isArray(value) ? (value as unknown[]) : [];
 }
 
-/** A page of a listing: its items, and the token that ends the last page. */
+/** Every page of a listing: its items, and the token the last page ends with. */
 export interface Listing {
   readonly items: Json[];
   readonly syncToken: string | undefined;
-  readonly timeZone: string | undefined;
 }
 
 const mostPages = 10_000;
@@ -60,7 +59,6 @@ export class CalendarApi {
   ): Promise<Listing> {
     const items: Json[] = [];
     let token: string | undefined;
-    let timeZone: string | undefined;
     for (let page = 0; page < mostPages; page += 1) {
       const body = await this.get(path, {
         ...query,
@@ -68,10 +66,9 @@ export class CalendarApi {
       });
       for (const item of list(body, "items"))
         if (isJson(item)) items.push(item);
-      timeZone ??= text(body, "timeZone");
       token = text(body, "nextPageToken");
       if (token === undefined) {
-        return { items, syncToken: text(body, "nextSyncToken"), timeZone };
+        return { items, syncToken: text(body, "nextSyncToken") };
       }
     }
     throw new GoogleError("Google kept answering pages", "passing");
