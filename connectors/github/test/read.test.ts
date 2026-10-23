@@ -1708,6 +1708,14 @@ describe("a personal access token run", () => {
     expect(result.output).toContain("unknown-kind");
   });
 
+  it("refuses to start with the App when GITHUB_READ_ONLY names an unknown kind", async () => {
+    const result = await once({ GITHUB_READ_ONLY: "issue,unknown-kind" });
+    expect(result.code).toBe(2);
+    expect(result.output).toContain(
+      "GITHUB_READ_ONLY holds an unknown kind (unknown-kind)",
+    );
+  });
+
   it("does not carry issues when GITHUB_READ_ONLY=issue", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository, { title: "Original" });
