@@ -1,6 +1,6 @@
 # Google Calendar
 
-Reads the calendars and events of a Google account into Marfa. This connector only reads: it never changes anything in Google Calendar. It signs in through the shared [Google sign-in](../../shared/google/README.md), so it uses the same OAuth client and refresh token as any other Google connector.
+Reads the calendars and events of a Google account into Marfa, and carries changes made to events in Marfa back to Google Calendar. It never invites anyone and never has Google email anyone. It signs in through the shared [Google sign-in](../../shared/google/README.md), so it uses the same OAuth client and refresh token as any other Google connector.
 
 For how to build, deploy and run a connector, see the [template README](../../template/README.md). This page covers what is specific to Google Calendar.
 
@@ -79,6 +79,7 @@ Without the calendar list scope, the connector reads nothing and raises a scope 
 | `GOOGLE_CLIENT_SECRET`                | That client's secret.                                                                                                      |
 | `GOOGLE_REFRESH_TOKEN`                | The value `--setup` writes.                                                                                                |
 | `GOOGLE_CALENDAR_READ_ONLY_CALENDARS` | Optional. Calendar IDs, separated by commas or spaces, of read-only calendars to read, such as a shared holidays calendar. |
+| `GOOGLE_CALENDAR_CONFIRM_PURGES`      | Optional. Lets one held batch of deletions through; see [The safety stop](#the-safety-stop).                               |
 
 Run it:
 
@@ -111,13 +112,13 @@ When an event moves between two calendars of the account, the connector keeps it
 
 ### Whether Marfa may change an event
 
-Nothing is written back to Google yet. `editable` and `uneditable_reason` record whether a later change from Marfa could be carried. `editable` is `false` when:
+`editable` and `uneditable_reason` record whether Marfa carries a change to the event back to Google. `editable` is `false` when:
 
 - The account can only read the calendar.
 - Google reserves the event kind.
 - The event is locked.
-- Someone else organizes the event, even if guests can modify it.
-- The event has any guest other than the account.
+- Someone else organizes the event, even when Google lets guests change it.
+- The event has guests other than the account. A change to an event with guests is a change to their calendars too, and Marfa doesn't send the invitations or updates that would tell them.
 
 ### Other fields
 
@@ -125,6 +126,59 @@ Nothing is written back to Google yet. `editable` and `uneditable_reason` record
 - `guests` is a list of objects with `email`, `name`, `response`, and `optional`, `self`, `organizer` or `resource` where true.
 - `changed_at` is Google's `updated` time. `occurred_at` is the event's start.
 - An event without a title is named `(No title)`.
+
+## What it carries back
+
+Google is asked for the event before each change, and the change is decided on the event as Google holds it then. Every write sets `sendUpdates=none`, so Google emails nobody, and no write names guests.
+
+| In Marfa                                                       | In Google Calendar                                                                                                                              |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create an event row.                                           | Makes the event on the calendar the row connects to through `google.calendar.in-calendar`, or on the primary calendar when it connects to none. |
+| Change `title`, `description`, `place`, `status` or the times. | Changes those fields of the event.                                                                                                              |
+| Change the `recurrence` of a series.                           | Changes the series' rules. See [Series](#series).                                                                                               |
+| Connect the row to another calendar.                           | Moves the event to that calendar. The row keeps its identity.                                                                                   |
+| Trash the row.                                                 | Deletes the event. Deleting a series deletes its occurrences, so the changed occurrences the trash takes with it send nothing of their own.     |
+| Restore the row.                                               | Brings the event back. If Google no longer has it, makes it again.                                                                              |
+| Purge the row.                                                 | Deletes the event, if the trash before it didn't.                                                                                               |
+
+Fields Google holds and Marfa doesn't change, such as `organizer`, `guests`, `url` and `calendar_id`, are read only: a change to one in Marfa is put back.
+
+`status` takes `confirmed` or `tentative`. Any other value is refused; trash the row to delete the event.
+
+The times are carried as the row holds them. An all-day event is written as its dates in its own time zone, so a row whose `starts_at` is midnight in Los Angeles is written as that day in Los Angeles. A switch between timed and all-day clears the form Google held before.
+
+### Making an event
+
+A row made in Marfa becomes an event whose Google ID is made from the row's ID. If the answer to the create is lost, the next run sends the same create, Google answers that it already holds that ID, and the connector links the row to the event the first try made. Until the row is linked, a read doesn't make a second row for that event.
+
+The connector refuses to make an event on a calendar the account can only read, and raises a condition that names the row.
+
+### When both sides change
+
+Each change sends only the fields changed in Marfa that differ from Google's event, held to Google's version of the event (its `etag`) that Marfa last read. If Google changed the event since, the change waits: the next read brings Google's change, and the kit decides between the two field by field. A field changed on one side only keeps that change.
+
+### Events Marfa may not change
+
+A change to an event whose `editable` is `false` isn't sent. The connector puts the fields changed in Marfa back to Google's values and raises the condition `declined:<row ID>`, with the reason. A trash of such a row leaves the event in Google. The same happens when Google refuses a change because the account isn't the organizer.
+
+### Series
+
+A change to a series' `recurrence` sends the rules it holds, and keeps Google's own `EXDATE` lines that the row still holds. The `EXDATE` lines the connector adds for cancelled occurrences are never sent as rules. Instead:
+
+- An `EXDATE` added in Marfa cancels that occurrence in Google.
+- An `EXDATE` removed in Marfa brings that cancelled occurrence back.
+
+A changed occurrence's row changes that occurrence alone. A series can't stop repeating from Marfa: a `recurrence` with no rules left is refused. An occurrence can't move to another calendar on its own, because Google moves a whole series.
+
+### Errors
+
+A rate limit, a server error or no answer from Google leaves the change in Marfa, raises a condition, and sends it again on the next run. A value Google refuses raises a condition that names the row, and the change isn't sent again until the row changes.
+
+### The safety stop
+
+Before it deletes anything for purged rows, the connector counts, for each calendar, the events Google still holds that the purges would delete. If one calendar would lose more than 10 events and more than a quarter of its events at once, nothing is carried to Google, the run fails, and the connector raises the condition `purges-held` with the numbers.
+
+To let that batch through, set `GOOGLE_CALENDAR_CONFIRM_PURGES` to the number of events the condition names, run once, and remove the setting. A different number holds the batch again.
 
 ## Progress and recovery
 
@@ -142,6 +196,8 @@ For a change to a series, the connector asks Google for the series and its insta
 
 ## Limits
 
-- Everything is read only. Nothing in Marfa changes Google Calendar.
+- The safety stop counts purges only. Trashing many rows in Marfa deletes their events without it; restoring the rows brings the events back.
+- A row made in Marfa is always made as an event of its own, even when you put it beneath a series: Marfa can't make a changed occurrence. Change a single occurrence in Google Calendar, or cancel it from the series row with an `EXDATE`.
+- When the safety stop holds a batch, the whole run fails, so nothing is read until the batch is confirmed or the purges are no longer pending.
 - A Marfa instance supports one Google account for its Google connectors. A grant for another account fails the run.
 - Fixture tests stand in for Google. They don't show how a live account behaves.
