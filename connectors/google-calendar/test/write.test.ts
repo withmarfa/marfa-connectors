@@ -1144,6 +1144,67 @@ describe("a series", () => {
     ).toEqual([]);
   });
 
+  const guests = {
+    attendees: [
+      { email: me, self: true, organizer: true },
+      { email: "kim@example.com" },
+    ],
+  };
+
+  it("declines to cancel an occurrence Marfa may not change, and puts its date back", async () => {
+    calendar.put(me, series);
+    calendar.put(me, {
+      ...occurrence("2026-10-26T10:00:00Z"),
+      summary: "Planning with Kim",
+      start: { dateTime: "2026-10-26T10:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T11:00:00Z", timeZone: london },
+      organizer: { email: me, self: true },
+      ...guests,
+    });
+    await landed();
+    const one = row(`${me}/weekly`);
+
+    server.edit(one.id, {
+      recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE:20261026T100000Z"],
+    });
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, "weekly_20261026T100000Z")?.["status"]).toBe(
+      "confirmed",
+    );
+    const said = conditions()[`declined:${one.id}`];
+    expect(said).toContain("2026-10-26T10:00:00Z");
+    expect(said).toContain("guests other than the account");
+    expect(server.byId(one.id).properties["recurrence"]).toEqual([
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+    ]);
+  });
+
+  it("declines to bring back a cancelled occurrence Marfa may not change, and keeps its date", async () => {
+    calendar.put(me, series);
+    const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+    calendar.cancel(me, id, {
+      ...rest,
+      organizer: { email: me, self: true },
+      ...guests,
+    });
+    await landed();
+    const one = row(`${me}/weekly`);
+    const lines = ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE:20261026T100000Z"];
+    expect(one.properties["recurrence"]).toEqual(lines);
+
+    server.edit(one.id, { recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"] });
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+    expect(conditions()[`declined:${one.id}`]).toContain(
+      "guests other than the account",
+    );
+    expect(server.byId(one.id).properties["recurrence"]).toEqual(lines);
+  });
+
   it("makes a series Google forgot again with every date it skips, Google's own and those it cancelled by name", async () => {
     calendar.put(me, {
       ...series,

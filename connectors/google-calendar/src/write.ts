@@ -897,9 +897,8 @@ async function update(
     );
   }
 
-  let current: Json = found;
-  let here = parts.calendarId;
   const destination = destinationOf(change, parts.calendarId);
+  let target: CalendarInfo | undefined;
   if (destination !== undefined) {
     if (event.recurringEventId !== undefined) {
       throw decline(
@@ -907,7 +906,7 @@ async function update(
         "Google Calendar moves a whole series to another calendar, not one occurrence",
       );
     }
-    const target = await calendarFor(session, destination);
+    target = await calendarFor(session, destination);
     if (target === undefined || !owned.has(target.role)) {
       throw decline(
         item,
@@ -916,17 +915,10 @@ async function update(
           : `the account can only read the calendar ${target.title}`,
       );
     }
-    current = await session.api.move(
-      parts.calendarId,
-      parts.eventId,
-      destination,
-      etag,
-    );
-    await context.setLink(item, linkOf(destination, parts.eventId));
-    here = destination;
-    calendar = target;
   }
 
+  const from = calendar;
+  calendar = target ?? calendar;
   const fields = patchOf(change.changed, item, event, calendar);
   const zone = zoneOf(text(object(found, "start"), "timeZone"), calendar.zone);
   const rowLines = linesOf(item.properties["recurrence"]);
@@ -939,14 +931,29 @@ async function update(
     plan = await planSeries(
       item,
       event,
-      here,
+      parts.calendarId,
       zone,
       rowLines,
       session,
       writing,
     );
+    // Decided before anything is sent, so a declined change sends nothing.
+    await checkSeries(item, plan, parts, from, session);
     if (plan.lines !== undefined) fields["recurrence"] = plan.lines;
     cancelled = plan.cancelled;
+  }
+
+  let current: Json = found;
+  let here = parts.calendarId;
+  if (target !== undefined) {
+    current = await session.api.move(
+      parts.calendarId,
+      parts.eventId,
+      target.id,
+      etag,
+    );
+    await context.setLink(item, linkOf(target.id, parts.eventId));
+    here = target.id;
   }
   if (Object.keys(fields).length > 0) {
     current = await session.api.patch(
@@ -956,8 +963,9 @@ async function update(
       text(current, "etag"),
     );
   }
-  if (plan !== undefined)
-    await applySeries(plan, here, parts.eventId, session, context);
+  if (plan !== undefined) {
+    await applySeries(plan, here, parts.eventId, calendar, session, context);
+  }
   return entryOf(session, calendar, current, cancelled);
 }
 
@@ -1065,31 +1073,82 @@ function removedBy(
     : sent.days.has(one.day);
 }
 
+/** Each occurrence a plan changes, with the status it gives it. */
+function stepsOf(
+  plan: SeriesPlan,
+): [Cancellation, "cancelled" | "confirmed"][] {
+  return [
+    ...plan.cancel.map((one) => [one, "cancelled"] as const),
+    ...plan.restore.map((one) => [one, "confirmed"] as const),
+  ] as [Cancellation, "cancelled" | "confirmed"][];
+}
+
+/** Why Marfa may not give an occurrence a status, or nothing where it may
+ *  or Google holds it so already. */
+function stepRefused(
+  found: Json,
+  status: string,
+  calendar: CalendarInfo,
+): string | undefined {
+  if (found["status"] === status) return undefined;
+  const event = eventOf(found);
+  return event === undefined ? undefined : uneditable(event, calendar);
+}
+
+/**
+ * Declines a change to a series that would cancel or bring back an
+ * occurrence Marfa may not change, such as a changed occurrence with other
+ * guests, as a change to that occurrence itself is declined.
+ */
+async function checkSeries(
+  item: Item,
+  plan: SeriesPlan,
+  parts: { calendarId: string; eventId: string },
+  calendar: CalendarInfo,
+  session: Session,
+): Promise<void> {
+  const refused: string[] = [];
+  for (const [one, status] of stepsOf(plan)) {
+    const found = await occurrenceOf(session, parts, one);
+    const reason =
+      found === undefined ? undefined : stepRefused(found, status, calendar);
+    if (reason !== undefined) {
+      refused.push(
+        `the occurrence at ${startParam(one)} is not to be ${status === "cancelled" ? "cancelled" : "brought back"}, since ${reason}`,
+      );
+    }
+  }
+  if (refused.length > 0) throw decline(item, refused.join("; "));
+}
+
 async function applySeries(
   plan: SeriesPlan,
   calendarId: string,
   seriesId: string,
+  calendar: CalendarInfo,
   session: Session,
   context: WriteContext,
 ): Promise<void> {
   const parts = { calendarId, eventId: seriesId };
-  for (const [ones, status] of [
-    [plan.cancel, "cancelled"],
-    [plan.restore, "confirmed"],
-  ] as const) {
-    for (const one of ones) {
-      const found = await occurrenceOf(session, parts, one);
-      if (found === undefined) {
-        context.log.info(
-          `Google Calendar holds no occurrence of ${linkOf(calendarId, seriesId)} at ${startParam(one)}, so there is none to ${status === "cancelled" ? "cancel" : "bring back"}`,
-        );
-        continue;
-      }
-      if (found["status"] === status) continue;
-      const id = text(found, "id");
-      if (id === undefined) continue;
-      await session.api.patch(calendarId, id, { status }, text(found, "etag"));
+  for (const [one, status] of stepsOf(plan)) {
+    const found = await occurrenceOf(session, parts, one);
+    if (found === undefined) {
+      context.log.info(
+        `Google Calendar holds no occurrence of ${linkOf(calendarId, seriesId)} at ${startParam(one)}, so there is none to ${status === "cancelled" ? "cancel" : "bring back"}`,
+      );
+      continue;
     }
+    if (found["status"] === status) continue;
+    const id = text(found, "id");
+    if (id === undefined) continue;
+    if (stepRefused(found, status, calendar) !== undefined) {
+      // Changed in Google since `checkSeries`: the next run reads it and
+      // declines the change there.
+      throw new Unreachable(
+        `Google Calendar changed the occurrence ${linkOf(calendarId, id)} since Marfa checked it, so the change to its series waits for the next read`,
+      );
+    }
+    await session.api.patch(calendarId, id, { status }, text(found, "etag"));
   }
 }
 
