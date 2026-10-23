@@ -18,6 +18,7 @@ import {
 } from "./rows.js";
 import { wireOf } from "./shipped.js";
 import type { Store } from "./store.js";
+import type { Updated } from "./watch.js";
 
 export const connectionsKey = "@connections";
 
@@ -149,6 +150,39 @@ export async function readEdges(
   return found;
 }
 
+/**
+ * The `edge.updated` frames that may have moved the connector's own end, by
+ * declared kind and the edge's other end. That end can move only where the
+ * other holds one edge of the kind, `one-to-one` or `one-to-many` as
+ * declared; and an edge the row it reached has already agreed is a move a
+ * run has carried, or a change to the edge's properties. The kit never
+ * updates an edge itself.
+ */
+export function mayHaveLeft(
+  kinds: Iterable<ConnectionDefinition>,
+  updated: readonly Updated[],
+  agreed: (id: string) => Agreement | undefined,
+): Map<string, Map<string, { row: string; at: string }>> {
+  const sought = new Map<string, Map<string, { row: string; at: string }>>();
+  const declared = [...kinds];
+  for (const { edgeType, row, other, at } of updated) {
+    for (const kind of declared) {
+      if (
+        wireOf(kind.id).edge !== edgeType ||
+        (kind.cardinality !== "one-to-one" &&
+          kind.cardinality !== "one-to-many") ||
+        agreed(row)?.connections?.[kind.id]?.includes(other) === true
+      )
+        continue;
+      const others =
+        sought.get(kind.id) ?? new Map<string, { row: string; at: string }>();
+      others.set(other, { row, at });
+      sought.set(kind.id, others);
+    }
+  }
+  return sought;
+}
+
 export interface Carried {
   readonly connections: Record<string, Connected>;
   readonly agreed: Record<string, string[]>;
@@ -184,6 +218,40 @@ export class Connections {
     const [type] = this.lanes.keys();
     if (ids.length === 0 || type === undefined) return new Map();
     return readEdges(this.marfa, type, ids, this.kinds.values());
+  }
+
+  /**
+   * The rows a person moved an edge away from, by when, which the edge's
+   * `edge.updated` does not name: it carries the edge only as it stands. For
+   * each edge that may have left one, every agreement the connector keeps is
+   * read once, for the rows that agreed the edge's other end; the row that
+   * agreed it is the one it left.
+   */
+  async leftBehind(updated: readonly Updated[]): Promise<Map<string, string>> {
+    const sought = mayHaveLeft(this.kinds.values(), updated, (id) =>
+      this.store.get(id),
+    );
+    if (sought.size === 0) return new Map();
+    const holds = (agreement: Agreement) =>
+      [...sought].flatMap(([kind, others]) =>
+        (agreement.connections?.[kind] ?? []).flatMap((other) => {
+          const moved = others.get(other);
+          return moved === undefined ? [] : [moved];
+        }),
+      );
+    const ids = await this.store.holding(
+      (agreement) => holds(agreement).length > 0,
+      this.signal,
+    );
+    const left = new Map<string, string>();
+    for (const id of ids) {
+      const agreement = this.store.get(id);
+      if (agreement === undefined) continue;
+      for (const { row, at } of holds(agreement)) {
+        if (row !== id && !left.has(id)) left.set(id, at);
+      }
+    }
+    return left;
   }
 
   /** Removals go first, so a target with one source moves, not refused. */
@@ -397,50 +465,114 @@ export class Connections {
     return false;
   }
 
+  /**
+   * Puts back what was agreed for each row's mirrored connections, removing
+   * every edge across the rows before drawing any: an edge a person moved
+   * from one row to another leaves the row it reached before the row it left
+   * draws it again, which a target holding one edge needs.
+   */
   async putBack(
-    item: Item,
-    spec: Spec,
-    agreement: Agreement,
-    edges: readonly Edge[],
-  ) {
-    let next = agreement;
-    for (const type of this.typesFrom(item.type)) {
-      const agreedList = agreement.connections?.[type];
-      if (!this.mirrored(spec, type)) continue;
-      // Nothing agreed on a two-way kind: the vendor's set is taken when it
-      // next names one.
-      if (spec.twoWay && agreedList === undefined) continue;
-      const kind = this.kinds.get(type);
-      if (kind === undefined) continue;
-      const agreed = new Set(agreedList ?? []);
-      const current = await this.own(edges, kind, agreed);
-      const add = [...agreed].filter((target) => !current.has(target));
-      const remove = [...current].filter(([target]) => !agreed.has(target));
-      if (add.length === 0 && remove.length === 0) continue;
-      const kept = new Set(agreed);
-      for (const [target, edge] of remove) {
-        if (!(await this.disconnect(edge, item, type, target)))
-          kept.add(target);
+    rows: readonly {
+      item: Item;
+      spec: Spec;
+      agreement: Agreement;
+      edges: readonly Edge[];
+    }[],
+  ): Promise<Map<string, Agreement>> {
+    const plans: {
+      item: Item;
+      type: string;
+      add: string[];
+      remove: [string, string][];
+      kept: Set<string>;
+      landed: boolean;
+    }[] = [];
+    for (const { item, spec, agreement, edges } of rows) {
+      for (const type of this.typesFrom(item.type)) {
+        const agreedList = agreement.connections?.[type];
+        if (!this.mirrored(spec, type)) continue;
+        // Nothing agreed on a two-way kind: the vendor's set is taken when it
+        // next names one.
+        if (spec.twoWay && agreedList === undefined) continue;
+        const kind = this.kinds.get(type);
+        if (kind === undefined) continue;
+        const agreed = new Set(agreedList ?? []);
+        const current = await this.own(edges, kind, agreed);
+        const add = [...agreed].filter((target) => !current.has(target));
+        const remove = [...current].filter(([target]) => !agreed.has(target));
+        if (add.length === 0 && remove.length === 0) continue;
+        plans.push({
+          item,
+          type,
+          add,
+          remove,
+          kept: new Set(agreed),
+          landed: false,
+        });
       }
-      const gone = await this.absent(add);
-      for (const { target } of await this.link(
-        add
-          .filter((target) => !gone.has(target))
-          .map((target) => ({ item, type, target })),
-      )) {
-        kept.delete(target);
+    }
+    for (const plan of plans) {
+      for (const [target, edge] of plan.remove) {
+        if (await this.disconnect(edge, plan.item, plan.type, target))
+          plan.landed = true;
+        else plan.kept.add(target);
       }
-      for (const target of gone) kept.delete(target);
+    }
+    // A target purged meanwhile is let go, which no person changed.
+    const gone = await this.absent([
+      ...new Set(plans.flatMap((plan) => plan.add)),
+    ]);
+    const adds = plans.flatMap((plan) =>
+      plan.add
+        .filter((target) => !gone.has(target))
+        .map((target) => ({ plan, target })),
+    );
+    const refused = await this.link(
+      adds.map(({ plan, target }) => ({
+        item: plan.item,
+        type: plan.type,
+        target,
+      })),
+    );
+    for (const { plan, target } of adds) {
+      if (
+        refused.some(
+          (one) =>
+            one.id === plan.item.id &&
+            one.type === plan.type &&
+            one.target === target,
+        )
+      )
+        plan.kept.delete(target);
+      else plan.landed = true;
+    }
+    for (const plan of plans) {
+      for (const target of plan.add)
+        if (gone.has(target)) plan.kept.delete(target);
+    }
+    const next = new Map(rows.map((row) => [row.item.id, row.agreement]));
+    for (const { item, spec } of rows) {
+      const own = plans.filter((plan) => plan.item.id === item.id);
+      if (own.length === 0) continue;
       if (
         spec.policy !== undefined &&
         (await this.freshOwned(item.id)) === undefined
       )
-        return agreement;
-      // A target purged meanwhile is let go, which no person changed.
-      if (remove.length > 0 || add.length > gone.size) {
-        this.putBackCondition(item.id, type);
+        continue;
+      for (const plan of own) {
+        const agreement = next.get(item.id);
+        if (agreement === undefined) continue;
+        if (plan.landed) this.putBackCondition(item.id, plan.type);
+        next.set(
+          item.id,
+          this.agreeOn(
+            agreement,
+            plan.type,
+            plan.kept,
+            agreement.pending?.[plan.type] ?? [],
+          ),
+        );
       }
-      next = this.agreeOn(next, type, kept, next.pending?.[type] ?? []);
     }
     return next;
   }

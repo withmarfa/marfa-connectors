@@ -61,6 +61,17 @@ interface Held {
   updated_at: string;
 }
 
+/** A write a helper refuses as the instance would refuse it over HTTP. */
+export class ScriptedRefusal extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(`${String(status)} ${code}`);
+  }
+}
+
 export interface EdgeRow {
   id: string;
   source_id: string;
@@ -822,6 +833,95 @@ export class ScriptedServer {
     this.announceEdge("edge.deleted", edge);
   }
 
+  /** Changes an edge as `PATCH /edges/{id}` does, moving one end or merging
+   *  properties: the edge keeps its id, and the log carries one
+   *  `edge.updated` with the edge as it now stands. A move the instance
+   *  refuses throws a `ScriptedRefusal` with its code and changes nothing. */
+  updateEdge(
+    id: string,
+    change: {
+      source_id?: string;
+      target_id?: string;
+      properties?: Record<string, unknown>;
+    },
+  ): EdgeRow {
+    const edge = this.edges.find((candidate) => candidate.id === id);
+    if (edge === undefined) throw new ScriptedRefusal(404, "edge_not_found");
+    const moves = (["source_id", "target_id"] as const).filter(
+      (end) => change[end] !== undefined && change[end] !== edge[end],
+    );
+    const [end] = moves;
+    const invalid = (path: string) =>
+      new ScriptedRefusal(400, "validation_error", {
+        errors: [{ path }],
+      });
+    if (moves.length > 1) throw invalid("target_id");
+    const kind = this.edgeTypes.get(edge.edge_type);
+    if (kind === undefined) throw new Error(`no edge type ${edge.edge_type}`);
+    const cardinality = String(kind["cardinality"]);
+    // The end that stays must hold one edge of the type, or there is no one
+    // edge to move.
+    if (
+      (end === "source_id" &&
+        !["one-to-one", "one-to-many"].includes(cardinality)) ||
+      (end === "target_id" &&
+        !["one-to-one", "many-to-one"].includes(cardinality))
+    )
+      throw invalid(end);
+    const to = end === undefined ? undefined : change[end];
+    const moved = { ...edge, ...(end !== undefined && { [end]: to }) };
+    const source = this.rows.find((row) => row.id === moved.source_id);
+    const target = this.rows.find((row) => row.id === moved.target_id);
+    if (
+      source === undefined ||
+      target === undefined ||
+      source.state === "trashed" ||
+      target.state === "trashed"
+    )
+      throw new ScriptedRefusal(404, "item_not_found");
+    if (end === undefined && change.properties === undefined)
+      throw new ScriptedRefusal(400, "missing_required_field");
+    if (end !== undefined && to !== undefined) {
+      if (source.id === target.id)
+        throw new ScriptedRefusal(400, "edge_cycle", {
+          edge_type: edge.edge_type,
+        });
+      const allowed = (constraints: unknown, type: string) =>
+        !Array.isArray(constraints) ||
+        constraints.length === 0 ||
+        constraints.includes("*") ||
+        constraints.includes(type);
+      if (!allowed(kind["source_type_constraints"], source.type))
+        throw new ScriptedRefusal(400, "edge_constraint_violation", {
+          source_type: source.type,
+        });
+      if (!allowed(kind["target_type_constraints"], target.type))
+        throw new ScriptedRefusal(400, "edge_constraint_violation", {
+          target_type: target.type,
+        });
+      if (
+        cardinality === "one-to-one" &&
+        this.edges.some(
+          (other) =>
+            other.id !== edge.id &&
+            other.edge_type === edge.edge_type &&
+            other[end] === to,
+        )
+      )
+        throw new ScriptedRefusal(400, "edge_constraint_violation", {
+          constraint: "cardinality",
+          edge_type: edge.edge_type,
+          [end]: to,
+        });
+      edge[end] = to;
+    }
+    edge.properties = { ...edge.properties, ...change.properties };
+    edge.version += 1;
+    edge.updated_at = this.now();
+    this.announceEdge("edge.updated", edge);
+    return edge;
+  }
+
   targetsOf(sourceId: string, edgeType: string): string[] {
     return this.edges
       .filter(
@@ -1382,13 +1482,16 @@ export class ScriptedServer {
     ) {
       const limit = Number(url.searchParams.get("limit") ?? "50");
       const from = Number(url.searchParams.get("cursor") ?? "0");
-      const waiting = [...this.agreements]
-        .filter(([, held]) => held.waiting)
+      const waiting = url.searchParams.get("waiting");
+      const listed = [...this.agreements]
+        .filter(
+          ([, held]) =>
+            waiting === null || held.waiting === (waiting === "true"),
+        )
         .map(([id, held]) => ({ item_id: id, ...structuredClone(held) }));
       send(200, {
-        data: waiting.slice(from, from + limit),
-        next_cursor:
-          from + limit < waiting.length ? String(from + limit) : null,
+        data: listed.slice(from, from + limit),
+        next_cursor: from + limit < listed.length ? String(from + limit) : null,
       });
       return;
     }
