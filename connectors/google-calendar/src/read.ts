@@ -131,8 +131,6 @@ interface Listed {
   readonly chosen: Map<string, CalendarInfo>;
   /** Every calendar the list holds, whether read or not. */
   readonly onList: Set<string>;
-  /** The calendars the list marks deleted. */
-  readonly deleted: Set<string>;
 }
 
 function selection(
@@ -143,16 +141,12 @@ function selection(
   const listed: Listed = {
     chosen: new Map(),
     onList: new Set(),
-    deleted: new Set(),
   };
   let left = 0;
   for (const item of items) {
     const calendar = calendarOf(item);
     if (calendar === undefined) continue;
-    if (item["deleted"] === true) {
-      listed.deleted.add(calendar.id);
-      continue;
-    }
+    if (item["deleted"] === true) continue;
     listed.onList.add(calendar.id);
     if (calendar.id === birthdays) continue;
     if (owned.has(calendar.role) || named.has(calendar.id)) {
@@ -229,11 +223,7 @@ export async function readCalendars(reading: Reading): Promise<void> {
   const { context, api, access } = reading;
   const { log } = context;
   const listed = await api.calendars();
-  const { chosen, onList, deleted } = selection(
-    listed.items,
-    reading.named,
-    context,
-  );
+  const { chosen, onList } = selection(listed.items, reading.named, context);
   if (!access.has(eventsScope)) {
     // Without the events permission only the calendars themselves are read.
     log.unreached({
@@ -281,7 +271,7 @@ export async function readCalendars(reading: Reading): Promise<void> {
 
   for (const id of before) {
     if (chosen.has(id)) continue;
-    if (!onList.has(id) && !deleted.has(id)) {
+    if (!onList.has(id)) {
       // One listing that leaves a calendar out is not Google removing it.
       let found: Json | "gone";
       try {
