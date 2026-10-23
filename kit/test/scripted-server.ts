@@ -670,7 +670,9 @@ export class ScriptedServer {
    * after it): the losing value on a new row of the original's type, under
    * the original's source, without its natural key or its link, tagged
    * `conflicted-copy` beside the original's tags, and linked to the original
-   * by one `derived-from` edge. `losing` is what the copy holds beyond the
+   * by one `derived-from` edge. It gives the copy none of the original's
+   * other edges (`versions/copy-edges-own`), so a test that needs one draws
+   * it. `losing` is what the copy holds beyond the
    * original's other properties; `winning` is written to the original after
    * the copy's events, as the resolution's own update.
    */
