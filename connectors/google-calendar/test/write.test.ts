@@ -1161,6 +1161,89 @@ describe("a series", () => {
     expect(writes("POST")).toEqual([]);
   });
 
+  it.each([
+    ["gone", false],
+    ["cancelled", true],
+  ])(
+    "brings back a cancelled occurrence on the next run when Google fails the first change, with the occurrence answered as %s",
+    async (_, getsCancelled) => {
+      calendar.getsCancelled = getsCancelled;
+      calendar.put(me, series);
+      const instance = "weekly_20261026T100000Z";
+      const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+      calendar.cancel(me, id, rest);
+      await landed();
+      const one = madeUnder(row(`${me}/weekly`), moved);
+      calendar.failNext((call) => call.method === "PATCH", 503, {
+        error: { code: 503, message: "Backend Error" },
+      });
+
+      await landed();
+      expect(calendar.event(me, instance)?.["status"]).toBe("cancelled");
+      expect(server.byId(one.id).properties["google_id"]).toBe(
+        `${me}/${instance}`,
+      );
+
+      server.edit(one.id, { title: "Planning, much later" });
+      await landed();
+      expect(calendar.event(me, instance)).toMatchObject({
+        status: "confirmed",
+        summary: "Planning, much later",
+        start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+        end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+      });
+      expect(conditions()).toEqual({});
+      expect(server.byId(one.id).state).toBe("active");
+      expect(server.byId(one.id).properties["etag"]).toBe(
+        calendar.event(me, instance)?.["etag"],
+      );
+
+      const sent = writes().length;
+      await landed();
+      expect(writes()).toHaveLength(sent);
+    },
+  );
+
+  it("does not bring back an occurrence read from Google and then cancelled there", async () => {
+    calendar.put(me, series);
+    const instance = "weekly_20261026T100000Z";
+    calendar.put(me, {
+      ...occurrence("2026-10-26T10:00:00Z"),
+      summary: "Planning, later",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+      organizer: { email: me, self: true },
+    });
+    await landed();
+    const exception = row(`${me}/${instance}`);
+    expect(exception.properties["etag"]).toBeDefined();
+
+    const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+    calendar.cancel(me, id, rest);
+    server.edit(exception.id, { title: "Planning, much later" });
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, instance)?.["status"]).toBe("cancelled");
+  });
+
+  it("does not bring back an occurrence made in Marfa once it landed and Google then cancelled it", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    await landed();
+    const instance = "weekly_20261026T100000Z";
+    expect(server.byId(one.id).properties["etag"]).toBeDefined();
+
+    const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+    calendar.cancel(me, id, rest);
+    server.edit(one.id, { title: "Planning, much later" });
+    await landed();
+
+    expect(writes()).toHaveLength(1);
+    expect(calendar.event(me, instance)?.["status"]).toBe("cancelled");
+  });
+
   const agenda = {
     description: "Agenda: the roadmap",
     location: "https://meet.example.com/planning",
@@ -1290,6 +1373,38 @@ describe("a series", () => {
     expect(server.byId(one.id).properties["google_id"]).toBe(
       `${team}/daily_20261102`,
     );
+  });
+
+  it("writes a changed occurrence with no zone of its own in its all-day series' zone, not the calendar's", async () => {
+    const tokyo = "Asia/Tokyo";
+    calendar.put(me, {
+      ...daily,
+      start: { date: "2026-10-26", timeZone: tokyo },
+      end: { date: "2026-10-27", timeZone: tokyo },
+    });
+    await landed();
+    // Midnight of 2 November in Tokyo, which is still 1 November in London.
+    madeUnder(row(`${me}/daily`), {
+      title: "Offsite",
+      starts_at: "2026-11-01T15:00:00Z",
+      ends_at: "2026-11-02T15:00:00Z",
+      all_day: true,
+      original_starts_at: "2026-11-01T15:00:00Z",
+    });
+
+    await landed();
+
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(me, "daily_20261102"),
+        body: {
+          summary: "Offsite",
+          start: { date: "2026-11-02", timeZone: tokyo },
+          end: { date: "2026-11-03", timeZone: tokyo },
+        },
+      }),
+    ]);
   });
 
   it("refuses a changed occurrence of a series Marfa may not change", async () => {

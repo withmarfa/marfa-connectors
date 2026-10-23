@@ -146,7 +146,7 @@ Fields Google holds and Marfa doesn't change, such as `organizer`, `guests`, `ur
 
 `status` takes `confirmed` or `tentative`. Any other value is refused; trash the row to delete the event.
 
-The times are carried as the row holds them. An all-day event is written as its dates in its own time zone, so a row whose `starts_at` is midnight in Los Angeles is written as that day in Los Angeles. A switch between timed and all-day clears the form Google held before.
+The times are carried as the row holds them. An all-day event is written as its dates in its own time zone, so a row whose `starts_at` is midnight in Los Angeles is written as that day in Los Angeles. A changed occurrence with no time zone of its own follows its series' time zone, not the calendar's. A switch between timed and all-day clears the form Google held before.
 
 ### Making an event
 
@@ -173,7 +173,7 @@ A change to a series' `recurrence` sends the rules it holds, and keeps Google's 
 
 A changed occurrence's row changes that occurrence alone. A series can't stop repeating from Marfa: a `recurrence` with no rules left is refused. An occurrence can't move to another calendar on its own, because Google moves a whole series.
 
-To change one occurrence from Marfa, make a row beneath the series, through `parent-of`, with `original_starts_at` set to the start of the occurrence it replaces. For an all-day series, that's midnight of the occurrence's date in the series' time zone. Google already holds every occurrence of a series, so the connector changes that occurrence rather than making an event, and links the row to it. It sends the row's times, and each of `title`, `description`, `place` and `status` that the row holds and that differs from the occurrence. A field the row doesn't hold keeps the occurrence's value, such as the agenda and meeting link the occurrence has from its series. An occurrence cancelled in Google comes back. The connector refuses the row, and raises a condition that names it, when:
+To change one occurrence from Marfa, make a row beneath the series, through `parent-of`, with `original_starts_at` set to the start of the occurrence it replaces. For an all-day series, that's midnight of the occurrence's date in the series' time zone. Google already holds every occurrence of a series, so the connector changes that occurrence rather than making an event, and links the row to it. It sends the row's times, and each of `title`, `description`, `place` and `status` that the row holds and that differs from the occurrence. A field the row doesn't hold keeps the occurrence's value, such as the agenda and meeting link the occurrence has from its series. An occurrence cancelled in Google comes back. If the change fails after the row is linked, the next run sends it again with the row as it is then, and an occurrence cancelled in Google still comes back. Once the change has landed, an occurrence later cancelled in Google stays cancelled. The connector refuses the row, and raises a condition that names it, when:
 
 - The series has no Google ID, or Google no longer has it.
 - Marfa may not change the series or the occurrence. See [Events Marfa may not change](#events-marfa-may-not-change).

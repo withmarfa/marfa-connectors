@@ -34,6 +34,9 @@ export class CalendarStub {
   unlisted: Json[] = [];
   /** How many items a page holds. */
   pageSize = 2500;
+  /** Whether a `GET` for a cancelled event answers it as cancelled, where
+   *  Google may answer `410` instead. */
+  getsCancelled = false;
   private readonly stores = new Map<string, Map<string, Stored>>();
   private readonly expired = new Map<string, number>();
   private readonly failures: Failure[] = [];
@@ -236,7 +239,8 @@ export class CalendarStub {
     }
     if (
       found.event["status"] === "cancelled" &&
-      call.query["showDeleted"] !== "true"
+      call.query["showDeleted"] !== "true" &&
+      !this.getsCancelled
     ) {
       return [
         410,
