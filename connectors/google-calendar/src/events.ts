@@ -167,6 +167,12 @@ export function eventOf(raw: Json): GoogleEvent | undefined {
   };
 }
 
+/** Whether an event gets a row: a working-location entry is not an
+ *  appointment. */
+export function appointment(event: GoogleEvent): boolean {
+  return event.kind !== "workingLocation";
+}
+
 /**
  * Why Marfa may not change an event, or nothing where it may. An event with
  * a guest other than the account is someone else's to agree to, so Marfa
@@ -220,12 +226,14 @@ function timesOf(event: GoogleEvent, calendar: CalendarInfo) {
   if (start.date !== undefined) {
     const zone = zoneOf(start.timeZone, calendar.zone);
     const first = dayStart(zone, start.date);
-    const lastDate =
-      end?.date !== undefined && end.date > start.date
-        ? end.date
-        : nextDay(start.date);
-    const last = dayStart(zone, lastDate);
-    if (first === undefined || last === undefined) return undefined;
+    if (first === undefined) return undefined;
+    const after =
+      end?.date === undefined ? undefined : dayStart(zone, end.date);
+    const last =
+      after !== undefined && after > first
+        ? after
+        : dayStart(zone, nextDay(start.date));
+    if (last === undefined) return undefined;
     return {
       allDay: true,
       zone,
