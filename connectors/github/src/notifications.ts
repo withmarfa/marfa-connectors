@@ -365,23 +365,23 @@ export async function readNotifications(
     admitted.set(String(thread.id), thread);
   }
   const nodes = new Map<string, string>();
-  if (
-    [...admitted.values()].some(
-      (one) => concerned[one.subject?.type ?? ""] !== undefined,
-    )
-  ) {
-    for (const { type } of Object.values(concerned)) {
-      for (const row of await scoped.held(type, { state: "active" })) {
-        const id = row.properties["github_id"];
-        const repository = row.properties["repository"];
-        const number = row.properties["number"];
-        if (
-          typeof id === "string" &&
-          typeof repository === "string" &&
-          typeof number === "number"
-        )
-          nodes.set(`${type} ${placeOf(repository, number)}`, id);
-      }
+  const wanted = new Set(
+    [...admitted.values()].flatMap((one) => {
+      const kind = concerned[one.subject?.type ?? ""];
+      return kind === undefined ? [] : [kind.type];
+    }),
+  );
+  for (const type of wanted) {
+    for (const row of await scoped.held(type, { state: "active" })) {
+      const id = row.properties["github_id"];
+      const repository = row.properties["repository"];
+      const number = row.properties["number"];
+      if (
+        typeof id === "string" &&
+        typeof repository === "string" &&
+        typeof number === "number"
+      )
+        nodes.set(`${type} ${placeOf(repository, number)}`, id);
     }
   }
   const entries: Entry[] = [];

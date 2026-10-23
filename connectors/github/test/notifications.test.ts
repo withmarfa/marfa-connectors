@@ -202,6 +202,55 @@ describe("notifications", () => {
     expect(conditions()).toEqual({});
   });
 
+  it("reads only the types the listing concerns", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repo, { title: "An issue" });
+    const pr = github.addPullRequest(repo, { title: "A change" });
+    const discussion = github.addDiscussion(repo, { title: "A question" });
+    const reads = (type: string) =>
+      marfa.requests.filter(
+        (one) =>
+          one.method === "GET" &&
+          one.path === "/items" &&
+          one.query.get("type") === type,
+      ).length;
+    const counted = async () => {
+      marfa.requests.length = 0;
+      await ok();
+      return {
+        issue: reads("github.issue"),
+        pull: reads("github.pull_request"),
+        discussion: reads("github.discussion"),
+      };
+    };
+    await ok();
+    github.notifications.add(repo, {
+      type: "Issue",
+      title: issue.title,
+      number: issue.number,
+    });
+    const onlyIssues = await counted();
+    // The witness: each thread of another kind makes the listing read that
+    // kind's rows, and only that kind's.
+    github.notifications.add(repo, {
+      type: "PullRequest",
+      title: pr.title,
+      number: pr.number,
+    });
+    const withPull = await counted();
+    expect(withPull.pull).toBe(onlyIssues.pull + 1);
+    expect(withPull.discussion).toBe(onlyIssues.discussion);
+    expect(withPull.issue).toBe(onlyIssues.issue);
+    github.notifications.add(repo, {
+      type: "Discussion",
+      title: discussion.title,
+      number: discussion.number,
+    });
+    const withDiscussion = await counted();
+    expect(withDiscussion.discussion).toBe(withPull.discussion + 1);
+    expect(withDiscussion.pull).toBe(withPull.pull);
+  });
+
   it("leaves a link the person made from a notification alone", async () => {
     const repo = github.addRepository("someone/tracker");
     const issue = github.addIssue(repo, { title: "Concerned" });
