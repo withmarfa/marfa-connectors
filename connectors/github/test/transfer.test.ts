@@ -29,6 +29,7 @@ beforeEach(async () => {
       "github.file",
       "github.file.image",
       "github.pull_request",
+      "github.notification",
     ],
     edges: [
       "github.in-repository",
@@ -41,6 +42,7 @@ beforeEach(async () => {
       "github.closed-by",
       "in-thread",
       "parent-of",
+      "references",
     ],
   }).start();
   marfa.grants = {
