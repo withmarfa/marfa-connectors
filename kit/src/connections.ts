@@ -243,7 +243,6 @@ export class Connections {
       (agreement) => holds(agreement).length > 0,
       this.signal,
     );
-    await this.store.fetch(ids);
     const left = new Map<string, string>();
     for (const id of ids) {
       const agreement = this.store.get(id);

@@ -329,11 +329,22 @@ describe("connections, whatever order the rows come in", () => {
     const three = harness.server.row("a:3");
 
     harness.server.updateEdge(edge.id, { source_id: two.id });
+    const before = harness.server.requests.length;
     expect(await harness.twoWay(held)).toBe(0);
 
     expect(childrenOf(1)).toEqual([]);
     expect(childrenOf(2)).toEqual(["a:3"]);
     expect(scans()).toBe(1);
+    // The scan holds the agreement it found, so none is looked up again.
+    expect(
+      harness.server.requests
+        .slice(before)
+        .filter(
+          (request) =>
+            request.path.endsWith("/agreements/lookup") &&
+            JSON.stringify(request.body).includes(one.id),
+        ),
+    ).toEqual([]);
     expect(
       held.changes.map((change) => {
         const carried = change.connections?.["test.parent-of"];

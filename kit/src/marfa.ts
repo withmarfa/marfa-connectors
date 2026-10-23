@@ -1085,12 +1085,11 @@ export class Marfa {
     return data.data;
   }
 
-  /** The connector's agreements, page by page; only those waiting, or only
-   *  the others, where `waiting` says. */
+  /** The connector's agreements, page by page, or only those waiting. */
   agreements(
     id: string,
     signal: AbortSignal,
-    waiting?: boolean,
+    { waiting = false }: { waiting?: boolean } = {},
   ): AsyncIterable<{ item_id: string; record: unknown }> {
     return pages(async (cursor) => {
       const { data, error, response } = await this.client.GET(
@@ -1099,9 +1098,7 @@ export class Marfa {
           params: {
             path: { id },
             query: {
-              ...(waiting !== undefined && {
-                waiting: waiting ? ("true" as const) : ("false" as const),
-              }),
+              ...(waiting && { waiting: "true" as const }),
               limit: 200,
               ...(cursor !== undefined && { cursor }),
             },
