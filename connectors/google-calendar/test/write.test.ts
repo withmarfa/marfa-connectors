@@ -1161,11 +1161,17 @@ describe("a series", () => {
     expect(writes("POST")).toEqual([]);
   });
 
+  function failPatch(): void {
+    calendar.failNext((call) => call.method === "PATCH", 503, {
+      error: { code: 503, message: "Backend Error" },
+    });
+  }
+
   it.each([
     ["gone", false],
     ["cancelled", true],
   ])(
-    "brings back a cancelled occurrence on the next run when Google fails the first change, with the occurrence answered as %s",
+    "brings back a cancelled occurrence on the next run when Google fails the first change, then carries an edit made since, with the occurrence answered as %s",
     async (_, getsCancelled) => {
       calendar.getsCancelled = getsCancelled;
       calendar.put(me, series);
@@ -1174,9 +1180,7 @@ describe("a series", () => {
       calendar.cancel(me, id, rest);
       await landed();
       const one = madeUnder(row(`${me}/weekly`), moved);
-      calendar.failNext((call) => call.method === "PATCH", 503, {
-        error: { code: 503, message: "Backend Error" },
-      });
+      failPatch();
 
       await landed();
       expect(calendar.event(me, instance)?.["status"]).toBe("cancelled");
@@ -1188,12 +1192,27 @@ describe("a series", () => {
       await landed();
       expect(calendar.event(me, instance)).toMatchObject({
         status: "confirmed",
-        summary: "Planning, much later",
+        summary: "Planning, later",
         start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
         end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
       });
       expect(conditions()).toEqual({});
       expect(server.byId(one.id).state).toBe("active");
+      expect(server.byId(one.id).properties["title"]).toBe(
+        "Planning, much later",
+      );
+
+      await landed();
+      expect(writes().at(-1)).toMatchObject({
+        method: "PATCH",
+        path: eventPath(me, instance),
+        body: { summary: "Planning, much later" },
+      });
+      expect(calendar.event(me, instance)).toMatchObject({
+        status: "confirmed",
+        summary: "Planning, much later",
+      });
+      expect(conditions()).toEqual({});
       expect(server.byId(one.id).properties["etag"]).toBe(
         calendar.event(me, instance)?.["etag"],
       );
@@ -1203,6 +1222,108 @@ describe("a series", () => {
       expect(writes()).toHaveLength(sent);
     },
   );
+
+  function wholeReads(): number {
+    return calendar.calls.filter(
+      (call) =>
+        call.method === "GET" &&
+        call.path === eventPath(me) &&
+        call.query["syncToken"] === undefined &&
+        call.query["pageToken"] === undefined,
+    ).length;
+  }
+
+  it.each([
+    ["gone", false],
+    ["cancelled", true],
+  ])(
+    "keeps a changed occurrence made in Marfa through a whole read before its change to a cancelled occurrence lands, with the occurrence answered as %s",
+    async (_, getsCancelled) => {
+      calendar.getsCancelled = getsCancelled;
+      calendar.put(me, series);
+      const instance = "weekly_20261026T100000Z";
+      const exdate = "EXDATE:20261026T100000Z";
+      const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+      calendar.cancel(me, id, rest);
+      await landed();
+      const parent = row(`${me}/weekly`);
+      expect(parent.properties["recurrence"]).toContain(exdate);
+      const one = madeUnder(parent, moved);
+
+      failPatch();
+      await landed();
+      expect(calendar.event(me, instance)?.["status"]).toBe("cancelled");
+      expect(server.byId(one.id).properties["google_id"]).toBe(
+        `${me}/${instance}`,
+      );
+
+      failPatch();
+      calendar.expire(me);
+      const before = wholeReads();
+      await landed();
+      expect(wholeReads()).toBe(before + 1);
+      expect(calendar.event(me, instance)?.["status"]).toBe("cancelled");
+      expect(server.byId(one.id).state).toBe("active");
+      expect(server.byId(one.id).properties).toMatchObject({
+        google_id: `${me}/${instance}`,
+        title: "Planning, later",
+      });
+      // Google still holds the occurrence cancelled, so the series says so.
+      expect(row(`${me}/weekly`).properties["recurrence"]).toContain(exdate);
+
+      await landed();
+      expect(calendar.event(me, instance)).toMatchObject({
+        status: "confirmed",
+        summary: "Planning, later",
+      });
+      expect(server.byId(one.id).state).toBe("active");
+      expect(conditions()).toEqual({});
+      expect(row(`${me}/weekly`).properties["recurrence"]).not.toContain(
+        exdate,
+      );
+      expect(eventRows().sort()).toEqual([parent.id, one.id].sort());
+    },
+  );
+
+  it("archives a changed occurrence made in Marfa on a whole read once its change landed and Google then cancelled it", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    await landed();
+    const instance = "weekly_20261026T100000Z";
+    expect(calendar.event(me, instance)?.["summary"]).toBe("Planning, later");
+
+    const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+    calendar.cancel(me, id, rest);
+    calendar.expire(me);
+    const before = wholeReads();
+    await landed();
+
+    expect(wholeReads()).toBe(before + 1);
+    expect(server.byId(one.id).state).toBe("archived");
+    expect(row(`${me}/weekly`).properties["recurrence"]).toContain(
+      "EXDATE:20261026T100000Z",
+    );
+  });
+
+  it("sends nothing when a changed occurrence made in Marfa is trashed before its change lands", async () => {
+    calendar.put(me, series);
+    await landed();
+    const one = madeUnder(row(`${me}/weekly`), moved);
+    failPatch();
+    await landed();
+    const instance = "weekly_20261026T100000Z";
+    const sent = writes().length;
+
+    server.trash(one.id);
+    await landed();
+
+    expect(writes()).toHaveLength(sent);
+    expect(writes().map((call) => call.method)).toEqual(["PATCH"]);
+    expect(calendar.event(me, instance)).toBeUndefined();
+    expect(conditions()).toEqual({});
+    expect(server.byId(one.id).state).toBe("trashed");
+  });
 
   it("does not bring back an occurrence read from Google and then cancelled there", async () => {
     calendar.put(me, series);

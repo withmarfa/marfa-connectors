@@ -35,12 +35,14 @@ import {
   linkOf,
   makingOf,
   owned,
+  replacingOf,
   splitLink,
   uneditable,
   zoneOf,
   type CalendarInfo,
   type GoogleEvent,
   type Making,
+  type Replacing,
 } from "./events.js";
 import {
   cancellationOf,
@@ -501,9 +503,9 @@ function calendarsNamed(change: Change): Set<string> {
  * A changed occurrence made in Marfa: a row beneath a series, naming the
  * start it replaces. Google holds every occurrence of a series already, so
  * the row changes that occurrence rather than making an event of its own.
- * The row is linked before the occurrence is changed, so an occurrence
- * another row holds is refused before anything is sent; a change that fails
- * after the link is sent again by `replaceAgain`.
+ * The change is kept in the outbound journal before anything is sent, so one
+ * that fails is sent again as it was, and the read leaves the occurrence's
+ * row alone until it lands.
  */
 async function replaceOccurrence(
   change: Change,
@@ -545,7 +547,7 @@ async function replaceOccurrence(
     );
   }
   const calendar = calendarIn(session, parts.calendarId, item);
-  const { instance, id, zone } = await occurrenceFor(
+  const found = await occurrenceFor(
     item,
     original,
     parts,
@@ -553,9 +555,58 @@ async function replaceOccurrence(
     calendar,
     session,
   );
-  // Decided before the link, so a row the patch refuses stays unlinked.
+  // Decided before the journal, so a row the patch refuses keeps nothing.
+  occurrencePatch(item, found.instance, { ...calendar, zone: found.zone });
+  const replacing: Replacing = {
+    calendarId: calendar.id,
+    seriesId: parts.eventId,
+    eventId: found.id,
+  };
+  const held = await context.outbound.save(change, {
+    request: replacing as unknown as JsonValue,
+    baseline: null,
+  });
+  return replace(held, replacing, session, context, found);
+}
+
+/**
+ * Sends a journaled change of a changed occurrence made in Marfa and keeps
+ * it as done. The row is linked first, so an occurrence another row holds is
+ * refused before anything is sent. A change sent again finds the occurrence
+ * anew, cancelled or not, and an occurrence cancelled in Google comes back,
+ * as the first try would have brought it.
+ */
+async function replace(
+  held: OutboundIntent,
+  replacing: Replacing,
+  session: Session,
+  context: WriteContext,
+  first?: { instance: Json; id: string; zone: string },
+): Promise<Entry | undefined> {
+  if (held.acknowledged) return undefined;
+  if (held.requestNotApplied === true) {
+    await context.outbound.prepareRetry(held.change.item.id, held.token);
+  }
+  const { item } = held.change;
+  const calendar = calendarIn(session, replacing.calendarId, item);
+  // The journal keeps the change as `replaceOccurrence` checked it.
+  const { instance, id, zone } =
+    first ??
+    (await occurrenceFor(
+      item,
+      Date.parse(textOf(item, "original_starts_at") ?? ""),
+      { calendarId: replacing.calendarId, eventId: replacing.seriesId },
+      linkOf(replacing.calendarId, replacing.seriesId),
+      calendar,
+      session,
+    ));
+  const target = linkOf(calendar.id, replacing.eventId);
+  if (id !== replacing.eventId) {
+    throw new Refused(
+      `Google Calendar no longer has the occurrence ${target}, so ${named(item)} is not carried`,
+    );
+  }
   const fields = occurrencePatch(item, instance, { ...calendar, zone });
-  const target = linkOf(calendar.id, id);
   try {
     await context.setLink(item, target);
   } catch (error) {
@@ -570,7 +621,9 @@ async function replaceOccurrence(
     fields,
     text(instance, "etag"),
   );
-  return entryOf(session, calendar, changed);
+  const entry = entryOf(session, calendar, changed);
+  await context.outbound.acknowledge(item.id, held.token, entry);
+  return entry;
 }
 
 function seriesRefused(series: string, item: Item, reason: string): Refused {
@@ -669,12 +722,22 @@ async function make(
 }
 
 /** Sends a journaled write, links the row to what it made, and keeps that
- *  as done. A write sent again first asks Google whether the first landed. */
+ *  as done. A write sent again first asks Google whether the first landed.
+ *  The change of a changed occurrence is sent by `replace`. */
 async function settle(
   held: OutboundIntent,
   context: WriteContext,
   writing: Writing,
 ): Promise<Entry | undefined> {
+  const replacing = replacingOf(held.request);
+  if (replacing !== undefined) {
+    return replace(
+      held,
+      replacing,
+      await sessionFor(context, writing),
+      context,
+    );
+  }
   const making = makingOf(held.request);
   if (making === undefined) {
     throw new Refused(
@@ -759,51 +822,6 @@ async function occurrenceOf(
   });
 }
 
-/**
- * Sends again the change of a changed occurrence made in Marfa that never
- * landed: the row was linked, and the change that followed failed. Nothing
- * was agreed for the row, so an occurrence cancelled in Google comes back,
- * as the first try would have brought it. Google answers a cancelled
- * occurrence as cancelled or as gone, so the series is found from the
- * occurrence or its id, and is held only where its occurrence at the row's
- * original start has the row's id.
- */
-async function replaceAgain(
-  item: Item,
-  parts: { calendarId: string; eventId: string },
-  found: Json | "gone",
-  calendar: CalendarInfo,
-  session: Session,
-): Promise<Entry | undefined> {
-  const original = Date.parse(textOf(item, "original_starts_at") ?? "");
-  const event = found === "gone" ? undefined : eventOf(found);
-  const cut = parts.eventId.lastIndexOf("_");
-  const seriesId =
-    event?.recurringEventId ??
-    (cut > 0 ? parts.eventId.slice(0, cut) : undefined);
-  const gone = new Refused(
-    `Google Calendar no longer has ${named(item)}, so the change is not carried`,
-  );
-  if (seriesId === undefined || !Number.isFinite(original)) throw gone;
-  const series = { calendarId: parts.calendarId, eventId: seriesId };
-  const { instance, id, zone } = await occurrenceFor(
-    item,
-    original,
-    series,
-    linkOf(series.calendarId, seriesId),
-    calendar,
-    session,
-  );
-  if (id !== parts.eventId) throw gone;
-  const changed = await session.api.patch(
-    calendar.id,
-    id,
-    occurrencePatch(item, instance, { ...calendar, zone }),
-    text(instance, "etag"),
-  );
-  return entryOf(session, calendar, changed);
-}
-
 // --- Update -----------------------------------------------------------------
 
 async function update(
@@ -824,13 +842,6 @@ async function update(
   const session = await sessionFor(context, writing);
   let calendar = calendarIn(session, parts.calendarId, item);
   const found = await session.api.event(parts.calendarId, parts.eventId);
-  if (
-    (found === "gone" || found["status"] === "cancelled") &&
-    change.made !== undefined &&
-    textOf(item, "original_starts_at") !== undefined
-  ) {
-    return replaceAgain(item, parts, found, calendar, session);
-  }
   if (found === "gone" || found["status"] === "cancelled") {
     throw new Refused(
       `Google Calendar no longer has ${named(item)}, so the change is not carried`,
@@ -1093,6 +1104,8 @@ async function deleteEvent(
  * under the row's own id on the calendar the saved write names, so it is
  * deleted there, and the write is then settled, so it is never sent again.
  * Where the delete's answer is lost too, the next run asks Google again.
+ * A changed occurrence's change that never landed made nothing, and Google
+ * held the occurrence before the row, so it is settled with nothing sent.
  */
 async function overtaken(
   held: OutboundIntent,
@@ -1100,6 +1113,12 @@ async function overtaken(
   writing: Writing,
 ): Promise<undefined> {
   const { item } = held.change;
+  if (replacingOf(held.request) !== undefined) {
+    if (!held.acknowledged) {
+      await context.outbound.acknowledge(item.id, held.token);
+    }
+    return undefined;
+  }
   const making = makingOf(held.request);
   if (making?.eventId !== eventIdFor(item.id)) {
     throw new Refused(
@@ -1235,7 +1254,8 @@ async function deleting(
 }
 
 /** The event a row's trash or purge deletes: the one an unanswered create
- *  made under the row's own id, or the one the row is linked to. */
+ *  made under the row's own id, or the one the row is linked to. A changed
+ *  occurrence whose change has not landed deletes none. */
 function deletedBy(
   item: Item,
   context: WriteContext,

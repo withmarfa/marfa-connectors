@@ -63,7 +63,7 @@ export function linkOf(calendarId: string, eventId: string): string {
 
 /**
  * A write that makes an event under the row's own id, kept in the outbound
- * journal until its row is linked. Until then the read leaves that event
+ * journal until it is answered. Until then the read leaves that event
  * alone, since the write links it and a row read for it would be a second
  * one.
  */
@@ -84,6 +84,32 @@ export function makingOf(request: JsonValue): Making | undefined {
     return undefined;
   }
   return request as unknown as Making;
+}
+
+/**
+ * The change a changed occurrence made in Marfa sends to the occurrence it
+ * replaces, kept in the outbound journal until it lands. Until then the read
+ * leaves the occurrence's row alone, since Google still holds the occurrence
+ * as it was, which may be cancelled.
+ */
+export interface Replacing {
+  readonly calendarId: string;
+  readonly seriesId: string;
+  /** The occurrence's own id. */
+  readonly eventId: string;
+}
+
+export function replacingOf(request: JsonValue): Replacing | undefined {
+  if (!isJson(request)) return undefined;
+  const { calendarId, seriesId, eventId } = request;
+  if (
+    typeof calendarId !== "string" ||
+    typeof seriesId !== "string" ||
+    typeof eventId !== "string"
+  ) {
+    return undefined;
+  }
+  return request as unknown as Replacing;
 }
 
 /** The id an event row's link holds after the calendar's. */
