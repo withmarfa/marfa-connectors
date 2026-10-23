@@ -142,6 +142,14 @@ function starRequests(): number {
   return github.asked.filter((one) => one.path === "/user/starred").length;
 }
 
+function conditions(): Record<string, string> {
+  return marfa.problems.get("github") ?? {};
+}
+
+function checks(name: string): number {
+  return github.asked.filter((one) => one.path === `/repos/${name}`).length;
+}
+
 function changes(since: number): string[] {
   return marfa.log.slice(since).map((one) => one.event);
 }
@@ -239,6 +247,8 @@ describe("starred repositories", { timeout: 60_000 }, () => {
 
     github.unstar(repository);
     await sync();
+    expect(repositoryRow(repository).state).toBe("active");
+    await sync();
     expect(repositoryRow(repository).state).toBe("archived");
     expect(repositoryRow(other).state).toBe("active");
 
@@ -264,7 +274,11 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     await sync();
     expect(repositoryRow(tracker).properties["starred"]).toBe(true);
 
+    const at = repositoryRow(tracker).properties["starred_at"];
     github.unstar(tracker);
+    await sync();
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).properties["starred_at"]).toBe(at);
     await sync();
     const row = repositoryRow(tracker);
     expect(row.state).toBe("active");
@@ -276,7 +290,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     ).toBe("active");
   });
 
-  it("archives nothing when a page of stars fails, and does so once the listing works", async () => {
+  it("counts only complete listings: a failed page neither archives nor counts as a miss", async () => {
     const stars = Array.from({ length: 105 }, (_, at) =>
       starOnly(`someone/starred-${String(at)}`),
     );
@@ -288,20 +302,114 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     github.starsFailAt = { page: 2, status: 403 };
     const output = await sync();
     expect(output).toContain("starred repositories");
+    expect(conditions()).toHaveProperty("stars-unreadable");
     expect(repositoryRow(gone).state).toBe("active");
     expect(repositoryRow(gone).properties["starred"]).toBe(true);
     expect(held(fresh)).toBeUndefined();
-    expect(
-      marfa.rows.filter(
-        (one) => one.type === "github.repository" && one.state === "archived",
-      ),
-    ).toEqual([]);
+
+    github.starsFailAt = undefined;
+    await sync();
+    expect(conditions()).not.toHaveProperty("stars-unreadable");
+    expect(repositoryRow(gone).state).toBe("active");
+    expect(repositoryRow(fresh).properties["starred"]).toBe(true);
+
+    github.starsFailAt = { page: 2, status: 403 };
+    await sync();
+    expect(repositoryRow(gone).state).toBe("active");
 
     github.starsFailAt = undefined;
     await sync();
     expect(repositoryRow(gone).state).toBe("archived");
-    expect(repositoryRow(fresh).properties["starred"]).toBe(true);
-  }, 60_000);
+    expect(
+      marfa.rows.filter(
+        (one) => one.type === "github.repository" && one.state === "archived",
+      ),
+    ).toHaveLength(1);
+  }, 90_000);
+
+  it("keeps a star missed once, and forgets the miss when the star is listed again", async () => {
+    const repository = starOnly("someone/starred");
+    const tracker = listed("someone/tracker");
+    github.star(tracker);
+    await sync();
+
+    github.unstar(repository);
+    github.unstar(tracker);
+    await sync();
+    expect(repositoryRow(repository).state).toBe("active");
+    expect(repositoryRow(repository).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+
+    github.star(repository);
+    github.star(tracker);
+    await sync();
+    github.unstar(repository);
+    github.unstar(tracker);
+    await sync();
+    expect(repositoryRow(repository).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+
+    await sync();
+    expect(repositoryRow(repository).state).toBe("archived");
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(false);
+  }, 90_000);
+
+  it("reads the repository before it archives a star, and archives on a 404 or a 200", async () => {
+    const hidden = starOnly("someone/hidden");
+    const open = starOnly("someone/open");
+    await sync();
+    github.unstar(hidden);
+    github.unstar(open);
+    hidden.hidden = true;
+    await sync();
+    expect(checks("someone/hidden")).toBe(0);
+    expect(checks("someone/open")).toBe(0);
+
+    await sync();
+    expect(checks("someone/hidden")).toBe(1);
+    expect(checks("someone/open")).toBe(1);
+    expect(repositoryRow(hidden).state).toBe("archived");
+    expect(repositoryRow(open).state).toBe("archived");
+    expect(conditions()).not.toHaveProperty("stars-kept");
+  });
+
+  it("keeps a star-only row, and names the repository and the answer, when its owner refuses the token", async () => {
+    const refusing = starOnly("someone/refusing");
+    const other = starOnly("someone/other");
+    await sync();
+    github.personalRefused.set(refusing.node, 403);
+    github.unstar(other);
+    await sync();
+    expect(repositoryRow(refusing).state).toBe("active");
+    expect(repositoryRow(refusing).properties["starred"]).toBe(true);
+
+    await sync();
+    expect(checks("someone/refusing")).toBe(1);
+    expect(repositoryRow(refusing).state).toBe("active");
+    expect(repositoryRow(refusing).properties["starred"]).toBe(true);
+    expect(repositoryRow(other).state).toBe("archived");
+    expect(conditions()["stars-kept"]).toContain("someone/refusing");
+    expect(conditions()["stars-kept"]).toContain("403");
+
+    github.personalRefused.delete(refusing.node);
+    github.unstar(refusing);
+    await sync();
+    expect(checks("someone/refusing")).toBe(2);
+    expect(repositoryRow(refusing).state).toBe("archived");
+    expect(conditions()).not.toHaveProperty("stars-kept");
+  }, 90_000);
+
+  it("keeps a star-only row on any other answer to the read, and names it", async () => {
+    const repository = starOnly("someone/starred");
+    await sync();
+    github.personalRefused.set(repository.node, 451);
+    await sync();
+    await sync();
+    expect(repositoryRow(repository).state).toBe("active");
+    expect(conditions()["stars-kept"]).toContain("someone/starred");
+    expect(conditions()["stars-kept"]).toContain("451");
+  });
 
   it("keeps a failed read from touching a synced repository's mark", async () => {
     const tracker = listed("someone/tracker");
@@ -363,8 +471,38 @@ describe("starred repositories", { timeout: 60_000 }, () => {
 
     github.unstar(tracker);
     await sync();
+    expect(repositoryRow(tracker).state).toBe("active");
+    await sync();
     expect(repositoryRow(tracker).state).toBe("archived");
   });
+
+  it("keeps the star mark of a paused repository, and unmarks it only once two listings lack the star", async () => {
+    const tracker = listed("someone/tracker", { private: false });
+    listed("someone/other", { private: false });
+    github.star(tracker);
+    await sync();
+    const at = repositoryRow(tracker).properties["starred_at"];
+
+    const paused = async () => {
+      const result = await exec({
+        GITHUB_PERSONAL_TOKEN: token,
+        GITHUB_REPOSITORIES: "someone/other",
+      });
+      expect(result.code, result.output).toBe(0);
+    };
+    await paused();
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).properties["starred_at"]).toBe(at);
+
+    github.unstar(tracker);
+    await paused();
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    await paused();
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(false);
+    expect(repositoryRow(tracker).properties["starred_at"] ?? null).toBeNull();
+  }, 90_000);
 
   it("archives an unstarred repository that leaves the listing", async () => {
     const tracker = listed("someone/tracker", { private: false });
@@ -389,6 +527,20 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(
       marfa.rows.filter((one) => one.type === "github.repository"),
     ).toHaveLength(1);
+  });
+
+  it("clears the marks of a repository on an App-only run, without reading the rows to carry them", async () => {
+    const repository = github.addRepository("someone/tracker");
+    github.star(repository);
+    github.personalRepositories = new Set([repository.node]);
+    await sync();
+    expect(repositoryRow(repository).properties["starred"]).toBe(true);
+
+    await syncWithApp();
+    expect(repositoryRow(repository).properties["starred"] ?? null).toBeNull();
+    expect(
+      repositoryRow(repository).properties["starred_at"] ?? null,
+    ).toBeNull();
   });
 
   it("writes nothing on a second run when nothing changed", async () => {

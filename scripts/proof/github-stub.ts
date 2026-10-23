@@ -192,6 +192,10 @@ export class GitHubStub {
   /** Answers the star listing's page this number with the status, as a
    *  listing GitHub fails partway does. */
   starsFailAt: { page: number; status: number } | undefined;
+  /** Repositories whose owner refuses the personal token, by node, with the
+   *  status a read of one answers: GitHub leaves their stars out of the
+   *  listing and says nothing. */
+  personalRefused = new Map<string, number>();
   relationsRefused = false;
   relatedPageSize = 100;
   installations: Installation[] = [{ id: 1, login: "someone" }];
@@ -1072,6 +1076,7 @@ export class GitHubStub {
             );
             return repository !== undefined &&
               repository.hidden !== true &&
+              !this.personalRefused.has(repository.node) &&
               (!repository.private || this.reaches(req, repository))
               ? [{ repository, starredAt }]
               : [];
@@ -1191,7 +1196,29 @@ export class GitHubStub {
       (match = /^\/repos\/([^/]+)\/([^/]+)$/.exec(path)) &&
       method === "GET"
     ) {
-      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      const [owner, name] = [match[1] ?? "", match[2] ?? ""];
+      const named = this.repositories.find(
+        (one) => one.owner === owner && one.name === name,
+      );
+      const refusal =
+        named !== undefined && this.isPersonal(req)
+          ? this.personalRefused.get(named.node)
+          : undefined;
+      if (refusal !== undefined) {
+        send(refusal, {
+          message:
+            "The organization forbids access via a fine-grained personal access token with a lifetime over 366 days",
+        });
+        return;
+      }
+      // Any token reads a public repository.
+      const repository =
+        named !== undefined &&
+        named.hidden !== true &&
+        (this.readable(req, owner, name) !== undefined ||
+          (this.isPersonal(req) && !named.private))
+          ? named
+          : undefined;
       if (repository === undefined) send(404, { message: "Not Found" });
       else send(200, this.restRepository(repository));
       return;

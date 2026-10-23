@@ -725,11 +725,10 @@ describe("a run for deliveries", () => {
       const reads = marfa.requests.filter(
         (one) => one.method === "GET" && one.path.startsWith("/items"),
       );
-      // Eleven, whether the repository holds 8 discussions or 30: only the
-      // named discussion's comments are read, never every comment row or every
-      // discussion's, and one read lists the repository rows to keep their
-      // star marks.
-      expect(reads.length).toBeLessThanOrEqual(11);
+      // Nine, whether the repository holds 8 discussions or 30: only the named
+      // discussion's comments are read, never every comment row or every
+      // discussion's.
+      expect(reads.length).toBeLessThanOrEqual(10);
       expect(
         reads.filter((one) => one.query.get("filter")?.includes("in-thread")),
       ).toHaveLength(1);

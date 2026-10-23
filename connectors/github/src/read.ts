@@ -72,7 +72,7 @@ import {
   conditionKeys as notificationConditions,
   readNotifications,
 } from "./notifications.js";
-import { Stars } from "./stars.js";
+import { Stars, starsKept } from "./stars.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
@@ -174,6 +174,7 @@ class Coverage {
     "clock-skew",
     ...notificationConditions,
     "stars-unreadable",
+    starsKept,
   ]);
   readonly prefixes = new Set(readPrefixes);
 
@@ -373,7 +374,7 @@ async function readAll(
   }
   // Only a scheduled run lists the stars; the rest keep each mark as it was.
   const scheduled = context.hints === undefined;
-  const stars = await Stars.open(context, personal, scheduled);
+  const stars = await Stars.open(context, state, personal, scheduled);
   if (scheduled) coverage.reached("stars-unreadable");
   for (const [node, at] of listed)
     listed.set(node, { ...at, repository: stars.mark(at.repository) });
@@ -735,6 +736,7 @@ async function readAll(
     kept: new Set([...Object.keys(next), ...retained]),
     complete: answered.size === installations.length,
   });
+  if (stars.listed) coverage.reached(starsKept);
   if (waiting.length > 0) {
     log.condition(
       "rate-limit-reserve",
