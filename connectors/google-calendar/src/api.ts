@@ -249,6 +249,25 @@ export class CalendarApi {
     }
   }
 
+  /** Every event of a calendar, with the changed and cancelled occurrences
+   *  of its series, in whatever year they fall, and only the fields that say
+   *  whether Marfa may change one: none for a calendar Google no longer has. */
+  async inventory(calendarId: string): Promise<Json[]> {
+    try {
+      const { items } = await this.pages(this.eventPath(calendarId), {
+        singleEvents: "false",
+        showDeleted: "true",
+        maxResults: "2500",
+        fields:
+          "items(id,status,recurringEventId,originalStartTime,eventType,locked,organizer,attendees),nextPageToken",
+      });
+      return items;
+    } catch (error) {
+      if (isGone(error)) return [];
+      throw error;
+    }
+  }
+
   /** The ids of the events a calendar still holds: none for a calendar
    *  Google no longer has. */
   async live(calendarId: string): Promise<Set<string>> {

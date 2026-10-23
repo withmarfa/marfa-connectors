@@ -1206,7 +1206,8 @@ async function applySeries(
 // --- Trash, purge and restore -----------------------------------------------
 
 /** Deletes the event in Google, while Marfa may change it. Deleting a series
- *  deletes its occurrences with it. */
+ *  deletes its changed occurrences with it, so Marfa must be able to change
+ *  each of those too. */
 async function remove(
   item: Item,
   parts: { calendarId: string; eventId: string },
@@ -1234,13 +1235,50 @@ async function deleteEvent(
   const found = await session.api.event(parts.calendarId, parts.eventId);
   if (found === "gone" || found["status"] === "cancelled") return;
   const event = eventOf(found);
-  const reason = event === undefined ? undefined : uneditable(event, calendar);
+  // The kit sends no delete of its own for a changed occurrence trashed with
+  // its series, so the series' delete is the only place to check them.
+  const changed =
+    event === undefined || event.recurrence.length === 0
+      ? []
+      : (await session.api.inventory(parts.calendarId)).filter(
+          (raw) => raw["recurringEventId"] === parts.eventId,
+        );
+  const reason =
+    event === undefined ? undefined : deleteRefused(event, calendar, changed);
   if (reason !== undefined) throw decline(item, reason);
   await session.api.remove(
     parts.calendarId,
     parts.eventId,
     text(found, "etag"),
   );
+}
+
+/**
+ * Why Marfa may not delete an event as Google holds it, or nothing where it
+ * may: the event's own reason, or, for a series, that of a changed
+ * occurrence the delete would take with it. An occurrence Google already
+ * holds cancelled loses nothing to the delete.
+ */
+function deleteRefused(
+  event: GoogleEvent,
+  calendar: CalendarInfo,
+  changed: readonly Json[],
+): string | undefined {
+  const own = uneditable(event, calendar);
+  if (own !== undefined) return own;
+  for (const raw of changed) {
+    const one = eventOf(raw);
+    if (one === undefined || one.status === "cancelled") continue;
+    const reason = uneditable(one, calendar);
+    if (reason === undefined) continue;
+    const at = cancellationOf(one);
+    const which =
+      at === undefined
+        ? `the changed occurrence ${one.id}`
+        : `the changed occurrence at ${startParam(at)}`;
+    return `deleting the series would delete ${which}, which Marfa may not change, since ${reason}`;
+  }
+  return undefined;
 }
 
 /**

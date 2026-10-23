@@ -131,16 +131,16 @@ When an event moves between two calendars of the account, the connector keeps it
 
 Google is asked for the event before each change, and the change is decided on the event as Google holds it then. Every write sets `sendUpdates=none`, so Google emails nobody, and no write names guests.
 
-| In Marfa                                                         | In Google Calendar                                                                                                                              |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create an event row.                                             | Makes the event on the calendar the row connects to through `google.calendar.in-calendar`, or on the primary calendar when it connects to none. |
-| Create an event row beneath a series, with `original_starts_at`. | Changes the occurrence that row replaces. See [Series](#series).                                                                                |
-| Change `title`, `description`, `place`, `status` or the times.   | Changes those fields of the event.                                                                                                              |
-| Change the `recurrence` of a series.                             | Changes the series' rules. See [Series](#series).                                                                                               |
-| Connect the row to another calendar.                             | Moves the event to that calendar. The row keeps its identity.                                                                                   |
-| Trash the row.                                                   | Deletes the event. Deleting a series deletes its occurrences, so the changed occurrences the trash takes with it send nothing of their own.     |
-| Restore the row.                                                 | Brings the event back. If Google no longer has it, makes it again.                                                                              |
-| Purge the row.                                                   | Deletes the event, if the trash before it didn't.                                                                                               |
+| In Marfa                                                         | In Google Calendar                                                                                                                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Create an event row.                                             | Makes the event on the calendar the row connects to through `google.calendar.in-calendar`, or on the primary calendar when it connects to none.                    |
+| Create an event row beneath a series, with `original_starts_at`. | Changes the occurrence that row replaces. See [Series](#series).                                                                                                   |
+| Change `title`, `description`, `place`, `status` or the times.   | Changes those fields of the event.                                                                                                                                 |
+| Change the `recurrence` of a series.                             | Changes the series' rules. See [Series](#series).                                                                                                                  |
+| Connect the row to another calendar.                             | Moves the event to that calendar. The row keeps its identity.                                                                                                      |
+| Trash the row.                                                   | Deletes the event. Deleting a series deletes its occurrences, so the changed occurrences the trash takes with it send nothing of their own. See [Series](#series). |
+| Restore the row.                                                 | Brings the event back. If Google no longer has it, makes it again.                                                                                                 |
+| Purge the row.                                                   | Deletes the event, if the trash before it didn't.                                                                                                                  |
 
 Fields Google holds and Marfa doesn't change, such as `organizer`, `guests`, `url` and `calendar_id`, are read only: a change to one in Marfa is put back.
 
@@ -174,6 +174,8 @@ A change to a series' `recurrence` sends the rules it holds, and keeps Google's 
 - An `EXDATE` removed in Marfa brings that cancelled occurrence back.
 
 An `EXDATE` added or removed for an occurrence Marfa may not change, such as a changed occurrence with other guests, declines the whole change to the series: nothing is sent, the connector raises the condition `declined:<row ID>`, which names the occurrence and the reason, and puts back the row's changed fields, including any other field changed in the same edit. See [Events Marfa may not change](#events-marfa-may-not-change).
+
+Deleting a series in Google deletes its changed occurrences too, and the kit sends no delete of its own for a changed occurrence trashed with its series. So before it deletes a series, the connector lists the calendar's events, which include every changed occurrence of the series, in whatever year it falls. If one that isn't cancelled is an occurrence Marfa may not change, such as one with other guests, the trash or purge is declined: nothing is sent, the series stays in Google, and the connector raises the condition `declined:<row ID>`, which names the occurrence and the reason.
 
 A changed occurrence's row changes that occurrence alone. A series can't stop repeating from Marfa: a `recurrence` with no rules left is refused. An occurrence can't move to another calendar on its own, because Google moves a whole series.
 

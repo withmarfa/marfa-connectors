@@ -1930,6 +1930,51 @@ describe("a series", () => {
       }),
     ]);
   });
+
+  it("declines to delete a series whose changed occurrence Marfa may not change, as Google holds it now", async () => {
+    calendar.put(me, series);
+    await landed();
+    const parent = row(`${me}/weekly`);
+    // Changed in Google after the read, so no row in Marfa says so.
+    calendar.put(me, {
+      ...occurrence("2033-10-31T10:00:00Z"),
+      summary: "Planning with Kim",
+      start: { dateTime: "2033-10-31T10:00:00Z", timeZone: london },
+      end: { dateTime: "2033-10-31T11:00:00Z", timeZone: london },
+      organizer: { email: me, self: true },
+      ...guests,
+    });
+
+    server.trash(parent.id);
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, "weekly")?.["status"]).toBe("confirmed");
+    const said = conditions()[`declined:${parent.id}`];
+    expect(said).toContain("2033-10-31T10:00:00Z");
+    expect(said).toContain("guests other than the account");
+  });
+
+  it("deletes a series whose occurrence with other guests Google already holds cancelled", async () => {
+    calendar.put(me, series);
+    const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+    calendar.cancel(me, id, {
+      ...rest,
+      organizer: { email: me, self: true },
+      ...guests,
+    });
+    await landed();
+
+    server.trash(row(`${me}/weekly`).id);
+    await landed();
+
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "DELETE",
+        path: eventPath(me, "weekly"),
+      }),
+    ]);
+  });
 });
 
 describe("the safety stop", () => {
