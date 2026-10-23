@@ -13,13 +13,17 @@ import {
   childOf,
   env,
   eventDefinition,
+  eventDerived,
   eventFields,
+  eventReadOnly,
   eventType,
   inCalendar,
+  needs,
   scopes,
   source,
 } from "./config.js";
 import { calendarChecks, readCalendars } from "./read.js";
+import { carry, preflight, remake, type Writing } from "./write.js";
 
 const connections: ConnectionDefinition[] = [
   {
@@ -54,25 +58,29 @@ function names(value: string | undefined): Set<string> {
 /** The connector; a test passes the address of its stub of Google. */
 export function createConnector(options?: GoogleOptions) {
   const base = `${options?.endpoints?.api ?? "https://www.googleapis.com"}/calendar/v3`;
+  const now = options?.now ?? Date.now;
+  const writing: Writing = { options, base };
   return defineConnector({
     name: "google-calendar",
     description:
-      "Calendars and events of a Google account, read through the Calendar API, read only.",
+      "Calendars and events of a Google account, read through the Calendar API, with changes to events made in Marfa carried back.",
     source,
     readme: "connectors/google-calendar/README.md",
     types: [
       { type: calendarDefinition as TypeDefinition, fields: calendarFields },
-      { type: eventDefinition as TypeDefinition, fields: eventFields },
+      {
+        type: eventDefinition as TypeDefinition,
+        fields: eventFields,
+        readOnly: eventReadOnly,
+        derived: eventDerived,
+      },
     ],
+    carries: () => [eventType],
     connections,
     env,
     setup: (context) => signIn(context, scopes, options),
     async run(context) {
-      const google = connectGoogle(
-        context,
-        { source, scopes, types: [calendarType, eventType] },
-        options,
-      );
+      const google = connectGoogle(context, needs, options);
       const access = await google.ready();
       if (!access.has(calendarListScope)) {
         // Nothing is read, so every check of the calendars is skipped.
@@ -84,8 +92,12 @@ export function createConnector(options?: GoogleOptions) {
         api: new CalendarApi(google, base),
         access,
         named: names(context.env.GOOGLE_CALENDAR_READ_ONLY_CALENDARS),
-        now: options?.now ?? Date.now,
+        now,
       });
     },
+    onChange: (change, context) => carry(change, context, writing),
+    remake: (change, context) => remake(change, context, writing),
+    preflight: (inventory, context) =>
+      preflight([...inventory.purges, ...inventory.trashes], context, writing),
   });
 }

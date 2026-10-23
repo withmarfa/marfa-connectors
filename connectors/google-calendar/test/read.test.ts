@@ -394,7 +394,7 @@ describe("a first read", () => {
     ).toBe(false);
   });
 
-  it("states who organizes an event, who is invited, and whether Marfa may change it", async () => {
+  it("states who organizes an event, who is invited, and that Marfa may change only an event the account organizes alone", async () => {
     calendar.put(
       me,
       timed(

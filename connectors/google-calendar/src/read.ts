@@ -28,7 +28,9 @@ import {
   eventEntry,
   eventOf,
   linkOf,
+  makingOf,
   owned,
+  replacingOf,
   splitLink,
   type CalendarInfo,
   type GoogleEvent,
@@ -391,6 +393,7 @@ async function syncCalendar(
     }
   }
   const whole = token === undefined;
+  const waiting = waitingOn(context, calendar.id);
   const items = [...answer.items];
   const asked = new Set(
     items.flatMap((item) =>
@@ -406,7 +409,7 @@ async function syncCalendar(
       const link = linkIn(row);
       const parts = link === undefined ? undefined : splitLink(link);
       if (link === undefined || parts === undefined) continue;
-      if (asked.has(parts.eventId)) continue;
+      if (asked.has(parts.eventId) || waiting.has(parts.eventId)) continue;
       asked.add(parts.eventId);
       const found = await api.event(calendar.id, parts.eventId);
       if (found === "gone") {
@@ -423,7 +426,7 @@ async function syncCalendar(
     const link = refusedLink(record);
     const parts = splitLink(link);
     if (parts?.calendarId !== calendar.id) continue;
-    if (asked.has(parts.eventId)) continue;
+    if (asked.has(parts.eventId) || waiting.has(parts.eventId)) continue;
     asked.add(parts.eventId);
     try {
       const found = await api.event(calendar.id, parts.eventId);
@@ -444,6 +447,7 @@ async function syncCalendar(
     whole,
     gone,
     vanished,
+    waiting,
   );
   await withMoves(run, scoped, calendar.id, plan);
   if (plan.entries.length > 0) await scoped.upsert(eventType, plan.entries);
@@ -503,6 +507,23 @@ function recurrenceOf(row: Item | undefined): string[] {
     : [];
 }
 
+/**
+ * The events of a calendar whose rows a write from Marfa still settles: an
+ * event it is making, which it links to its row, or deletes once the row is
+ * trashed or purged, and an occurrence a changed occurrence made in Marfa
+ * changes, which Google holds as it was, cancelled or not, until the change
+ * lands. The read leaves their rows alone until then.
+ */
+function waitingOn(context: Context, calendarId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const intent of context.pendingOutbound()) {
+    if (intent.acknowledged) continue;
+    const target = makingOf(intent.request) ?? replacingOf(intent.request);
+    if (target?.calendarId === calendarId) ids.add(target.eventId);
+  }
+  return ids;
+}
+
 async function planEvents(
   run: Run,
   scoped: Scoped,
@@ -511,6 +532,7 @@ async function planEvents(
   whole: boolean,
   gone: ReadonlySet<string>,
   vanished: ReadonlySet<string>,
+  waiting: ReadonlySet<string>,
 ): Promise<Plan> {
   const { api, access } = run;
   const account = access.account;
@@ -542,6 +564,17 @@ async function planEvents(
   };
 
   for (const event of byId.values()) {
+    if (waiting.has(event.id)) {
+      // Its series still takes Google's word on the occurrence.
+      if (event.recurringEventId !== undefined) {
+        add(
+          event.status === "cancelled" ? cancelled : restored,
+          event.recurringEventId,
+          event,
+        );
+      }
+      continue;
+    }
     if (!appointment(event)) {
       plan.archive.add(linkOf(calendar.id, event.id));
       continue;

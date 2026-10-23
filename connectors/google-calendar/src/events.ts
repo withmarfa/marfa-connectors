@@ -1,4 +1,4 @@
-import type { Entry } from "@withmarfa/connector";
+import type { Entry, JsonValue } from "@withmarfa/connector";
 import { flag, isJson, list, object, text, type Json } from "./api.js";
 import { calendarType, childOf, eventType, inCalendar } from "./config.js";
 import { dayStart, iso, nextDay, validZone } from "./time.js";
@@ -61,6 +61,68 @@ export function linkOf(calendarId: string, eventId: string): string {
   return `${calendarId}/${eventId}`;
 }
 
+/**
+ * A write that makes an event under the row's own id, kept in the outbound
+ * journal until it is answered. Until then the read leaves that event
+ * alone, since the write links it and a row read for it would be a second
+ * one.
+ */
+export interface Making {
+  readonly calendarId: string;
+  readonly eventId: string;
+  readonly body: Readonly<Record<string, JsonValue>>;
+}
+
+export function makingOf(request: JsonValue): Making | undefined {
+  if (!isJson(request)) return undefined;
+  const { calendarId, eventId, body } = request;
+  if (
+    typeof calendarId !== "string" ||
+    typeof eventId !== "string" ||
+    !isJson(body)
+  ) {
+    return undefined;
+  }
+  return request as unknown as Making;
+}
+
+/**
+ * The change a changed occurrence made in Marfa sends to the occurrence it
+ * replaces, kept in the outbound journal until it lands. Until then the read
+ * leaves the occurrence's row alone, since Google still holds the occurrence
+ * as it was, which may be cancelled.
+ */
+export interface Replacing {
+  readonly calendarId: string;
+  readonly seriesId: string;
+  /** The occurrence's own id. */
+  readonly eventId: string;
+  /** The patch, as first sent. */
+  readonly fields: Readonly<Record<string, JsonValue>>;
+  /** The version of the occurrence the patch was made against. */
+  readonly etag: string | null;
+}
+
+export function replacingOf(request: JsonValue): Replacing | undefined {
+  if (!isJson(request)) return undefined;
+  const { calendarId, seriesId, eventId, fields, etag } = request;
+  if (
+    typeof calendarId !== "string" ||
+    typeof seriesId !== "string" ||
+    typeof eventId !== "string" ||
+    !isJson(fields) ||
+    (etag !== null && typeof etag !== "string")
+  ) {
+    return undefined;
+  }
+  return request as unknown as Replacing;
+}
+
+/** The id an event row's link holds after the calendar's. */
+export function eventIdOf(calendarId: string, link: string): string {
+  return link.slice(calendarId.length + 1);
+}
+
 /** The calendar a link names, and the event after it. */
 export function splitLink(
   link: string,
@@ -117,10 +179,14 @@ export function appointment(event: GoogleEvent): boolean {
   return event.kind !== "workingLocation";
 }
 
-/** Why Marfa may not change an event, or nothing where it may. */
-function uneditable(
+/**
+ * Why Marfa may not change an event, or nothing where it may. An event with
+ * a guest other than the account is someone else's to agree to, so Marfa
+ * leaves it alone even where Google would let the account change it.
+ */
+export function uneditable(
   event: GoogleEvent,
-  calendar: CalendarInfo,
+  calendar: Pick<CalendarInfo, "role">,
 ): string | undefined {
   if (!owned.has(calendar.role))
     return "the account can only read this calendar";
