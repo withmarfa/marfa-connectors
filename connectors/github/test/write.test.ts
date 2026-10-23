@@ -451,9 +451,7 @@ describe("a row made in Marfa", () => {
       await ok();
       expect(github.writes()).toEqual([]);
       expect(github.issues).toHaveLength(1);
-      expect(output).toContain(
-        `${copy.id} is a conflicted copy of ${original.id}`,
-      );
+      expect(output).toContain(`${copy.id} is tagged conflicted-copy`);
       expect(marfa.byId(copy.id).state).toBe("active");
       expect(marfa.byId(copy.id).properties["body"]).toBe("Theirs");
       expect(marfa.byId(copy.id).properties["github_id"]).toBeUndefined();

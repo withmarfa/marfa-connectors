@@ -22,10 +22,8 @@ export type Tombstone = components["schemas"]["Tombstone"];
 export type Edge = components["schemas"]["Edge"];
 
 /** The tag Marfa gives the copy it writes when two edits to a
- *  `keep_both_copies` property collide, beside a `derived-from` edge to the
- *  original. */
+ *  `keep_both_copies` property collide. */
 export const conflictedCopyTag = "conflicted-copy";
-export const conflictedCopyEdge = "derived-from";
 export type EdgeType = components["schemas"]["EdgeType"];
 
 /** Edges one bulk request carries, well inside the door's 5000. */

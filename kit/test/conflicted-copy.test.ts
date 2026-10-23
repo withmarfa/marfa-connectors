@@ -49,7 +49,7 @@ it("creates a row made in Marfa at the vendor, which a conflicted copy is not", 
   expect(copyConditions()).toEqual([]);
 });
 
-it("leaves a conflicted copy in Marfa and raises a condition naming it and its original", async () => {
+it("leaves a conflicted copy in Marfa and raises a condition naming it", async () => {
   const vendorHeld = held();
   expect(await harness.twoWay(vendorHeld)).toBe(0);
   const row = harness.server.row("one");
@@ -60,9 +60,7 @@ it("leaves a conflicted copy in Marfa and raises a condition naming it and its o
   expect(vendorHeld.changes).toEqual([]);
   const raised = copyConditions();
   expect(raised.map(([key]) => key)).toEqual([`conflicted-copy:${copy.id}`]);
-  expect(raised[0]?.[1]).toContain(
-    `${copy.id} is a conflicted copy of ${row.id}`,
-  );
+  expect(raised[0]?.[1]).toContain(`${copy.id} is tagged conflicted-copy`);
 
   const writes = harness.server.requests
     .slice(before)
