@@ -174,7 +174,9 @@ describe("the look, for connections", () => {
     target_type_constraints: ["test.entry"],
   };
 
-  function blocking(): ReturnType<typeof vendor> {
+  function blocking(
+    cardinality: "many-to-many" | "many-to-one" = "many-to-many",
+  ): ReturnType<typeof vendor> {
     const held = vendor([
       {
         source_id: "a:1",
@@ -183,7 +185,7 @@ describe("the look, for connections", () => {
       },
       { source_id: "a:2", properties: { title: "Two", vendor_id: "v2" } },
     ]);
-    held.connections = [blocks];
+    held.connections = [{ ...blocks, cardinality }];
     harness.server.grants = {
       type_permissions: { "test.entry": "write" },
       edge_permissions: { "test.blocks": "write" },
@@ -296,7 +298,8 @@ describe("the look, for connections", () => {
   });
 
   it("starts no run for a change to an edge's properties, and one for its move to another row", async () => {
-    const held = blocking();
+    // Only the end that stays holding one edge of the type lets the other move.
+    const held = blocking("many-to-one");
     held.entries.push({
       source_id: "a:3",
       properties: { title: "Three", vendor_id: "v3" },

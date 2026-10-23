@@ -51,6 +51,54 @@ function bulkEdges(): number {
   return harness.server.requestsTo("POST", "/edges/bulk").length;
 }
 
+/** A row in one list, as an event is in one calendar: each source holds one
+ *  edge of the type, so a person can move its target. */
+const inList: ConnectionDefinition = {
+  id: "test.in-list",
+  cardinality: "many-to-one",
+  source_type_constraints: ["test.entry"],
+  target_type_constraints: ["test.entry"],
+};
+
+function filed(n: number, list?: number): Entry {
+  return {
+    ...entry(n),
+    connections: {
+      "test.in-list":
+        list === undefined
+          ? []
+          : [{ type: "test.entry", id: `v${String(list)}` }],
+    },
+  };
+}
+
+function listing(entries: Entry[]): Vendor {
+  harness.server.grants = {
+    type_permissions: { "test.entry": "write" },
+    edge_permissions: { "test.in-list": "write" },
+    metadata_permissions: { edge_types: "write" },
+  };
+  const held = vendor(entries);
+  held.connections = [inList];
+  return held;
+}
+
+function listOf(n: number): string[] {
+  return harness.server
+    .targetsOf(harness.server.row(`a:${String(n)}`).id, "test.in-list")
+    .map((id) => harness.server.byId(id).source_id ?? id);
+}
+
+/** Reads of every agreement the connector keeps, not only those waiting. */
+function scans(): number {
+  return harness.server.requests.filter(
+    (request) =>
+      request.method === "GET" &&
+      request.path.endsWith("/agreements") &&
+      !request.query.has("waiting"),
+  ).length;
+}
+
 describe("connections from the vendor", () => {
   it("are registered as edge types and written from each row, and the kit's own write is carried nowhere", async () => {
     const held = connected([entry(1, [2, 3]), entry(2), entry(3)]);
@@ -258,15 +306,6 @@ describe("connections, whatever order the rows come in", () => {
       .map((id) => harness.server.byId(id).source_id ?? id);
   }
 
-  function scans(): number {
-    return harness.server.requests.filter(
-      (request) =>
-        request.method === "GET" &&
-        request.path.endsWith("/agreements") &&
-        !request.query.has("waiting"),
-    ).length;
-  }
-
   async function settled(held: Vendor) {
     harness.server.grants = {
       type_permissions: { "test.entry": "write" },
@@ -391,8 +430,8 @@ describe("connections made in Marfa", () => {
     expect(carried?.removed.map((row) => row.id)).toEqual([two.id]);
   });
 
-  it("are carried when a person moves an edge to another row, after the row has settled", async () => {
-    const held = connected([entry(1, [2]), entry(2), entry(3)]);
+  it("are carried as one change when a person moves a row to another list, as an event to another calendar", async () => {
+    const held = listing([filed(1, 2), filed(2), filed(3)]);
     await harness.twoWay(held);
     expect(await harness.twoWay(held)).toBe(0);
     const one = harness.server.row("a:1");
@@ -407,11 +446,16 @@ describe("connections made in Marfa", () => {
     harness.server.updateEdge(edge.id, { target_id: three.id });
     expect(await harness.twoWay(held)).toBe(0);
 
-    expect(targets(1)).toEqual(["a:3"]);
+    expect(listOf(1)).toEqual(["a:3"]);
     expect(held.changes.map((change) => change.item.id)).toEqual([one.id]);
-    const carried = held.changes[0]?.connections?.["test.blocks"];
+    const carried = held.changes[0]?.connections?.["test.in-list"];
     expect(carried?.added.map((row) => row.id)).toEqual([three.id]);
     expect(carried?.removed.map((row) => row.id)).toEqual([two.id]);
+    // The row that stays is the connector's, so the frame names it.
+    expect(scans()).toBe(0);
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
   });
 
   it("are carried, added and removed, as the rows at the other end", async () => {
@@ -933,8 +977,9 @@ describe("a read-only connection type on a two-way kind", () => {
     expect(held.changes).toEqual([]);
   });
 
-  it("is put back when a person moves an edge to another row, and the run names it", async () => {
-    const held = mirrored([entry(1, [2]), entry(2), entry(3)]);
+  it("is put back when a person moves a row to another list, and the run names it", async () => {
+    const held = listing([filed(1, 2), filed(2), filed(3)]);
+    held.readOnly = ["test.in-list"];
     await harness.twoWay(held);
     held.entries = [];
     expect(await harness.twoWay(held)).toBe(0);
@@ -946,10 +991,12 @@ describe("a read-only connection type on a two-way kind", () => {
       target_id: harness.server.row("a:3").id,
     });
     expect(await harness.twoWay(held)).toBe(0);
-    expect(targets(1)).toEqual(["a:2"]);
+    expect(listOf(1)).toEqual(["a:2"]);
     expect(held.changes).toEqual([]);
-    expect(harness.lastRun().summary).toContain(
-      `the test.blocks connections of ${one.id} were changed in Marfa and put back`,
+    const summary = harness.lastRun().summary;
+    expect(summary).not.toContain("refused");
+    expect(summary).toContain(
+      `the test.in-list connections of ${one.id} were changed in Marfa and put back`,
     );
   });
 
