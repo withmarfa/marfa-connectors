@@ -85,9 +85,7 @@ export interface Entry {
    * type names no link, or several, newest first: the row is found by them
    * and takes the entry's. A row in the bin keeps its old key, and a purged
    * one leaves its tombstone there, so name them for as long as a row may
-   * still be held under them, or the entry makes a row anew. Where a row
-   * already holds the entry's own key, the entry updates that row and leaves
-   * the older one alone, unless the entry's type sets `mergeMoved`.
+   * still be held under them, or the entry makes a row anew.
    */
   movedFrom?: string | readonly string[] | undefined;
   /**
@@ -573,20 +571,6 @@ export interface Kind {
    * entry, or the vendor's own close reads as a change.
    */
   readonly revive?: boolean;
-  /**
-   * For a type with a `link_field`, where an entry's `movedFrom` names a row
-   * and another row already holds the entry's own link, such as a copy made
-   * before the move was known. The named, older row keeps its ID,
-   * connections and edits made in Marfa, and takes the link. The other row is
-   * archived and given the older row's link, as the row of an item the vendor
-   * no longer has. This happens only where the other row is the connector's
-   * own and active (or archived by the connector), was not made or changed in
-   * Marfa since the connector wrote it and has no change waiting, and the
-   * older row is the earlier made and not in the bin. Otherwise both rows
-   * stay, the entry updates the row holding its link, and a condition names
-   * both rows and why.
-   */
-  readonly mergeMoved?: boolean;
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {

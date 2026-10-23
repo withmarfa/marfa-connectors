@@ -143,7 +143,6 @@ export interface Vendor {
   remakes?: { change: Change; runsBefore: number }[];
   hints?: (ReadonlySet<string> | undefined)[];
   revive?: boolean;
-  mergeMoved?: boolean;
   connections?: ConnectionDefinition[];
   readOnly?: string[];
   derived?: string[];
@@ -198,7 +197,6 @@ function twoWayConnector(held: Vendor) {
         type: linkedType,
         fields: testFields,
         revive: held.revive === true,
-        ...(held.mergeMoved === true && { mergeMoved: true }),
         ...(held.readOnly !== undefined && { readOnly: held.readOnly }),
         ...(held.derived !== undefined && { derived: held.derived }),
       },

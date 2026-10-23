@@ -267,7 +267,6 @@ export function specsOf<E extends EnvDeclaration>(
           derived: new Set(kept(kind.derived ?? [])),
           twoWay,
           revive: kind.revive === true,
-          mergeMoved: kind.mergeMoved === true,
           connections: new Set(
             (connector.connections ?? [])
               .filter((connection) =>
