@@ -1257,10 +1257,13 @@ export async function runOnce<E extends EnvDeclaration>(
           | "rejected"
           | "requestNotApplied"
         >;
-        // A step a trash or purge takes over a create or remake keeps that
-        // write's own, which the row's restore hands back.
+        // A step a trash takes over a create or remake keeps that write's
+        // own, which the row's restore hands back; a purged row is never
+        // restored, so its step keeps none.
         const original =
-          activeOutbound.supersedes === true && making(held)
+          activeOutbound.supersedes === true &&
+          activeOutbound.change.kind === "trashed" &&
+          making(held)
             ? (held.original ?? {
                 token: held.token,
                 request: held.request,
