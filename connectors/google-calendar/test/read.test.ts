@@ -1165,7 +1165,7 @@ describe("the grant, kept", () => {
 });
 
 describe("a row Marfa refuses", () => {
-  const key = `row-refused:${me}/weekly`;
+  const key = `inbound:${JSON.stringify([eventType, `${sub}:${me}/weekly`])}`;
 
   it("is kept for a retry while the calendar's token advances, and is asked for again once due", async () => {
     calendar.put(
@@ -1201,7 +1201,10 @@ describe("a row Marfa refuses", () => {
     expect(active()).toEqual([`${me}/plain`, moved]);
     expect(tokens()[me]?.token).toMatch(/^sync-/);
     expect(conditions()).toContain(key);
-    expect(harness.problems()[key]).toMatch(/Planning/);
+    expect(harness.problems()[key]).toMatch(/RDATE period/);
+    expect(
+      conditions().filter((one) => one.startsWith("row-refused:")),
+    ).toEqual([]);
     const firstToken = tokens()[me]?.token;
 
     calendar.put(

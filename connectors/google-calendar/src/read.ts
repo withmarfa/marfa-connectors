@@ -111,7 +111,6 @@ export const calendarChecks = [
   "calendar-unconfirmed:",
   "calendar-progress:",
   "events-skipped:",
-  "row-refused:",
   "read-only-calendar-unknown:",
 ] as const;
 
@@ -122,9 +121,7 @@ function unreachedCalendar(context: Pick<Context, "log">, id: string): void {
       `calendar-refused:${id}`,
       `events-skipped:${id}`,
       `calendar-progress:${id}`,
-      `row-refused:${id}`,
     ],
-    prefixes: [`row-refused:${id}/`],
   });
 }
 
@@ -225,27 +222,6 @@ function refusedLink(record: PendingInbound): string {
   if (link !== undefined) return link;
   const at = sourceId.indexOf(":");
   return at === -1 ? sourceId : sourceId.slice(at + 1);
-}
-
-/** Names each row of a calendar Marfa refused and the kit keeps for a retry,
- *  on every run it stands. */
-function nameRefused(
-  scoped: Scoped,
-  context: Context,
-  title: string,
-  titles: ReadonlyMap<string, string>,
-): void {
-  for (const { record, due } of scoped.refusals.pending()) {
-    const link = refusedLink(record);
-    const what =
-      record.identity.type === calendarType
-        ? `the calendar ${title}`
-        : `the event ${titles.get(link) ?? link} on ${title}`;
-    context.log.condition(
-      `row-refused:${link}`,
-      `Marfa refused ${what} (${record.reason}), so its row is left as it was. It is read again ${due ? "on the next run" : `after ${record.dueAt}`}, or as soon as it changes in Google.`,
-    );
-  }
 }
 
 /** Reads the account's calendars and their events into Marfa. */
@@ -368,7 +344,6 @@ async function leave(run: Run, id: string): Promise<void> {
   await scoped.archive(eventType, [...links]);
   await scoped.archive(calendarType, [id]);
   await save(scoped, context, id, id, undefined);
-  nameRefused(scoped, context, id, new Map());
   context.log.info(
     `${id} is no longer a calendar this connector reads, so it and its events are archived`,
   );
@@ -498,16 +473,6 @@ async function syncCalendar(
       ? { token: answer.syncToken, shape }
       : { shape },
   );
-  const titles = new Map(
-    plan.entries.flatMap((entry) => {
-      const link = entry.properties["google_id"];
-      const title = entry.properties["title"];
-      return typeof link === "string" && typeof title === "string"
-        ? [[link, title] as const]
-        : [];
-    }),
-  );
-  nameRefused(scoped, context, calendar.title, titles);
 }
 
 /** The active rows Marfa holds under these links, by link. */
