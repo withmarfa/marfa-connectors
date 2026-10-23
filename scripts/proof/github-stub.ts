@@ -254,7 +254,6 @@ export class GitHubStub {
   private grants = new Map<string, Grant>();
   private budgets = new Map<string, Budget>();
   private server: Server | undefined;
-  private behind = 0;
   private clock = Math.floor(Date.now() / 1000) * 1000;
   /** How far behind the machine's clock GitHub's own runs, in milliseconds. */
   private behind = 0;
