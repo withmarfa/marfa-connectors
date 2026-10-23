@@ -79,7 +79,7 @@ After an uncertain highlight create, recovery accepts exactly one new matching o
 
 ## Deletion and reconciliation
 
-Trash never changes Reader. Purge propagation is off unless explicitly enabled. Before any vendor mutation, the connector checks the complete pending purge set, including retries and provider cascades. More than 20 intended deletions blocks every deletion and reports a condition.
+Trash never changes Reader. Purge propagation is off unless explicitly enabled. Before any vendor mutation, the connector checks the complete pending purge set, including retries and provider cascades. More than 20 intended deletions fails the whole run before Reader is read: no change of any kind is carried to Reader and nothing is read from it. Each later run fails the same way until the count is 20 or fewer or purge propagation is turned off.
 
 An upstream disappearance requires a completed inventory and a successful empty direct lookup. A failed request, incomplete inventory, or excluded feed record does not establish deletion. More than 20 confirmed disappearances blocks archival of the whole set. Confirmed missing documents and their dependent highlights are archived explicitly, while content remains retained. Returning records reuse their existing identities.
 
