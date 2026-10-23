@@ -675,6 +675,237 @@ describe("a trash, restore and purge", () => {
   });
 });
 
+describe("a trash or purge before a lost create is settled", () => {
+  /** A row made in Marfa whose create Google made, with the answer lost. */
+  async function lost(): Promise<{ one: Row; id: string }> {
+    await landed();
+    const one = made(planning);
+    const id = eventIdFor(one.id);
+    calendar.loseAnswer((call) => call.method === "POST");
+    await landed();
+    expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+    expect(server.connectorState?.["outbound"]).toHaveLength(1);
+    return { one, id };
+  }
+
+  /** A row made in Marfa whose create never reached Google. */
+  async function failed(): Promise<{ one: Row; id: string }> {
+    await landed();
+    const one = made(planning);
+    const id = eventIdFor(one.id);
+    calendar.failNext((call) => call.method === "POST", 500);
+    await landed();
+    expect(calendar.event(me, id)).toBeUndefined();
+    expect(server.connectorState?.["outbound"]).toHaveLength(1);
+    return { one, id };
+  }
+
+  it("deletes the event the create made, once, when the row is trashed", async () => {
+    const { one, id } = await lost();
+    const etag = calendar.event(me, id)?.["etag"];
+
+    server.trash(one.id);
+    await landed();
+
+    expect(writes().map((call) => `${call.method} ${call.path}`)).toEqual([
+      `POST ${eventPath(me)}`,
+      `DELETE ${eventPath(me, id)}`,
+    ]);
+    expect(writes("DELETE")[0]?.ifMatch).toBe(etag);
+    expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    expect(server.byId(one.id).state).toBe("trashed");
+    expect(server.byId(one.id).properties["google_id"]).toBeUndefined();
+    expect(conditions()).toEqual({});
+
+    await landed();
+    expect(writes()).toHaveLength(2);
+    expect(eventRows()).toEqual([]);
+  });
+
+  it("sends nothing when the row is trashed and the create never reached Google", async () => {
+    const { one } = await failed();
+
+    server.trash(one.id);
+    await landed();
+
+    expect(writes().map((call) => call.method)).toEqual(["POST"]);
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    expect(conditions()).toEqual({});
+    await landed();
+    expect(writes()).toHaveLength(1);
+    expect(eventRows()).toEqual([]);
+  });
+
+  it("deletes the event the create made, once, when the row is purged, and stops holding its id", async () => {
+    const { one, id } = await lost();
+
+    server.purgeById(one.id);
+    await landed();
+
+    expect(writes().map((call) => `${call.method} ${call.path}`)).toEqual([
+      `POST ${eventPath(me)}`,
+      `DELETE ${eventPath(me, id)}`,
+    ]);
+    expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    await landed();
+    expect(writes()).toHaveLength(2);
+    expect(eventRows()).toEqual([]);
+  });
+
+  it("sends nothing when the row is purged and the create never reached Google, and stops holding its id", async () => {
+    const { one, id } = await failed();
+
+    server.purgeById(one.id);
+    await landed();
+
+    expect(writes().map((call) => call.method)).toEqual(["POST"]);
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    expect(conditions()).toEqual({});
+
+    // The read takes an event under that id as any other once nothing is
+    // making it.
+    calendar.put(
+      me,
+      timed(
+        id,
+        "Made in Google",
+        "2026-11-03T09:00:00Z",
+        "2026-11-03T10:00:00Z",
+      ),
+    );
+    await landed();
+    expect(row(`${me}/${id}`).properties["title"]).toBe("Made in Google");
+    expect(writes()).toHaveLength(1);
+  });
+
+  it("links the restored row to the event the create made, with no twin", async () => {
+    const { one, id } = await lost();
+    server.trash(one.id);
+    server.restore(one.id);
+
+    await landed();
+
+    expect(writes("DELETE")).toEqual([]);
+    expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+    expect(server.byId(one.id)).toMatchObject({
+      state: "active",
+      properties: { google_id: `${me}/${id}` },
+    });
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    await landed();
+    expect(eventRows()).toEqual([one.id]);
+  });
+
+  it("brings the event back, linked, when the row is restored after a delete whose answer was lost", async () => {
+    const { one, id } = await lost();
+    server.trash(one.id);
+    calendar.loseAnswer((call) => call.method === "DELETE");
+    await landed();
+    expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+    expect(server.connectorState?.["outbound"]).toHaveLength(1);
+    expect(eventRows()).toEqual([]);
+
+    server.restore(one.id);
+    await landed();
+
+    expect(writes("DELETE")).toHaveLength(1);
+    expect(calendar.event(me, id)).toMatchObject({
+      status: "confirmed",
+      summary: "Planning",
+    });
+    expect(server.byId(one.id)).toMatchObject({
+      state: "active",
+      properties: { google_id: `${me}/${id}` },
+    });
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    await landed();
+    expect(eventRows()).toEqual([one.id]);
+  });
+
+  it("settles a trash whose delete's answer was lost without deleting again", async () => {
+    const { one, id } = await lost();
+    server.trash(one.id);
+    calendar.loseAnswer((call) => call.method === "DELETE");
+    await landed();
+    expect(server.connectorState?.["outbound"]).toHaveLength(1);
+
+    await landed();
+
+    expect(writes("DELETE")).toHaveLength(1);
+    expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    expect(server.byId(one.id).state).toBe("trashed");
+    await landed();
+    expect(eventRows()).toEqual([]);
+  });
+
+  it("settles the trash of a row whose create Google refused, and makes the event when the row is restored", async () => {
+    await landed();
+    const one = made(planning);
+    const id = eventIdFor(one.id);
+    calendar.failNext((call) => call.method === "POST", 400);
+    await landed();
+    expect(server.connectorState?.["outbound"]).toHaveLength(1);
+
+    server.trash(one.id);
+    await landed();
+
+    expect(writes().map((call) => call.method)).toEqual(["POST"]);
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    expect(conditions()).toEqual({});
+
+    server.restore(one.id);
+    await landed();
+    expect(writes().map((call) => call.method)).toEqual(["POST", "POST"]);
+    expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+    expect(server.byId(one.id).properties["google_id"]).toBe(`${me}/${id}`);
+    await landed();
+    expect(eventRows()).toEqual([one.id]);
+  });
+
+  it("counts the events those trashes would delete in the safety stop, and only those", async () => {
+    await landed();
+    const rows = Array.from({ length: 11 }, (_, n) =>
+      made({ ...planning, title: `Planning ${String(n)}` }),
+    );
+    rows.forEach(() => {
+      calendar.loseAnswer((call) => call.method === "POST");
+    });
+    await landed();
+    expect(server.connectorState?.["outbound"]).toHaveLength(11);
+    for (const one of rows) server.trash(one.id);
+
+    expect(await once()).toBe(1);
+    expect(writes("DELETE")).toEqual([]);
+    expect(conditions()["deletes-held"]).toContain("11 of the 11 events on Me");
+
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" });
+    expect(writes("DELETE")).toHaveLength(11);
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+  });
+
+  it("does not count trashes whose creates never reached Google", async () => {
+    await landed();
+    const rows = Array.from({ length: 11 }, (_, n) =>
+      made({ ...planning, title: `Planning ${String(n)}` }),
+    );
+    rows.forEach(() => {
+      calendar.failNext((call) => call.method === "POST", 500);
+    });
+    await landed();
+    expect(server.connectorState?.["outbound"]).toHaveLength(11);
+    for (const one of rows) server.trash(one.id);
+
+    await landed();
+
+    expect(writes("DELETE")).toEqual([]);
+    expect(conditions()["deletes-held"]).toBeUndefined();
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+  });
+});
+
 describe("a series", () => {
   const series = {
     id: "weekly",

@@ -201,12 +201,14 @@ async function carried(
   writing: Writing,
 ): Promise<Entry | undefined> {
   const { item, kind } = change;
+  const gone = kind === "trashed" || kind === "purged";
   const held = context.outbound.get(item.id);
   if (held !== undefined) {
-    return settle(held, context, writing);
+    return gone
+      ? overtaken(held, context, writing)
+      : settle(held, context, writing);
   }
   const link = textOf(item, "google_id");
-  const gone = kind === "trashed" || kind === "purged";
   if (link === undefined) {
     if (!gone) return create(change, context, writing);
     if (change.attempted !== undefined) {
@@ -930,6 +932,14 @@ async function remove(
       textOf(item, "uneditable_reason") ?? "Google does not let it",
     );
   }
+  await deleteEvent(item, parts, session);
+}
+
+async function deleteEvent(
+  item: Item,
+  parts: { calendarId: string; eventId: string },
+  session: Session,
+): Promise<void> {
   const calendar = session.calendars.get(parts.calendarId);
   if (calendar === undefined) return;
   if (!owned.has(calendar.role)) {
@@ -945,6 +955,31 @@ async function remove(
     parts.eventId,
     text(found, "etag"),
   );
+}
+
+/**
+ * The trash or purge of a row whose create, or making again, got no answer
+ * and so never linked the row. The event that write made, if it landed, is
+ * under the row's own id on the calendar the saved write names, so it is
+ * deleted there, and the write is then settled, so it is never sent again.
+ * Where the delete's answer is lost too, the next run asks Google again.
+ */
+async function overtaken(
+  held: OutboundIntent,
+  context: WriteContext,
+  writing: Writing,
+): Promise<undefined> {
+  const { item } = held.change;
+  const making = makingOf(held.request);
+  if (making?.eventId !== eventIdFor(item.id)) {
+    throw new Refused(
+      `The write kept for ${named(item)} is not one this connector makes`,
+    );
+  }
+  if (held.acknowledged) return undefined;
+  await deleteEvent(item, making, await sessionFor(context, writing));
+  await context.outbound.acknowledge(item.id, held.token);
+  return undefined;
 }
 
 /** The trash of a row whose create got no link: whatever that create made,
@@ -1040,8 +1075,8 @@ interface Deleting {
  * each calendar where that is more than `deleteLimit`. Only a delete Marfa
  * would send counts: a row Marfa may not change, or one on a calendar the
  * account no longer has or can only read, sends none, and neither does an
- * event Google no longer holds. An event named by both a trash and a purge
- * is one delete.
+ * event Google no longer holds, such as one a create that got no answer
+ * never made. An event named by both a trash and a purge is one delete.
  */
 async function deleting(
   changes: readonly Change[],
@@ -1050,9 +1085,7 @@ async function deleting(
 ): Promise<Deleting[]> {
   const byCalendar = new Map<string, Map<string, boolean>>();
   for (const { kind, item } of changes) {
-    if (item.properties["editable"] === false) continue;
-    const link = textOf(item, "google_id");
-    const parts = link === undefined ? undefined : splitLink(link);
+    const parts = deletedBy(item, context);
     if (parts === undefined) continue;
     const ids = byCalendar.get(parts.calendarId) ?? new Map<string, boolean>();
     ids.set(
@@ -1080,6 +1113,21 @@ async function deleting(
     }
   }
   return found;
+}
+
+/** The event a row's trash or purge deletes: the one an unanswered create
+ *  made under the row's own id, or the one the row is linked to. */
+function deletedBy(
+  item: Item,
+  context: WriteContext,
+): { calendarId: string; eventId: string } | undefined {
+  const held = context.outbound.get(item.id);
+  if (held !== undefined) {
+    return held.acknowledged ? undefined : makingOf(held.request);
+  }
+  if (item.properties["editable"] === false) return undefined;
+  const link = textOf(item, "google_id");
+  return link === undefined ? undefined : splitLink(link);
 }
 
 /**
