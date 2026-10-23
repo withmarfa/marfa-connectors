@@ -26,7 +26,12 @@ import type {
   Target,
   WatchContext,
 } from "./define.js";
-import { Connections, connectionsKey, type Carried } from "./connections.js";
+import {
+  Connections,
+  connectionsKey,
+  readEdges,
+  type Carried,
+} from "./connections.js";
 import type { Environment } from "./environment.js";
 import { collect, type Collected } from "./inbound.js";
 import { cap, keepSecret, reportCap, type Logger } from "./log.js";
@@ -76,6 +81,7 @@ import {
   fitsJournal,
   type UpsertAttempt,
 } from "./inbound-retry.js";
+import { edgeTypesOf, endsOf, wireOf } from "./shipped.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
 import { checkedJson, intentOf as checkedEntry } from "./inbound-retry.js";
 import {
@@ -337,12 +343,6 @@ export function observe(
     Reflect.deleteProperty(next, "made");
   }
   return { next, own };
-}
-
-function connectionTypes<E extends EnvDeclaration>(
-  connector: Connector<E>,
-): Set<string> {
-  return new Set((connector.connections ?? []).map((kind) => kind.id));
 }
 
 function sumOf(counts: readonly Counts[]): Counts {
@@ -694,7 +694,7 @@ export async function runOnce<E extends EnvDeclaration>(
     narrowed: () =>
       (narrowed ??= setup.marfa.narrower(
         new Set(connector.types.map((kind) => kind.type.id)),
-        new Set((connector.connections ?? []).map((kind) => kind.id)),
+        edgeTypesOf(connector.connections ?? []),
       )),
     refused: (sourceId: string, reason: string) =>
       raised.set(
@@ -1113,7 +1113,12 @@ export async function runOnce<E extends EnvDeclaration>(
       target.id,
     );
     if (held === undefined) return [];
-    const found = await setup.marfa.connectedTo(type, connection, held.id);
+    const found = await setup.marfa.connectedTo(
+      type,
+      wireOf(connection).edge,
+      held.id,
+      wireOf(connection).inbound,
+    );
     const told = await rows.told(found);
     return found
       .filter((row) => {
@@ -2299,7 +2304,7 @@ export async function runOnce<E extends EnvDeclaration>(
       [...specs.keys()],
       stored.cursor,
       setup.signal,
-      connectionTypes(connector),
+      endsOf(connector.connections ?? []),
     ).read();
     if (read.resync && stored.cursor !== undefined) {
       raised.set(
@@ -3174,7 +3179,7 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
     [...specs.keys()],
     cursor,
     setup.signal,
-    connectionTypes(setup.connector),
+    endsOf(setup.connector.connections ?? []),
   ).read();
   if (read.resync) return { waiting: true, cursor };
   if (read.rows.size === 0 && read.connected.size === 0) {
@@ -3205,12 +3210,13 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
   const connected =
     first === undefined
       ? new Map<string, { item: Item; edges: Edge[] }>()
-      : await setup.marfa.edgesFrom(
+      : await readEdges(
+          setup.marfa,
           first,
           [...read.connected.keys()].filter(
             (id) => store.get(id) !== undefined,
           ),
-          connectionTypes(setup.connector),
+          setup.connector.connections ?? [],
         );
   // A purge's never counts.
   const kinds = new Map(

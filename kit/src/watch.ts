@@ -70,7 +70,12 @@ export class Watch {
     types: readonly string[],
     private readonly cursor: string | undefined,
     private readonly signal: AbortSignal,
-    private readonly connections: ReadonlySet<string> = new Set(),
+    /** For each edge type the connector writes, the end of its edges that is
+     *  the connector's row. */
+    private readonly connections: ReadonlyMap<
+      string,
+      "source" | "target"
+    > = new Map(),
   ) {
     this.types = new Set(types);
   }
@@ -121,13 +126,20 @@ export class Watch {
           if (edgeEvents.has(frame.event)) {
             const data = parse(frame.data);
             const edge = data["edge"] as Edge | undefined;
+            const row =
+              edge === undefined
+                ? undefined
+                : this.connections.get(edge.edge_type) === "target"
+                  ? edge.target_id
+                  : edge.source_id;
             if (
               edge !== undefined &&
+              row !== undefined &&
               this.connections.has(edge.edge_type) &&
               data["purged_with"] === undefined &&
-              !connected.has(edge.source_id)
+              !connected.has(row)
             ) {
-              connected.set(edge.source_id, edge.updated_at);
+              connected.set(row, edge.updated_at);
             }
             continue;
           }

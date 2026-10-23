@@ -23,6 +23,7 @@ import {
   Refusal,
   retryAfterOf,
   type Cause,
+  type EdgeType,
   keyNarrowerThanTypes,
   type Key,
 } from "./marfa.js";
@@ -46,6 +47,7 @@ import {
   type TelemetrySettings,
 } from "./telemetry.js";
 import { setUp, workingTreeOf } from "./setup.js";
+import { edgeTypesOf, shippedConnection, turned } from "./shipped.js";
 import {
   backoff,
   describeDuration,
@@ -89,11 +91,6 @@ function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
 }
 
-/** Shipped connection types a connector may write between its own rows,
- *  narrowed itself and never registered: a file attaching to its item, a
- *  message in its thread, a highlight referencing its source. */
-const shippedConnections = new Set(["attached-to", "in-thread", "references"]);
-
 /** Where an owner is told to mint the connector's key. */
 function keyGuide(connector: Pick<Connector, "readme">): string {
   return connector.readme ?? "the template's README";
@@ -125,8 +122,9 @@ function keySourceProblem(
 function keyWiderThanTypes(
   key: Key,
   types: ReadonlySet<string>,
-  connections: ReadonlySet<string>,
+  connections: readonly ConnectionDefinition[],
 ): string[] {
+  const edges = edgeTypesOf(connections);
   const wider: string[] = [];
   wider.push(...key.permissions);
   const held = (
@@ -146,9 +144,9 @@ function keyWiderThanTypes(
     (name) =>
       name === "types" ||
       (name === "edge_types" &&
-        [...connections].some((id) => !shippedConnections.has(id))),
+        connections.some((kind) => shippedConnection(kind.id) === undefined)),
   );
-  held("edge", key.edge_permissions, (name) => connections.has(name));
+  held("edge", key.edge_permissions, (name) => edges.has(name));
   held("extension", key.extension_permissions, () => false);
   held("profile", key.profile_permissions, () => false);
   // An exemption from the instance's own rules is never a connector's.
@@ -158,6 +156,27 @@ function keyWiderThanTypes(
   return wider;
 }
 
+/** How a declaration of a shipped type's reverse name differs from the
+ *  type, which it reads from the other end. */
+function inboundDifferences(
+  connection: ConnectionDefinition,
+  held: EdgeType,
+): string[] {
+  const differences: string[] = [];
+  const there = turned(held.cardinality);
+  if (connection.cardinality !== there) {
+    differences.push(
+      `cardinality is ${JSON.stringify(connection.cardinality)} here and ${JSON.stringify(there)} on the server, read from ${connection.id}'s side`,
+    );
+  }
+  if (held.reverse_name !== connection.id) {
+    differences.push(
+      `${connection.id} is not the instance's reverse name, ${JSON.stringify(held.reverse_name)}`,
+    );
+  }
+  return differences;
+}
+
 async function ensureConnections(
   connections: readonly ConnectionDefinition[],
   marfa: Marfa,
@@ -165,23 +184,39 @@ async function ensureConnections(
   if (connections.length === 0) return undefined;
   let served = await marfa.edgeTypes();
   for (const connection of connections) {
-    let held = served.find((type) => type.id === connection.id);
-    if (shippedConnections.has(connection.id)) {
+    const shipped = shippedConnection(connection.id);
+    let held = served.find(
+      (type) => type.id === (shipped?.edge ?? connection.id),
+    );
+    if (shipped !== undefined) {
+      // A declaration of the reverse name reads from the other end of the
+      // edge, so its cardinality is the server's turned about.
       const differences =
         held === undefined
           ? ["the instance does not hold it"]
-          : edgeTypeDifferences(
-              {
-                ...connection,
-                source_type_constraints: held.source_type_constraints,
-                target_type_constraints: held.target_type_constraints,
-                ...(held.reverse_name !== undefined && {
-                  reverse_name: held.reverse_name,
-                }),
-                written_at: held.written_at,
-              },
-              held,
-            );
+          : [
+              ...edgeTypeDifferences(
+                {
+                  ...connection,
+                  id: held.id,
+                  cardinality: held.cardinality,
+                  source_type_constraints: held.source_type_constraints,
+                  target_type_constraints: held.target_type_constraints,
+                  ...(held.reverse_name !== undefined && {
+                    reverse_name: held.reverse_name,
+                  }),
+                  written_at: held.written_at,
+                },
+                held,
+              ),
+              ...(shipped.inbound
+                ? inboundDifferences(connection, held)
+                : connection.cardinality !== held.cardinality
+                  ? [
+                      `cardinality is ${JSON.stringify(connection.cardinality)} here and ${JSON.stringify(held.cardinality)} on the server`,
+                    ]
+                  : []),
+            ];
       if (differences.length > 0) {
         return `the connection type ${connection.id} differs from the instance's own: ${differences.join("; ")}`;
       }
@@ -231,12 +266,11 @@ function keyProblems<E extends EnvDeclaration>(
   key: Key,
 ): string | undefined {
   const types = new Set(connector.types.map((kind) => kind.type.id));
-  const connections = new Set(
-    (connector.connections ?? []).map((kind) => kind.id),
-  );
-  const named = [...types, ...connections].join(", ");
+  const connections = connector.connections ?? [];
+  const edges = edgeTypesOf(connections);
+  const named = [...types, ...edges].join(", ");
   const wider = keyWiderThanTypes(key, types, connections);
-  const narrower = keyNarrowerThanTypes(key, types, connections);
+  const narrower = keyNarrowerThanTypes(key, types, edges);
   const problems = [
     keySourceProblem(key, connector.source, keyGuide(connector)),
     wider.length === 0

@@ -16,6 +16,7 @@ import {
   type Rows,
   type Spec,
 } from "./rows.js";
+import { wireOf } from "./shipped.js";
 import type { Store } from "./store.js";
 
 export const connectionsKey = "@connections";
@@ -27,6 +28,62 @@ function keyOf(target: Target): string {
 function targetOf(key: string): Target {
   const at = key.indexOf(" ");
   return { type: key.slice(0, at), id: key.slice(at + 1) };
+}
+
+/** Rows read at once for their inbound edges. */
+const inboundReads = 8;
+
+/**
+ * The edges of the declared connections at each row, every one read from the
+ * row's side as the declaration is: an edge the row is the target of, for a
+ * connection that is the reverse name of a shipped type, comes back turned
+ * about, naming the other row as its target, with the edge's own id.
+ */
+export async function readEdges(
+  marfa: Marfa,
+  type: string,
+  ids: readonly string[],
+  kinds: Iterable<ConnectionDefinition>,
+): Promise<Map<string, { item: Item; edges: Edge[] }>> {
+  const declared = [...kinds];
+  const found = await marfa.edgesFrom(
+    type,
+    ids,
+    new Set(
+      declared
+        .filter((kind) => !wireOf(kind.id).inbound)
+        .map((kind) => kind.id),
+    ),
+  );
+  // A lookup carries only the edges that start at a row.
+  const reads = declared
+    .filter((kind) => wireOf(kind.id).inbound)
+    .flatMap((kind) =>
+      [...found.values()]
+        .filter(
+          ({ item }) =>
+            kind.source_type_constraints?.includes(item.type) === true,
+        )
+        .map(({ item, edges }) => ({ kind, item, edges })),
+    );
+  for (let at = 0; at < reads.length; at += inboundReads) {
+    await Promise.all(
+      reads.slice(at, at + inboundReads).map(async ({ kind, item, edges }) => {
+        for (const edge of await marfa.edgesInto(
+          item.id,
+          wireOf(kind.id).edge,
+        )) {
+          edges.push({
+            ...edge,
+            edge_type: kind.id,
+            source_id: edge.target_id,
+            target_id: edge.source_id,
+          });
+        }
+      }),
+    );
+  }
+  return found;
 }
 
 export interface Carried {
@@ -63,7 +120,7 @@ export class Connections {
   ): Promise<Map<string, { item: Item; edges: Edge[] }>> {
     const [type] = this.lanes.keys();
     if (ids.length === 0 || type === undefined) return new Map();
-    return this.marfa.edgesFrom(type, ids, new Set(this.kinds.keys()));
+    return readEdges(this.marfa, type, ids, this.kinds.values());
   }
 
   /** Removals go first, so a target with one source moves, not refused. */
@@ -614,11 +671,12 @@ export class Connections {
       refused.push({ id: add.item.id, type: add.type, target: add.target });
     }
     const results = await this.marfa.connect(
-      plain.map(({ item, type, target }) => ({
-        source_id: item.id,
-        target_id: target,
-        edge_type: type,
-      })),
+      plain.map(({ item, type, target }) => {
+        const wire = wireOf(type);
+        return wire.inbound
+          ? { source_id: target, target_id: item.id, edge_type: wire.edge }
+          : { source_id: item.id, target_id: target, edge_type: wire.edge };
+      }),
     );
     for (const result of results) {
       const add = plain[result.index];

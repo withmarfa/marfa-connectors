@@ -516,6 +516,31 @@ export class Marfa {
     return edges;
   }
 
+  /** The edges of one type that point at a row, which a lookup does not
+   *  carry. */
+  async edgesInto(id: string, edgeType: string): Promise<Edge[]> {
+    const edges: Edge[] = [];
+    const walk = pages(async (cursor) => {
+      const { data, error, response } = await this.client.GET(
+        "/items/{id}/backrefs",
+        {
+          params: {
+            path: { id },
+            query: {
+              edge_type: edgeType,
+              limit: 200,
+              ...(cursor !== undefined && { cursor }),
+            },
+          },
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      return data;
+    });
+    for await (const edge of walk) edges.push(edge);
+    return edges;
+  }
+
   async connect(
     edges: readonly {
       source_id: string;
@@ -636,10 +661,13 @@ export class Marfa {
     return rows;
   }
 
+  /** The rows of a type that hold an edge to the target, or with `inbound`
+   *  that the target holds an edge to. */
   async connectedTo(
     type: string,
     edgeType: string,
     targetId: string,
+    inbound = false,
   ): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -647,7 +675,7 @@ export class Marfa {
         params: {
           query: {
             type,
-            filter: `edge[${edgeType}] eq ${JSON.stringify(targetId)}`,
+            filter: `${inbound ? "backref" : "edge"}[${edgeType}] eq ${JSON.stringify(targetId)}`,
             limit: 200,
             ...(cursor !== undefined && { cursor }),
           },

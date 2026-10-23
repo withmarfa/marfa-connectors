@@ -1,4 +1,5 @@
 import type { Connector, EnvDeclaration } from "./define.js";
+import { wireOf } from "./shipped.js";
 
 export class ConfigurationError extends Error {
   override name = "ConfigurationError";
@@ -154,6 +155,17 @@ export function checkDefinition<E extends EnvDeclaration>(
   if (new Set(connections).size !== connections.length) {
     problems.push("each connection type once");
   }
+  const edges = (connector.connections ?? []).map(
+    (kind) => wireOf(kind.id).edge,
+  );
+  if (
+    new Set(connections).size === connections.length &&
+    new Set(edges).size !== edges.length
+  ) {
+    problems.push(
+      "child-of and parent-of declared once between them, since they are one edge type",
+    );
+  }
   for (const kind of connector.connections ?? []) {
     const ends = [
       ...(kind.source_type_constraints ?? []),
@@ -166,7 +178,18 @@ export function checkDefinition<E extends EnvDeclaration>(
     ) {
       problems.push(`${kind.id}'s both ends constrained to its own types`);
     }
-    if ((kind.cascade_on_delete ?? "orphan") !== "orphan") {
+    const wire = wireOf(kind.id);
+    if (
+      wire.inbound &&
+      connector.types.some(
+        (held) => held.policy !== undefined && ends.includes(held.type.id),
+      )
+    ) {
+      problems.push(
+        `${kind.id}'s ends without a row policy, since the instance conditions an edge's write only on its source's version`,
+      );
+    }
+    if (!wire.cascades && (kind.cascade_on_delete ?? "orphan") !== "orphan") {
       problems.push(
         `${kind.id} to orphan on delete, so a trash in Marfa takes no vendor's row with it`,
       );
