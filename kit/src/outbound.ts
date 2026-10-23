@@ -24,6 +24,17 @@ export interface OutboundRecord {
   /** The person's trash or purge of the row that the acknowledgment
    *  settled in place of an unanswered create or remake. */
   superseding?: CapturedChange;
+  /** The unanswered create's or remake's own step, kept once a trash or
+   *  purge that overtook it advanced the intent to another request, and
+   *  handed back if the row is restored before that request is answered. */
+  original?: OriginalStep;
+}
+
+export interface OriginalStep {
+  token: string;
+  request: JsonValue;
+  baseline: JsonValue;
+  requestNotApplied?: true;
 }
 
 export function captureChange(change: Change): CapturedChange {
@@ -67,6 +78,7 @@ export function outboundToken(
     | "rejected"
     | "requestNotApplied"
     | "superseding"
+    | "original"
   >,
 ): string {
   return digest(record);
@@ -112,6 +124,10 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       record !== null && typeof record === "object"
         ? Reflect.get(record, "superseding")
         : undefined;
+    const original: unknown =
+      record !== null && typeof record === "object"
+        ? Reflect.get(record, "original")
+        : undefined;
     if (
       record === null ||
       typeof record !== "object" ||
@@ -142,7 +158,17 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       !Object.hasOwn(record, "request") ||
       !Object.hasOwn(record, "baseline") ||
       (superseding !== undefined &&
-        (!record.acknowledged || !overtakes(superseding, record.change)))
+        (!record.acknowledged || !overtakes(superseding, record.change))) ||
+      (original !== undefined &&
+        (!isObject(original) ||
+          typeof Reflect.get(original as object, "token") !== "string" ||
+          !Object.hasOwn(original as object, "request") ||
+          !Object.hasOwn(original as object, "baseline") ||
+          ![undefined, true].includes(
+            Reflect.get(original as object, "requestNotApplied") as
+              true | undefined,
+          ) ||
+          (record.change.kind !== "created" && record.operation !== "remake")))
     )
       throw new Error("invalid outbound journal record");
     const intent = { ...record };
@@ -154,10 +180,18 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       "rejected",
       "requestNotApplied",
       "superseding",
+      "original",
     ])
       Reflect.deleteProperty(intent, field);
     if (
       record.token !== outboundToken(intent) ||
+      (record.original !== undefined &&
+        record.original.token !==
+          outboundToken({
+            ...intent,
+            request: record.original.request,
+            baseline: record.original.baseline,
+          })) ||
       ids.has(record.change.item.id)
     )
       throw new Error("invalid outbound journal identity");

@@ -44,7 +44,8 @@ export function purgeOf(
 }
 
 export interface Relinked {
-  rows: Record<string, { link: string; type: string }>;
+  /** No link where none was agreed for a row whose create got none back. */
+  rows: Record<string, { link?: string; type: string }>;
   overflowed?: true;
 }
 
@@ -57,8 +58,9 @@ export interface Kept {
   cursor?: string;
   purges?: Purge[];
   /** The link agreed for each row whose own link differs and could not be
-   *  put back, which a purge, dropping the agreement, would otherwise lose;
-   *  `overflowed` once one was past what is kept. */
+   *  put back, which a purge, dropping the agreement, would otherwise lose,
+   *  or that none was, for a row whose create got no link back; `overflowed`
+   *  once one was past what is kept. */
   relinked?: Relinked;
 }
 
@@ -92,9 +94,19 @@ function keptOf(value: unknown, problems: unknown): Kept {
       Object.entries(isRecord(held["rows"]) ? held["rows"] : {}).flatMap(
         ([id, row]) =>
           isRecord(row) &&
-          typeof row["link"] === "string" &&
+          (row["link"] === undefined || typeof row["link"] === "string") &&
           typeof row["type"] === "string"
-            ? [[id, { link: row["link"], type: row["type"] }]]
+            ? [
+                [
+                  id,
+                  {
+                    ...(typeof row["link"] === "string" && {
+                      link: row["link"],
+                    }),
+                    type: row["type"],
+                  },
+                ],
+              ]
             : [],
       ),
     ),

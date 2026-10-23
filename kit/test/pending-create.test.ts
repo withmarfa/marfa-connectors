@@ -27,9 +27,12 @@ function fixture() {
   // How many creates lose their answer, and whether before the vendor.
   let losing = 1;
   let before = false;
-  let loseDelete = false;
+  let loseDelete: "before" | "after" | undefined;
+  let advancing = false;
   let loseAcknowledgment = false;
   let seen: Change[] = [];
+  // Each change `onChange` got, with the request the journal held for it.
+  const requests: [string, unknown][] = [];
   const create = async (change: Change, context: Context) => {
     const id = change.item.id;
     const intent =
@@ -66,6 +69,7 @@ function fixture() {
     async onChange(change, context) {
       seen.push(change);
       const pending = context.outbound.get(change.item.id);
+      requests.push([change.kind, pending?.request ?? null]);
       if (change.kind === "created") {
         await create(change, context);
         return undefined;
@@ -75,20 +79,29 @@ function fixture() {
         pending?.change.kind === "created"
       ) {
         // Whether the create landed is the vendor's to say.
-        const made = (pending.request as { create: string }).create;
-        if (loseDelete) {
-          loseDelete = false;
+        const asked = pending.request as { create?: string; delete?: string };
+        const made = asked.delete ?? asked.create ?? "";
+        let step = pending;
+        if (advancing && asked.delete === undefined && vendor.has(made))
+          step = await context.outbound.advance(change.item.id, pending.token, {
+            request: { delete: made },
+            baseline: null,
+          });
+        const losing = loseDelete;
+        loseDelete = undefined;
+        if (losing === "before")
           throw new Unreachable(`the vendor did not answer for ${made}`);
-        }
         if (vendor.has(made)) {
           calls.push(`delete ${made}`);
           vendor.delete(made);
         }
+        if (losing === "after")
+          throw new Unreachable(`the vendor did not answer for ${made}`);
         if (loseAcknowledgment) {
           loseAcknowledgment = false;
           harness.server.loseStateAnswer = true;
         }
-        await context.outbound.acknowledge(change.item.id, pending.token);
+        await context.outbound.acknowledge(change.item.id, step.token);
         return undefined;
       }
       calls.push(
@@ -101,6 +114,7 @@ function fixture() {
     vendor,
     calls,
     preflights,
+    requests,
     seen: () => {
       const all = seen;
       seen = [];
@@ -111,8 +125,13 @@ function fixture() {
       losing = count;
       before = beforeSending;
     },
-    loseDelete: () => {
-      loseDelete = true;
+    /** Loses the vendor's answer to the delete, before or after it lands. */
+    loseDelete: (when: "before" | "after" = "before") => {
+      loseDelete = when;
+    },
+    /** Journals the delete as the intent's next step before sending it. */
+    advance: () => {
+      advancing = true;
     },
     loseAcknowledgment: () => {
       loseAcknowledgment = true;
@@ -255,6 +274,113 @@ it("replays the create for a row restored while its trash waited", async () => {
   expect(harness.kept()["outbound"]).toBeUndefined();
 });
 
+it("hands a restored row its create, not the delete its trash journaled, where the delete landed", async () => {
+  const f = fixture();
+  f.advance();
+  const row = await uncertain(f);
+  harness.server.trash(row.id);
+  f.loseDelete("after");
+  expect(await f.once()).toBe(0);
+  expect(f.vendor.size).toBe(0);
+  expect(harness.kept()["outbound"]).toHaveLength(1);
+  harness.server.restore(row.id);
+
+  const exit = await f.once();
+  const made = `made-${row.id}`;
+  expect(f.requests).toEqual([
+    ["created", null],
+    ["trashed", { create: made }],
+    ["created", { create: made }],
+  ]);
+  expect(exit).toBe(0);
+  expect(f.calls).toEqual([
+    `create ${made}`,
+    `delete ${made}`,
+    `create ${made}`,
+  ]);
+  expect(f.vendor.has(made)).toBe(true);
+  expect(harness.server.byId(row.id).properties["vendor_id"]).toBe(made);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
+
+it("hands a restored row its create, not the delete its trash journaled, where the delete was lost", async () => {
+  const f = fixture();
+  f.advance();
+  const row = await uncertain(f);
+  harness.server.trash(row.id);
+  f.loseDelete("before");
+  expect(await f.once()).toBe(0);
+  const made = `made-${row.id}`;
+  expect(f.vendor.has(made)).toBe(true);
+  harness.server.restore(row.id);
+
+  const exit = await f.once();
+  expect(f.requests).toEqual([
+    ["created", null],
+    ["trashed", { create: made }],
+    ["created", { create: made }],
+  ]);
+  expect(exit).toBe(0);
+  expect(f.calls).toEqual([`create ${made}`, `create ${made}`]);
+  expect(harness.server.byId(row.id).properties["vendor_id"]).toBe(made);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
+
+it("hands a trash still in the bin the delete it journaled", async () => {
+  const f = fixture();
+  f.advance();
+  const row = await uncertain(f);
+  harness.server.trash(row.id);
+  f.loseDelete("before");
+  expect(await f.once()).toBe(0);
+
+  expect(await f.once()).toBe(0);
+  const made = `made-${row.id}`;
+  expect(f.requests).toEqual([
+    ["created", null],
+    ["trashed", { create: made }],
+    ["trashed", { delete: made }],
+  ]);
+  expect(f.vendor.size).toBe(0);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+  expect(harness.agreement(row.id)?.["state"]).toBe("trashed");
+});
+
+it("hands a trash over a pending create no link a person typed", async () => {
+  const f = fixture();
+  const row = await uncertain(f);
+  harness.server.edit(row.id, { vendor_id: "someone-elses-object" });
+  harness.server.trash(row.id);
+
+  expect(await f.once()).toBe(0);
+  const [trash, ...rest] = f.seen();
+  expect(rest).toEqual([]);
+  expect(trash?.kind).toBe("trashed");
+  expect(trash?.attempted).toBeDefined();
+  expect(trash?.item.properties["vendor_id"]).toBeUndefined();
+});
+
+it("hands a purge over a pending create no link a person typed, though the log vouches for it", async () => {
+  const f = fixture();
+  const row = await uncertain(f);
+  // The replay loses its answer again, after the run has read the edit.
+  harness.server.edit(row.id, { vendor_id: "someone-elses-object" });
+  f.loseCreates(1);
+  expect(await f.once()).toBe(0);
+  expect(f.seen().map((change) => change.kind)).toEqual(["created"]);
+  harness.server.trash(row.id);
+  harness.server.purgeById(row.id);
+
+  expect(await f.once()).toBe(0);
+  const [purge, ...rest] = f.seen();
+  expect(rest).toEqual([]);
+  expect(purge?.kind).toBe("purged");
+  expect(purge?.attempted).toBeDefined();
+  expect(purge?.item.properties["vendor_id"]).toBeUndefined();
+  expect(f.calls).toContain(`delete made-${row.id}`);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
+
 it("asks for the create again, as attempted, when the row is restored after its trash settled", async () => {
   const f = fixture();
   const row = await uncertain(f);
@@ -354,6 +480,7 @@ it("hands a trash the pending remake it overtakes", async () => {
   let seed = true;
   let lose = true;
   const kinds: string[] = [];
+  const links: unknown[] = [];
   const connector = defineConnector({
     name: "test",
     source: "test",
@@ -393,6 +520,7 @@ it("hands a trash the pending remake it overtakes", async () => {
       if (change.kind === "trashed" && pending !== undefined) {
         expect(pending.change.kind).toBe("restored");
         expect(change.attempted).toBeDefined();
+        links.push(change.item.properties["vendor_id"]);
         const made = (pending.request as { remake: string }).remake;
         if (vendor.delete(made)) calls.push(`delete ${made}`);
         await context.outbound.acknowledge(change.item.id, pending.token);
@@ -417,6 +545,8 @@ it("hands a trash the pending remake it overtakes", async () => {
 
   expect(await once()).toBe(0);
   expect(kinds).toEqual(["trashed", "remake:restored", "trashed"]);
+  // The link the remake's journal agreed, where the row still holds it.
+  expect(links).toEqual(["vendor-one"]);
   expect(calls).toEqual([
     "delete vendor-one",
     "remake remade-one",

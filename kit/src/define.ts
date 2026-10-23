@@ -316,9 +316,10 @@ export interface Change {
    */
   readonly changed: ReadonlySet<string>;
   /**
-   * For a create, the trash of a row whose create got no link, a remake, or
-   * a trash or purge that overtakes a journaled create or remake whose
-   * answer was lost: when it was first sent, so the vendor may hold what it
+   * For a create, the trash of a row whose create got no link (carried with
+   * no link, even one the row holds since), a remake, or a trash or purge
+   * that overtakes a journaled create or remake whose answer was lost: when
+   * it was first sent, so the vendor may hold what it
    * made; look for it there before making another, or delete it. It can be
    * long ago, for a create abandoned then sent again, so a match may belong
    * to another row, which `setLink` refuses.
@@ -384,7 +385,11 @@ export interface OutboundJournal {
     change: Change,
     intent: { request: JsonValue; baseline: JsonValue },
   ): Promise<OutboundIntent>;
-  /** After proving a step complete, durably replace it with the next exact request. The captured change stays fixed. */
+  /** After proving a step complete, durably replace it with the next exact
+   * request. The captured change stays fixed. A step taken under a trash or
+   * purge that overtakes a pending create or remake is the trash's or
+   * purge's own: if the row is restored before it is acknowledged, `get`
+   * returns the create or remake again, with its own request and token. */
   advance(
     itemId: string,
     token: string,
