@@ -67,7 +67,8 @@ export function readOnly(value: string | undefined, kind?: string): boolean {
   if (value === "true") return true;
   const kinds = value.split(",").map((one) => one.trim());
   const unknown = kinds.filter((one) => !kindsOf.includes(one));
-  if (unknown.length > 0)
+  // Only the whole-value check refuses; `carries` asks per kind before the settings are checked.
+  if (kind === undefined && unknown.length > 0)
     throw new Error(
       `GITHUB_READ_ONLY holds an unknown kind (${unknown.join(", ")}); use true, false, or a comma-separated list of ${kindsOf.join(", ")}`,
     );

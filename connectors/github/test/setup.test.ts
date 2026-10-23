@@ -118,9 +118,8 @@ describe("read-only kinds", () => {
   it("rejects unknown kinds and empty list members", () => {
     expect(() => readOnly("isssue")).toThrow("GITHUB_READ_ONLY");
     expect(() => readOnly("issue,,comment")).toThrow("GITHUB_READ_ONLY");
-    expect(() => readOnly("discussions", "issue")).toThrow(
-      "unknown kind (discussions)",
-    );
+    expect(() => readOnly("discussions")).toThrow("unknown kind (discussions)");
+    expect(readOnly("discussions", "issue")).toBe(false);
   });
 });
 
