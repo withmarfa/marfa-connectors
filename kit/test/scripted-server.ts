@@ -254,6 +254,19 @@ export class ScriptedServer {
       },
     ],
     [
+      "derived-from",
+      {
+        id: "derived-from",
+        cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
       "parent-of",
       {
         id: "parent-of",
@@ -283,6 +296,8 @@ export class ScriptedServer {
       },
     ],
   ]);
+  /** Each row's tags; a row without an entry has none. */
+  readonly tags = new Map<string, string[]>();
   readonly blobs = new Map<string, { bytes: Buffer; mime_type: string }>();
   uploads = 0;
   /** Mirrors the server's cap of 50 edges per type in a lookup. */
@@ -649,6 +664,47 @@ export class ScriptedServer {
     this.announce("item.purged", row);
   }
 
+  /**
+   * What the server writes for a stale `PATCH ?conflict=auto` that collides
+   * on a `keep_both_copies` property (`versions/copy-written` and the rules
+   * after it): the losing value on a new row of the original's type, under
+   * the original's source, without its natural key or its link, tagged
+   * `conflicted-copy` beside the original's tags, and linked to the original
+   * by one `derived-from` edge. It gives the copy none of the original's
+   * other edges (`versions/copy-edges-own`), so a test that needs one draws
+   * it. `losing` is what the copy holds beyond the
+   * original's other properties; `winning` is written to the original after
+   * the copy's events, as the resolution's own update.
+   */
+  conflictedCopy(
+    id: string,
+    losing: Record<string, unknown>,
+    winning?: Record<string, unknown>,
+  ): Row {
+    const original = this.byId(id);
+    const field = this.types.get(original.type)?.["link_field"];
+    const properties = { ...original.properties, ...losing };
+    if (typeof field === "string") Reflect.deleteProperty(properties, field);
+    const copy = this.newRow(
+      original.type,
+      original.source,
+      undefined,
+      properties,
+      original.occurred_at,
+      original.tier,
+    );
+    this.rows.push(copy);
+    this.tags.set(copy.id, [
+      ...(this.tags.get(original.id) ?? []),
+      "conflicted-copy",
+    ]);
+    this.announce("item.created", copy);
+    this.drawEdge(copy.id, original.id, "derived-from");
+    if (winning !== undefined)
+      this.write(original, { ...original.properties, ...winning });
+    return copy;
+  }
+
   insert(
     sourceId: string | undefined,
     properties: Record<string, unknown>,
@@ -821,6 +877,14 @@ export class ScriptedServer {
     };
     this.snapshots.set(row.id, []);
     return row;
+  }
+
+  private metadata(row: Row): Record<string, unknown> {
+    return {
+      item_id: row.id,
+      tags: [...(this.tags.get(row.id) ?? [])],
+      extensions: {},
+    };
   }
 
   private wire(row: Row): Record<string, unknown> {
@@ -1436,7 +1500,7 @@ export class ScriptedServer {
       this.announce("item.created", row);
       send(201, {
         item: this.wire(row),
-        metadata: { item_id: row.id, tags: [], extensions: {} },
+        metadata: this.metadata(row),
       });
       return;
     }
@@ -1625,7 +1689,7 @@ export class ScriptedServer {
         }
         send(200, {
           item: this.wire(row),
-          metadata: { item_id: row.id, tags: [], extensions: {} },
+          metadata: this.metadata(row),
         });
         return;
       }
@@ -1669,7 +1733,7 @@ export class ScriptedServer {
         this.restore(id);
         send(200, {
           item: this.wire(row),
-          metadata: { item_id: row.id, tags: [], extensions: {} },
+          metadata: this.metadata(row),
         });
         return;
       }
@@ -1706,7 +1770,7 @@ export class ScriptedServer {
         this.transition(id, state);
         send(200, {
           item: this.wire(row),
-          metadata: { item_id: row.id, tags: [], extensions: {} },
+          metadata: this.metadata(row),
         });
         return;
       }
@@ -2376,7 +2440,7 @@ export class ScriptedServer {
     }
     send(200, {
       item: this.wire(row),
-      metadata: { item_id: row.id, tags: [], extensions: {} },
+      metadata: this.metadata(row),
     });
   }
 }
