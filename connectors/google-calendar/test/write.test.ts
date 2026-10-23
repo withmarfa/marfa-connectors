@@ -1507,6 +1507,106 @@ describe("a series", () => {
     expect(conditions()[`change-refused:${one.id}`]).toContain("400");
   });
 
+  const answers = [
+    ["answers it as cancelled", true],
+    ["answers it as deleted", false],
+  ] as const;
+
+  /** A series trashed and carried, then restored with its recurrence
+   *  changed before the next run, which carries both. */
+  async function restoredWith(
+    getsCancelled: boolean,
+    lines: string[],
+  ): Promise<Row> {
+    calendar.getsCancelled = getsCancelled;
+    await landed();
+    const one = row(`${me}/weekly`);
+    server.trash(one.id);
+    await landed();
+    expect(calendar.event(me, "weekly")?.["status"]).toBe("cancelled");
+    server.restore(one.id);
+    server.edit(one.id, { recurrence: lines });
+    await landed();
+    return one;
+  }
+
+  it.each(answers)(
+    "brings back a restored series with the rule changed in Marfa when Google %s",
+    async (_, getsCancelled) => {
+      calendar.put(me, series);
+      const lines = ["RRULE:FREQ=WEEKLY;BYDAY=TU"];
+      const one = await restoredWith(getsCancelled, lines);
+
+      expect(calendar.event(me, "weekly")).toMatchObject({
+        status: "confirmed",
+        recurrence: lines,
+      });
+      expect(conditions()).toEqual({});
+
+      const sent = writes().length;
+      await landed();
+      expect(writes()).toHaveLength(sent);
+      expect(calendar.event(me, "weekly")?.["recurrence"]).toEqual(lines);
+      expect(server.byId(one.id).properties["recurrence"]).toEqual(lines);
+    },
+  );
+
+  it.each(answers)(
+    "cancels the occurrence whose date is added in Marfa to a restored series when Google %s",
+    async (_, getsCancelled) => {
+      calendar.put(me, series);
+      const lines = ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE:20261026T100000Z"];
+      const one = await restoredWith(getsCancelled, lines);
+
+      expect(calendar.event(me, "weekly")).toMatchObject({
+        status: "confirmed",
+        recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"],
+      });
+      expect(calendar.event(me, "weekly_20261026T100000Z")?.["status"]).toBe(
+        "cancelled",
+      );
+      expect(conditions()).toEqual({});
+
+      await landed();
+      expect(server.byId(one.id).properties["recurrence"]).toEqual(lines);
+    },
+  );
+
+  it.each(answers)(
+    "brings back a restored series but declines to bring back a cancelled occurrence Marfa may not change when Google %s",
+    async (_, getsCancelled) => {
+      calendar.put(me, series);
+      const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+      calendar.cancel(me, id, {
+        ...rest,
+        organizer: { email: me, self: true },
+        ...guests,
+      });
+      const lines = ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE:20261026T100000Z"];
+      const one = await restoredWith(getsCancelled, [
+        "RRULE:FREQ=WEEKLY;BYDAY=MO",
+      ]);
+
+      expect(calendar.event(me, "weekly")?.["status"]).toBe("confirmed");
+      expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+      expect(conditions()[`declined:${one.id}`]).toContain(
+        "guests other than the account",
+      );
+      expect(server.byId(one.id)).toMatchObject({
+        state: "active",
+        properties: { recurrence: lines },
+      });
+
+      await landed();
+      expect(calendar.event(me, "weekly")?.["status"]).toBe("confirmed");
+      expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+      expect(server.byId(one.id)).toMatchObject({
+        state: "active",
+        properties: { recurrence: lines },
+      });
+    },
+  );
+
   function madeUnder(parent: Row, properties: Record<string, unknown>): Row {
     const one = server.insert(undefined, properties, eventType, "person");
     server.drawEdge(parent.id, one.id, "parent-of");

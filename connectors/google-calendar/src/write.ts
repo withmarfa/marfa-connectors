@@ -973,23 +973,15 @@ async function update(
   calendar = target ?? calendar;
   const fields = patchOf(change.changed, item, event, calendar);
   const zone = zoneOf(text(object(found, "start"), "timeZone"), calendar.zone);
-  const rowLines = linesOf(item.properties["recurrence"]);
-  let cancelled = heldCancellations(rowLines, event.recurrence, zone);
+  let cancelled = heldCancellations(
+    linesOf(item.properties["recurrence"]),
+    event.recurrence,
+    zone,
+  );
   let plan: SeriesPlan | undefined;
-  if (
-    change.changed.has("recurrence") &&
-    event.recurringEventId === undefined
-  ) {
-    plan = await planSeries(
-      item,
-      event,
-      parts.calendarId,
-      zone,
-      rowLines,
-      session,
-    );
+  if (rulesChanged(change, event)) {
     // Decided before anything is sent, so a declined change sends nothing.
-    await checkSeries(item, plan, parts, from, session);
+    plan = await checkedPlan(item, event, parts, zone, from, session);
     if (plan.lines !== undefined) fields["recurrence"] = plan.lines;
     cancelled = plan.cancelled;
   }
@@ -1104,6 +1096,36 @@ async function planSeries(
     ),
     cancelled: want,
   };
+}
+
+/** Whether a change asks anything of a series' rules: a change to the
+ *  recurrence of an event that is not an occurrence. */
+function rulesChanged(change: Change, event: GoogleEvent): boolean {
+  return (
+    change.changed.has("recurrence") && event.recurringEventId === undefined
+  );
+}
+
+/** The plan for a change to a series' rules, declined where it would
+ *  cancel or bring back an occurrence Marfa may not change. */
+async function checkedPlan(
+  item: Item,
+  event: GoogleEvent,
+  parts: { calendarId: string; eventId: string },
+  zone: string,
+  calendar: CalendarInfo,
+  session: Session,
+): Promise<SeriesPlan> {
+  const plan = await planSeries(
+    item,
+    event,
+    parts.calendarId,
+    zone,
+    linesOf(item.properties["recurrence"]),
+    session,
+  );
+  await checkSeries(item, plan, parts, calendar, session);
+  return plan;
 }
 
 function removedBy(
@@ -1358,39 +1380,43 @@ async function remade(
     }
     // Google may answer a deleted event as gone while it can still bring it
     // back under its own id, which keeps its link and history.
+    let back: Json;
     try {
-      await session.api.patch(
+      back = await session.api.patch(
         parts.calendarId,
         parts.eventId,
         restoring(item, calendar, undefined),
         undefined,
       );
-      return true;
     } catch (error) {
       if (lostSplit(error, parts.eventId)) {
         return splitAgain(change, parts, calendar, session, context, writing);
       }
       if (!isGone(error)) throw error;
+      // The id is gone for good, so the event is made anew under the row's.
+      await make(change, makingFor(item, calendar), context, writing);
+      return true;
     }
-    // The id is gone for good, so the event is made anew under the row's.
-    await make(change, makingFor(item, calendar), context, writing);
+    await restoreRules(change, parts, calendar, back, session, context);
     return true;
   }
   const event = eventOf(found);
   const reason = event === undefined ? undefined : uneditable(event, calendar);
   if (reason !== undefined) throw decline(item, reason);
+  let back: Json;
   try {
-    await session.api.patch(
+    back = await session.api.patch(
       parts.calendarId,
       parts.eventId,
       restoring(item, calendar, found),
       text(found, "etag"),
     );
-    return true;
   } catch (error) {
     if (!lostSplit(error, parts.eventId)) throw error;
+    return splitAgain(change, parts, calendar, session, context, writing);
   }
-  return splitAgain(change, parts, calendar, session, context, writing);
+  await restoreRules(change, parts, calendar, back, session, context);
+  return true;
 }
 
 /** Every field Marfa sets on an event it brings back, as a patch to the
@@ -1401,6 +1427,55 @@ function restoring(
   raw: Json | undefined,
 ): Record<string, unknown> {
   return { ...whole(item, calendar), ...timesPatch(item, raw, calendar) };
+}
+
+/**
+ * Carries a change made in Marfa to the rules of a series it brought back,
+ * as an edit carries one, with the same declines. It waits until the series
+ * is back: Google may answer a deleted series as gone, so its own lines are
+ * known only from the event it brings back.
+ */
+async function restoreRules(
+  change: Change,
+  parts: { calendarId: string; eventId: string },
+  calendar: CalendarInfo,
+  back: Json,
+  session: Session,
+  context: WriteContext,
+): Promise<void> {
+  if (!change.changed.has("recurrence")) return;
+  const event = eventOf(back);
+  if (event === undefined) {
+    throw new Refused(
+      `Google Calendar answered no event for ${named(change.item)}`,
+    );
+  }
+  if (!rulesChanged(change, event)) return;
+  const zone = zoneOf(text(object(back, "start"), "timeZone"), calendar.zone);
+  const plan = await checkedPlan(
+    change.item,
+    event,
+    parts,
+    zone,
+    calendar,
+    session,
+  );
+  if (plan.lines !== undefined) {
+    await session.api.patch(
+      parts.calendarId,
+      parts.eventId,
+      { recurrence: plan.lines },
+      text(back, "etag"),
+    );
+  }
+  await applySeries(
+    plan,
+    parts.calendarId,
+    parts.eventId,
+    calendar,
+    session,
+    context,
+  );
 }
 
 /** Makes a split piece Google refused to bring back anew under the row's
