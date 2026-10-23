@@ -30,8 +30,82 @@ function targetOf(key: string): Target {
   return { type: key.slice(0, at), id: key.slice(at + 1) };
 }
 
-/** Rows read at once for their inbound edges. */
+/** Rows read at once for their inbound edges, one by one. */
 const inboundReads = 8;
+
+/** Fewer rows than this cost fewer requests one by one than a listing's
+ *  first page and its next could. */
+const listedFrom = 8;
+
+interface Inbound {
+  readonly kind: ConnectionDefinition;
+  readonly item: Item;
+  readonly edges: Edge[];
+}
+
+/** An edge turned about, as the declaration reads it from the row's side. */
+function turnedAbout(edge: Edge, kind: ConnectionDefinition): Edge {
+  return {
+    ...edge,
+    edge_type: kind.id,
+    source_id: edge.target_id,
+    target_id: edge.source_id,
+  };
+}
+
+/**
+ * The inbound edges of the rows, which a lookup does not carry. A listing of
+ * the edge type, indexed by target, costs a request for every 500 edges and
+ * so serves many rows; one request for each row serves few. The listing is
+ * given up when it takes more pages than the rows would take requests, so a
+ * small run in a large calendar never costs more than twice the rows. Only
+ * the edges that point at a row asked about are kept, whatever else the
+ * listing holds.
+ */
+async function readInbound(
+  marfa: Marfa,
+  reads: readonly Inbound[],
+): Promise<void> {
+  const byEdge = new Map<string, Inbound[]>();
+  for (const read of reads) {
+    const edgeType = wireOf(read.kind.id).edge;
+    byEdge.set(edgeType, [...(byEdge.get(edgeType) ?? []), read]);
+  }
+  for (const [edgeType, group] of byEdge) {
+    const listed =
+      group.length < listedFrom
+        ? undefined
+        : await marfa.edgesOfType(edgeType, group.length);
+    if (listed !== undefined) {
+      const into = new Map<string, Edge[]>();
+      for (const edge of listed) {
+        into.set(edge.target_id, [...(into.get(edge.target_id) ?? []), edge]);
+      }
+      for (const { kind, item, edges } of group) {
+        for (const edge of into.get(item.id) ?? []) {
+          edges.push(turnedAbout(edge, kind));
+        }
+      }
+      continue;
+    }
+    for (let at = 0; at < group.length; at += inboundReads) {
+      const batch = group.slice(at, at + inboundReads);
+      // Every read of the batch is answered before one's failure is raised,
+      // so none is left running.
+      const answers = await Promise.allSettled(
+        batch.map(({ item }) => marfa.edgesInto(item.id, edgeType)),
+      );
+      for (const [index, answer] of answers.entries()) {
+        if (answer.status === "rejected") throw answer.reason;
+        const read = batch[index];
+        if (read === undefined) continue;
+        for (const edge of answer.value) {
+          read.edges.push(turnedAbout(edge, read.kind));
+        }
+      }
+    }
+  }
+}
 
 /**
  * The edges of the declared connections at each row, every one read from the
@@ -56,33 +130,19 @@ export async function readEdges(
     ),
   );
   // A lookup carries only the edges that start at a row.
-  const reads = declared
-    .filter((kind) => wireOf(kind.id).inbound)
-    .flatMap((kind) =>
-      [...found.values()]
-        .filter(
-          ({ item }) =>
-            kind.source_type_constraints?.includes(item.type) === true,
-        )
-        .map(({ item, edges }) => ({ kind, item, edges })),
-    );
-  for (let at = 0; at < reads.length; at += inboundReads) {
-    await Promise.all(
-      reads.slice(at, at + inboundReads).map(async ({ kind, item, edges }) => {
-        for (const edge of await marfa.edgesInto(
-          item.id,
-          wireOf(kind.id).edge,
-        )) {
-          edges.push({
-            ...edge,
-            edge_type: kind.id,
-            source_id: edge.target_id,
-            target_id: edge.source_id,
-          });
-        }
-      }),
-    );
-  }
+  await readInbound(
+    marfa,
+    declared
+      .filter((kind) => wireOf(kind.id).inbound)
+      .flatMap((kind) =>
+        [...found.values()]
+          .filter(
+            ({ item }) =>
+              kind.source_type_constraints?.includes(item.type) === true,
+          )
+          .map(({ item, edges }) => ({ kind, item, edges })),
+      ),
+  );
   return found;
 }
 

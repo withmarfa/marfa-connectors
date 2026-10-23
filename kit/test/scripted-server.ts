@@ -307,6 +307,8 @@ export class ScriptedServer {
    *  value that is no number, or none at all. */
   ttlAnswer: { value: unknown } | undefined;
   bodyCap: number | undefined;
+  /** The most edges a page of `GET /edges` holds, below the server's 500. */
+  edgeListCap = 500;
   tooOld = false;
   /** The cursor asked for is past the head, as after a restore. */
   cursorAhead = false;
@@ -1526,6 +1528,32 @@ export class ScriptedServer {
       send(200, { ok: true });
       return;
     }
+    if (method === "GET" && url.pathname === "/edges") {
+      const types = (url.searchParams.get("edge_type") ?? "")
+        .split(",")
+        .filter((type) => type !== "");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      if (limit < 1 || limit > 500) {
+        refuse(400, "validation_error", "limit is 1 to 500", {});
+        return;
+      }
+      // Newest first, and an edge whose source the key may not read is left
+      // out, whatever its target.
+      const all = this.edges
+        .filter(
+          (edge) =>
+            (types.length === 0 || types.includes(edge.edge_type)) &&
+            this.readsSourceOf(edge),
+        )
+        .reverse();
+      const size = Math.min(limit, this.edgeListCap);
+      send(200, {
+        data: all.slice(from, from + size),
+        next_cursor: from + size < all.length ? String(from + size) : null,
+      });
+      return;
+    }
     if (
       method === "GET" &&
       parts[0] === "items" &&
@@ -1539,7 +1567,7 @@ export class ScriptedServer {
         (edge) =>
           (parts[2] === "edges"
             ? edge.source_id === parts[1]
-            : edge.target_id === parts[1]) &&
+            : edge.target_id === parts[1] && this.readsSourceOf(edge)) &&
           (type === null || edge.edge_type === type),
       );
       send(200, {
@@ -2045,6 +2073,10 @@ export class ScriptedServer {
         (row) => reaches(row.type) && Object.hasOwn(row.properties, name),
       ),
     );
+  }
+
+  private readsSourceOf(edge: EdgeRow): boolean {
+    return this.permission(this.byId(edge.source_id).type) !== "none";
   }
 
   /** What the key holds on a type, as marfa's `resolveTypePermission`

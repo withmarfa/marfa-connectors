@@ -145,7 +145,97 @@ export async function proveParentOf(
           { kind: "restored", event: "t", added: [], removed: [] },
         ]);
         assert.deepEqual(await seriesOf(id("e1")), [id("t")]);
-        return "the exceptions' edges point from their series, a move lets the old one go, a removal in Marfa is carried, a trash carries the series once and a restore brings its exceptions back";
+
+        // A calendar of many exceptions is read through one listing of the
+        // edge type, not a request for each row, and finds the same edges.
+        const base: Events = [
+          ["e1", "t"],
+          ["e2", "s"],
+          ["plain"],
+          ["s"],
+          ["t"],
+        ];
+        const many: Events = [
+          ...base,
+          ...Array.from({ length: 12 }, (_, at): [string, string] => [
+            `x${String(at)}`,
+            "u",
+          ]),
+          ["u"],
+        ];
+        await run(many);
+        held = await rows();
+        for (let at = 0; at < 12; at += 1) {
+          assert.deepEqual(await seriesOf(id(`x${String(at)}`)), [id("u")]);
+        }
+        const settled = [...held.values()].map((row) => row.version);
+        await run(many);
+        held = await rows();
+        assert.deepEqual(
+          [...held.values()].map((row) => row.version),
+          settled,
+        );
+        assert.equal((await carried()).length, 3);
+        // Edges the connector's key may read, or only half read, are left as
+        // they are: a note joined to a note, and the series joined to a note.
+        const outsider = createClient({
+          baseUrl: url,
+          credential: (
+            await mintKey({
+              label: "parent-of proof outsider",
+              source: "proof-parent-of-person",
+              type_permissions: { [type]: "write", "core.note": "write" },
+              edge_permissions: { "parent-of": "write" },
+              default_tier: "feed",
+            })
+          ).key,
+        });
+        const notes: string[] = [];
+        for (const title of ["First note", "Second note"]) {
+          const made = await outsider.POST("/items", {
+            body: { type: "core.note", properties: { title, body: title } },
+          });
+          assert.ok(made.data, JSON.stringify(made.error));
+          notes.push(made.data.item.id);
+        }
+        const [first, second] = notes;
+        assert.ok(first && second);
+        for (const [source, target] of [
+          [first, second],
+          [id("u"), first],
+        ] as const) {
+          const joined = await outsider.POST("/edges", {
+            body: {
+              source_id: source,
+              target_id: target,
+              edge_type: "parent-of",
+            },
+          });
+          assert.ok(joined.data, JSON.stringify(joined.error));
+        }
+        const gone = (await edgesFrom(marfa, id("u"))).find(
+          (edge) => edge.target_id === id("x0"),
+        );
+        assert.ok(gone);
+        const dropped = await marfa.DELETE("/edges/{id}", {
+          params: { path: { id: gone.id } },
+        });
+        assert.ok(dropped.response.ok, JSON.stringify(dropped.error));
+        await run(many);
+        assert.deepEqual((await carried()).slice(3), [
+          { kind: "updated", event: "x0", added: [], removed: ["u"] },
+        ]);
+        assert.deepEqual(
+          (await edgesFrom(outsider, id("u")))
+            .map((edge) => edge.target_id)
+            .filter((target) => target === first),
+          [first],
+        );
+        assert.deepEqual(
+          (await edgesFrom(outsider, first)).map((edge) => edge.target_id),
+          [second],
+        );
+        return "the exceptions' edges point from their series, a move lets the old one go, a removal in Marfa is carried, a trash carries the series once, a restore brings its exceptions back, and a calendar of many exceptions finds the same edges through one listing";
       } finally {
         await rm(directory, { recursive: true, force: true });
       }

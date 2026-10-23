@@ -541,6 +541,36 @@ export class Marfa {
     return edges;
   }
 
+  /**
+   * Every edge of one type that the key may read, 500 to a page, or
+   * `undefined` once `budget` pages were read and the listing went on.
+   * It holds edges whatever the type of their ends, so a caller keeps the
+   * ones it asked about.
+   */
+  async edgesOfType(
+    edgeType: string,
+    budget: number,
+  ): Promise<Edge[] | undefined> {
+    const edges: Edge[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < budget; page += 1) {
+      const { data, error, response } = await this.client.GET("/edges", {
+        params: {
+          query: {
+            edge_type: edgeType,
+            limit: 500,
+            ...(cursor !== undefined && { cursor }),
+          },
+        },
+      });
+      if (data === undefined) throw refusal(response, error);
+      edges.push(...data.data);
+      if (data.next_cursor === null) return edges;
+      cursor = data.next_cursor;
+    }
+    return undefined;
+  }
+
   async connect(
     edges: readonly {
       source_id: string;

@@ -339,3 +339,202 @@ describe("a declaration of parent-of", () => {
     );
   });
 });
+
+/** The `GET /items/{id}/backrefs` requests so far. */
+function backrefReads(): number {
+  return harness.server.requests.filter(
+    (request) =>
+      request.method === "GET" &&
+      /^\/items\/[^/]+\/backrefs$/.test(request.path),
+  ).length;
+}
+
+function edgePages(): number {
+  return harness.server.requestsTo("GET", "/edges").length;
+}
+
+/** A series, `exceptions` of its exceptions, and plain events up to `rows`. */
+function crowded(rows: number, exceptions: number): Entry[] {
+  return [
+    series(1),
+    ...Array.from({ length: rows - 1 }, (_, at) =>
+      exception(at + 2, at < exceptions ? 1 : undefined),
+    ),
+  ];
+}
+
+async function settled(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+describe("reading the connections of a calendar's rows", () => {
+  it("costs a few requests, not one for each row, on a first run and on a resync", async () => {
+    const held = calendar(crowded(50, 10));
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(seriesOf(2)).toEqual(["a:1"]);
+    expect(backrefReads()).toBe(0);
+    expect(edgePages()).toBeLessThanOrEqual(2);
+    const before = harness.server.requests.length;
+    harness.server.tooOld = true;
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    harness.server.tooOld = false;
+    expect(backrefReads()).toBe(0);
+    expect(
+      harness.server.requests
+        .slice(before)
+        .filter((request) => request.path === "/edges"),
+    ).toHaveLength(1);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("finds every connection when the edges fill several pages, a late page's too", async () => {
+    harness.server.edgeListCap = 5;
+    const held = calendar(crowded(16, 12));
+    expect(await harness.twoWay(held)).toBe(0);
+    for (let n = 2; n <= 13; n += 1) expect(seriesOf(n)).toEqual(["a:1"]);
+    const written = harness.server.requestsTo("POST", "/edges/bulk").length;
+    held.entries = [];
+    harness.server.tooOld = true;
+    const before = edgePages();
+    expect(await harness.twoWay(held)).toBe(0);
+    // Every connection was found: none is mistaken for a removal or an add.
+    expect(edgePages() - before).toBe(3);
+    expect(backrefReads()).toBe(0);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.requestsTo("POST", "/edges/bulk")).toHaveLength(
+      written,
+    );
+    expect(harness.server.edges).toHaveLength(12);
+
+    // The oldest edge sits on the last page: a person's removal of it is
+    // carried, and only it.
+    const two = harness.server.row("a:2");
+    const oldest = harness.server.edges.find(
+      (edge) => edge.target_id === two.id,
+    );
+    harness.server.removeEdge(oldest?.id ?? "");
+    harness.server.tooOld = true;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(kinds(held.changes)).toEqual(["updated a:2"]);
+    expect(
+      held.changes[0]?.connections?.["child-of"]?.removed.map((row) => row.id),
+    ).toEqual([harness.server.row("a:1").id]);
+  });
+
+  it("reads rows one by one when the edges would take more pages than the rows", async () => {
+    harness.server.edgeListCap = 1;
+    const held = calendar(crowded(30, 28));
+    expect(await harness.twoWay(held)).toBe(0);
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    held.entries = crowded(30, 28).slice(1, 9);
+    const requests = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    const reads = harness.server.requests
+      .slice(requests)
+      .filter(
+        (request) =>
+          request.path === "/edges" || request.path.endsWith("/backrefs"),
+      );
+    // Eight rows: the listing gives up after eight pages, then each row is read.
+    expect(reads.filter((request) => request.path === "/edges")).toHaveLength(
+      8,
+    );
+    expect(reads).toHaveLength(16);
+    expect(held.changes).toEqual([]);
+    expect(harness.server.edges).toHaveLength(28);
+  });
+
+  it("reads a few rows one by one", async () => {
+    const held = calendar(crowded(4, 2));
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(edgePages()).toBe(0);
+    expect(backrefReads()).toBe(3);
+    expect(seriesOf(2)).toEqual(["a:1"]);
+  });
+
+  it("leaves an edge to a row outside the connector's types, and an edge between others, alone", async () => {
+    const held = calendar(crowded(12, 4));
+    await harness.twoWay(held);
+    const note = harness.server.insert(
+      undefined,
+      { title: "Note" },
+      "core.note",
+      "person",
+    );
+    const other = harness.server.insert(
+      undefined,
+      { title: "Other" },
+      "core.note",
+      "person",
+    );
+    const attached = harness.server.drawEdge(
+      harness.server.row("a:1").id,
+      note.id,
+      "parent-of",
+    );
+    const between = harness.server.drawEdge(note.id, other.id, "parent-of");
+    held.entries = [];
+    held.changes.length = 0;
+    harness.server.tooOld = true;
+    const before = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    harness.server.tooOld = false;
+    expect(
+      harness.server.requests
+        .slice(before)
+        .filter((request) => request.path === "/edges"),
+    ).toHaveLength(1);
+    expect(harness.server.edges.map((edge) => edge.id)).toEqual(
+      expect.arrayContaining([attached.id, between.id]),
+    );
+    expect(
+      harness.server.requests
+        .slice(before)
+        .filter(
+          (request) =>
+            request.method === "DELETE" && request.path.startsWith("/edges/"),
+        ),
+    ).toEqual([]);
+    expect(held.changes).toEqual([]);
+  });
+
+  it("fails the run, and leaves nothing running, when the edge read is rate limited, and the next run goes on", async () => {
+    const held = calendar(crowded(20, 6));
+    harness.server.refuseNext("GET /edges", 429, "rate_limited", "slow", "7");
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    expect(harness.lines.join("\n")).not.toContain("the server refused the");
+    const issued = harness.server.requests.length;
+    await settled();
+    expect(harness.server.requests).toHaveLength(issued);
+    expect(seriesOf(2)).toEqual([]);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(seriesOf(2)).toEqual(["a:1"]);
+    expect(seriesOf(7)).toEqual(["a:1"]);
+  });
+
+  it("fails the run once every read of a few rows has answered, when one is rate limited", async () => {
+    const held = calendar(crowded(4, 3));
+    await harness.twoWay(held);
+    const two = harness.server.row("a:2");
+    held.entries = crowded(4, 3);
+    harness.server.refuseNext(
+      `GET /items/${two.id}/backrefs`,
+      429,
+      "rate_limited",
+      "slow",
+      "7",
+    );
+    const before = backrefReads();
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    const issued = harness.server.requests.length;
+    expect(backrefReads() - before).toBe(3);
+    await settled();
+    expect(harness.server.requests).toHaveLength(issued);
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+  });
+});
