@@ -22,7 +22,9 @@ export interface RowPolicy {
   readonly firstAgreement?: "preserve" | "hold";
 }
 
-/** Nothing cascades, so a trash in Marfa never takes a vendor's row with it. */
+/** Only the instance's `parent-of` cascades, read from either end; a custom
+ *  connection type orphans, so its trash in Marfa takes no vendor's row with
+ *  it. */
 export type ConnectionDefinition =
   components["schemas"]["EdgeTypeRegistrationRequest"];
 
