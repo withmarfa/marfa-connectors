@@ -1,5 +1,13 @@
 import { createSign, generateKeyPairSync } from "node:crypto";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { appKey, GitHubStub } from "../proof/github-stub.js";
 
 // What each test holds the stand-in to is what GitHub does, as its
@@ -383,6 +391,37 @@ describe("listing the comments of a repository", () => {
   it("honors direction without a sort, as GitHub does though its documentation says it does not", async () => {
     const { a, b, c } = seed();
     expect(await ids("?direction=desc")).toEqual([c, b, a]);
+  });
+});
+
+describe("GitHub's clock", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps to real time however few writes there are, and orders each write after the last and after the time it told", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const issue = github.addIssue(github.addRepository("someone/tracker"));
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+    const late = github.addComment(issue, "Late");
+    expect(Date.parse(late.created_at)).toBe(
+      Math.floor(Date.now() / 1000) * 1000,
+    );
+    const told = Date.parse(
+      (await fetch(`${github.url}/app`)).headers.get("date") ?? "",
+    );
+    const next = github.addComment(issue, "Next");
+    expect(told).toBeGreaterThanOrEqual(Date.parse(late.created_at));
+    expect(Date.parse(next.created_at)).toBeGreaterThan(told);
+  });
+
+  it("runs behind the machine's by what a test asks", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    github.runBehind(60 * 60 * 1000);
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+    expect(Date.parse(github.now())).toBe(
+      Math.floor((Date.now() - 60 * 60 * 1000) / 1000) * 1000,
+    );
   });
 });
 

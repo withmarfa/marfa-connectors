@@ -178,7 +178,8 @@ export interface Asked {
   limited?: boolean;
 }
 
-// The clock moves a second at every write, so `updated_at` orders them.
+// GitHub's clock keeps to real time, as the connector compares it with the
+// machine's, and moves a second at every write, so `updated_at` orders them.
 export class GitHubStub {
   url = "";
   personalToken: string | undefined;
@@ -253,6 +254,7 @@ export class GitHubStub {
   private grants = new Map<string, Grant>();
   private budgets = new Map<string, Budget>();
   private server: Server | undefined;
+  private behind = 0;
   private clock = Math.floor(Date.now() / 1000) * 1000;
   /** How far behind the machine's clock GitHub's own runs, in milliseconds. */
   private behind = 0;
@@ -283,10 +285,7 @@ export class GitHubStub {
   /** A second on from the last, and never behind the machine's own time less
    *  `behind`, so a long run does not leave what is made far in the past. */
   now(): string {
-    this.clock = Math.max(
-      this.clock + 1000,
-      Math.floor((Date.now() - this.behind) / 1000) * 1000,
-    );
+    this.clock = Math.max(this.clock + 1000, this.wall());
     return new Date(this.clock).toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
@@ -294,11 +293,21 @@ export class GitHubStub {
    *  far behind the machine's. */
   runBehind(milliseconds: number): void {
     this.behind = milliseconds;
-    this.clock = Math.floor((Date.now() - milliseconds) / 1000) * 1000;
+    this.clock = this.wall();
+  }
+
+  /** GitHub's time, never before a time it has already given. */
+  private current(): number {
+    this.clock = Math.max(this.clock, this.wall());
+    return this.clock;
+  }
+
+  private wall(): number {
+    return Math.floor((Date.now() - this.behind) / 1000) * 1000;
   }
 
   ago(days: number): string {
-    return new Date(this.clock - days * 86_400_000)
+    return new Date(this.current() - days * 86_400_000)
       .toISOString()
       .replace(/\.\d{3}Z$/, "Z");
   }
@@ -844,7 +853,7 @@ export class GitHubStub {
       asked.remaining = budget.remaining;
       res.writeHead(status, {
         "content-type": "application/json",
-        date: new Date(this.clock + this.clockAhead * 1000).toUTCString(),
+        date: new Date(this.current() + this.clockAhead * 1000).toUTCString(),
         "x-ratelimit-limit": String(budget.limit),
         "x-ratelimit-remaining": String(budget.remaining),
         "x-ratelimit-used": String(budget.limit - budget.remaining),
