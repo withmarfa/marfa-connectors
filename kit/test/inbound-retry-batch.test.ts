@@ -230,7 +230,7 @@ it.each([129, 130])(
     expect(harness.kept()).not.toHaveProperty("state.page");
     expect(harness.kept()["inbound"]).toBeUndefined();
     expect(harness.problems()["retry-journal-full:A"]).toContain(
-      "the retry journal of scope A has no room",
+      "no room for another refusal from scope A",
     );
     // Past the journal, two or more refusals of one code are systemic again.
     if (count === 130) {

@@ -792,7 +792,7 @@ export async function runOnce<E extends EnvDeclaration>(
           scope.blocked = "row-refused";
           raised.set(
             `retry-journal-full:${scope.name}`,
-            `the retry journal of scope ${scope.name} has no room for another refusal (it holds at most 128 records and 64 KiB), so the scope keeps its position until its refused rows are written or archived`,
+            `the retry journal has no room for another refusal from scope ${scope.name} (it holds at most 128 records and 64 KiB across all scopes), so the scope keeps its position until refused rows are written or archived`,
           );
           return false;
         }
