@@ -1443,6 +1443,39 @@ describe("a row in the bin", () => {
     expect(await quietRun(held)).toBe(0);
     expect(held.changes).toEqual([]);
   });
+
+  it("is offered as a trash with no link, where its create got none and a person typed one", async () => {
+    const held = vendor([]);
+    await harness.twoWay(held);
+    const theirs = harness.server.insert(
+      undefined,
+      { title: "Theirs" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: theirs.id, error: new Error("the vendor is down") };
+    expect(await quietRun(held)).toBe(1);
+    harness.server.edit(theirs.id, { vendor_id: "v-someone-else" });
+    harness.server.trash(theirs.id);
+    expect(await quietRun(held)).toBe(0);
+    expect(
+      held.changes.map((change) => [
+        change.kind,
+        change.item.properties["vendor_id"],
+        change.attempted !== undefined,
+      ]),
+    ).toEqual([["trashed", undefined, true]]);
+
+    // Nor does its purge carry it, though the log since vouches for it.
+    harness.server.purgeById(theirs.id);
+    expect(await quietRun(held)).toBe(0);
+    expect(held.changes.filter((change) => change.kind === "purged")).toEqual(
+      [],
+    );
+    expect(harness.problems()[`purge-unvouched:${theirs.id}`]).toContain(
+      "is not carried",
+    );
+  });
 });
 
 describe("a row made again", () => {

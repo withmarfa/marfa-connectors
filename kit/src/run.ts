@@ -574,8 +574,19 @@ export async function runOnce<E extends EnvDeclaration>(
     (stored.outbound ?? []).map((record) => [record.change.item.id, record]),
   );
   let activeOutbound:
-    | { change: Change; operation: "change" | "remake"; moved?: Carried }
+    | {
+        change: Change;
+        operation: "change" | "remake";
+        moved?: Carried;
+        supersedes?: true;
+      }
     | undefined;
+  // An unanswered create or remake ends in linking its row, so a person's
+  // trash or purge of the row since overtakes it.
+  const making = (record: OutboundRecord | undefined): boolean =>
+    record !== undefined &&
+    !record.acknowledged &&
+    (record.change.kind === "created" || record.operation === "remake");
   let outboundBusy = false;
   let outboundRetryAt = stored.outboundRetryAt;
   const checkVendorRetry = (): void => {
@@ -1246,10 +1257,27 @@ export async function runOnce<E extends EnvDeclaration>(
           | "rejected"
           | "requestNotApplied"
         >;
+        // A step a trash takes over a create or remake keeps that write's
+        // own, which the row's restore hands back; a purged row is never
+        // restored, so its step keeps none.
+        const original =
+          activeOutbound.supersedes === true &&
+          activeOutbound.change.kind === "trashed" &&
+          making(held)
+            ? (held.original ?? {
+                token: held.token,
+                request: held.request,
+                baseline: held.baseline,
+                ...(held.requestNotApplied === true && {
+                  requestNotApplied: true as const,
+                }),
+              })
+            : undefined;
         const record: OutboundRecord = {
           ...content,
           token: outboundToken(content),
           acknowledged: false,
+          ...(original !== undefined && { original }),
         };
         outbound.set(id, record);
         await saveOutbound();
@@ -1292,14 +1320,20 @@ export async function runOnce<E extends EnvDeclaration>(
           return;
         }
         const confirmationAgreement = store.get(id);
-        outbound.set(id, {
+        const next: OutboundRecord = {
           ...held,
           acknowledged: true,
           ...(entry !== undefined && { answer: entry }),
           ...(confirmationAgreement !== undefined && {
             confirmationAgreement: structuredClone(confirmationAgreement),
           }),
-        });
+          ...(activeOutbound.supersedes === true && {
+            superseding: captureChange(activeOutbound.change),
+          }),
+        };
+        // An answer settles a refusal; a saved record never holds both.
+        Reflect.deleteProperty(next, "rejected");
+        outbound.set(id, next);
         await saveOutbound();
       },
     },
@@ -1347,6 +1381,11 @@ export async function runOnce<E extends EnvDeclaration>(
     const kept: Purge[] = [];
     const dropped: Purge[] = [];
     for (const purge of ranked) {
+      // It settles a journaled write, which the journal's own limit bounds.
+      if (making(outbound.get(purge.id))) {
+        kept.push(purge);
+        continue;
+      }
       bytes += Buffer.byteLength(JSON.stringify(purge)) + 1;
       (bytes > purgeBytes ? dropped : kept).push(purge);
     }
@@ -1445,6 +1484,7 @@ export async function runOnce<E extends EnvDeclaration>(
     operation: "change" | "remake",
     callback: () => Promise<T>,
     moved?: Carried,
+    supersedes = false,
   ): Promise<T> => {
     check();
     checkVendorRetry();
@@ -1452,6 +1492,7 @@ export async function runOnce<E extends EnvDeclaration>(
       change: structuredClone(change),
       operation,
       ...(moved !== undefined && { moved }),
+      ...(supersedes && { supersedes: true as const }),
     };
     try {
       const result = await callback();
@@ -1461,11 +1502,13 @@ export async function runOnce<E extends EnvDeclaration>(
         throw new Error("outbound journal operations were not awaited");
       }
       const pending = outbound.get(change.item.id);
-      if (pending !== undefined && !pending.acknowledged)
+      // One left unsettled under a trash or purge waits, named by the replay.
+      if (pending !== undefined && !pending.acknowledged && !supersedes)
         throw new Error("outbound success requires a durable acknowledgment");
       return result;
     } catch (error) {
-      if (error instanceof Refused && change.kind !== "purged") {
+      // A refused trash leaves the create it overtook unrefused.
+      if (error instanceof Refused && change.kind !== "purged" && !supersedes) {
         const held = outbound.get(change.item.id);
         if (held !== undefined && !held.acknowledged) {
           outbound.set(change.item.id, {
@@ -1654,13 +1697,16 @@ export async function runOnce<E extends EnvDeclaration>(
   /** A row holding a link other than the agreed one, as the run records
    *  it and until its put-back writes the agreed one back, keeps the agreed
    *  one here, which its purge, dropping the agreement, would otherwise
-   *  lose. A row in the bin cannot have it put back, so keeps it there. */
+   *  lose. A row in the bin cannot have it put back, so keeps it there. A
+   *  row whose create was sent and got no link back, holding one since,
+   *  keeps that none was agreed, so its purge carries no link a person may
+   *  have typed. */
   const keepAgreedLink = (kind: Spec, item: Item, agreement: Agreement) => {
     const own = lane(kind.type).rows.linkOf(item.properties);
     if (
       kind.link === undefined ||
-      agreement.link === undefined ||
-      own === agreement.link
+      own === agreement.link ||
+      (agreement.link === undefined && agreement.attempted === undefined)
     ) {
       relinked.delete(item.id);
       return;
@@ -1674,7 +1720,10 @@ export async function runOnce<E extends EnvDeclaration>(
       );
       return;
     }
-    relinked.set(item.id, { link: agreement.link, type: kind.type });
+    relinked.set(item.id, {
+      ...(agreement.link !== undefined && { link: agreement.link }),
+      type: kind.type,
+    });
   };
   const unagreedOf = (
     kind: Spec,
@@ -1820,17 +1869,22 @@ export async function runOnce<E extends EnvDeclaration>(
       `${id} is not sent to the vendor until the vendor has each row its read-only connections name`,
     );
   };
+  // The row as carried by the given link, or by none.
+  const linkedAs = (kind: Spec, item: Item, link: string | undefined): Item => {
+    if (
+      kind.link === undefined ||
+      lane(kind.type).rows.linkOf(item.properties) === link
+    )
+      return item;
+    const properties = { ...item.properties };
+    if (link === undefined) Reflect.deleteProperty(properties, kind.link);
+    else properties[kind.link] = link;
+    return { ...item, properties };
+  };
   // A row a person relinked that could not be put back, being in the bin or
   // its link taken, is carried by the link the two sides agreed.
   const byAgreedLink = (kind: Spec, item: Item, agreement: Agreement): Item =>
-    kind.link !== undefined &&
-    agreement.link !== undefined &&
-    lane(kind.type).rows.linkOf(item.properties) !== agreement.link
-      ? {
-          ...item,
-          properties: { ...item.properties, [kind.link]: agreement.link },
-        }
-      : item;
+    agreement.link === undefined ? item : linkedAs(kind, item, agreement.link);
   const decline = async (
     kind: Spec,
     item: Item,
@@ -1886,17 +1940,22 @@ export async function runOnce<E extends EnvDeclaration>(
     if (agreement.stateBy === "cascade") return { skip: "cascade", kind };
     if (item.state === "trashed" && cascaded(item))
       return { skip: "cascaded", kind };
+    // A trash of a row whose create sent got no link back carries no link
+    // the row holds since, which a person may have typed.
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
-      lane(kind.type).rows.linkOf(item.properties) === undefined;
+      (lane(kind.type).rows.linkOf(item.properties) === undefined ||
+        (item.state === "trashed" && agreement.attempted !== undefined));
     if (
       unlinked &&
       item.state === "trashed" &&
       agreement.attempted === undefined
     )
       return { skip: "untold", kind };
-    const current = byAgreedLink(kind, item, agreement);
+    const current = unlinked
+      ? linkedAs(kind, item, undefined)
+      : byAgreedLink(kind, item, agreement);
     // A trash of a row whose create got no link back may still find it made.
     const changeKind: ChangeKind = unlinked
       ? current.state === "trashed"
@@ -1988,10 +2047,9 @@ export async function runOnce<E extends EnvDeclaration>(
   // Why a journaled write the vendor has not answered waits, judged on its
   // row as it is now.
   const replayUnproven = (
-    record: OutboundRecord,
+    { item, kind }: Change,
     live: Item | undefined,
   ): string | undefined => {
-    const { item, kind } = record.change;
     const declared = specs.get(item.type);
     return (live === undefined && kind !== "purged") ||
       (live !== undefined &&
@@ -2000,6 +2058,98 @@ export async function runOnce<E extends EnvDeclaration>(
           !forRow(declared, live).twoWay))
       ? "the current row does not prove write authority"
       : undefined;
+  };
+  // The purge of a row with an unanswered create or remake, as `onChange`
+  // sees it: with when that write was first sent, so what it made can be
+  // found.
+  const purgeChange = (purge: Purge): Change => {
+    const item: Item = { ...purge };
+    Reflect.deleteProperty(item, "refused");
+    const record = outbound.get(purge.id);
+    const attempted = making(record) ? record?.agreement?.attempted : undefined;
+    return {
+      kind: "purged",
+      item,
+      changed: new Set(),
+      ...(attempted !== undefined && { attempted }),
+    };
+  };
+  // A person's trash of a row whose create or remake went unanswered, as
+  // `onChange` sees it: with when that write was first sent, as for a trash
+  // of a row whose create got no link.
+  const trashOver = async (
+    record: OutboundRecord,
+    live: Item,
+  ): Promise<Change> => {
+    const kind = forRow(lane(live.type).spec, live);
+    const agreement = store.get(live.id) ??
+      record.agreement ?? { vendor: {}, marfa: {}, state: "active" };
+    // A remake's first try is dropped from the agreement once its row
+    // leaves active, so the journal's copy names it.
+    const attempted = agreement.attempted ?? record.agreement?.attempted;
+    return changeOf(
+      {
+        kind,
+        // By the link its journal agreed: the row's own may be one a person
+        // typed.
+        current: linkedAs(kind, live, record.agreement?.link),
+        changeKind: "trashed",
+        unlinked: true,
+      },
+      attempted === undefined ? agreement : { ...agreement, attempted },
+      [],
+      undefined,
+    );
+  };
+  // What replaying a journaled write sends, where a person's trash or purge
+  // since overtook its create or remake: that trash or purge, or why it
+  // waits. A refused create whose row is in the bin is carried as any
+  // refused change is.
+  const overtaken = async (
+    record: OutboundRecord,
+    live: Item | undefined,
+  ): Promise<Change | string | undefined> => {
+    if (!making(record)) return undefined;
+    const { id, type } = record.change.item;
+    if (live === undefined) {
+      const purge = purged.get(id);
+      return purge === undefined ? undefined : purgeChange(purge);
+    }
+    if (
+      live.type !== type ||
+      live.state !== "trashed" ||
+      record.rejected !== undefined
+    )
+      return undefined;
+    if (cascaded(live)) return "its row is in the bin with another row's trash";
+    return trashOver(record, live);
+  };
+  // A row restored before the trash or purge that overtook its create or
+  // remake was answered gets that write back with its own request, never
+  // the step the trash or purge journaled since, such as a delete.
+  const madeAgain = async (
+    record: OutboundRecord,
+    live: Item | undefined,
+  ): Promise<void> => {
+    const { original } = record;
+    if (
+      original === undefined ||
+      record.acknowledged ||
+      live?.type !== record.change.item.type ||
+      live.state === "trashed"
+    )
+      return;
+    const back: OutboundRecord = {
+      ...record,
+      token: original.token,
+      request: original.request,
+      baseline: original.baseline,
+    };
+    Reflect.deleteProperty(back, "original");
+    Reflect.deleteProperty(back, "requestNotApplied");
+    if (original.requestNotApplied === true) back.requestNotApplied = true;
+    outbound.set(record.change.item.id, back);
+    await saveOutbound();
   };
   const carry = async (
     item: Item,
@@ -2263,10 +2413,17 @@ export async function runOnce<E extends EnvDeclaration>(
         moved,
       ),
     );
+    // That none was agreed holds only while the first try is kept.
+    if (
+      next.attempted === undefined &&
+      relinked.has(item.id) &&
+      relinked.get(item.id)?.link === undefined
+    )
+      relinked.delete(item.id);
   };
 
   const completeIntent = async (record: OutboundRecord): Promise<void> => {
-    const change = restoreChange(record.change);
+    const change = restoreChange(record.superseding ?? record.change);
     const id = change.item.id;
     const { spec, rows } = lane(change.item.type);
     const kind = forRow(spec, change.item);
@@ -2274,6 +2431,19 @@ export async function runOnce<E extends EnvDeclaration>(
       await settlePurge(kind, change.item, record.answer);
       purged.delete(id);
       pushed += 1;
+    } else if (record.superseding !== undefined) {
+      const live = await currentItem(change.item.type, id);
+      if (live !== undefined) {
+        rows.adopt(live);
+        settle(kind, change.item, "trashed", [], record.answer, undefined);
+        // Restored while the vendor was asked: the restore waits to carry.
+        const agreed = store.get(id);
+        if (agreed !== undefined && live.state !== agreed.state)
+          store.set(id, {
+            ...agreed,
+            waiting: { ...agreed.waiting, [stateKey]: live.updated_at },
+          });
+      }
     } else {
       let live = await currentItem(change.item.type, id);
       if (live !== undefined) {
@@ -2332,6 +2502,7 @@ export async function runOnce<E extends EnvDeclaration>(
       }
     }
     await finishOutbound(id);
+    refusedOutbound.delete(id);
   };
 
   try {
@@ -2472,16 +2643,33 @@ export async function runOnce<E extends EnvDeclaration>(
       if (seen.purged) {
         // The instance drops a purged row's agreement and keeps its
         // keys as tombstones, named as the log last showed the row.
-        const agreed = relinked.get(id)?.link;
+        const agreed = relinked.get(id);
         relinked.delete(id);
         const own = rows.linkOf(last.properties);
-        if (
+        const pending = outbound.get(id);
+        const keep =
+          kind.policy !== undefined || connector.preflight !== undefined;
+        if (kind.twoWay && making(pending)) {
+          // Remembered beside the unanswered create or remake it overtakes,
+          // so that write can be settled, by the link its journal agreed:
+          // the row's own may be one a person typed.
+          const refused = purged.get(id)?.refused;
+          purged.set(id, {
+            ...purgeOf(last, kind.link, pending?.agreement?.link, keep),
+            ...(refused !== undefined && { refused }),
+          });
+        } else if (
           kind.twoWay &&
           kind.link !== undefined &&
           own !== undefined &&
           !cascaded(last)
         ) {
-          const link = agreed ?? (overflowed ? undefined : vouched(kind, seen));
+          const link =
+            agreed !== undefined
+              ? agreed.link
+              : overflowed
+                ? undefined
+                : vouched(kind, seen);
           if (link === undefined) {
             raised.set(
               `purge-unvouched:${id}`,
@@ -2490,12 +2678,7 @@ export async function runOnce<E extends EnvDeclaration>(
           } else {
             const refused = purged.get(id)?.refused;
             purged.set(id, {
-              ...purgeOf(
-                last,
-                kind.link,
-                link,
-                kind.policy !== undefined || connector.preflight !== undefined,
-              ),
+              ...purgeOf(last, kind.link, link, keep),
               ...(refused !== undefined && { refused }),
             });
           }
@@ -2590,15 +2773,18 @@ export async function runOnce<E extends EnvDeclaration>(
         if (seen.purged && item !== undefined)
           inventory.set(item.id, { kind: "purged", item, changed: new Set() });
       }
+      for (const [id, purge] of purged)
+        if (making(outbound.get(id))) inventory.set(id, purgeChange(purge));
       for (const pending of outbound.values())
         if (pending.change.kind === "purged")
           inventory.set(pending.change.item.id, restoreChange(pending.change));
       const trashes = new Map<string, Change>();
-      // Journaled trashes the replay would send: not refused, since a refused
+      // Journaled trashes the replay would send, and the trashes that
+      // overtake an unanswered create or remake: not refused, since a refused
       // change is carried again, nor answered, since only settling remains.
       const replayed = [...outbound.values()].filter(
         (record) =>
-          record.change.kind === "trashed" &&
+          (record.change.kind === "trashed" || making(record)) &&
           record.rejected === undefined &&
           !record.acknowledged &&
           !inventory.has(record.change.item.id) &&
@@ -2614,8 +2800,16 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       for (const record of replayed) {
         const { id } = record.change.item;
-        if (replayUnproven(record, live.get(id)) === undefined)
-          trashes.set(id, restoreChange(record.change));
+        const found = live.get(id);
+        const over = making(record)
+          ? await overtaken(record, found)
+          : restoreChange(record.change);
+        if (over === undefined) await madeAgain(record, found);
+        if (typeof over !== "object" || over.kind !== "trashed") continue;
+        if (replayUnproven(over, found) !== undefined) continue;
+        if (making(record) && store.get(id)?.refused?.change === sending(over))
+          continue;
+        trashes.set(id, over);
       }
       // A journaled change is replayed, not carried, unless it was refused
       // and its replay is not held.
@@ -2652,8 +2846,8 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     recorded = true;
     for (const record of [...outbound.values()]) {
-      const change = restoreChange(record.change);
-      const id = change.item.id;
+      const captured = restoreChange(record.change);
+      const id = captured.item.id;
       recovered.add(id);
       const suspend = (reason: string): void => {
         suspendedOutbound.add(id);
@@ -2667,9 +2861,21 @@ export async function runOnce<E extends EnvDeclaration>(
         suspend(held);
         continue;
       }
-      if (refusedOutbound.has(id)) {
-        const live = await currentItem(change.item.type, id);
-        if (live?.type === change.item.type) {
+      const live = record.acknowledged
+        ? undefined
+        : await currentItem(captured.item.type, id);
+      const over = record.acknowledged
+        ? undefined
+        : await overtaken(record, live);
+      if (typeof over === "string") {
+        suspend(over);
+        continue;
+      }
+      if (over === undefined) await madeAgain(record, live);
+      // The person's trash or purge since, sent in the create's place.
+      const change = over ?? captured;
+      if (over === undefined && refusedOutbound.has(id)) {
+        if (live?.type === captured.item.type) {
           lane(live.type).rows.adopt(live);
           recovered.delete(id);
           order.add(id);
@@ -2687,12 +2893,16 @@ export async function runOnce<E extends EnvDeclaration>(
         purgeRefusedOf(id, refusal.reason);
         continue;
       }
+      const agreement = store.get(id);
+      if (
+        over !== undefined &&
+        agreement !== undefined &&
+        refusedBefore(id, agreement, over)
+      )
+        continue;
       try {
         if (!record.acknowledged) {
-          const unproven = replayUnproven(
-            record,
-            await currentItem(change.item.type, id),
-          );
+          const unproven = replayUnproven(change, live);
           if (unproven !== undefined) {
             suspend(unproven);
             continue;
@@ -2706,7 +2916,21 @@ export async function runOnce<E extends EnvDeclaration>(
             suspend("preflight has not seen it");
             continue;
           }
-          if (record.operation === "remake") {
+          if (over !== undefined) {
+            await invoke(
+              over,
+              "change",
+              () => callChange(over),
+              undefined,
+              true,
+            );
+            if (outbound.get(id)?.acknowledged !== true) {
+              suspend(
+                `onChange did not acknowledge it under the ${over.kind === "purged" ? "purge" : "trash"} that overtook it`,
+              );
+              continue;
+            }
+          } else if (record.operation === "remake") {
             await invoke(change, "remake", () => callRemake(change));
           } else {
             await invoke(
