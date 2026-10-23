@@ -2315,7 +2315,35 @@ export class GitHubStub {
           .filter((one) => !one.deleted && one.blocked_by.includes(issue.node))
           .map((one) => ({ id: one.node })),
       },
+      timelineItems: { nodes: this.transferEvents(issue, sees) },
     };
+  }
+
+  /** The issue's TransferredEvent, once GitHub has recorded it; its origin is
+   *  null where the token cannot see that repository. */
+  private transferEvents(
+    issue: Issue,
+    sees: (repository: Repository) => boolean,
+  ): Record<string, unknown>[] {
+    if (issue.transferred === undefined || issue.transferred.late === true) {
+      return [];
+    }
+    const from = this.repositories.find(
+      (one) => one.node === issue.transferred?.from,
+    );
+    return [
+      {
+        __typename: "TransferredEvent",
+        createdAt: issue.transferred.at,
+        fromRepository:
+          from === undefined || !sees(from)
+            ? null
+            : {
+                id: from.node,
+                nameWithOwner: `${from.owner}/${from.name}`,
+              },
+      },
+    ];
   }
 
   private graphPull(
@@ -2589,44 +2617,6 @@ export class GitHubStub {
           },
         },
       });
-      return;
-    }
-    if (operation === "Transfers") {
-      const data = {
-        nodes: nodes(body.variables["ids"], (id) => {
-          const issue = this.issue(id);
-          if (issue === undefined || !this.visible(req, issue.repository))
-            return undefined;
-          const from = this.repositories.find(
-            (one) => one.node === issue.transferred?.from,
-          );
-          return {
-            __typename: "Issue",
-            id: issue.node,
-            timelineItems: {
-              nodes:
-                issue.transferred === undefined ||
-                issue.transferred.late === true
-                  ? []
-                  : [
-                      {
-                        __typename: "TransferredEvent",
-                        createdAt: issue.transferred.at,
-                        fromRepository:
-                          from === undefined ||
-                          (from.private && !this.visible(req, from.node))
-                            ? null
-                            : {
-                                id: from.node,
-                                nameWithOwner: `${from.owner}/${from.name}`,
-                              },
-                      },
-                    ],
-            },
-          };
-        }),
-      };
-      send(200, { data, ...(errors.length > 0 && { errors }) });
       return;
     }
     if (operation === "Comments" || operation === "FileComments") {

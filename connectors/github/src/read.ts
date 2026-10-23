@@ -1026,7 +1026,9 @@ async function syncRepository(
         : { url: pr.url };
   };
   const written = [
-    ...listed.map((issue) => issueOfRest(issue, at)),
+    ...listed.map((issue) =>
+      issueOfRest(issue, at, relations.get(issue.node_id)?.transfer ?? null),
+    ),
     ...beside
       .filter(({ issue }) => options.synced.has(issue.repository.node))
       .map(({ issue }) => issue),
@@ -1052,7 +1054,7 @@ async function syncRepository(
             if (found === undefined || moving.has(issue.node_id)) return [];
             return [
               issueEntry(
-                issueOfRest(issue, at),
+                issueOfRest(issue, at, found.transfer),
                 found,
                 options.inside,
                 hidden,

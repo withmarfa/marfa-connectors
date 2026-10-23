@@ -586,6 +586,19 @@ describe("a transferred issue whose transfer record is late", () => {
     120_000,
   );
 
+  it("reads the transfer with the issue, in no request of its own", async () => {
+    repositories(true);
+    github.addIssue(target, { title: "Brand new" });
+    await once();
+    const timelines = github.asked
+      .map((one) => (one.body as { query?: string } | undefined)?.query ?? "")
+      .filter((query) => query.includes("TRANSFERRED_EVENT"))
+      .map((query) => /^\s*query\s+(\w+)/.exec(query)?.[1]);
+    expect(timelines).not.toHaveLength(0);
+    for (const name of timelines)
+      expect(["Issues", "Relations"]).toContain(name);
+  });
+
   it("writes a new issue at once", async () => {
     repositories(true);
     await once();
@@ -783,7 +796,7 @@ describe("a transferred issue whose transfer record is late", () => {
   }, 60_000);
 
   it.each([
-    ["opened", "the transfer check"],
+    ["opened", "the issue read"],
     ["opened", "the old address"],
     ["transferred", "the old address"],
   ] as const)(
@@ -802,9 +815,9 @@ describe("a transferred issue whose transfer record is late", () => {
         const address = `/repos/someone/source/issues/${String(moving.number)}`;
         github.onAsked = (asked) => {
           if (
-            limited === "the transfer check" &&
+            limited === "the issue read" &&
             asked.path === "/graphql" &&
-            JSON.stringify(asked.body).includes("query Transfers")
+            JSON.stringify(asked.body).includes("query Issues")
           ) {
             github.exhaust("graphql");
           }

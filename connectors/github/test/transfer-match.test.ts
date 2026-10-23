@@ -149,6 +149,7 @@ describe("finding the rows of transferred issues", () => {
       labels: [],
       assignees: [],
       repository: { node: "R_target", name: "o/target" },
+      transfer: { from: { id: "R_source", name: "o/source" } },
     });
     const fresh = [
       issue("N1", 11, "2026-01-01T00:00:00Z"),
@@ -174,24 +175,6 @@ describe("finding the rows of transferred issues", () => {
       log: {},
     };
     const octokit = {
-      graphql: (_: string, variables: { ids: string[] }) =>
-        Promise.resolve({
-          nodes: variables.ids.map((id) => ({
-            __typename: "Issue",
-            id,
-            timelineItems: {
-              nodes: [
-                {
-                  __typename: "TransferredEvent",
-                  fromRepository: {
-                    id: "R_source",
-                    nameWithOwner: "o/source",
-                  },
-                },
-              ],
-            },
-          })),
-        }),
       request: (_: string, parameters: { issue_number: number }) =>
         Promise.resolve({
           status: 301,
@@ -218,7 +201,12 @@ describe("an issue that may be mid-transfer", () => {
   const now = Date.parse("2026-10-01T12:00:00Z");
   const iso = (offset: number): string => new Date(now - offset).toISOString();
 
-  function issue(node: string, created: number, updated: number): Issue {
+  function issue(
+    node: string,
+    created: number,
+    updated: number,
+    transfer: Issue["transfer"] = null,
+  ): Issue {
     return {
       node,
       number: 1,
@@ -234,6 +222,7 @@ describe("an issue that may be mid-transfer", () => {
       labels: [],
       assignees: [],
       repository: { node: "R_target", name: "o/target" },
+      transfer,
     };
   }
 
@@ -252,24 +241,15 @@ describe("an issue that may be mid-transfer", () => {
       linked: () => Promise.resolve([]),
       log: {},
     };
-    const octokit = {
-      graphql: (_: string, variables: { ids: string[] }) =>
-        Promise.resolve({
-          nodes: variables.ids.map((id) => ({
-            __typename: "Issue",
-            id,
-            timelineItems: {
-              nodes: (options.events ?? []).includes(id)
-                ? [{ __typename: "TransferredEvent", fromRepository: null }]
-                : [],
-            },
-          })),
-        }),
-    };
+    const octokit = {};
     const found = await movedFrom(
       context as never,
       octokit as unknown as Client,
-      issues,
+      issues.map((one) =>
+        (options.events ?? []).includes(one.node)
+          ? { ...one, transfer: { from: null } }
+          : one,
+      ),
       now,
       new Map(Object.entries(options.firstSeen ?? {})),
     );
@@ -325,27 +305,15 @@ describe("an issue that may be mid-transfer", () => {
       log: {},
     };
     const octokit = {
-      graphql: (_: string, variables: { ids: string[] }) =>
-        Promise.resolve({
-          nodes: variables.ids.map((id) => ({
-            __typename: "Issue",
-            id,
-            timelineItems: {
-              nodes: [
-                {
-                  __typename: "TransferredEvent",
-                  fromRepository: { id: "R_source", nameWithOwner: "o/source" },
-                },
-              ],
-            },
-          })),
-        }),
       request: () => Promise.resolve({ status: 200, headers: {} }),
     };
     const found = await movedFrom(
       context as never,
       octokit as unknown as Client,
-      issues,
+      issues.map((one) => ({
+        ...one,
+        transfer: { from: { id: "R_source", name: "o/source" } },
+      })),
       now,
       new Map(Object.entries(firstSeen)),
     );

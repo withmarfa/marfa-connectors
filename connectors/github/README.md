@@ -91,7 +91,7 @@ GitHub gives a transferred issue a new node id, number and address, and copies i
 
 The connector keeps the Marfa row, so the issue keeps its Marfa ID, its comments and its connections to other rows. The proof is the old address answering 301 to the new issue's own address. The title is never compared, since either side may have been edited. The old row is found in one of three ways:
 
-- The first read of an issue Marfa does not hold asks GitHub whether the issue has a transfer on its timeline. If the repository it came from is one whose rows Marfa holds, the connector looks there for a row created at the same time and asks the old address.
+- The first read of an issue Marfa does not hold gets the transfer on its timeline in the same query that reads the issue. If the repository it came from is one whose rows Marfa holds, the connector looks there for a row created at the same time and asks the old address.
 - A delivery that names the old issue and the new one, such as `issues.transferred`, asks the old address of the row it holds before the new issue is written, so the timeline does not matter.
 - When the old repository is read first, its check of rows it no longer lists (daily, and whenever its listing changes) asks the old address and follows the 301.
 
@@ -108,7 +108,7 @@ The connector does not write an issue that may be mid-transfer, so it does not m
 
 A waiting issue appears on the next run: the `issues.transferred` delivery that follows about two seconds later, or the next scheduled run. A scheduled run records the repository's issue listing as read, as for any other issue, and keeps the waiting issues in its saved progress with the time it first held each back. The next scheduled run reads them by node, writes one that proves to be a transfer as the row it replaces, and reads all its comments then. An issue that has waited a full window of two minutes since it was first held back, and has no proof of a transfer, is written as an ordinary new issue, however lately GitHub changed it, so a busy old issue cannot wait for ever. A run for deliveries keeps no such time: it leaves the issue to the next delivery or scheduled run. An issue transferred in from outside the installation has no `issues.transferred` delivery, so it appears on the next scheduled run. The two minutes are measured on the clock of the machine running the connector, against the times GitHub gives.
 
-A rate limit does not let an issue through unchecked. A run for deliveries writes no issue that Marfa holds no row for if a rate limit stopped the check that says whether it is a transfer, or the read of a moved issue's comments, nor that issue's comments. The run reports that it is unfinished, and its deliveries are replayed.
+A rate limit does not let an issue through unchecked. A run for deliveries writes no issue that Marfa holds no row for if a rate limit stopped the read of the issue, which carries its timeline, or the old address's answer, or the read of a moved issue's comments, nor that issue's comments. The run reports that it is unfinished, and its deliveries are replayed.
 
 ### What happens to the item
 

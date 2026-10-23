@@ -17,7 +17,7 @@ import {
   type Relations,
   type RestComment,
 } from "./entries.js";
-import { batches, query, status, type Client } from "./github.js";
+import { status, type Client } from "./github.js";
 import { issuesByNode, nodesOfNumbers } from "./graph.js";
 
 /**
@@ -48,32 +48,6 @@ export type Asked =
   | { kind: "present" | "deleted" | "missing" }
   | { kind: "moved"; to: Address | undefined };
 
-const transfersQuery = `query Transfers($ids: [ID!]!) {
-  nodes(ids: $ids) {
-    __typename
-    ... on Issue {
-      id
-      timelineItems(last: 1, itemTypes: [TRANSFERRED_EVENT]) {
-        nodes {
-          __typename
-          ... on TransferredEvent { fromRepository { id nameWithOwner } }
-        }
-      }
-    }
-  }
-}`;
-
-interface TransferNode {
-  __typename: string;
-  id: string;
-  timelineItems: {
-    nodes: ({
-      __typename: string;
-      fromRepository: { id: string; nameWithOwner: string } | null;
-    } | null)[];
-  };
-}
-
 function linkOf(row: Item): string | undefined {
   const value = row.properties["github_id"];
   return typeof value === "string" ? value : undefined;
@@ -83,31 +57,6 @@ function sameInstant(a: string | undefined, b: string | undefined): boolean {
   if (a === undefined || b === undefined) return false;
   const first = Date.parse(a);
   return !Number.isNaN(first) && first === Date.parse(b);
-}
-
-/** The issues whose timeline has a transfer, each with where the newest
- *  came from, or null where the token cannot see that repository. */
-async function transfersOf(
-  octokit: Client,
-  ids: readonly string[],
-): Promise<Map<string, { id: string; name: string } | null>> {
-  const found = new Map<string, { id: string; name: string } | null>();
-  for (const batch of batches([...new Set(ids)])) {
-    const answer = (await query(octokit, transfersQuery, {
-      ids: batch,
-    })) as { nodes: (TransferNode | null)[] };
-    for (const node of answer.nodes) {
-      if (node?.__typename !== "Issue") continue;
-      const event = node.timelineItems.nodes[0];
-      if (event?.__typename !== "TransferredEvent") continue;
-      const from = event.fromRepository;
-      found.set(
-        node.id,
-        from ? { id: from.id, name: from.nameWithOwner } : null,
-      );
-    }
-  }
-  return found;
 }
 
 function addressOf(location: string | undefined): Address | undefined {
@@ -176,7 +125,8 @@ function mayBeMoving(issue: Issue, now: number): boolean {
   );
 }
 
-/** For the issues Marfa has no row for: the old row of each that was
+/** For the issues Marfa has no row for, by the transfer each carries from the
+ *  query that read it, so none is asked about again: the old row of each that was
  *  transferred from a repository whose rows it holds, by the issue's creation
  *  time, which a transfer keeps, and then the old address's answer; and those
  *  that may be mid-transfer, which are not written yet: one with no transfer
@@ -200,10 +150,6 @@ export async function movedFrom(
   );
   const fresh = issues.filter((one) => !seen.has(one.node));
   if (fresh.length === 0) return { moves, waiting };
-  const events = await transfersOf(
-    octokit,
-    fresh.map((one) => one.node),
-  );
   const holding = (issue: Issue): boolean => {
     const since = Date.parse(firstSeen.get(issue.node) ?? "");
     return (
@@ -214,11 +160,11 @@ export async function movedFrom(
   const claimed = new Set<string>();
   const held = new Map<string, Item[]>();
   for (const issue of fresh) {
-    const from = events.get(issue.node);
-    if (from === undefined) {
+    if (issue.transfer === null) {
       if (holding(issue)) waiting.add(issue.node);
       continue;
     }
+    const { from } = issue.transfer;
     if (from === null) continue;
     const [owner = "", name = ""] = from.name.split("/");
     let rows = held.get(from.id);

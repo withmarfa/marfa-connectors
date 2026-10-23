@@ -948,7 +948,7 @@ async function placeIssue(
   const { octokit, owner, repo } = where;
   const patch: Record<string, unknown> = {};
   if (found) {
-    const held = issueOfRest(made, { node: "", name: "" });
+    const held = issueOfRest(made, { node: "", name: "" }, null);
     const same = (a: readonly string[], b: readonly string[]): boolean =>
       [...a].sort().join("\n") === [...b].sort().join("\n");
     const title = text(item, "title") ?? "";
