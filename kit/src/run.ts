@@ -1751,7 +1751,22 @@ export async function runOnce<E extends EnvDeclaration>(
     Reflect.deleteProperty(next, "waiting");
     return next;
   };
-  const putBack = async (id: string): Promise<void> => {
+  // A row's link and read-only fields put back; its mirrored connections and
+  // waiting marks are left for `putBack` to finish across every row at once.
+  const putBackFields = async (
+    id: string,
+  ): Promise<
+    | {
+        id: string;
+        kind: Spec;
+        current: Item;
+        agreement: Agreement;
+        back: readonly string[];
+        connecting: boolean;
+        settles: boolean;
+      }
+    | undefined
+  > => {
     const agreement = store.get(id);
     const found = await find(id);
     if (agreement !== undefined && found?.item.state === "trashed") {
@@ -1763,7 +1778,7 @@ export async function runOnce<E extends EnvDeclaration>(
       found.spec.owned === false ||
       found.item.state === "trashed"
     ) {
-      return;
+      return undefined;
     }
     const { spec: kind, rows } = found;
     let current = found.item;
@@ -1780,7 +1795,7 @@ export async function runOnce<E extends EnvDeclaration>(
           `the ${kind.link ?? "link"} of ${id} was changed in Marfa and cannot be put back: ${error.message}`,
         );
         keepAgreedLink(kind, current, agreement);
-        return;
+        return undefined;
       }
       current = rows.known(id) ?? current;
       keepAgreedLink(kind, current, agreement);
@@ -1807,39 +1822,57 @@ export async function runOnce<E extends EnvDeclaration>(
     const mirrored = types.filter((type) => connections.mirrored(kind, type));
     // A create's mirrored connections place it, so they are not put back.
     const told = !kind.twoWay || agreement.link !== undefined;
-    if (
-      mirrored.length > 0 &&
-      told &&
-      agreement.waiting[connectionsKey] !== undefined
-    ) {
-      const edges = (await connections.edgesOf([id])).get(id)?.edges ?? [];
-      store.set(
-        id,
-        await connections.putBack(
-          current,
-          kind,
-          store.get(id) ?? agreement,
-          edges,
-        ),
+    return {
+      id,
+      kind,
+      current,
+      agreement,
+      back,
+      connecting:
+        mirrored.length > 0 &&
+        told &&
+        agreement.waiting[connectionsKey] !== undefined,
+      settles: told && mirrored.length === types.length,
+    };
+  };
+  const putBack = async (ids: Iterable<string>): Promise<void> => {
+    const rows = [];
+    for (const id of ids) {
+      const row = await putBackFields(id);
+      if (row !== undefined) rows.push(row);
+    }
+    const connecting = rows.filter((row) => row.connecting);
+    if (connecting.length > 0) {
+      const edges = await connections.edgesOf(connecting.map((row) => row.id));
+      const agreed = await connections.putBack(
+        connecting.map(({ id, kind, current, agreement }) => ({
+          item: current,
+          spec: kind,
+          agreement: store.get(id) ?? agreement,
+          edges: edges.get(id)?.edges ?? [],
+        })),
       );
+      for (const [id, agreement] of agreed) store.set(id, agreement);
     }
-    const waiting = { ...store.get(id)?.waiting };
-    for (const field of [
-      ...back,
-      ...(kind.link === undefined ? [] : [kind.link]),
-      ...(told && mirrored.length === types.length ? [connectionsKey] : []),
-    ]) {
-      Reflect.deleteProperty(waiting, field);
+    for (const { id, kind, agreement, back, settles } of rows) {
+      const waiting = { ...store.get(id)?.waiting };
+      for (const field of [
+        ...back,
+        ...(kind.link === undefined ? [] : [kind.link]),
+        ...(settles ? [connectionsKey] : []),
+      ]) {
+        Reflect.deleteProperty(waiting, field);
+      }
+      const now = withoutWaiting(store.get(id) ?? agreement);
+      if (!carriable(waiting)) {
+        Reflect.deleteProperty(now, "refused");
+        Reflect.deleteProperty(now, "made");
+      }
+      store.set(id, {
+        ...now,
+        ...(Object.keys(waiting).length > 0 && { waiting }),
+      });
     }
-    const now = withoutWaiting(store.get(id) ?? agreement);
-    if (!carriable(waiting)) {
-      Reflect.deleteProperty(now, "refused");
-      Reflect.deleteProperty(now, "made");
-    }
-    store.set(id, {
-      ...now,
-      ...(Object.keys(waiting).length > 0 && { waiting }),
-    });
   };
   const withWaiting = async (
     named: ReadonlyMap<string, ReadonlySet<string>>,
@@ -2644,8 +2677,6 @@ export async function runOnce<E extends EnvDeclaration>(
       ...waitingIds,
       ...outbound.keys(),
     ]);
-    // After the rows the log named, so a put-back removes the moved edge
-    // before it draws the agreed one again.
     const connected = new Map(read.connected);
     for (const [id, since] of await connections.leftBehind(read.updated)) {
       if (!connected.has(id)) connected.set(id, since);
@@ -3001,7 +3032,7 @@ export async function runOnce<E extends EnvDeclaration>(
         throw new Error("pending outbound intent disappeared");
       await completeIntent(confirmed);
     }
-    for (const id of order) await putBack(id);
+    await putBack(order);
     if (hints !== undefined) hints = await withWaiting(hints, order);
 
     const done = new Set<string>();

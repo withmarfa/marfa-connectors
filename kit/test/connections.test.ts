@@ -408,6 +408,35 @@ describe("connections, whatever order the rows come in", () => {
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
   });
+
+  it("put a moved child back where the row it left was also edited, removing before adding across both", async () => {
+    const held = parenting([child(1, [3]), child(2, []), child(3, [])]);
+    held.readOnly = ["test.parent-of"];
+    const edge = await settled(held);
+    const one = harness.server.row("a:1");
+    const two = harness.server.row("a:2");
+    held.entries = [];
+
+    // The edit names the row the child left before the move names the other.
+    harness.server.edit(one.id, { title: "One, edited" });
+    harness.server.updateEdge(edge.id, { source_id: two.id });
+    expect(await harness.twoWay(held)).toBe(0);
+
+    expect(childrenOf(1)).toEqual(["a:3"]);
+    expect(childrenOf(2)).toEqual([]);
+    expect(held.changes.map((change) => change.item.id)).toEqual([one.id]);
+    const summary = harness.lastRun().summary;
+    expect(summary).not.toContain("refused");
+    for (const row of [one, two]) {
+      expect(summary).toContain(
+        `the test.parent-of connections of ${row.id} were changed in Marfa and put back`,
+      );
+    }
+    held.changes.length = 0;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.changes).toEqual([]);
+    expect(childrenOf(1)).toEqual(["a:3"]);
+  });
 });
 
 describe("connections made in Marfa", () => {
@@ -975,6 +1004,28 @@ describe("a read-only connection type on a two-way kind", () => {
     );
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes).toEqual([]);
+  });
+
+  it("names no put-back the server refused, only the refusal", async () => {
+    const held = mirrored([entry(1, [2]), entry(2)]);
+    await harness.twoWay(held);
+    held.entries = [];
+    const one = harness.server.row("a:1");
+    harness.server.removeEdge(harness.server.edges[0]?.id ?? "");
+    harness.server.beforeAnswer = (request) => {
+      if (request.path !== "/edges/bulk") return;
+      const kind = harness.server.edgeTypes.get("test.blocks");
+      if (kind !== undefined) kind["target_type_constraints"] = ["test.other"];
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(targets(1)).toEqual([]);
+    const summary = harness.lastRun().summary;
+    expect(summary).toContain(
+      `the server refused the test.blocks connection from ${one.id}`,
+    );
+    expect(summary).not.toContain(
+      `the test.blocks connections of ${one.id} were changed in Marfa and put back`,
+    );
   });
 
   it("is put back when a person moves a row to another list, and the run names it", async () => {

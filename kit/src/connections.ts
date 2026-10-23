@@ -466,50 +466,114 @@ export class Connections {
     return false;
   }
 
+  /**
+   * Puts back what was agreed for each row's mirrored connections, removing
+   * every edge across the rows before drawing any: an edge a person moved
+   * from one row to another leaves the row it reached before the row it left
+   * draws it again, which a target holding one edge needs.
+   */
   async putBack(
-    item: Item,
-    spec: Spec,
-    agreement: Agreement,
-    edges: readonly Edge[],
-  ) {
-    let next = agreement;
-    for (const type of this.typesFrom(item.type)) {
-      const agreedList = agreement.connections?.[type];
-      if (!this.mirrored(spec, type)) continue;
-      // Nothing agreed on a two-way kind: the vendor's set is taken when it
-      // next names one.
-      if (spec.twoWay && agreedList === undefined) continue;
-      const kind = this.kinds.get(type);
-      if (kind === undefined) continue;
-      const agreed = new Set(agreedList ?? []);
-      const current = await this.own(edges, kind, agreed);
-      const add = [...agreed].filter((target) => !current.has(target));
-      const remove = [...current].filter(([target]) => !agreed.has(target));
-      if (add.length === 0 && remove.length === 0) continue;
-      const kept = new Set(agreed);
-      for (const [target, edge] of remove) {
-        if (!(await this.disconnect(edge, item, type, target)))
-          kept.add(target);
+    rows: readonly {
+      item: Item;
+      spec: Spec;
+      agreement: Agreement;
+      edges: readonly Edge[];
+    }[],
+  ): Promise<Map<string, Agreement>> {
+    const plans: {
+      item: Item;
+      type: string;
+      add: string[];
+      remove: [string, string][];
+      kept: Set<string>;
+      landed: boolean;
+    }[] = [];
+    for (const { item, spec, agreement, edges } of rows) {
+      for (const type of this.typesFrom(item.type)) {
+        const agreedList = agreement.connections?.[type];
+        if (!this.mirrored(spec, type)) continue;
+        // Nothing agreed on a two-way kind: the vendor's set is taken when it
+        // next names one.
+        if (spec.twoWay && agreedList === undefined) continue;
+        const kind = this.kinds.get(type);
+        if (kind === undefined) continue;
+        const agreed = new Set(agreedList ?? []);
+        const current = await this.own(edges, kind, agreed);
+        const add = [...agreed].filter((target) => !current.has(target));
+        const remove = [...current].filter(([target]) => !agreed.has(target));
+        if (add.length === 0 && remove.length === 0) continue;
+        plans.push({
+          item,
+          type,
+          add,
+          remove,
+          kept: new Set(agreed),
+          landed: false,
+        });
       }
-      const gone = await this.absent(add);
-      for (const { target } of await this.link(
-        add
-          .filter((target) => !gone.has(target))
-          .map((target) => ({ item, type, target })),
-      )) {
-        kept.delete(target);
+    }
+    for (const plan of plans) {
+      for (const [target, edge] of plan.remove) {
+        if (await this.disconnect(edge, plan.item, plan.type, target))
+          plan.landed = true;
+        else plan.kept.add(target);
       }
-      for (const target of gone) kept.delete(target);
+    }
+    // A target purged meanwhile is let go, which no person changed.
+    const gone = await this.absent([
+      ...new Set(plans.flatMap((plan) => plan.add)),
+    ]);
+    const adds = plans.flatMap((plan) =>
+      plan.add
+        .filter((target) => !gone.has(target))
+        .map((target) => ({ plan, target })),
+    );
+    const refused = await this.link(
+      adds.map(({ plan, target }) => ({
+        item: plan.item,
+        type: plan.type,
+        target,
+      })),
+    );
+    for (const { plan, target } of adds) {
+      if (
+        refused.some(
+          (one) =>
+            one.id === plan.item.id &&
+            one.type === plan.type &&
+            one.target === target,
+        )
+      )
+        plan.kept.delete(target);
+      else plan.landed = true;
+    }
+    for (const plan of plans) {
+      for (const target of plan.add)
+        if (gone.has(target)) plan.kept.delete(target);
+    }
+    const next = new Map(rows.map((row) => [row.item.id, row.agreement]));
+    for (const { item, spec } of rows) {
+      const own = plans.filter((plan) => plan.item.id === item.id);
+      if (own.length === 0) continue;
       if (
         spec.policy !== undefined &&
         (await this.freshOwned(item.id)) === undefined
       )
-        return agreement;
-      // A target purged meanwhile is let go, which no person changed.
-      if (remove.length > 0 || add.length > gone.size) {
-        this.putBackCondition(item.id, type);
+        continue;
+      for (const plan of own) {
+        const agreement = next.get(item.id);
+        if (agreement === undefined) continue;
+        if (plan.landed) this.putBackCondition(item.id, plan.type);
+        next.set(
+          item.id,
+          this.agreeOn(
+            agreement,
+            plan.type,
+            plan.kept,
+            agreement.pending?.[plan.type] ?? [],
+          ),
+        );
       }
-      next = this.agreeOn(next, type, kept, next.pending?.[type] ?? []);
     }
     return next;
   }
