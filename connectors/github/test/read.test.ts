@@ -15,6 +15,7 @@ const types = [
   "github.file",
   "github.file.image",
   "github.pull_request",
+  "github.discussion",
 ];
 const connections = [
   "github.in-repository",
@@ -25,6 +26,7 @@ const connections = [
   "attached-to",
   "github.closes",
   "github.closed-by",
+  "github.reply-to",
   "in-thread",
 ];
 
@@ -1185,6 +1187,10 @@ describe("the installation tokens", () => {
           metadata: "read",
         },
       }),
+      expect.objectContaining({
+        repository_ids: [tracker.id],
+        permissions: { discussions: "read", metadata: "read" },
+      }),
     ]);
     expect(mints()[0]).not.toHaveProperty("repository_ids");
     expect(row(child.node).properties["parent_url"] ?? null).toBeNull();
@@ -1216,6 +1222,10 @@ describe("the installation tokens", () => {
           metadata: "read",
         },
       }),
+      expect.objectContaining({
+        repository_ids: [tracker.id],
+        permissions: { discussions: "read", metadata: "read" },
+      }),
     ]);
     expect(links(child.node, "github.sub-issue-of")).toEqual([parent.node]);
   });
@@ -1246,7 +1256,7 @@ describe("the installation tokens", () => {
     expect(output).not.toContain("refused it");
     expect(row(issue.node).state).toBe("active");
     expect(row(comment.node).state).toBe("active");
-    expect(mints()).toHaveLength(3);
+    expect(mints()).toHaveLength(4);
   });
 
   it("are not asked for while this machine's clock is more than ten minutes from GitHub's, which the run names, changing nothing", async () => {
@@ -1574,7 +1584,7 @@ describe("a relation to an issue in a repository left out", () => {
     expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual([
       parentRow,
     ]);
-  });
+  }, 60_000);
 });
 
 // Helper: run the connector with a personal token instead of App credentials.

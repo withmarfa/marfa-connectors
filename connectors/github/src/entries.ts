@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Entry, Target } from "@withmarfa/connector";
+import type { Entry, Item, Target } from "@withmarfa/connector";
 
 /** What the App writes at the end of what a row makes, unseen on GitHub's
  *  page, so a later try finds what an earlier one made whatever changed. */
@@ -23,10 +23,18 @@ function issueBody(body: string | null): string | null {
   return text === "" ? null : text;
 }
 
+/** The GitHub node id a row is linked by. */
+export function linkOf(row: Item): string | undefined {
+  const value = row.properties["github_id"];
+  return typeof value === "string" ? value : undefined;
+}
+
 export const repositoryType = "github.repository";
 export const issueType = "github.issue";
 export const commentType = "github.comment";
 export const pullRequestType = "github.pull_request";
+export const discussionType = "github.discussion";
+export const replyTo = "github.reply-to";
 export const inRepository = "github.in-repository";
 export const subIssueOf = "github.sub-issue-of";
 export const blockedBy = "github.blocked-by";
@@ -74,6 +82,39 @@ export interface RestComment {
   created_at: string;
   updated_at: string;
   user: { login: string } | null;
+}
+
+export interface Discussion {
+  node: string;
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  open: boolean;
+  /** GitHub's `stateReason`, lowercase: resolved, outdated, duplicate or reopened. */
+  reason: string | null;
+  answered: boolean;
+  locked: boolean;
+  category: string;
+  createdAt: string;
+  updatedAt: string;
+  author: string | null;
+  repository: { node: string; name: string };
+}
+
+/** A comment or reply on a discussion; a reply names the comment it answers. */
+export interface DiscussionComment {
+  node: string;
+  body: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Set where GitHub deleted a comment it keeps for its replies. */
+  deleted: boolean;
+  author: string | null;
+  discussion: string;
+  replyTo: string | null;
+  repository: { node: string; name: string };
 }
 
 export interface Related {
@@ -344,6 +385,65 @@ export function commentEntry(comment: Comment, hidden?: boolean): Entry {
     connections: {
       [inThread]: [{ type: issueType, id: comment.issue }],
       [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
+    },
+  };
+}
+
+export function discussionEntry(
+  discussion: Discussion,
+  hidden?: boolean,
+): Entry {
+  return {
+    source_id: discussion.node,
+    properties: {
+      github_id: discussion.node,
+      title: discussion.title,
+      body: unmarked(discussion.body),
+      number: discussion.number,
+      repository: discussion.repository.name,
+      ...(hidden !== undefined && { private: hidden }),
+      author: discussion.author,
+      category: discussion.category,
+      status: discussion.open ? "open" : "closed",
+      state_reason: discussion.reason,
+      answered: discussion.answered,
+      locked: discussion.locked,
+      url: discussion.url,
+      github_updated_at: discussion.updatedAt,
+    },
+    occurred_at: discussion.createdAt,
+    changed_at: discussion.updatedAt,
+    connections: {
+      [inRepository]: [
+        { type: repositoryType, id: discussion.repository.node },
+      ],
+    },
+  };
+}
+
+export function discussionCommentEntry(
+  comment: DiscussionComment,
+  hidden?: boolean,
+): Entry {
+  return {
+    source_id: comment.node,
+    properties: {
+      github_id: comment.node,
+      body: comment.deleted ? "" : unmarked(comment.body),
+      from: comment.author ?? "ghost",
+      repository: comment.repository.name,
+      ...(hidden !== undefined && { private: hidden }),
+      url: comment.url,
+    },
+    occurred_at: comment.createdAt,
+    changed_at: comment.updatedAt,
+    connections: {
+      [inThread]: [{ type: discussionType, id: comment.discussion }],
+      [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
+      [replyTo]:
+        comment.replyTo === null
+          ? []
+          : [{ type: commentType, id: comment.replyTo }],
     },
   };
 }

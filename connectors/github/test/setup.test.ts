@@ -23,6 +23,7 @@ beforeEach(async () => {
       "github.file",
       "github.file.image",
       "github.pull_request",
+      "github.discussion",
     ],
     edges: [
       "github.in-repository",
@@ -33,6 +34,7 @@ beforeEach(async () => {
       "attached-to",
       "github.closes",
       "github.closed-by",
+      "github.reply-to",
       "in-thread",
     ],
   }).start();
@@ -104,7 +106,10 @@ describe("read-only kinds", () => {
     expect(readOnly("pull_request")).toBe(false);
     expect(readOnly("pull_request", "pull_request")).toBe(true);
     expect(readOnly("pull_request", "issue")).toBe(false);
-    expect(readOnly(" issue, comment ")).toBe(true);
+    expect(readOnly(" issue, comment, discussion ")).toBe(true);
+    expect(readOnly("issue, comment")).toBe(false);
+    expect(readOnly("discussion", "discussion")).toBe(true);
+    expect(readOnly("discussion", "comment")).toBe(false);
     expect(readOnly("true", "comment")).toBe(true);
     expect(readOnly("false", "issue")).toBe(false);
     expect(readOnly(undefined, "issue")).toBe(false);
@@ -113,6 +118,9 @@ describe("read-only kinds", () => {
   it("rejects unknown kinds and empty list members", () => {
     expect(() => readOnly("isssue")).toThrow("GITHUB_READ_ONLY");
     expect(() => readOnly("issue,,comment")).toThrow("GITHUB_READ_ONLY");
+    expect(() => readOnly("discussions", "issue")).toThrow(
+      "unknown kind (discussions)",
+    );
   });
 });
 
@@ -158,6 +166,7 @@ describe("setup", () => {
       public: false,
       default_permissions: {
         issues: "write",
+        discussions: "write",
         pull_requests: "read",
         checks: "read",
         statuses: "read",
@@ -166,6 +175,8 @@ describe("setup", () => {
       default_events: [
         "issues",
         "issue_comment",
+        "discussion",
+        "discussion_comment",
         "sub_issues",
         "issue_dependencies",
         "issue_relates_to",
@@ -359,7 +370,45 @@ describe("setup", () => {
     await visited;
     expect(finished.code).toBe(0);
     expect(manifest).toMatchObject({
-      default_permissions: { issues: "read", metadata: "read" },
+      default_permissions: {
+        issues: "read",
+        discussions: "write",
+        metadata: "read",
+      },
+    });
+  });
+
+  it("asks to read Discussions only where discussion is read only", async () => {
+    const file = join(dir, "secrets.json");
+    let manifest: Record<string, unknown> | undefined;
+    let visited: Promise<void> | undefined;
+    const finished = await setup(
+      file,
+      { GITHUB_READ_ONLY: "discussion" },
+      (line) => {
+        const opened = / open (\S+) in a browser/.exec(line)?.[1];
+        if (opened === undefined) return;
+        visited = (async () => {
+          const html = await (await fetch(opened)).text();
+          manifest = JSON.parse(
+            decoded(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? ""),
+          ) as Record<string, unknown>;
+          const action = decoded(/action="([^"]+)"/.exec(html)?.[1] ?? "");
+          const state = new URL(action).searchParams.get("state");
+          await fetch(
+            `${String(manifest["redirect_url"])}?code=manifest-code&state=${String(state)}`,
+          );
+        })();
+      },
+    );
+    await visited;
+    expect(finished.code).toBe(0);
+    expect(manifest).toMatchObject({
+      default_permissions: {
+        issues: "write",
+        discussions: "read",
+        metadata: "read",
+      },
     });
   });
 });

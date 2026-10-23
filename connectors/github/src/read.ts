@@ -9,10 +9,12 @@ import {
   relatesTo,
   commentEntry,
   commentType,
+  discussionType,
   inRepository,
   issueEntry,
   issueOfRest,
   issueType,
+  linkOf,
   pullRequestType,
   pullRequestEntry,
   type PullRequest,
@@ -53,6 +55,12 @@ import {
   relationsOf,
 } from "./graph.js";
 import {
+  discussionsRefusal,
+  heldIn,
+  readNamedDiscussions,
+  syncDiscussions,
+} from "./discussions.js";
+import {
   listPullRequests,
   pullRequestsByNode,
   closedByOf,
@@ -78,6 +86,8 @@ export interface Kept {
    *  ETag then cannot say nothing lies past it. */
   comments?: { since: string; etag?: string; full?: boolean };
   checked?: string;
+  /** The time Discussions were last read down to; absent until they are. */
+  discussions?: { since: string };
   paused?: boolean;
   /** The repository's visibility as its rows last said it. */
   private?: boolean;
@@ -135,11 +145,6 @@ function day(at: Date): string {
   return at.toISOString().slice(0, 10);
 }
 
-function linkOf(row: Item): string | undefined {
-  const value = row.properties["github_id"];
-  return typeof value === "string" ? value : undefined;
-}
-
 const readPrefixes = [
   "installation-suspended:",
   "installation-lost:",
@@ -149,6 +154,7 @@ const readPrefixes = [
   "issues-off:",
   "repository-unreadable:",
   "pull-requests-unreadable:",
+  "discussions-unreadable:",
   "repository-progress:",
   "unsettled:",
   "issue-missing:",
@@ -241,6 +247,9 @@ async function readAll(
       : await asApp(app, signal).paginate("GET /app/installations");
   coverage.reached("clock-skew");
   const clients = new Map<number, Client>();
+  // Discussions are read with their own token, so an installation that has
+  // not accepted their permission still reads everything else.
+  const discussionClients = new Map<number, Client>();
   const listed = new Map<
     string,
     { repository: RestRepository; installation: number }
@@ -384,6 +393,22 @@ async function readAll(
           signal,
         ),
     );
+    const discussed = [...listed.values()]
+      .filter((one) => one.installation === installation)
+      .map((one) => one.repository.id);
+    if (discussed.length > 0) {
+      discussionClients.set(
+        installation,
+        personal ??
+          asInstallation(
+            app as App,
+            installation,
+            { access: "discussions", repositoryIds: discussed },
+            secret,
+            signal,
+          ),
+      );
+    }
   }
   // Visibility follows immutable repository identity, including restored files
   // whose repository is no longer in saved progress.
@@ -418,6 +443,7 @@ async function readAll(
       ),
       new Set(outside.keys()),
       retained,
+      discussionClients,
     );
     for (const [node, at] of listed) {
       const client = clients.get(at.installation);
@@ -507,6 +533,38 @@ async function readAll(
   }
 
   const permissions: string[] = [];
+  const readDiscussions = async (
+    scoped: ScopedRunContext<EnvDeclaration>,
+    installation: number,
+    node: string,
+    repository: Kept,
+    check: boolean,
+  ): Promise<Kept> => {
+    const octokit = discussionClients.get(installation);
+    if (octokit === undefined) return repository;
+    const [owner = "", name = ""] = repository.name.split("/");
+    try {
+      const since = await syncDiscussions(
+        scoped,
+        octokit,
+        { node, owner, name, hidden: privateIn(privacy, node) },
+        repository.discussions,
+        check,
+      );
+      coverage.reached(`discussions-unreadable:${node}`);
+      return since === undefined
+        ? repository
+        : { ...repository, discussions: since };
+    } catch (error) {
+      const why = discussionsRefusal(error);
+      if (why === undefined) throw error;
+      log.condition(
+        `discussions-unreadable:${node}`,
+        `${repository.name}: GitHub refused its Discussions (${why}), so its discussions and their comments are left as they are; the other kinds keep syncing`,
+      );
+      return repository;
+    }
+  };
   const sync = async (node: string, check: boolean): Promise<void> => {
     const at = listed.get(node);
     const repository = next[node];
@@ -542,17 +600,29 @@ async function readAll(
           repository,
           privateIn(privacy, node),
         );
-        await save(scoped, node, next[node]);
         coverage.reached(`pull-requests-unreadable:${node}`);
+        next[node] = await readDiscussions(
+          scoped,
+          at.installation,
+          node,
+          next[node],
+          check,
+        );
+        await save(scoped, node, next[node]);
         return;
       }
-      next[node] = await syncRepository(scoped, octokit, node, repository, {
-        synced,
-        inside: new Set([...synced, ...paused]),
-        retainedRepositories: retained,
-        privacy,
-        check,
-      });
+      next[node] = {
+        ...(await syncRepository(scoped, octokit, node, repository, {
+          synced,
+          inside: new Set([...synced, ...paused]),
+          retainedRepositories: retained,
+          privacy,
+          check,
+        })),
+        ...(repository.discussions !== undefined && {
+          discussions: repository.discussions,
+        }),
+      };
       await preserveFiles(
         scoped,
         octokit,
@@ -569,6 +639,13 @@ async function readAll(
       coverage.reached(
         `repository-unreadable:${node}`,
         `pull-requests-unreadable:${node}`,
+      );
+      next[node] = await readDiscussions(
+        scoped,
+        at.installation,
+        node,
+        next[node],
+        check,
       );
     } catch (error) {
       if (personal !== undefined && status(error) === 401) throw error;
@@ -651,6 +728,10 @@ async function takeOut(
     links(await linked(commentType, inRepository, under)),
   );
   await archive(issueType, links(await linked(issueType, inRepository, under)));
+  await archive(
+    discussionType,
+    links(await linked(discussionType, inRepository, under)),
+  );
   await archive(
     pullRequestType,
     links(await linked(pullRequestType, inRepository, under)),
@@ -1044,7 +1125,12 @@ async function markRows(
   hidden: boolean,
 ): Promise<void> {
   const under = { type: repositoryType, id: node };
-  for (const type of [issueType, commentType, pullRequestType]) {
+  for (const type of [
+    issueType,
+    commentType,
+    pullRequestType,
+    discussionType,
+  ]) {
     const links = (await context.linked(type, inRepository, under)).flatMap(
       (row) => linkOf(row) ?? [],
     );
@@ -1165,6 +1251,11 @@ async function checkComments(
     "GET /repos/{owner}/{repo}/issues/comments",
     { owner: where.owner, repo: where.name, per_page: 100 },
   )) as RestComment[];
+  // Discussion comments are not in this listing and are checked with their
+  // discussions.
+  const discussionComments = new Set(
+    [...(await heldIn(context, where.node)).values()].flat(),
+  );
   // Rows this run wrote have no connection to the repository until it ends.
   const held = new Set([
     ...rows.flatMap((row) => linkOf(row) ?? []),
@@ -1180,7 +1271,11 @@ async function checkComments(
   const listed = new Set(all.map((comment) => comment.node_id));
   const absent = rows.flatMap((row) => {
     const link = linkOf(row);
-    return link === undefined || listed.has(link) ? [] : [link];
+    return link === undefined ||
+      listed.has(link) ||
+      discussionComments.has(link)
+      ? []
+      : [link];
   });
   const still = new Set(
     (await commentsByNode(octokit, absent)).map((comment) => comment.node),
@@ -1277,6 +1372,7 @@ async function readNamed(
   initiallyDeferred: ReadonlySet<number>,
   excluded: ReadonlySet<string>,
   retainedRepositories: ReadonlySet<string>,
+  discussionClients: ReadonlyMap<number, Client>,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(every);
@@ -1521,10 +1617,27 @@ async function readNamed(
     ),
   );
 
+  const namedDiscussions = new Set(hints?.get(discussionType) ?? []);
+  let unseenDiscussions = new Set<string>();
+  if (namedDiscussions.size > 0) {
+    unseenDiscussions = await readNamedDiscussions(context, namedDiscussions, {
+      listed,
+      synced,
+      clients: new Map(
+        [...discussionClients].filter(([installation]) =>
+          clients.has(installation),
+        ),
+      ),
+      hidden: (node) => privateIn(privacy, node),
+      deferred: deferred.size > 0,
+    });
+  }
+
   const unfinished = (): void => {
     if (
       deferred.size > 0 &&
       (closingReadIncomplete ||
+        unseenDiscussions.size > 0 ||
         [
           ...neededIssues,
           ...namedComments,

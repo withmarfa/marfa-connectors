@@ -1,5 +1,10 @@
 import type { Delivery, Hint } from "@withmarfa/connector";
-import { commentType, issueType, pullRequestType } from "./entries.js";
+import {
+  commentType,
+  discussionType,
+  issueType,
+  pullRequestType,
+} from "./entries.js";
 
 type Payload = Record<string, unknown>;
 
@@ -65,6 +70,11 @@ export function hints(delivery: Delivery): readonly Hint[] | "everything" {
         ...named(issueType, issue),
       ];
     }
+    // A comment names its discussion, so the run reads the discussion with
+    // every comment and reply, which also finds a deletion.
+    case "discussion":
+    case "discussion_comment":
+      return named(discussionType, payload["discussion"]);
     case "sub_issues":
       return named(issueType, payload["sub_issue"], payload["parent_issue"]);
     case "issue_relates_to":

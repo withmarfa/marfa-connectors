@@ -29,6 +29,7 @@ beforeEach(async () => {
       "github.file",
       "github.file.image",
       "github.pull_request",
+      "github.discussion",
     ],
     edges: [
       "github.in-repository",
@@ -39,6 +40,7 @@ beforeEach(async () => {
       "attached-to",
       "github.closes",
       "github.closed-by",
+      "github.reply-to",
       "in-thread",
     ],
   }).start();
@@ -200,6 +202,26 @@ describe("a delivery's hints", () => {
       { type: "github.issue", id: "I_1" },
       { type: "github.issue", id: "I_2" },
     ]);
+  });
+
+  it("name the discussion and the comment each discussion event carries", () => {
+    expect(
+      hints(
+        delivery("discussion", {
+          action: "edited",
+          discussion: { node_id: "D_1" },
+        }),
+      ),
+    ).toEqual([{ type: "github.discussion", id: "D_1" }]);
+    expect(
+      hints(
+        delivery("discussion_comment", {
+          action: "created",
+          comment: { node_id: "DC_1" },
+          discussion: { node_id: "D_1" },
+        }),
+      ),
+    ).toEqual([{ type: "github.discussion", id: "D_1" }]);
   });
 
   it("names both ends of an issue_relates_to event", () => {
@@ -556,6 +578,40 @@ describe("a run for deliveries", () => {
       expect(row(issue.node).properties["github_updated_at"]).toBe(
         issue.updated_at,
       );
+    });
+  });
+
+  it("writes a discussion comment made on GitHub within seconds, asking GitHub for the discussion by node id alone", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const discussion = github.addDiscussion(repository);
+    const other = github.addDiscussion(repository, { title: "Untouched" });
+    await watching(async () => {
+      deliver("ping", {});
+      await until(() => marfa.runs.length > 1, "the first run for deliveries");
+      github.asked.length = 0;
+      const comment = github.addDiscussionComment(discussion, "Seen on GitHub");
+      github.editDiscussion(other, { title: "Not named" });
+      deliver("discussion_comment", {
+        action: "created",
+        comment: { node_id: comment.node },
+        discussion: { node_id: discussion.node },
+      });
+      await until(
+        () =>
+          marfa.rows.some(
+            (one) =>
+              one.properties["github_id"] === comment.node &&
+              marfa.targetsOf(one.id, "in-thread").length > 0,
+          ),
+        "the comment being written in its discussion's thread",
+      );
+      expect(
+        marfa
+          .targetsOf(row(comment.node).id, "in-thread")
+          .map((id) => marfa.byId(id).properties["github_id"]),
+      ).toEqual([discussion.node]);
+      expect(row(other.node).properties["title"]).toBe("Untouched");
+      expect(listings()).toEqual([]);
     });
   });
 

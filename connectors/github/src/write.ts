@@ -38,6 +38,7 @@ import {
   ClockSkew,
   reads,
   status,
+  type Access,
   type App,
   type Client,
 } from "./github.js";
@@ -54,10 +55,10 @@ import {
 import type { Kept } from "./read.js";
 import { everywhere, unsettle } from "./unsettled.js";
 
-type Context = WatchContext<EnvDeclaration>;
+export type Context = WatchContext<EnvDeclaration>;
 
 /** A try's time asked a little early, as GitHub's clock is not ours. */
-const margin = 5 * 60 * 1000;
+export const margin = 5 * 60 * 1000;
 
 function wanted(
   value: unknown,
@@ -79,7 +80,7 @@ function wanted(
   return { state: "open", state_reason: "reopened" };
 }
 
-function text(item: Item, field: string): string | undefined {
+export function text(item: Item, field: string): string | undefined {
   const value = item.properties[field];
   return typeof value === "string" ? value : undefined;
 }
@@ -91,7 +92,7 @@ function list(item: Item, field: string): string[] {
     : [];
 }
 
-function refusal(error: unknown): string | undefined {
+export function refusal(error: unknown): string | undefined {
   if (error instanceof RequestError) {
     return [403, 404, 410, 422].includes(error.status)
       ? `${String(error.status)} ${error.message}`
@@ -106,14 +107,14 @@ function refusal(error: unknown): string | undefined {
   return undefined;
 }
 
-function refusedApp(error: unknown): boolean {
+export function refusedApp(error: unknown): boolean {
   return (
     error instanceof RequestError &&
     (error.request.url.endsWith("/access_tokens") || error.status === 401)
   );
 }
 
-function unreachable(error: unknown): string | undefined {
+export function unreachable(error: unknown): string | undefined {
   if (rateLimited(error)) return "GitHub's rate limit ran out";
   if (
     error instanceof GraphqlResponseError &&
@@ -135,7 +136,7 @@ function unreachable(error: unknown): string | undefined {
 
 /** Throws what GitHub's answer makes of a write it did not take: a wait
  *  for what can pass, a refusal for what will not. */
-async function refusedOrWaits(
+export async function refusedOrWaits(
   error: unknown,
   octokit: Client,
   where: { owner: string; repo: string },
@@ -159,7 +160,7 @@ async function refusedOrWaits(
  *  look, or where nothing is listed yet, the create waits, and the
  *  repository it may be in is not read this run, so what it made is never
  *  read in as a row of its own; the next run looks again before sending. */
-async function looking<T>(
+export async function looking<T>(
   context: Context,
   item: Item,
   fence: string,
@@ -186,19 +187,23 @@ async function looking<T>(
   }
 }
 
-function unlisted(context: Context, item: Item, fence: string): Unreachable {
+export function unlisted(
+  context: Context,
+  item: Item,
+  fence: string,
+): Unreachable {
   unsettle(context.state, fence);
   return new Unreachable(
     `GitHub answered a server error to the create of ${item.id} and lists nothing it made yet, so the create waits and its repository is not read until it is found`,
   );
 }
 
-function linkRefused(error: unknown): never {
+export function linkRefused(error: unknown): never {
   if (error instanceof LinkTaken) throw new Refused(error.message);
   throw error;
 }
 
-function allKept(context: Context): Record<string, Kept> {
+export function allKept(context: Context): Record<string, Kept> {
   const value = context.state.get("repositories");
   return typeof value === "object" && value !== null
     ? (value as Record<string, Kept>)
@@ -226,7 +231,12 @@ function paused(node: string, kept: Kept): Unreachable {
  *  has no id recorded yet, or GitHub refuses to name one, it reaches the
  *  whole installation instead: it only finds where a node sits, and
  *  `placeIn` refuses anything the connector does not sync. */
-function looker(context: Context, app: App, installation: number): Client {
+export function looker(
+  context: Context,
+  app: App,
+  installation: number,
+  access: Access = "read",
+): Client {
   const held = Object.values(allKept(context)).filter(
     (one) => one.installation === installation,
   );
@@ -235,7 +245,7 @@ function looker(context: Context, app: App, installation: number): Client {
     app,
     installation,
     {
-      access: "read",
+      access,
       ...(repositoryIds.length === held.length && { repositoryIds }),
       orWhole: true,
     },
@@ -247,7 +257,12 @@ function looker(context: Context, app: App, installation: number): Client {
 /** A token for one write, naming by id only the repositories it touches
  *  that are synced and not paused, so a stale or refused repository holds
  *  up only the writes that touch it. */
-function writer(context: Context, app: App, nodes: readonly string[]): Client {
+function writer(
+  context: Context,
+  app: App,
+  nodes: readonly string[],
+  access: Access = "write",
+): Client {
   const kept = allKept(context);
   const installation = kept[nodes[0] ?? ""]?.installation;
   const touched = nodes.flatMap((node) => {
@@ -267,13 +282,13 @@ function writer(context: Context, app: App, nodes: readonly string[]): Client {
   return asInstallation(
     app,
     installation,
-    { access: "write", repositoryIds },
+    { access, repositoryIds },
     context.secret,
     context.signal,
   );
 }
 
-interface Place {
+export interface Place {
   readonly octokit: Client;
   readonly owner: string;
   readonly repo: string;
@@ -282,10 +297,11 @@ interface Place {
 
 /** Where a write lands: a repository GitHub named, which the connector syncs
  *  and has not paused, or the write waits. */
-function placeIn(
+export function placeIn(
   context: Context,
   app: App,
   repository: { node: string; name: string },
+  access: Access = "write",
 ): Place {
   const kept = allKept(context)[repository.node];
   if (kept?.paused === true) throw paused(repository.node, kept);
@@ -297,7 +313,7 @@ function placeIn(
   }
   const [owner = "", repo = ""] = repository.name.split("/");
   return {
-    octokit: writer(context, app, [repository.node]),
+    octokit: writer(context, app, [repository.node], access),
     owner,
     repo,
     repository,
@@ -306,10 +322,11 @@ function placeIn(
 
 /** Asked of each installation the sync uses, as a node it cannot see
  *  answers nothing; one that refuses the App is passed over. */
-async function seek<T>(
+export async function seek<T>(
   context: Context,
   app: App,
   ask: (octokit: Client) => Promise<T | undefined>,
+  access: Access = "read",
 ): Promise<T | undefined> {
   const installations = new Set(
     Object.values(allKept(context)).map((one) => one.installation),
@@ -317,7 +334,7 @@ async function seek<T>(
   for (const installation of installations) {
     let found: T | undefined;
     try {
-      found = await ask(looker(context, app, installation));
+      found = await ask(looker(context, app, installation, access));
     } catch (error) {
       if (refusedApp(error)) continue;
       throw error;
@@ -368,10 +385,11 @@ async function commentAt(
     : { place: placeIn(context, app, comment.repository), comment };
 }
 
-async function repositoryAt(
+export async function repositoryAt(
   context: Context,
   app: App,
   node: string,
+  access: Access = "write",
 ): Promise<Place> {
   const kept = allKept(context)[node];
   if (kept === undefined) {
@@ -391,7 +409,7 @@ async function repositoryAt(
       { scope: node },
     );
   }
-  return placeIn(context, app, found);
+  return placeIn(context, app, found, access);
 }
 
 /** Tells a target GitHub dropped from one out of the App's reach. A node
@@ -399,7 +417,7 @@ async function repositoryAt(
  *  once each of them, asked by its own node, still reads; while any does
  *  not, the target may be there, and the change waits. No row's text takes
  *  part, so neither an edited row nor a reused name can settle a change. */
-async function goneOrWaits(
+export async function goneOrWaits(
   context: Context,
   app: App,
   change: Change,
@@ -455,7 +473,7 @@ async function goneOrWaits(
 
 const slugs = new Map<string, string>();
 
-async function botOf(app: App, signal: AbortSignal): Promise<string> {
+export async function botOf(app: App, signal: AbortSignal): Promise<string> {
   let slug = slugs.get(app.appId);
   if (slug === undefined) {
     const answer = await asApp(app, signal).request("GET /app");
@@ -648,7 +666,10 @@ export async function carry(
   });
 }
 
-async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
+export async function waiting<T>(
+  change: Change,
+  act: () => Promise<T>,
+): Promise<T> {
   try {
     return await act();
   } catch (error) {
@@ -661,12 +682,14 @@ async function waiting<T>(change: Change, act: () => Promise<T>): Promise<T> {
   }
 }
 
-function marked(item: Item): string {
+export function marked(item: Item): string {
   const body = text(item, "body") ?? "";
   return body === "" ? markOf(item.id) : `${body}\n\n${markOf(item.id)}`;
 }
 
-async function linkMade<T extends { node_id: string; body?: string | null }>(
+export async function linkMade<
+  T extends { node_id: string; body?: string | null },
+>(
   context: Context,
   item: Item,
   candidates: readonly T[],
@@ -729,7 +752,7 @@ async function commentsMadeSince(
 
 // A row in the bin cannot take a link, so what GitHub may have made comes in
 // as its own row.
-function binnedUnanswered(context: Context, item: Item): void {
+export function binnedUnanswered(context: Context, item: Item): void {
   context.log.condition(
     `unanswered-create-trashed:${item.id}`,
     `${item.id} was trashed before GitHub answered its create; anything GitHub made of it comes in as its own row, which a trash closes or deletes`,

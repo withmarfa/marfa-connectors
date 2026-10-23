@@ -18,6 +18,7 @@ beforeEach(async () => {
       "github.file",
       "github.file.image",
       "github.pull_request",
+      "github.discussion",
     ],
     edges: [
       "github.in-repository",
@@ -27,6 +28,7 @@ beforeEach(async () => {
       "github.duplicate-of",
       "github.closes",
       "github.closed-by",
+      "github.reply-to",
       "in-thread",
       "attached-to",
     ],
