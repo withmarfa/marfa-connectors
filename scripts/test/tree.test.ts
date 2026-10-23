@@ -251,7 +251,7 @@ describe("the tree", () => {
     expect(shared).toContain("readwise");
   });
 
-  it("takes only the shared packages' manifests and sources into the image", () => {
+  it("takes only the shared packages' manifests and sources into the image, and no .env file at any depth", () => {
     const rules = readFileSync(resolve(root, ".dockerignore"), "utf8")
       .split("\n")
       .map((line) => line.trim())
@@ -260,10 +260,21 @@ describe("the tree", () => {
       "shared/google/package.json",
       "shared/google/tsconfig.json",
       "shared/google/src/index.ts",
+      "shared/google/src/env.ts",
       "shared/readwise/src/nested/deep.ts",
+      "kit/src/env.ts",
+      "connectors/rss/src/.envrc.ts",
     ];
     const left = [
+      ".env",
+      ".env.development",
       "shared/google/.env",
+      "shared/google/src/.env",
+      "shared/google/src/nested/.env.production",
+      "kit/src/.env",
+      "kit/.env.staging",
+      "connectors/rss/src/.env",
+      "template/connector/.env.example",
       "shared/google/secrets.json",
       "shared/google/README.md",
       "shared/google/test/google.test.ts",

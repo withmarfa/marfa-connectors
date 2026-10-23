@@ -5,8 +5,6 @@ vendor
 .claude
 _trash
 _archive
-.env
-.env.*
 _tmp
 _local
 _ignore
@@ -14,3 +12,5 @@ shared/*/*
 !shared/*/package.json
 !shared/*/tsconfig.json
 !shared/*/src
+**/.env
+**/.env.*
