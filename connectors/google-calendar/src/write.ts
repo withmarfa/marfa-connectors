@@ -1101,7 +1101,8 @@ async function remade(
 /** The events of one calendar a batch would delete, among those it holds. */
 interface Deleting {
   readonly title: string;
-  readonly doomed: number;
+  /** The events deleted, each as `<calendar id>/<event id>`. */
+  readonly doomed: readonly string[];
   readonly live: number;
   /** Whether a trash is among the deletes, which restoring its row undoes. */
   readonly trashed: boolean;
@@ -1143,7 +1144,7 @@ async function deleting(
     if (doomed.length > deleteLimit) {
       found.push({
         title: calendar.title,
-        doomed: doomed.length,
+        doomed: doomed.map(([id]) => linkOf(calendarId, id)),
         live: live.size,
         trashed: doomed.some(([, trashed]) => trashed),
       });
@@ -1168,10 +1169,23 @@ function deletedBy(
 }
 
 /**
+ * What `GOOGLE_CALENDAR_CONFIRM_DELETES` takes to let a held batch through:
+ * how many events it deletes, and a short hash of which, so a confirmation
+ * lets that batch through and no other, of the same size or not.
+ */
+function confirmationOf(doomed: readonly string[]): string {
+  const hash = createHash("sha256")
+    .update([...doomed].sort().join("\n"))
+    .digest("hex")
+    .slice(0, 12);
+  return `${String(doomed.length)}:${hash}`;
+}
+
+/**
  * Holds a batch of trashes and purges that would delete more than
  * `deleteLimit` events of one calendar and more than `deleteShare` of the
- * events it holds, unless `GOOGLE_CALENDAR_CONFIRM_DELETES` names the number
- * the batch deletes.
+ * events it holds, unless `GOOGLE_CALENDAR_CONFIRM_DELETES` names that
+ * batch.
  */
 export async function preflight(
   changes: readonly Change[],
@@ -1179,24 +1193,30 @@ export async function preflight(
   writing: Writing,
 ): Promise<void> {
   const held = (await deleting(changes, context, writing)).filter(
-    (one) => one.doomed > one.live * deleteShare,
+    (one) => one.doomed.length > one.live * deleteShare,
   );
   if (held.length === 0) return;
-  const total = held.reduce((sum, one) => sum + one.doomed, 0);
-  if (context.env.GOOGLE_CALENDAR_CONFIRM_DELETES === String(total)) {
+  const doomed = held.flatMap((one) => one.doomed);
+  const confirmation = confirmationOf(doomed);
+  const given = context.env.GOOGLE_CALENDAR_CONFIRM_DELETES;
+  if (given === confirmation) {
     context.log.info(
-      `GOOGLE_CALENDAR_CONFIRM_DELETES confirms deleting ${String(total)} events from Google Calendar`,
+      `GOOGLE_CALENDAR_CONFIRM_DELETES confirms deleting ${String(doomed.length)} events from Google Calendar`,
     );
     return;
   }
   const listed = held.map(
     (one) =>
-      `${String(one.doomed)} of the ${String(one.live)} events on ${one.title}`,
+      `${String(one.doomed.length)} of the ${String(one.live)} events on ${one.title}`,
   );
   const undo = held.some((one) => one.trashed)
     ? " To keep the events, restore the trashed rows in Marfa."
     : "";
-  const message = `Rows trashed or purged in Marfa would delete ${listed.join(" and ")} in Google Calendar, more than ${String(deleteLimit)} events and a quarter of a calendar at once, so nothing is carried to Google and the connector stops.${undo} To delete them, set GOOGLE_CALENDAR_CONFIRM_DELETES=${String(total)} for one run, then remove it.`;
+  const stale =
+    given === undefined || given === ""
+      ? ""
+      : ` GOOGLE_CALENDAR_CONFIRM_DELETES is ${given}, which names another batch, so it lets none through.`;
+  const message = `Rows trashed or purged in Marfa would delete ${listed.join(" and ")} in Google Calendar, more than ${String(deleteLimit)} events and a quarter of a calendar at once, so nothing is carried to Google and the connector stops.${stale}${undo} To delete them, set GOOGLE_CALENDAR_CONFIRM_DELETES=${confirmation} for one run, then remove it.`;
   context.log.condition("deletes-held", message);
   throw new Error(message);
 }

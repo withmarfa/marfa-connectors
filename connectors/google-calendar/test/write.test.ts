@@ -158,6 +158,17 @@ function conditions(): Record<string, string> {
   return harness.problems();
 }
 
+/** The value the held condition asks GOOGLE_CALENDAR_CONFIRM_DELETES to
+ *  take. */
+function confirmation(): string {
+  const held = conditions()["deletes-held"] ?? "";
+  const value = /GOOGLE_CALENDAR_CONFIRM_DELETES=(\S+) for one run/.exec(
+    held,
+  )?.[1];
+  if (value === undefined) throw new Error(`no confirmation in: ${held}`);
+  return value;
+}
+
 const planning = {
   title: "Planning",
   starts_at: "2026-11-02T09:00:00Z",
@@ -901,7 +912,7 @@ describe("a trash or purge before a lost create is settled", () => {
     expect(writes("DELETE")).toEqual([]);
     expect(conditions()["deletes-held"]).toContain("11 of the 11 events on Me");
 
-    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" });
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: confirmation() });
     expect(writes("DELETE")).toHaveLength(11);
     expect(server.connectorState?.["outbound"]).toBeUndefined();
   });
@@ -1452,18 +1463,25 @@ describe("the safety stop", () => {
     expect(conditions()["deletes-held"]).toBeUndefined();
   });
 
-  it("holds a purge that would delete most of a calendar until a person confirms its size", async () => {
+  it("holds a purge that would delete most of a calendar until a person confirms that batch", async () => {
     await many(20);
     for (let n = 0; n < 11; n += 1) server.purge(`${sub}:${me}/e${String(n)}`);
 
     expect(await once()).toBe(1);
     expect(writes()).toEqual([]);
     expect(conditions()["deletes-held"]).toContain("11 of the 20 events on Me");
+    const value = confirmation();
+    expect(value).toMatch(/^11:[0-9a-f]{12}$/);
 
-    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: "12" })).toBe(1);
-    expect(writes()).toEqual([]);
+    for (const wrong of ["11", "12", value.replace(/^11/, "12")]) {
+      expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: wrong })).toBe(1);
+      expect(writes()).toEqual([]);
+      expect(conditions()["deletes-held"]).toContain(
+        `GOOGLE_CALENDAR_CONFIRM_DELETES is ${wrong}, which names another batch`,
+      );
+    }
 
-    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" });
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: value });
     expect(writes("DELETE")).toHaveLength(11);
   });
 
@@ -1492,7 +1510,7 @@ describe("the safety stop", () => {
     const held = conditions()["deletes-held"];
     expect(held).toContain("11 of the 20 events on Me");
     expect(held).toContain("restore the trashed rows in Marfa");
-    expect(held).toContain("GOOGLE_CALENDAR_CONFIRM_DELETES=11");
+    expect(held).toContain("GOOGLE_CALENDAR_CONFIRM_DELETES=11:");
 
     expect(await once()).toBe(1);
     expect(writes()).toEqual([]);
@@ -1538,17 +1556,49 @@ describe("the safety stop", () => {
     await many(40);
     trash(0, 11);
 
-    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: "12" })).toBe(1);
-    expect(writes()).toEqual([]);
-
-    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" });
+    expect(await once()).toBe(1);
+    const value = confirmation();
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: value });
     expect(writes("DELETE")).toHaveLength(11);
     expect(conditions()["deletes-held"]).toBeUndefined();
 
     trash(11, 23);
     calendar.calls.length = 0;
-    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" })).toBe(1);
+    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: value })).toBe(1);
     expect(writes()).toEqual([]);
     expect(conditions()["deletes-held"]).toContain("12 of the 29 events on Me");
+  });
+
+  it("holds a batch of the same size as the one a confirmation names", async () => {
+    await many(40);
+    trash(0, 11);
+    expect(await once()).toBe(1);
+    const value = confirmation();
+
+    for (let n = 0; n < 11; n += 1)
+      server.restore(row(`${me}/e${String(n)}`).id);
+    trash(11, 22);
+
+    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: value })).toBe(1);
+    expect(writes()).toEqual([]);
+    const held = conditions()["deletes-held"];
+    expect(held).toContain("11 of the 40 events on Me");
+    expect(held).toContain(
+      `GOOGLE_CALENDAR_CONFIRM_DELETES is ${value}, which names another batch`,
+    );
+    const next = confirmation();
+    expect(next).not.toBe(value);
+
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: next });
+    expect(
+      writes("DELETE")
+        .map((call) => call.path)
+        .sort(),
+    ).toEqual(
+      Array.from({ length: 11 }, (_, n) =>
+        eventPath(me, `e${String(n + 11)}`),
+      ).sort(),
+    );
+    expect(calendar.event(me, "e0")?.["status"]).toBe("confirmed");
   });
 });
