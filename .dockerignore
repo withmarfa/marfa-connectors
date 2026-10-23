@@ -10,5 +10,7 @@ _archive
 _tmp
 _local
 _ignore
-**/test
-**/*.md
+shared/*/*
+!shared/*/package.json
+!shared/*/tsconfig.json
+!shared/*/src
