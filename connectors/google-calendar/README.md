@@ -188,7 +188,7 @@ To change one occurrence from Marfa, make a row beneath the series, through `par
 - Another row already holds that occurrence, such as a changed occurrence read from Google. Change that row instead.
 - The row is beneath more than one series, or connects to a calendar other than its series' calendar.
 
-When a restored series row's event is gone from Google for good, the connector makes the series again with its rules and every `EXDATE` line the row holds, so the dates the series skipped stay skipped.
+When a restored series row's event is gone from Google for good, the connector makes the series again under the row's ID with its rules and every `EXDATE` line the row holds, so the dates the series skipped stay skipped, and links the row to the new series. This includes the later part of a series that a change to "this and following events" split in Google, whose ID ends in `_R` and the time of the split: once deleted, Google refuses to bring it back. The deleted part stays deleted in Google, so the new series isn't a duplicate. Google refusing to bring back any other series raises a condition, and the restore isn't sent again until the row changes.
 
 ### Errors
 

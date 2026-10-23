@@ -1362,6 +1362,9 @@ async function remade(
       );
       return true;
     } catch (error) {
+      if (lostSplit(error, parts.eventId)) {
+        return splitAgain(change, parts, calendar, session, context, writing);
+      }
       if (!isGone(error)) throw error;
     }
     // The id is gone for good, so the event is made anew under the row's.
@@ -1371,13 +1374,55 @@ async function remade(
   const event = eventOf(found);
   const reason = event === undefined ? undefined : uneditable(event, calendar);
   if (reason !== undefined) throw decline(item, reason);
-  await session.api.patch(
-    parts.calendarId,
-    parts.eventId,
-    whole(item, calendar),
-    text(found, "etag"),
-  );
+  try {
+    await session.api.patch(
+      parts.calendarId,
+      parts.eventId,
+      whole(item, calendar),
+      text(found, "etag"),
+    );
+    return true;
+  } catch (error) {
+    if (!lostSplit(error, parts.eventId)) throw error;
+  }
+  return splitAgain(change, parts, calendar, session, context, writing);
+}
+
+/** Makes a split piece Google refused to bring back anew under the row's
+ *  id, so the row's link moves to it. A refusal does not prove the restore
+ *  never landed, so the piece is made only while Google still holds it
+ *  deleted, and the two are never both live. */
+async function splitAgain(
+  change: Change,
+  parts: { calendarId: string; eventId: string },
+  calendar: CalendarInfo,
+  session: Session,
+  context: WriteContext,
+  writing: Writing,
+): Promise<boolean> {
+  const held = await session.api.event(parts.calendarId, parts.eventId);
+  if (held !== "gone" && held["status"] !== "cancelled") return false;
+  await make(change, makingFor(change.item, calendar), context, writing);
   return true;
+}
+
+/** Google's id for the later part of a series it split at a "this and
+ *  following" change: the first part's id, `_R` and when the split begins.
+ *  An id given at a create takes only lowercase letters and digits, and an
+ *  occurrence's ends in its start alone, so no other event has one. */
+const splitPiece = /_R\d{8}(?:T\d{6}Z?)?$/;
+
+/** Whether Google refused to bring back a deleted split piece. Google keeps
+ *  one only as a stub, cancelled, and answers 400 to every write that would
+ *  restore it, so it is gone for good. A 400 for any other event stays a
+ *  refusal: making that event anew would drop what Google holds of it and
+ *  Marfa does not. */
+function lostSplit(error: unknown, eventId: string): boolean {
+  return (
+    error instanceof GoogleError &&
+    error.status === 400 &&
+    splitPiece.test(eventId)
+  );
 }
 
 // --- The safety stop ----------------------------------------------------------

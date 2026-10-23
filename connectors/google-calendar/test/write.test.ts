@@ -1323,6 +1323,131 @@ describe("a series", () => {
     });
   });
 
+  // Google names the later part of a series split by a "this and following"
+  // change after the first, and refuses to bring that part back once deleted.
+  const split = {
+    ...series,
+    id: "weekly_R20261124T090000",
+    start: { dateTime: "2026-11-24T09:00:00Z", timeZone: london },
+    end: { dateTime: "2026-11-24T10:00:00Z", timeZone: london },
+    recurrence: [
+      "RRULE:FREQ=WEEKLY;BYDAY=TU",
+      "EXDATE;TZID=Europe/London:20261201T090000",
+    ],
+  };
+
+  async function trashedSplit(): Promise<Row> {
+    calendar.put(me, split);
+    await landed();
+    const one = row(`${me}/${split.id}`);
+    server.trash(one.id);
+    await landed();
+    expect(calendar.event(me, split.id)?.["status"]).toBe("cancelled");
+    return one;
+  }
+
+  it.each([
+    ["answers it as cancelled", true],
+    ["answers it as deleted", false],
+  ])(
+    "makes a restored split series again under the row's own id when Google %s and refuses to bring it back",
+    async (_, getsCancelled) => {
+      calendar.getsCancelled = getsCancelled;
+      const one = await trashedSplit();
+
+      server.restore(one.id);
+      await landed();
+
+      const id = eventIdFor(one.id);
+      expect(writes().slice(1)).toEqual([
+        expect.objectContaining({
+          method: "PATCH",
+          path: eventPath(me, split.id),
+        }),
+        expect.objectContaining({ method: "POST", path: eventPath(me) }),
+      ]);
+      expect(writes("POST")[0]?.body).toMatchObject({
+        id,
+        summary: "Planning",
+        start: split.start,
+        recurrence: split.recurrence,
+      });
+      expect(calendar.event(me, split.id)?.["status"]).toBe("cancelled");
+      expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+      expect(server.byId(one.id)).toMatchObject({
+        state: "active",
+        properties: { google_id: `${me}/${id}` },
+      });
+      expect(conditions()).toEqual({});
+
+      await landed();
+      expect(eventRows()).toEqual([one.id]);
+      expect(writes()).toHaveLength(3);
+    },
+  );
+
+  it("makes a restored split series once when the answer to the create is lost", async () => {
+    calendar.getsCancelled = true;
+    const one = await trashedSplit();
+    calendar.loseAnswer((call) => call.method === "POST");
+
+    server.restore(one.id);
+    await once();
+    await landed();
+
+    const id = eventIdFor(one.id);
+    expect(writes("POST")).toHaveLength(2);
+    expect(writes("POST").map((call) => call.body?.["id"])).toEqual([id, id]);
+    expect(calendar.event(me, split.id)?.["status"]).toBe("cancelled");
+    expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+    expect(server.byId(one.id).properties["google_id"]).toBe(`${me}/${id}`);
+    expect(eventRows()).toEqual([one.id]);
+  });
+
+  it("makes nothing when Google refuses to bring back a split series but brought it back all the same", async () => {
+    calendar.getsCancelled = true;
+    const one = await trashedSplit();
+    calendar.failNext((call) => {
+      if (call.method !== "PATCH" || call.path !== eventPath(me, split.id)) {
+        return false;
+      }
+      calendar.put(me, split);
+      return true;
+    }, 400);
+
+    server.restore(one.id);
+    await landed();
+
+    expect(writes("POST")).toEqual([]);
+    expect(calendar.event(me, split.id)?.["status"]).toBe("confirmed");
+    expect(server.byId(one.id)).toMatchObject({
+      state: "active",
+      properties: { google_id: `${me}/${split.id}` },
+    });
+  });
+
+  it("keeps the refusal, and makes nothing, when Google refuses to bring back a series it did not split", async () => {
+    calendar.getsCancelled = true;
+    calendar.put(me, series);
+    await landed();
+    const one = row(`${me}/weekly`);
+    server.trash(one.id);
+    await landed();
+    calendar.failNext(
+      (call) =>
+        call.method === "PATCH" && call.path === eventPath(me, "weekly"),
+      400,
+    );
+
+    server.restore(one.id);
+    await landed();
+
+    expect(writes("POST")).toEqual([]);
+    expect(calendar.event(me, "weekly")?.["status"]).toBe("cancelled");
+    expect(server.byId(one.id).properties["google_id"]).toBe(`${me}/weekly`);
+    expect(conditions()[`change-refused:${one.id}`]).toContain("400");
+  });
+
   function madeUnder(parent: Row, properties: Record<string, unknown>): Row {
     const one = server.insert(undefined, properties, eventType, "person");
     server.drawEdge(parent.id, one.id, "parent-of");

@@ -12,6 +12,10 @@ export interface Call {
   readonly body: Json | undefined;
 }
 
+/** The id Google gives the later part of a series split by a "this and
+ *  following" change. */
+const splitPiece = /_R\d{8}(?:T\d{6}Z?)?$/;
+
 interface Stored {
   event: Json;
   version: number;
@@ -285,6 +289,11 @@ export class CalendarStub {
       return [204, {}];
     }
     if (call.method !== "PATCH") return refusal(405, "method");
+    // Google keeps a deleted split series only as a stub and refuses every
+    // write that would bring it back.
+    if (found.event["status"] === "cancelled" && splitPiece.test(id)) {
+      return refusal(400, "Bad Request", "badRequest");
+    }
     const next = merged(found.event, call.body ?? {});
     return [200, this.write(store, next)];
   }
