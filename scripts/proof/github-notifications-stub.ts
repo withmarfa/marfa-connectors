@@ -49,6 +49,10 @@ export class NotificationsStub {
    *  for a request it will not take. */
   failing: { status: number; message: string; page?: number } | undefined;
   threads: Thread[] = [];
+  /** Runs once, after the listing answers this page: a thread that changes
+   *  between one page and the next moves to the front of a listing sorted by
+   *  its last change, past a page already read. */
+  afterPage: { page: number; run: () => void } | undefined;
   private modified = Math.floor(Date.now() / 1000) * 1000;
   private ids = 26_000_000_000;
 
@@ -212,5 +216,10 @@ export class NotificationsStub {
         }),
       },
     );
+    if (this.afterPage?.page === at) {
+      const { run } = this.afterPage;
+      this.afterPage = undefined;
+      run();
+    }
   }
 }

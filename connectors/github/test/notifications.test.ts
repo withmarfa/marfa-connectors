@@ -557,7 +557,7 @@ describe("notifications", () => {
     expect(conditions()).toEqual({});
   });
 
-  it("archives a thread GitHub no longer returns, and only on a read that listed it whole", async () => {
+  it("archives a thread only once two complete listings both lack it", async () => {
     const repo = github.addRepository("someone/tracker");
     const kept = github.notifications.add(repo, {
       type: "Issue",
@@ -576,8 +576,15 @@ describe("notifications", () => {
     expect(row(gone.id).state).toBe("active");
     github.notifications.remove(gone);
     await ok();
+    // One listing without it is no proof: it may have been skipped.
+    expect(row(gone.id).state).toBe("active");
+    expect(saved().missing).toEqual([gone.id]);
+    // While a thread is missing, the next listing is read whole, 304 or not.
+    await ok();
+    expect(listings().map((one) => one.status)).toEqual([200, 304, 200, 200]);
     expect(row(gone.id).state).toBe("archived");
     expect(row(kept.id).state).toBe("active");
+    expect(saved().missing).toEqual([]);
     // It comes back as the same row when GitHub lists it again.
     github.notifications.threads.push(gone);
     github.notifications.change(gone, { unread: true });
@@ -586,7 +593,53 @@ describe("notifications", () => {
     expect(held()).toHaveLength(2);
   });
 
-  it("archives nothing when a later page of the listing fails", async () => {
+  it("does not archive a thread that moved past a page while the listing was read", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const threads = Array.from({ length: 5 }, (_, at) =>
+      github.notifications.add(repo, {
+        type: "Issue",
+        title: `Issue ${String(at)}`,
+        number: at + 1,
+      }),
+    );
+    github.notifications.pageSize = 2;
+    await ok();
+    const moved = threads[2];
+    if (moved === undefined) throw new Error("No thread");
+    // Listed newest change first, the third of five is on page two. It
+    // changes once page one is read, moves to the front of the listing, and
+    // is on no page read after.
+    github.notifications.afterPage = {
+      page: 1,
+      run: () => {
+        github.notifications.change(moved, { unread: false });
+      },
+    };
+    age(25 * 60 * 60, "checked");
+    await ok();
+    expect(
+      listings()
+        .slice(3)
+        .map((one) => one.status),
+    ).toEqual([200, 200, 200]);
+    expect(row(moved.id).state).toBe("active");
+    expect(row(moved.id).properties["unread"]).toBe(true);
+    expect(saved().missing).toEqual([moved.id]);
+    // The next listing is whole and finds it: it is no longer missing.
+    await ok();
+    expect(row(moved.id).state).toBe("active");
+    expect(row(moved.id).properties["unread"]).toBe(false);
+    expect(saved().missing).toEqual([]);
+    // The witness: the same thread missing from two complete listings goes.
+    github.notifications.remove(moved);
+    await ok();
+    expect(row(moved.id).state).toBe("active");
+    await ok();
+    expect(row(moved.id).state).toBe("archived");
+    expect(held().filter((one) => one.state === "active")).toHaveLength(4);
+  });
+
+  it("keeps the missing threads and archives nothing when a later page fails", async () => {
     const repo = github.addRepository("someone/tracker");
     const threads = Array.from({ length: 5 }, (_, at) =>
       github.notifications.add(repo, {
@@ -600,6 +653,8 @@ describe("notifications", () => {
     const first = threads[0];
     if (first === undefined) throw new Error("No thread");
     github.notifications.remove(first);
+    await ok();
+    expect(saved().missing).toEqual([first.id]);
     github.notifications.failing = {
       status: 422,
       message: "Validation Failed",
@@ -608,10 +663,44 @@ describe("notifications", () => {
     await ok();
     expect(held().every((one) => one.state === "active")).toBe(true);
     expect(conditions()).toHaveProperty(["notifications-failed"]);
+    expect(saved().missing).toEqual([first.id]);
     // The witness: the same listing, whole, archives it.
     github.notifications.failing = undefined;
     await ok();
     expect(row(first.id).state).toBe("archived");
+  });
+
+  it("raises a Marfa failure as one, not as notifications that could not be read", async () => {
+    const repo = github.addRepository("someone/tracker");
+    github.addIssue(repo);
+    github.notifications.add(repo, { type: "Issue", title: "T", number: 1 });
+    // The first time Marfa is asked for rows after GitHub's listing was read.
+    const before = listings().length;
+    let armed = false;
+    marfa.beforeAnswer = (request) => {
+      if (
+        !armed &&
+        request.method === "GET" &&
+        request.path === "/items" &&
+        listings().length > before
+      ) {
+        armed = true;
+        marfa.refuseNext("GET /items", 403, "forbidden");
+      }
+    };
+    const result = await once();
+    marfa.beforeAnswer = undefined;
+    expect(armed).toBe(true);
+    expect(JSON.stringify(conditions())).not.toContain("could not be read");
+    expect(result.output).not.toContain("could not be read");
+    expect(held()).toEqual([]);
+    // The witness: a failure of GitHub's listing is said to be that.
+    github.notifications.failing = {
+      status: 422,
+      message: "Validation Failed",
+    };
+    await ok();
+    expect(conditions()["notifications-failed"]).toContain("could not be read");
   });
 
   it("obeys X-Poll-Interval and asks again only once it has passed", async () => {

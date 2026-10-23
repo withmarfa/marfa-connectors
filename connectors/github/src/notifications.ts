@@ -40,13 +40,17 @@ const pagesAtMost = 2000;
 
 /** What the next run needs of this one: the moment GitHub last said the
  *  listing changed, when it was last asked and how long GitHub asked to wait,
- *  when it was last read whole, and whom and what it was read for. */
+ *  when it was last read whole, whom and what it was read for, and the held
+ *  threads that listing did not name. A listing sorted by its last change
+ *  moves while it is paged and can skip a live thread, so a thread is
+ *  archived only once the listing after that one lacks it too. */
 interface Progress {
   modified?: string;
   polled: string;
   interval: number;
   checked: string;
   key: string;
+  missing: string[];
 }
 
 export interface RestThread {
@@ -82,6 +86,7 @@ function progressOf(value: unknown): Progress | undefined {
   const interval = one["interval"];
   const key = one["key"];
   const modified = one["modified"];
+  const missing = one["missing"];
   if (
     typeof polled !== "string" ||
     typeof checked !== "string" ||
@@ -96,6 +101,9 @@ function progressOf(value: unknown): Progress | undefined {
     checked,
     key,
     interval,
+    missing: Array.isArray(missing)
+      ? missing.filter((id): id is string => typeof id === "string")
+      : [],
     ...(typeof modified === "string" && { modified }),
   };
 }
@@ -120,7 +128,7 @@ function addressOf(thread: RestThread): string | undefined {
 
 /** The kinds of subject a thread can be connected to, by the type that holds
  *  them and the part of the subject's address that names its number. */
-const concerned: Record<string, { type: string; path: string } | undefined> = {
+const concerned: Record<string, { type: string; path: string }> = {
   Issue: { type: issueType, path: "issues" },
   PullRequest: { type: pullRequestType, path: "pulls" },
   Discussion: { type: discussionType, path: "discussions" },
@@ -263,9 +271,31 @@ function refusal(error: unknown): string | undefined {
     : `${tokenName} cannot read notifications (${String(code)}); GitHub reads them only for a classic token or an OAuth token with the notifications scope, never for an App or a fine-grained token${scopes === undefined ? "" : `, and this token's scopes are ${scopes === "" ? "none" : scopes}`}. The threads already read are kept`;
 }
 
+/** Raises the condition a failed listing leaves: GitHub's, and only GitHub's. */
+function raise(error: unknown, log: RootContext["log"]): void {
+  if (rateLimited(error)) {
+    log.condition(
+      limited,
+      "GitHub's rate limit for the notifications token is spent, so notifications wait for the next run",
+    );
+    return;
+  }
+  const said = refusal(error);
+  if (said !== undefined) {
+    log.condition(refused, said);
+    return;
+  }
+  const code = status(error);
+  log.condition(
+    failed,
+    `notifications could not be read (${code === undefined ? "no answer" : String(code)}: ${error instanceof Error ? error.message : String(error)}), so they are tried again next run; the threads already read are kept`,
+  );
+}
+
 /** Reads the person's notifications as `github.notification` rows, on a
- *  scheduled run. A failure is a condition and never fails the run, since
- *  every other kind is read apart from it. */
+ *  scheduled run. A failure of GitHub's listing is a condition and never
+ *  fails the run, since every other kind is read apart from it; a failure of
+ *  Marfa is the kit's, as anywhere else. */
 export async function readNotifications(
   context: RootContext,
   options: Options,
@@ -289,9 +319,12 @@ export async function readNotifications(
   reached(...conditionKeys);
   const key = `${createHash("sha256").update(token).digest("hex").slice(0, 16)} ${options.scopeText?.trim().toLowerCase() ?? ""}`;
   const checked = kept === undefined ? NaN : Date.parse(kept.checked);
+  // A thread missing from the last listing is confirmed or cleared by the
+  // next one, so while any is, the listing is read whole.
   const since =
     kept?.modified !== undefined &&
     kept.key === key &&
+    kept.missing.length === 0 &&
     checked <= now &&
     now - checked < checkEvery
       ? kept.modified
@@ -304,94 +337,85 @@ export async function readNotifications(
     tokenName,
   );
   const polled = new Date(now).toISOString();
+  let listing: Listing;
   try {
-    const listing = await list(octokit, since);
-    const interval = listing.interval ?? kept?.interval ?? 60;
-    if (listing.unchanged) {
-      if (kept === undefined) throw new Error("a 304 answered no request");
-      await save(scoped, log, { ...kept, polled, interval });
-      return;
-    }
-    const returned = new Set<string>();
-    const admitted = new Map<string, RestThread>();
-    for (const thread of listing.threads) {
-      const full = thread.repository?.full_name;
-      returned.add(String(thread.id));
-      if (
-        typeof full === "string" &&
-        options.scope !== undefined &&
-        !options.scope.admits(full)
-      )
-        continue;
-      admitted.set(String(thread.id), thread);
-    }
-    const nodes = new Map<string, string>();
-    if (
-      [...admitted.values()].some(
-        (one) => concerned[one.subject?.type ?? ""] !== undefined,
-      )
-    ) {
-      for (const type of [issueType, pullRequestType, discussionType]) {
-        for (const row of await scoped.held(type, { state: "active" })) {
-          const id = row.properties["github_id"];
-          const repository = row.properties["repository"];
-          const number = row.properties["number"];
-          if (
-            typeof id === "string" &&
-            typeof repository === "string" &&
-            typeof number === "number"
-          )
-            nodes.set(`${type} ${placeOf(repository, number)}`, id);
-        }
-      }
-    }
-    const entries: Entry[] = [];
-    let unusable = 0;
-    for (const thread of admitted.values()) {
-      const entry = entryOf(thread, nodes);
-      if (entry === undefined) unusable += 1;
-      else entries.push(entry);
-    }
-    if (unusable > 0)
-      log.warn(
-        `${String(unusable)} notification threads named no subject, repository or time, so they were left out`,
-      );
-    await scoped.upsert(notificationType, entries);
-    // The listing is whole, so a held thread it does not name is gone from it.
-    const gone = (
-      await scoped.held(notificationType, { state: "active" })
-    ).flatMap((row) => {
-      const id = row.properties["github_id"];
-      return typeof id === "string" && !returned.has(id) ? [id] : [];
-    });
-    if (gone.length > 0) await scoped.archive(notificationType, gone);
-    await save(scoped, log, {
-      ...(listing.modified !== undefined && { modified: listing.modified }),
-      polled,
-      interval,
-      checked: polled,
-      key,
-    });
+    listing = await list(octokit, since);
   } catch (error) {
     if (signal.aborted) throw error;
-    if (rateLimited(error)) {
-      log.condition(
-        limited,
-        "GitHub's rate limit for the notifications token is spent, so notifications wait for the next run",
-      );
-      return;
-    }
-    const said = refusal(error);
-    if (said !== undefined) {
-      log.condition(refused, said);
-      return;
-    }
-    const code = status(error);
-    log.condition(
-      failed,
-      `notifications could not be read (${code === undefined ? "no answer" : String(code)}: ${error instanceof Error ? error.message : String(error)}), so they are tried again next run; the threads already read are kept`,
-    );
+    raise(error, log);
+    return;
   }
+  const interval = listing.interval ?? kept?.interval ?? 60;
+  if (listing.unchanged) {
+    if (kept === undefined) throw new Error("a 304 answered no request");
+    await save(scoped, log, { ...kept, polled, interval });
+    return;
+  }
+  const returned = new Set<string>();
+  const admitted = new Map<string, RestThread>();
+  for (const thread of listing.threads) {
+    const full = thread.repository?.full_name;
+    returned.add(String(thread.id));
+    if (
+      typeof full === "string" &&
+      options.scope !== undefined &&
+      !options.scope.admits(full)
+    )
+      continue;
+    admitted.set(String(thread.id), thread);
+  }
+  const nodes = new Map<string, string>();
+  if (
+    [...admitted.values()].some(
+      (one) => concerned[one.subject?.type ?? ""] !== undefined,
+    )
+  ) {
+    for (const { type } of Object.values(concerned)) {
+      for (const row of await scoped.held(type, { state: "active" })) {
+        const id = row.properties["github_id"];
+        const repository = row.properties["repository"];
+        const number = row.properties["number"];
+        if (
+          typeof id === "string" &&
+          typeof repository === "string" &&
+          typeof number === "number"
+        )
+          nodes.set(`${type} ${placeOf(repository, number)}`, id);
+      }
+    }
+  }
+  const entries: Entry[] = [];
+  let unusable = 0;
+  for (const thread of admitted.values()) {
+    const entry = entryOf(thread, nodes);
+    if (entry === undefined) unusable += 1;
+    else entries.push(entry);
+  }
+  if (unusable > 0)
+    log.warn(
+      `${String(unusable)} notification threads named no subject, repository or time, so they were left out`,
+    );
+  await scoped.upsert(notificationType, entries);
+  // The listing is whole, but it moves while it is paged, so a held thread it
+  // does not name may only have been skipped. It is gone when the listing
+  // before this one lacked it too.
+  const before = new Set(kept?.key === key ? kept.missing : []);
+  const lacking = (
+    await scoped.held(notificationType, { state: "active" })
+  ).flatMap((row) => {
+    const id = row.properties["github_id"];
+    return typeof id === "string" && !returned.has(id) ? [id] : [];
+  });
+  const gone = lacking.filter((id) => before.has(id));
+  if (gone.length > 0) await scoped.archive(notificationType, gone);
+  await save(scoped, log, {
+    ...(listing.modified !== undefined && { modified: listing.modified }),
+    polled,
+    interval,
+    checked: polled,
+    key,
+    missing: lacking.filter((id) => !before.has(id)),
+  });
 }
 
 async function save(
