@@ -66,6 +66,15 @@ importers:
         specifier: ^2.2.2
         version: 2.2.2
 
+  connectors/google-calendar:
+    dependencies:
+      '@withmarfa/connector':
+        specifier: workspace:*
+        version: link:../../kit
+      '@withmarfa/google':
+        specifier: workspace:*
+        version: link:../../shared/google
+
   connectors/readwise:
     dependencies:
       '@withmarfa/connector':

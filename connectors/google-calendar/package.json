@@ -1,0 +1,15 @@
+{
+  "name": "google-calendar",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@withmarfa/connector": "workspace:*",
+    "@withmarfa/google": "workspace:*"
+  },
+  "scripts": {
+    "start": "node dist/main.js"
+  }
+}
