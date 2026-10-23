@@ -584,15 +584,19 @@ export class GitHubStub {
    *  empty Location where the asker cannot read the target. With `lagging`,
    *  the new issue's timeline lacks the TransferredEvent until
    *  `settleTransfers`. With `late`, the old issue also stays as it was, as
-   *  GitHub's does for a moment: the transfer has not settled. */
+   *  GitHub's does for a moment: the transfer has not settled. With `late`
+   *  and `showing`, the TransferredEvent is already there while the old
+   *  issue still answers 200: the other order GitHub can show them in. */
   transfer(
     issue: Issue,
     target: Repository,
-    options: { late?: boolean; lagging?: boolean } = {},
+    options: { late?: boolean; lagging?: boolean; showing?: boolean } = {},
   ): Issue {
     const id = this.ids++;
     const at = this.now();
-    const hidden = options.late === true || options.lagging === true;
+    const hidden =
+      (options.late === true || options.lagging === true) &&
+      options.showing !== true;
     const number =
       Math.max(
         0,
