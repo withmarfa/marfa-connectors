@@ -5,7 +5,7 @@
   "parent": "core.note",
   "link_field": "github_id",
   "merge_policy": {
-    "fields": { "body": "last_writer_wins" },
+    "fields": { "body": "last_writer_wins", "notes": "last_writer_wins" },
     "default": "last_writer_wins"
   },
   "fields": {
