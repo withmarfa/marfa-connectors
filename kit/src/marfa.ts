@@ -542,10 +542,11 @@ export class Marfa {
   }
 
   /**
-   * Every edge of one type that the key may read, 500 to a page, or
-   * `undefined` once `budget` pages were read and the listing went on.
-   * It holds edges whatever the type of their ends, so a caller keeps the
-   * ones it asked about.
+   * Every edge of one type that the key may read, or `undefined` once
+   * `budget` pages were read and the listing went on. The server cuts pages
+   * of 500 from every edge of the type before it leaves out the ones the key
+   * may not read, so a page can be short or empty. It holds edges whatever
+   * the type of their ends, so a caller keeps the ones it asked about.
    */
   async edgesOfType(
     edgeType: string,

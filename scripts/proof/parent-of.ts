@@ -176,8 +176,9 @@ export async function proveParentOf(
           settled,
         );
         assert.equal((await carried()).length, 3);
-        // Edges the connector's key may read, or only half read, are left as
-        // they are: a note joined to a note, and the series joined to a note.
+        // Edges the connector's key may not read, or reads only from one end,
+        // are left as they are: a note joined to a note, and the series joined
+        // to a note.
         const outsider = createClient({
           baseUrl: url,
           credential: (

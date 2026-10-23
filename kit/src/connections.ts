@@ -33,8 +33,8 @@ function targetOf(key: string): Target {
 /** Rows read at once for their inbound edges, one by one. */
 const inboundReads = 8;
 
-/** Fewer rows than this cost fewer requests one by one than a listing's
- *  first page and its next could. */
+/** Fewer rows than this are read one by one, all in one batch at once,
+ *  rather than through a listing whose pages are read in turn. */
 const listedFrom = 8;
 
 interface Inbound {
@@ -55,12 +55,13 @@ function turnedAbout(edge: Edge, kind: ConnectionDefinition): Edge {
 
 /**
  * The inbound edges of the rows, which a lookup does not carry. A listing of
- * the edge type, indexed by target, costs a request for every 500 edges and
- * so serves many rows; one request for each row serves few. The listing is
- * given up when it takes more pages than the rows would take requests, so a
- * small run in a large calendar never costs more than twice the rows. Only
- * the edges that point at a row asked about are kept, whatever else the
- * listing holds.
+ * the edge type, indexed by target, costs a request for every 500 edges of
+ * that type in the instance, the ones the key may not read included, and so
+ * serves many rows; one request for each row serves few. The listing is given
+ * up when it takes more pages than the rows would take requests, so a small
+ * run in an instance with many edges of the type never costs more than twice
+ * the rows. Only the edges that point at a row asked about are kept, whatever
+ * else the listing holds.
  */
 async function readInbound(
   marfa: Marfa,
@@ -69,7 +70,9 @@ async function readInbound(
   const byEdge = new Map<string, Inbound[]>();
   for (const read of reads) {
     const edgeType = wireOf(read.kind.id).edge;
-    byEdge.set(edgeType, [...(byEdge.get(edgeType) ?? []), read]);
+    const group = byEdge.get(edgeType);
+    if (group === undefined) byEdge.set(edgeType, [read]);
+    else group.push(read);
   }
   for (const [edgeType, group] of byEdge) {
     const listed =
