@@ -841,6 +841,26 @@ describe("a trash or purge before a lost create is settled", () => {
     expect(eventRows()).toEqual([]);
   });
 
+  it("sends nothing when a row whose create was refused before it was sent is trashed", async () => {
+    await landed();
+    const one = made(planning, holidays);
+    await landed();
+    expect(server.connectorState?.["outbound"]).toBeUndefined();
+    // Nothing can hold the row's id, as no create was sent; one put there
+    // shows that the trash does not look for it.
+    const id = eventIdFor(one.id);
+    calendar.put(
+      me,
+      timed(id, "Planning", planning.starts_at, planning.ends_at),
+    );
+
+    server.trash(one.id);
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, id)?.["status"]).toBe("confirmed");
+  });
+
   it("settles the trash of a row whose create Google refused, and makes the event when the row is restored", async () => {
     await landed();
     const one = made(planning);

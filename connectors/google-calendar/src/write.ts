@@ -210,11 +210,9 @@ async function carried(
   }
   const link = textOf(item, "google_id");
   if (link === undefined) {
-    if (!gone) return create(change, context, writing);
-    if (change.attempted !== undefined) {
-      await unmake(item, await sessionFor(context, writing));
-    }
-    return undefined;
+    // Every create that can make an event under the row's own id is
+    // journaled first, so a trash with nothing held has nothing to delete.
+    return gone ? undefined : create(change, context, writing);
   }
   const parts = splitLink(link);
   if (parts === undefined) {
@@ -1031,18 +1029,6 @@ async function overtaken(
   await deleteEvent(item, making, await sessionFor(context, writing));
   await context.outbound.acknowledge(item.id, held.token);
   return undefined;
-}
-
-/** The trash of a row whose create got no link: whatever that create made,
- *  under the row's own id, is deleted. */
-async function unmake(item: Item, session: Session): Promise<void> {
-  const id = eventIdFor(item.id);
-  for (const calendar of session.calendars.values()) {
-    if (!owned.has(calendar.role)) continue;
-    const found = await session.api.event(calendar.id, id);
-    if (found === "gone" || found["status"] === "cancelled") continue;
-    await session.api.remove(calendar.id, id, text(found, "etag"));
-  }
 }
 
 async function remade(
