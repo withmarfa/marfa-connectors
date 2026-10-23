@@ -835,7 +835,7 @@ describe("notifications", () => {
     await ok({ GITHUB_READ_ONLY: "notification" });
     expect(row(thread.id).state).toBe("active");
     const refused = await once({ GITHUB_READ_ONLY: "issue,nonsense" });
-    expect(refused.code).not.toBe(0);
+    expect(refused.code).toBe(2);
     expect(refused.output).toContain("notification");
   });
 });
