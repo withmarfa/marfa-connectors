@@ -1947,8 +1947,10 @@ export async function runOnce<E extends EnvDeclaration>(
   };
   // The trash `carry` would send for a row this run, as it would send it;
   // none for one whose refusal stands, since that is not sent again. Reads
-  // the row as `fetchRows` left it: one trashed since then waits for the
-  // next run's preflight.
+  // the row as the run's one batched lookup of the rows the log and waiting
+  // agreements name left it: a row only a refusal names is not read, since
+  // that refusal stands until the row changes, and the log then names it.
+  // One trashed since waits for the next run's preflight.
   const trashOf = async (id: string): Promise<Change | undefined> => {
     const agreement = store.get(id);
     if (agreement === undefined) return undefined;
@@ -2627,7 +2629,6 @@ export async function runOnce<E extends EnvDeclaration>(
           (record.rejected !== undefined && replayHeld(record) === undefined)
         );
       });
-      await fetchRows(carried);
       for (const id of carried) {
         const trash = await trashOf(id);
         if (trash !== undefined) trashes.set(id, trash);
