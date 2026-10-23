@@ -597,8 +597,10 @@ describe("a transferred issue whose transfer record is late", () => {
       const moved = github.transfer(moving, outside);
       deliver("issues", github.transferDeliveries(moving, moved).transferred);
       await until(
-        () => marfa.byId(id).state === "archived",
-        "the row to be archived",
+        () =>
+          marfa.byId(id).state === "archived" &&
+          conditions()[`issue-moved:${moving.node}`] !== undefined,
+        "the row to be archived and the condition raised",
       );
       const gone = Object.entries(conditions()).filter(([key]) =>
         key.startsWith("issue-"),

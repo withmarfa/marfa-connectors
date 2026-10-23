@@ -804,7 +804,9 @@ describe("what GitHub no longer lists", () => {
     checkDue();
     const output = await ok();
     expect(row(moved.node).state).toBe("archived");
-    expect(output).toContain("was moved to another repository");
+    expect(output).toContain(
+      "was moved to a repository the App cannot read, so its row here is archived",
+    );
     expect(row(hidden.node).state).toBe("active");
     expect(output).toContain("answered 404 though its repository reads");
   });
