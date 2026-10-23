@@ -113,8 +113,8 @@ describe("matching the comments of a moved issue", () => {
       new Set(["NI"]),
     );
     expect(found(matched)).toEqual({ N1: undefined });
-    expect(raised["duplicate:ROW-N1"]).toContain("ROW-C1");
-    expect(raised["duplicate:ROW-N1"]).toContain("ROW-N1");
+    expect(raised["duplicate:ROW-C1"]).toContain("ROW-C1");
+    expect(raised["duplicate:ROW-C1"]).toContain("ROW-N1");
   });
 
   it("leaves a copy alone where two rows could be it", async () => {
@@ -241,7 +241,11 @@ describe("an issue that may be mid-transfer", () => {
    *  timeline and none of them held by a row. */
   async function waiting(
     issues: Issue[],
-    options: { held?: string[]; events?: string[] } = {},
+    options: {
+      held?: string[];
+      events?: string[];
+      firstSeen?: Record<string, string>;
+    } = {},
   ): Promise<string[]> {
     const context = {
       known: () => Promise.resolve(new Set(options.held ?? [])),
@@ -267,6 +271,7 @@ describe("an issue that may be mid-transfer", () => {
       octokit as unknown as Client,
       issues,
       now,
+      new Map(Object.entries(options.firstSeen ?? {})),
     );
     return [...found.waiting].sort();
   }
@@ -298,6 +303,82 @@ describe("an issue that may be mid-transfer", () => {
     expect(
       await waiting([issue("N1", transferWindow + 60_001, 60_000)]),
     ).toEqual(["N1"]);
+  });
+
+  /** An issue whose timeline shows a transfer from a repository Marfa holds
+   *  a row of, though the old address still answers 200. */
+  async function showing(
+    issues: Issue[],
+    firstSeen: Record<string, string> = {},
+    rows = 1,
+  ): Promise<string[]> {
+    const context = {
+      known: () => Promise.resolve(new Set<string>()),
+      linked: () =>
+        Promise.resolve(
+          Array.from({ length: rows }, (_, index) => ({
+            id: `row-${String(index)}`,
+            properties: { github_id: `O${String(index)}`, number: 9 },
+            occurred_at: issues[0]?.createdAt,
+          })),
+        ),
+      log: {},
+    };
+    const octokit = {
+      graphql: (_: string, variables: { ids: string[] }) =>
+        Promise.resolve({
+          nodes: variables.ids.map((id) => ({
+            __typename: "Issue",
+            id,
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "TransferredEvent",
+                  fromRepository: { id: "R_source", nameWithOwner: "o/source" },
+                },
+              ],
+            },
+          })),
+        }),
+      request: () => Promise.resolve({ status: 200, headers: {} }),
+    };
+    const found = await movedFrom(
+      context as never,
+      octokit as unknown as Client,
+      issues,
+      now,
+      new Map(Object.entries(firstSeen)),
+    );
+    expect(found.moves.size).toBe(0);
+    return [...found.waiting].sort();
+  }
+
+  it("waits where its timeline shows a transfer that no old address confirms yet", async () => {
+    expect(await showing([issue("N1", hour, 30_000)])).toEqual(["N1"]);
+  });
+
+  it("is written where the transfer is shown from a repository Marfa holds nothing of, or it was not changed lately", async () => {
+    expect(await showing([issue("N1", hour, 30_000)], {}, 0)).toEqual([]);
+    expect(await showing([issue("N1", hour, transferWindow + 1_000)])).toEqual(
+      [],
+    );
+  });
+
+  it("stops holding back an issue that has waited a full window, whether or not its timeline shows a transfer", async () => {
+    const lately = issue("N1", hour, 30_000);
+    const first = (offset: number): Record<string, string> => ({
+      N1: iso(offset),
+    });
+    expect(await showing([lately], first(transferWindow - 1_000))).toEqual([
+      "N1",
+    ]);
+    expect(await showing([lately], first(transferWindow))).toEqual([]);
+    expect(
+      await waiting([lately], { firstSeen: first(transferWindow - 1_000) }),
+    ).toEqual(["N1"]);
+    expect(
+      await waiting([lately], { firstSeen: first(transferWindow) }),
+    ).toEqual([]);
   });
 
   it("is written where its timeline shows a transfer, or Marfa has a row for it", async () => {

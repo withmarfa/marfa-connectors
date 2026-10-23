@@ -179,13 +179,18 @@ function mayBeMoving(issue: Issue, now: number): boolean {
 /** For the issues Marfa has no row for: the old row of each that was
  *  transferred from a repository whose rows it holds, by the issue's creation
  *  time, which a transfer keeps, and then the old address's answer; and those
- *  that may be mid-transfer, which are not written yet. Title and text are not
+ *  that may be mid-transfer, which are not written yet: one with no transfer
+ *  on its timeline, and one whose timeline shows a transfer from a repository
+ *  Marfa holds rows for but whose old address has not yet answered with a
+ *  move. An issue that has waited a full window since `firstSeen` is no longer
+ *  held back, so a busy issue cannot wait for ever. Title and text are not
  *  used: either may have been edited on one side only. */
 export async function movedFrom(
   context: Context,
   octokit: Client,
   issues: readonly Issue[],
   now: number = Date.now(),
+  firstSeen: ReadonlyMap<string, string> = new Map(),
 ): Promise<{ moves: Map<string, string>; waiting: Set<string> }> {
   const moves = new Map<string, string>();
   const waiting = new Set<string>();
@@ -199,12 +204,19 @@ export async function movedFrom(
     octokit,
     fresh.map((one) => one.node),
   );
+  const holding = (issue: Issue): boolean => {
+    const since = Date.parse(firstSeen.get(issue.node) ?? "");
+    return (
+      mayBeMoving(issue, now) &&
+      (Number.isNaN(since) || now - since < transferWindow)
+    );
+  };
   const claimed = new Set<string>();
   const held = new Map<string, Item[]>();
   for (const issue of fresh) {
     const from = events.get(issue.node);
     if (from === undefined) {
-      if (mayBeMoving(issue, now)) waiting.add(issue.node);
+      if (holding(issue)) waiting.add(issue.node);
       continue;
     }
     if (from === null) continue;
@@ -234,6 +246,10 @@ export async function movedFrom(
       moves.set(issue.node, link);
       claimed.add(link);
       break;
+    }
+    // The timeline can show the transfer before the old address answers it.
+    if (!moves.has(issue.node) && rows.length > 0 && holding(issue)) {
+      waiting.add(issue.node);
     }
   }
   return { moves, waiting };
@@ -430,7 +446,7 @@ export async function withMovedComments(
       continue;
     }
     context.log.condition(
-      `duplicate:${own.id}`,
+      `duplicate:${row.id}`,
       `comment ${own.id} copies comment ${row.id}, which its issue's transfer replaced, but both rows exist, so both are kept`,
     );
   }
