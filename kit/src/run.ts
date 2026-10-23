@@ -1946,12 +1946,15 @@ export async function runOnce<E extends EnvDeclaration>(
     return change;
   };
   // The trash `carry` would send for a row this run, as it would send it;
-  // none for one whose refusal stands, since that is not sent again.
+  // none for one whose refusal stands, since that is not sent again. Reads
+  // the row as `fetchRows` left it: one trashed since then waits for the
+  // next run's preflight.
   const trashOf = async (id: string): Promise<Change | undefined> => {
     const agreement = store.get(id);
     if (agreement === undefined) return undefined;
     if (agreement.waiting === undefined && !refusedOutbound.has(id))
       return undefined;
+    if (inLane(id)?.item.state !== "trashed") return undefined;
     const found = await find(id);
     if (found === undefined) return undefined;
     const plan = planOf(found.spec, found.item, agreement);
@@ -1961,6 +1964,40 @@ export async function runOnce<E extends EnvDeclaration>(
     if (refusalStands(change) || agreement.refused?.change === sending(change))
       return undefined;
     return change;
+  };
+  // Why a journaled write waits without replay, judged before its row is
+  // read again.
+  const replayHeld = (record: OutboundRecord): string | undefined => {
+    const { item } = record.change;
+    const declared = specs.get(item.type);
+    if (declared === undefined || connector.onChange === undefined)
+      return "its kind has no declared write handler";
+    if (
+      !record.acknowledged &&
+      record.operation === "remake" &&
+      connector.remake === undefined
+    )
+      return "its remake handler is no longer declared";
+    const kind = forRow(declared, item);
+    if (!kind.twoWay || kind.owned === false)
+      return "its kind no longer has write authority";
+    return undefined;
+  };
+  // Why a journaled write the vendor has not answered waits, judged on its
+  // row as it is now.
+  const replayUnproven = (
+    record: OutboundRecord,
+    live: Item | undefined,
+  ): string | undefined => {
+    const { item, kind } = record.change;
+    const declared = specs.get(item.type);
+    return (live === undefined && kind !== "purged") ||
+      (live !== undefined &&
+        (live.type !== item.type ||
+          declared === undefined ||
+          !forRow(declared, live).twoWay))
+      ? "the current row does not prove write authority"
+      : undefined;
   };
   const carry = async (
     item: Item,
@@ -2555,16 +2592,43 @@ export async function runOnce<E extends EnvDeclaration>(
         if (pending.change.kind === "purged")
           inventory.set(pending.change.item.id, restoreChange(pending.change));
       const trashes = new Map<string, Change>();
-      for (const pending of outbound.values())
-        if (
-          pending.change.kind === "trashed" &&
-          !inventory.has(pending.change.item.id)
-        )
-          trashes.set(pending.change.item.id, restoreChange(pending.change));
-      // A journaled change is replayed, not carried, unless it was refused.
-      for (const id of new Set([...order, ...refusedOutbound.keys()])) {
-        if (inventory.has(id) || trashes.has(id)) continue;
-        if (outbound.has(id) && !refusedOutbound.has(id)) continue;
+      // Journaled trashes the replay would send: not refused, since a refused
+      // change is carried again, nor answered, since only settling remains.
+      const replayed = [...outbound.values()].filter(
+        (record) =>
+          record.change.kind === "trashed" &&
+          record.rejected === undefined &&
+          !record.acknowledged &&
+          !inventory.has(record.change.item.id) &&
+          replayHeld(record) === undefined,
+      );
+      const live = new Map<string, Item>();
+      for (const type of new Set(replayed.map((r) => r.change.item.type))) {
+        const ids = replayed
+          .filter((record) => record.change.item.type === type)
+          .map((record) => record.change.item.id);
+        for (const one of (await setup.marfa.lookup(type, { ids })).data)
+          live.set(one.id, one);
+      }
+      for (const record of replayed) {
+        const { id } = record.change.item;
+        if (replayUnproven(record, live.get(id)) === undefined)
+          trashes.set(id, restoreChange(record.change));
+      }
+      // A journaled change is replayed, not carried, unless it was refused
+      // and its replay is not held.
+      const carried = [
+        ...new Set([...order, ...refusedOutbound.keys()]),
+      ].filter((id) => {
+        if (inventory.has(id)) return false;
+        const record = outbound.get(id);
+        return (
+          record === undefined ||
+          (record.rejected !== undefined && replayHeld(record) === undefined)
+        );
+      });
+      await fetchRows(carried);
+      for (const id of carried) {
         const trash = await trashOf(id);
         if (trash !== undefined) trashes.set(id, trash);
       }
@@ -2590,7 +2654,6 @@ export async function runOnce<E extends EnvDeclaration>(
       const change = restoreChange(record.change);
       const id = change.item.id;
       recovered.add(id);
-      const declared = specs.get(change.item.type);
       const suspend = (reason: string): void => {
         suspendedOutbound.add(id);
         raised.set(
@@ -2598,21 +2661,9 @@ export async function runOnce<E extends EnvDeclaration>(
           `the pending write for ${id} is retained without replay because ${reason}`,
         );
       };
-      if (declared === undefined || connector.onChange === undefined) {
-        suspend("its kind has no declared write handler");
-        continue;
-      }
-      if (
-        !record.acknowledged &&
-        record.operation === "remake" &&
-        connector.remake === undefined
-      ) {
-        suspend("its remake handler is no longer declared");
-        continue;
-      }
-      const kind = forRow(declared, change.item);
-      if (!kind.twoWay || kind.owned === false) {
-        suspend("its kind no longer has write authority");
+      const held = replayHeld(record);
+      if (held !== undefined) {
+        suspend(held);
         continue;
       }
       if (refusedOutbound.has(id)) {
@@ -2637,14 +2688,21 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       try {
         if (!record.acknowledged) {
-          const live = await currentItem(change.item.type, id);
+          const unproven = replayUnproven(
+            record,
+            await currentItem(change.item.type, id),
+          );
+          if (unproven !== undefined) {
+            suspend(unproven);
+            continue;
+          }
+          // Its row may have changed since preflight left it out.
           if (
-            (live === undefined && change.kind !== "purged") ||
-            (live !== undefined &&
-              (live.type !== change.item.type ||
-                !forRow(declared, live).twoWay))
+            change.kind === "trashed" &&
+            previewed !== undefined &&
+            !previewed.has(id)
           ) {
-            suspend("the current row does not prove write authority");
+            suspend("preflight has not seen it");
             continue;
           }
           if (record.operation === "remake") {

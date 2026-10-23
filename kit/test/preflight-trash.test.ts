@@ -72,25 +72,30 @@ function fixture(options: { policy?: boolean; limit?: number } = {}) {
     },
     async onChange(change, context) {
       changes.push(change);
-      if (refuse && change.kind === "trashed") throw new Refused("not yours");
-      if (journal && change.kind === "trashed") {
-        const intent =
-          context.outbound.get(change.item.id) ??
+      if (change.kind !== "trashed") return undefined;
+      const intent = journal
+        ? (context.outbound.get(change.item.id) ??
           (await context.outbound.save(change, {
             request: { delete: change.item.id },
             baseline: null,
-          }));
-        if (lose) throw new Unreachable("lost delete response");
-        await context.outbound.acknowledge(change.item.id, intent.token);
-      }
+          })))
+        : undefined;
+      if (refuse) throw new Refused("not yours");
+      if (intent === undefined) return undefined;
+      if (lose) throw new Unreachable("lost delete response");
+      await context.outbound.acknowledge(change.item.id, intent.token);
       return undefined;
     },
   });
+  const unhandled = { ...connector };
+  Reflect.deleteProperty(unhandled, "onChange");
   return {
     seen,
     changes,
     reads: () => reads,
     once: () => start(connector, harness.runtime(["--once"])),
+    // The same connector with its write handler gone.
+    unhandled: () => start(unhandled, harness.runtime(["--once"])),
     limit: (next: number) => {
       limit = next;
     },
@@ -238,4 +243,107 @@ it("counts a journaled trash and holds its replay with the batch", async () => {
   expect(await f.once(), harness.lines.join("\n")).toBe(0);
   expect(names(f.changes)).toEqual(["one", "one", "two"]);
   expect(harness.kept()["outbound"]).toBeUndefined();
+});
+
+it("leaves out a journaled trash the vendor refused while the refusal stands", async () => {
+  const f = fixture({ limit: 1 });
+  await f.once();
+  trash("one");
+  f.journal({ lose: false });
+  f.refuse(true);
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual(["one"]);
+  expect(f.changes).toHaveLength(1);
+  expect(harness.kept()["outbound"]).toHaveLength(1);
+  for (let run = 0; run < 3; run += 1) {
+    expect(await f.once(), harness.lines.join("\n")).toBe(0);
+    expect(f.seen.at(-1)?.trashes).toEqual([]);
+  }
+  expect(f.changes).toHaveLength(1);
+});
+
+// The record a run journaled, as the instance keeps it.
+const journaled = (): Record<string, unknown> => {
+  const records = harness.kept()["outbound"] as Record<string, unknown>[];
+  const [record] = records;
+  if (record === undefined || records.length !== 1)
+    throw new Error("expected one journaled write");
+  return record;
+};
+
+it("leaves out a journaled trash the vendor already answered", async () => {
+  const f = fixture({ limit: 1 });
+  await f.once();
+  trash("one");
+  f.journal({ lose: true });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  // Answered, with only Marfa's agreement left to keep.
+  journaled()["acknowledged"] = true;
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual([]);
+  expect(f.changes).toHaveLength(1);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
+
+it("leaves out a journaled trash whose row is no longer the connector's", async () => {
+  const f = fixture({ limit: 1, policy: true });
+  await f.once();
+  const row = harness.server.row("one");
+  trash("one");
+  f.journal({ lose: true });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  harness.server.edit(row.id, { note: "adopted" });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual([]);
+  expect(f.changes).toHaveLength(1);
+  expect(journaled()["acknowledged"]).toBe(false);
+  // Given back while preflight runs: not sent, since preflight left it out.
+  f.during(() => {
+    harness.server.edit(row.id, { note: "" });
+  });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual([]);
+  expect(f.changes).toHaveLength(1);
+  f.during(undefined);
+  f.journal({ lose: false });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual(["one"]);
+  expect(names(f.changes)).toEqual(["one", "one"]);
+  expect(harness.kept()["outbound"]).toBeUndefined();
+});
+
+it("leaves out a journaled trash whose write handler is gone", async () => {
+  const f = fixture({ limit: 1 });
+  await f.once();
+  trash("one");
+  f.journal({ lose: true });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(await f.unhandled(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual([]);
+  expect(f.changes).toHaveLength(1);
+  expect(journaled()["acknowledged"]).toBe(false);
+});
+
+it("looks up no waiting row one at a time unless it is trashed", async () => {
+  const f = fixture({ policy: true });
+  await f.once();
+  for (const name of ["one", "two", "three"])
+    harness.server.edit(harness.server.row(name).id, { title: "edited" });
+  const lookups = (): number[] =>
+    harness.server
+      .requestsTo("POST", "/items/lookup")
+      .map((request) => (request.body as { ids?: unknown[] }).ids?.length ?? 0);
+  const before = lookups().length;
+  let asked: number[] = [];
+  f.during(() => {
+    asked = lookups().slice(before);
+  });
+  expect(await f.once(), harness.lines.join("\n")).toBe(0);
+  expect(f.seen.at(-1)?.trashes).toEqual([]);
+  expect(asked.filter((ids) => ids === 1)).toEqual([]);
+  expect(f.changes.map((change) => change.kind)).toEqual([
+    "updated",
+    "updated",
+    "updated",
+  ]);
 });
