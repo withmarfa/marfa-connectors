@@ -20,10 +20,11 @@ A row's `source_id` is `<account>:<calendar ID>/<event ID>`, where `<account>` i
 The connector reads every calendar in the account's calendar list, including hidden ones, that the account owns or can write to. It skips:
 
 - The Birthdays calendar.
-- A calendar with a slash in its ID, which a row can't be named by. The connector raises the condition `calendar-id:<ID>`.
 - A calendar the account can only read, unless you name it in `GOOGLE_CALENDAR_READ_ONLY_CALENDARS`.
 
-A calendar that leaves the list, one whose access drops to read only, or a read-only calendar you stop naming, is archived with its events.
+A calendar whose access drops to read only, or a read-only calendar you stop naming, is archived with its events.
+
+A calendar missing from the list is asked about first, because one listing that leaves a calendar out doesn't prove that it was removed. The connector archives it with its events only when Google answers that the calendar is gone or deleted. If Google still has it, the connector keeps it and its events as they are. If Google can't answer, the connector keeps them and raises `calendar-unconfirmed:<ID>`.
 
 ### Which events
 
@@ -106,7 +107,7 @@ A recurring event is one row whose `recurrence` holds Google's rules. Marfa expa
 
 ### Moving an event to another calendar
 
-When an event moves between two calendars of the account, the connector keeps its row, instead of archiving one and creating another. It tells a move from a copy by asking Google whether the event still exists on its first calendar.
+When an event moves between two calendars of the account, the connector keeps its row, instead of archiving one and creating another. It tells a move from a copy by asking Google whether the event still exists on its first calendar. Only an answer of "gone" or "cancelled" is a move. If the first calendar refuses the question, the event gets a new row on its new calendar, and the first calendar's row stays.
 
 ### Whether Marfa may change an event
 
@@ -115,7 +116,8 @@ Nothing is written back to Google yet. `editable` and `uneditable_reason` record
 - The account can only read the calendar.
 - Google reserves the event kind.
 - The event is locked.
-- Someone else organizes the event and guests can't modify it.
+- Someone else organizes the event, even if guests can modify it.
+- The event has any guest other than the account.
 
 ### Other fields
 
@@ -128,7 +130,13 @@ Nothing is written back to Google yet. `editable` and `uneditable_reason` record
 
 The connector keeps a sync token for each calendar, so after the first read it asks Google only for what changed. It saves a calendar's token after that calendar's rows are written. If any event in the calendar can't be read, it keeps no token, raises `events-skipped:<ID>`, and reads the calendar whole on the next run. If Google refuses one calendar, it raises `calendar-refused:<ID>` and reads the others.
 
+If Marfa refuses an event's row, such as a series whose `recurrence` holds an `RDATE` period, more than 1,000 added and removed dates, or more than 40,000 characters, the connector keeps the row as it was and raises `row-refused:<calendar ID>/<event ID>`, naming the event. The calendar's token still advances, so one refused row doesn't hold the calendar back. The kit keeps the refusal for a retry: the connector asks Google for the event again 24 hours after the last try, or sooner if the event changes in Google, and the condition clears once Marfa takes the row.
+
+A condition stands while the run doesn't reach its check, such as when a scope isn't granted or Google refuses the calendar it names.
+
 When Google says a token has expired (`410`), or something that changes how rows are written has changed, such as the calendar's time zone, the connector reads the calendar whole. In a whole read, a row the listing no longer returns is looked up directly, and only an answer of "gone" or "cancelled" archives it. A lookup that fails keeps the row: if Google refuses it, the connector raises `calendar-refused:<ID>`, and any other failure stops the run.
+
+A run that writes eight or more events has the kit find each changed occurrence's series by listing every `parent-of` connection in the Marfa instance, 500 to a page, including those of other connectors and of people's own items. The first read of a large calendar therefore costs one Marfa request for every 500 `parent-of` connections, or one for each event where that is fewer. After the first read, a run in which no event changed reads none of the event rows from Marfa.
 
 For a change to a series, the connector asks Google for the series and its instances, from a day before its start to five years past today or past its start, whichever is later, to find cancelled occurrences. Cancelled occurrences further out stay as they were.
 

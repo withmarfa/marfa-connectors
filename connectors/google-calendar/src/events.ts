@@ -121,13 +121,14 @@ function uneditable(
   if (event.kind !== "default") return `Google reserves ${event.kind} events`;
   if (flag(event.raw, "locked") === true) return "the event is locked";
   const organizer = object(event.raw, "organizer");
-  if (
-    organizer !== undefined &&
-    flag(organizer, "self") !== true &&
-    flag(event.raw, "guestsCanModify") !== true
-  ) {
+  if (organizer !== undefined && flag(organizer, "self") !== true) {
     return "someone else organizes the event";
   }
+  // A change would reach the guests' calendars, which Marfa does not touch.
+  const others = list(event.raw, "attendees").some(
+    (one) => !isJson(one) || flag(one, "self") !== true,
+  );
+  if (others) return "the event has guests other than the account";
   return undefined;
 }
 
@@ -190,7 +191,11 @@ function timesOf(event: GoogleEvent, calendar: CalendarInfo) {
   } as const;
 }
 
-/** The original start of a changed occurrence, in the zone of the series. */
+/**
+ * The original start of a changed occurrence. A date-only one, of an all-day
+ * series, is the midnight of that date in the zone it names, or else in
+ * `zone`, which is the zone the series is read in: the calendar's.
+ */
 export function originalStartOf(
   event: GoogleEvent,
   zone: string,
@@ -232,7 +237,7 @@ export function eventEntry(
   const original =
     event.recurringEventId === undefined
       ? undefined
-      : originalStartOf(event, times.zone);
+      : originalStartOf(event, calendar.zone);
   const guests = list(raw, "attendees")
     .map(guest)
     .filter((one): one is Json => one !== undefined);

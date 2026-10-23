@@ -82,6 +82,20 @@ export class CalendarApi {
     });
   }
 
+  /** One calendar of the account's list, or `"gone"` where Google says it
+   *  is no longer on it. */
+  async calendar(calendarId: string): Promise<Json | "gone"> {
+    try {
+      return await this.get(
+        `/users/me/calendarList/${encodeURIComponent(calendarId)}`,
+        {},
+      );
+    } catch (error) {
+      if (isGone(error)) return "gone";
+      throw error;
+    }
+  }
+
   /** The events of a calendar, whole or since the sync token. Deleted ones
    *  are always asked for: a read since a token must have them. A token
    *  Google no longer holds answers 410, which throws. */

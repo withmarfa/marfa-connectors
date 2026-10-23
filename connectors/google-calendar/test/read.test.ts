@@ -172,6 +172,20 @@ function eventCalls(): Call[] {
   return calendar.calls.filter((call) => call.path.includes("/events"));
 }
 
+/** The reads of every event row Marfa holds. */
+function heldReads(): number {
+  return server.requests.filter(
+    (request) =>
+      request.method === "GET" &&
+      request.path === "/items" &&
+      request.query.get("type") === eventType,
+  ).length;
+}
+
+function asked(path: string): boolean {
+  return calendar.calls.some((call) => call.path === `/calendar/v3${path}`);
+}
+
 function weekly(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return timed(
     "weekly",
@@ -428,6 +442,35 @@ describe("a first read", () => {
     calendar.put(
       me,
       timed(
+        "theirs-open",
+        "Theirs, open to guests",
+        "2026-11-02T09:00:00Z",
+        "2026-11-02T10:00:00Z",
+        london,
+        {
+          organizer: { email: "kim@example.com" },
+          guestsCanModify: true,
+          attendees: [{ email: me, self: true }],
+        },
+      ),
+    );
+    calendar.put(
+      me,
+      timed(
+        "alone",
+        "Alone",
+        "2026-11-02T09:00:00Z",
+        "2026-11-02T10:00:00Z",
+        london,
+        {
+          organizer: { email: me, self: true },
+          attendees: [{ email: me, self: true, organizer: true }],
+        },
+      ),
+    );
+    calendar.put(
+      me,
+      timed(
         "locked",
         "Locked",
         "2026-11-02T09:00:00Z",
@@ -457,9 +500,18 @@ describe("a first read", () => {
       ical_uid: "mine@example.com",
       etag: '"1"',
       url: "https://calendar.example.test/mine",
+      editable: false,
+      uneditable_reason: "the event has guests other than the account",
+    });
+    expect(row(`${me}/alone`).properties).toMatchObject({
       editable: true,
     });
+    expect(row(`${me}/alone`).properties["uneditable_reason"]).toBeUndefined();
     expect(row(`${me}/theirs`).properties).toMatchObject({
+      editable: false,
+      uneditable_reason: "someone else organizes the event",
+    });
+    expect(row(`${me}/theirs-open`).properties).toMatchObject({
       editable: false,
       uneditable_reason: "someone else organizes the event",
     });
@@ -668,6 +720,36 @@ describe("a series", () => {
       starts_at: "2026-12-24T00:00:00Z",
       ends_at: "2026-12-25T00:00:00Z",
       recurrence: ["RRULE:FREQ=YEARLY", "EXDATE;VALUE=DATE:20271224"],
+    });
+  });
+  it("reads the original start of a changed all-day occurrence in the calendar's zone, not the zone it moved to", async () => {
+    calendar.put(
+      me,
+      allDay("daily", "2026-10-20", "2026-10-21", {
+        recurrence: ["RRULE:FREQ=DAILY"],
+      }),
+    );
+    calendar.put(me, {
+      id: "daily_20261025",
+      summary: "Call from New York",
+      recurringEventId: "daily",
+      originalStartTime: { date: "2026-10-25" },
+      start: {
+        dateTime: "2026-10-25T09:00:00-04:00",
+        timeZone: "America/New_York",
+      },
+      end: {
+        dateTime: "2026-10-25T10:00:00-04:00",
+        timeZone: "America/New_York",
+      },
+    });
+
+    expect(await once()).toBe(0);
+
+    expect(row(`${me}/daily_20261025`).properties).toMatchObject({
+      original_starts_at: "2026-10-24T23:00:00Z",
+      starts_at: "2026-10-25T13:00:00Z",
+      timezone: "America/New_York",
     });
   });
 });
@@ -955,6 +1037,46 @@ describe("an event moved between calendars", () => {
 
     expect(active()).toEqual([`${me}/copy`, `${team}/copy`]);
   });
+
+  it("is a new row, and the new calendar still syncs, when the old calendar refuses the question", async () => {
+    calendar.put(
+      me,
+      timed("trip", "Trip", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    expect(await once()).toBe(0);
+    calendar.put(
+      team,
+      timed("trip", "Trip", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    calendar.put(
+      team,
+      timed("other", "Other", "2026-11-03T09:00:00Z", "2026-11-03T10:00:00Z"),
+    );
+    calendar.failNext(
+      (call) =>
+        call.path ===
+        `/calendar/v3/calendars/${encodeURIComponent(me)}/events/trip`,
+      403,
+      {
+        error: {
+          code: 403,
+          message: "Forbidden",
+          errors: [{ reason: "forbidden" }],
+        },
+      },
+    );
+
+    expect(await once()).toBe(0);
+
+    expect(asked(`/calendars/${encodeURIComponent(me)}/events/trip`)).toBe(
+      true,
+    );
+    expect(active()).toEqual([`${me}/trip`, `${team}/other`, `${team}/trip`]);
+    expect(row(`${me}/trip`).id).not.toBe(row(`${team}/trip`).id);
+    expect(conditions().filter((one) => one.startsWith("calendar-"))).toEqual(
+      [],
+    );
+  });
 });
 
 describe("the grant", () => {
@@ -1007,5 +1129,288 @@ describe("the grant", () => {
     );
     expect(events()).toEqual([]);
     expect(eventCalls()).toEqual([]);
+  });
+});
+
+describe("the grant, kept", () => {
+  it("keeps the account before any row is written, so a run whose rows Marfa refused still turns away another account's grant", async () => {
+    for (const id of [me, team, `${me}/m`]) {
+      server.entryRefusals.set(`${sub}:${id}`, {
+        status: 400,
+        code: "invalid_properties",
+        message: "refused",
+      });
+    }
+    calendar.put(
+      me,
+      timed("m", "M", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+
+    expect(await once()).toBe(0);
+    expect(server.rows).toEqual([]);
+    expect(
+      (harness.kept()["state"] as Record<string, unknown>)["google_account"],
+    ).toBe(sub);
+
+    server.entryRefusals.clear();
+    google.sub = "sub-2222222222";
+    calendar.calls.length = 0;
+
+    expect(await once()).not.toBe(0);
+
+    expect(conditions()).toContain("google:account");
+    expect(calendar.calls).toEqual([]);
+    expect(server.rows).toEqual([]);
+  });
+});
+
+describe("a row Marfa refuses", () => {
+  const key = `row-refused:${me}/weekly`;
+
+  it("is kept for a retry while the calendar's token advances, and is asked for again once due", async () => {
+    calendar.put(
+      me,
+      weekly({
+        recurrence: [
+          "RRULE:FREQ=WEEKLY;BYDAY=MO",
+          "RDATE;VALUE=PERIOD:20261030T100000Z/20261030T110000Z",
+        ],
+      }),
+    );
+    calendar.put(
+      me,
+      occurrence("2026-10-26T10:00:00Z", {
+        summary: "Planning (moved)",
+        start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+        end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+      }),
+    );
+    calendar.put(
+      me,
+      timed("plain", "Plain", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    server.entryRefusals.set(`${sub}:${me}/weekly`, {
+      status: 400,
+      code: "invalid_properties",
+      message: "recurrence holds an RDATE period",
+    });
+
+    expect(await once()).toBe(0);
+
+    const moved = `${me}/weekly_20261026T100000Z`;
+    expect(active()).toEqual([`${me}/plain`, moved]);
+    expect(tokens()[me]?.token).toMatch(/^sync-/);
+    expect(conditions()).toContain(key);
+    expect(harness.problems()[key]).toMatch(/Planning/);
+    const firstToken = tokens()[me]?.token;
+
+    calendar.put(
+      me,
+      timed("later", "Later", "2026-11-04T09:00:00Z", "2026-11-04T10:00:00Z"),
+    );
+    calendar.calls.length = 0;
+    expect(await once()).toBe(0);
+
+    expect(active()).toEqual([`${me}/later`, `${me}/plain`, moved]);
+    expect(tokens()[me]?.token).not.toBe(firstToken);
+    expect(asked(`/calendars/${encodeURIComponent(me)}/events/weekly`)).toBe(
+      false,
+    );
+    expect(conditions()).toContain(key);
+
+    server.entryRefusals.clear();
+    harness.clock.advance(25 * 60 * 60 * 1000);
+    calendar.calls.length = 0;
+    expect(await once()).toBe(0);
+
+    expect(asked(`/calendars/${encodeURIComponent(me)}/events/weekly`)).toBe(
+      true,
+    );
+    expect(active()).toEqual([
+      `${me}/later`,
+      `${me}/plain`,
+      `${me}/weekly`,
+      moved,
+    ]);
+    expect(row(`${me}/weekly`).properties["recurrence"]).toContain(
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+    );
+    expect(seriesOf(moved)).toEqual([`${me}/weekly`]);
+    expect(conditions()).not.toContain(key);
+    expect(harness.kept()["inbound"]).toBeUndefined();
+  });
+});
+
+describe("a check a run skips", () => {
+  it("keeps a refused calendar's condition through runs that do not read it", async () => {
+    calendar.failNext(
+      (call) =>
+        call.path.includes(encodeURIComponent(me)) &&
+        call.path.endsWith("/events"),
+      403,
+      {
+        error: {
+          code: 403,
+          message: "Forbidden",
+          errors: [{ reason: "forbidden" }],
+        },
+      },
+    );
+    expect(await once()).toBe(0);
+    expect(conditions()).toContain(`calendar-refused:${me}`);
+
+    google.scope = `openid ${eventsScope}`;
+    expect(await once()).toBe(0);
+    expect(conditions()).toContain(`calendar-refused:${me}`);
+
+    google.scope = `openid ${calendarListScope}`;
+    expect(await once()).toBe(0);
+    expect(conditions()).toContain(`calendar-refused:${me}`);
+
+    google.scope = `openid ${eventsScope} ${calendarListScope}`;
+    expect(await once()).toBe(0);
+    expect(conditions()).not.toContain(`calendar-refused:${me}`);
+  });
+
+  it("keeps a calendar's skipped events condition while Google refuses the calendar", async () => {
+    calendar.put(me, { id: "broken", summary: "Broken" });
+    expect(await once()).toBe(0);
+    expect(conditions()).toContain(`events-skipped:${me}`);
+    calendar.failNext(
+      (call) =>
+        call.path.includes(encodeURIComponent(me)) &&
+        call.path.endsWith("/events"),
+      403,
+      {
+        error: {
+          code: 403,
+          message: "Forbidden",
+          errors: [{ reason: "forbidden" }],
+        },
+      },
+    );
+
+    expect(await once()).toBe(0);
+
+    expect(conditions()).toContain(`calendar-refused:${me}`);
+    expect(conditions()).toContain(`events-skipped:${me}`);
+  });
+});
+
+describe("a calendar missing from one listing", () => {
+  beforeEach(async () => {
+    calendar.put(
+      team,
+      timed("t", "T", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    expect(await once()).toBe(0);
+  });
+
+  const entry = `/users/me/calendarList/${encodeURIComponent(team)}`;
+
+  it("is kept while Google still has it on the account's list", async () => {
+    calendar.calendars = [primary()];
+    calendar.unlisted = [writable()];
+
+    expect(await once()).toBe(0);
+
+    expect(asked(entry)).toBe(true);
+    expect(row(`${team}/t`).state).toBe("active");
+    expect(Object.keys(tokens()).sort()).toEqual([me, team]);
+  });
+
+  it("is kept, and named, when Google cannot say whether it left; and archived once Google says it did", async () => {
+    calendar.calendars = [primary()];
+    calendar.failNext((call) => call.path === `/calendar/v3${entry}`, 503);
+
+    expect(await once()).toBe(0);
+
+    expect(row(`${team}/t`).state).toBe("active");
+    expect(conditions()).toContain(`calendar-unconfirmed:${team}`);
+
+    expect(await once()).toBe(0);
+
+    expect(row(`${team}/t`).state).toBe("archived");
+    expect(conditions()).not.toContain(`calendar-unconfirmed:${team}`);
+  });
+
+  it("is archived without asking when it is still listed but the account can only read it", async () => {
+    calendar.calendars = [primary(), { ...writable(), accessRole: "reader" }];
+
+    expect(await once()).toBe(0);
+
+    expect(asked(entry)).toBe(false);
+    expect(row(`${team}/t`).state).toBe("archived");
+  });
+});
+
+describe("the cost of a run", () => {
+  it("reads no held rows when nothing changed or only a plain event did, and reads them for a whole read", async () => {
+    calendar.put(
+      me,
+      timed("m", "M", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    calendar.put(me, weekly());
+    calendar.put(
+      team,
+      timed("t", "T", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    expect(await once()).toBe(0);
+
+    server.requests.length = 0;
+    expect(await once()).toBe(0);
+    expect(heldReads()).toBe(0);
+
+    calendar.put(
+      me,
+      timed("m", "Changed", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    calendar.put(
+      me,
+      timed("n", "New", "2026-11-03T09:00:00Z", "2026-11-03T10:00:00Z"),
+    );
+    calendar.cancel(team, "t");
+    expect(await once()).toBe(0);
+    expect(heldReads()).toBe(0);
+    expect(row(`${me}/m`).properties["title"]).toBe("Changed");
+    expect(row(`${team}/t`).state).toBe("archived");
+
+    calendar.expire(me);
+    expect(await once()).toBe(0);
+    expect(heldReads()).toBeGreaterThan(0);
+  });
+});
+
+describe("a calendar id with a slash", () => {
+  const odd = "group/shared@example.com";
+
+  it("is read, and a row Google no longer has is found and archived in a whole read", async () => {
+    calendar.calendars.push({
+      id: odd,
+      summary: "Odd",
+      timeZone: london,
+      accessRole: "owner",
+    });
+    calendar.put(
+      odd,
+      timed("a", "A", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    calendar.put(
+      odd,
+      timed("b", "B", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+
+    expect(await once()).toBe(0);
+
+    expect(active()).toEqual([`${odd}/a`, `${odd}/b`]);
+    expect(placesOf(`${odd}/a`)).toEqual([odd]);
+    expect(conditions().filter((one) => one.includes(odd))).toEqual([]);
+
+    calendar.forget(odd, "b");
+    calendar.expire(odd);
+    expect(await once()).toBe(0);
+
+    expect(row(`${odd}/b`).state).toBe("archived");
+    expect(row(`${odd}/a`).state).toBe("active");
   });
 });

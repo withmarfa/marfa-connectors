@@ -19,7 +19,7 @@ import {
   scopes,
   source,
 } from "./config.js";
-import { readCalendars } from "./read.js";
+import { calendarChecks, readCalendars } from "./read.js";
 
 const connections: ConnectionDefinition[] = [
   {
@@ -68,9 +68,17 @@ export function createConnector(options?: GoogleOptions) {
     env,
     setup: (context) => signIn(context, scopes, options),
     async run(context) {
-      const google = connectGoogle(context, scopes, options);
+      const google = connectGoogle(
+        context,
+        { source, scopes, types: [calendarType, eventType] },
+        options,
+      );
       const access = await google.ready();
-      if (!access.has(calendarListScope)) return;
+      if (!access.has(calendarListScope)) {
+        // Nothing is read, so every check of the calendars is skipped.
+        context.log.unreached({ prefixes: [...calendarChecks] });
+        return;
+      }
       await readCalendars({
         context,
         api: new CalendarApi(google, base),

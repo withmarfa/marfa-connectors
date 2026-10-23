@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   Entry,
   Item,
+  PendingInbound,
   RunContext,
   ScopedRunContext,
 } from "@withmarfa/connector";
@@ -45,7 +46,7 @@ type Scoped = ScopedRunContext<typeof env>;
 
 /** Bumped when the way events are read changes, so that every calendar is
  *  read whole once more. */
-const reading = 1;
+const version = 1;
 const day = 86_400_000;
 const horizonYears = 5;
 
@@ -69,70 +70,99 @@ function progressOf(value: unknown): Calendars {
   return out;
 }
 
-/** What Marfa holds of the account's events when the run begins. */
-interface Held {
-  readonly links: Set<string>;
-  readonly byCalendar: Map<string, Item[]>;
-  readonly byEvent: Map<string, Set<string>>;
-  /** Links a row was moved from during this run, so one move is not used twice. */
-  readonly claimed: Set<string>;
-}
-
 function linkIn(item: Item): string | undefined {
   const link = item.properties["google_id"];
   return typeof link === "string" ? link : undefined;
 }
 
-function holding(items: readonly Item[]): Held {
-  const held: Held = {
-    links: new Set(),
-    byCalendar: new Map(),
-    byEvent: new Map(),
-    claimed: new Set(),
-  };
-  for (const item of items) {
-    const link = linkIn(item);
-    const parts = link === undefined ? undefined : splitLink(link);
-    if (link === undefined || parts === undefined) continue;
-    held.links.add(link);
-    const rows = held.byCalendar.get(parts.calendarId) ?? [];
-    rows.push(item);
-    held.byCalendar.set(parts.calendarId, rows);
-    const where = held.byEvent.get(parts.eventId) ?? new Set<string>();
-    where.add(parts.calendarId);
-    held.byEvent.set(parts.eventId, where);
+/**
+ * The account's events as Marfa holds them, by calendar, read once in a run
+ * and only where a step needs every row of a calendar: a whole read, a
+ * series that is gone and a calendar that leaves the list. A read since a
+ * sync token that meets none of those reads no rows.
+ */
+class Holdings {
+  private rows: Promise<Map<string, Item[]>> | undefined;
+
+  constructor(private readonly context: Context) {}
+
+  async of(calendarId: string): Promise<readonly Item[]> {
+    this.rows ??= this.context
+      .held(eventType, { state: "active" })
+      .then((items) => {
+        const byCalendar = new Map<string, Item[]>();
+        for (const item of items) {
+          const link = linkIn(item);
+          const parts = link === undefined ? undefined : splitLink(link);
+          if (parts === undefined) continue;
+          const rows = byCalendar.get(parts.calendarId) ?? [];
+          rows.push(item);
+          byCalendar.set(parts.calendarId, rows);
+        }
+        return byCalendar;
+      });
+    return (await this.rows).get(calendarId) ?? [];
   }
-  return held;
 }
 
-/** The calendars to read: those the account owns or writes to, and the
- *  read-only ones the connector is told to read. */
+/** The prefixes of the conditions a read raises. */
+export const calendarChecks = [
+  "calendar-refused:",
+  "calendar-unconfirmed:",
+  "calendar-progress:",
+  "events-skipped:",
+  "row-refused:",
+  "read-only-calendar-unknown:",
+] as const;
+
+/** Keeps the conditions of a calendar whose events this run did not read. */
+function unreachedCalendar(context: Pick<Context, "log">, id: string): void {
+  context.log.unreached({
+    keys: [
+      `events-skipped:${id}`,
+      `calendar-progress:${id}`,
+      `row-refused:${id}`,
+    ],
+    prefixes: [`row-refused:${id}/`],
+  });
+}
+
+interface Listed {
+  /** The calendars to read: those the account owns or writes to, and the
+   *  read-only ones the connector is told to read. */
+  readonly chosen: Map<string, CalendarInfo>;
+  /** Every calendar the list holds, whether read or not. */
+  readonly onList: Set<string>;
+  /** The calendars the list marks deleted. */
+  readonly deleted: Set<string>;
+}
+
 function selection(
   items: readonly Json[],
   named: ReadonlySet<string>,
   context: Pick<Context, "log">,
-): Map<string, CalendarInfo> {
-  const chosen = new Map<string, CalendarInfo>();
-  const found = new Set<string>();
+): Listed {
+  const listed: Listed = {
+    chosen: new Map(),
+    onList: new Set(),
+    deleted: new Set(),
+  };
   let left = 0;
   for (const item of items) {
     const calendar = calendarOf(item);
-    if (calendar === undefined || item["deleted"] === true) continue;
-    found.add(calendar.id);
-    if (calendar.id === birthdays) continue;
-    if (calendar.id.includes("/")) {
-      context.log.condition(
-        `calendar-id:${calendar.id}`,
-        `The calendar ${calendar.title} has an id with a slash in it, which a row cannot be named by, so it is not read.`,
-      );
+    if (calendar === undefined) continue;
+    if (item["deleted"] === true) {
+      listed.deleted.add(calendar.id);
       continue;
     }
+    listed.onList.add(calendar.id);
+    if (calendar.id === birthdays) continue;
     if (owned.has(calendar.role) || named.has(calendar.id)) {
-      chosen.set(calendar.id, calendar);
+      listed.chosen.set(calendar.id, calendar);
     } else left += 1;
   }
   for (const id of named) {
-    if (!found.has(id)) {
+    if (!listed.onList.has(id)) {
       context.log.condition(
         `read-only-calendar-unknown:${id}`,
         `GOOGLE_CALENDAR_READ_ONLY_CALENDARS names ${id}, which is not in the account's calendar list, so nothing is read for it.`,
@@ -144,7 +174,7 @@ function selection(
       `${String(left)} calendar${left === 1 ? " is" : "s are"} read only for this account and not named in GOOGLE_CALENDAR_READ_ONLY_CALENDARS, so ${left === 1 ? "it is" : "they are"} not read`,
     );
   }
-  return chosen;
+  return listed;
 }
 
 export interface Reading {
@@ -153,6 +183,20 @@ export interface Reading {
   readonly access: Access;
   readonly named: ReadonlySet<string>;
   readonly now: () => number;
+}
+
+/** What one run shares between its calendars. */
+interface Run extends Reading {
+  readonly holdings: Holdings;
+  /** The calendars Marfa held rows or progress for when the run began: the
+   *  only ones an event can have moved from. */
+  readonly before: ReadonlySet<string>;
+  /** Links a row was moved from during this run, so one move is not used
+   *  twice. */
+  readonly claimed: Set<string>;
+  /** A row Marfa refuses is kept for a retry, and the calendar's token still
+   *  advances; the retry asks Google for the event again once it is due. */
+  readonly retry: { retry: { mode: "refetch"; context: string } };
 }
 
 async function save(
@@ -174,20 +218,52 @@ async function save(
   }
 }
 
+/** The link a retry record names, from its link or its `source_id`. */
+function refusedLink(record: PendingInbound): string {
+  const { link, sourceId } = record.identity;
+  if (link !== undefined) return link;
+  const at = sourceId.indexOf(":");
+  return at === -1 ? sourceId : sourceId.slice(at + 1);
+}
+
+/** Names each row of a calendar Marfa refused and the kit keeps for a retry,
+ *  on every run it stands. */
+function nameRefused(
+  scoped: Scoped,
+  context: Context,
+  title: string,
+  titles: ReadonlyMap<string, string>,
+): void {
+  for (const { record, due } of scoped.refusals.pending()) {
+    const link = refusedLink(record);
+    const what =
+      record.identity.type === calendarType
+        ? `the calendar ${title}`
+        : `the event ${titles.get(link) ?? link} on ${title}`;
+    context.log.condition(
+      `row-refused:${link}`,
+      `Marfa refused ${what} (${record.reason}), so its row is left as it was. It is read again ${due ? "on the next run" : `after ${record.dueAt}`}, or as soon as it changes in Google.`,
+    );
+  }
+}
+
 /** Reads the account's calendars and their events into Marfa. */
 export async function readCalendars(reading: Reading): Promise<void> {
   const { context, api, access } = reading;
   const { log } = context;
   const listed = await api.calendars();
-  const chosen = selection(listed.items, reading.named, context);
-  const [calendarRows, eventRows] = await Promise.all([
-    context.held(calendarType, { state: "active" }),
-    context.held(eventType, { state: "active" }),
-  ]);
-  const held = holding(eventRows);
-  const progress = progressOf(context.state.get("calendars"));
+  const { chosen, onList, deleted } = selection(
+    listed.items,
+    reading.named,
+    context,
+  );
   if (!access.has(eventsScope)) {
     // Without the events permission only the calendars themselves are read.
+    log.unreached({
+      prefixes: calendarChecks.filter(
+        (one) => one !== "read-only-calendar-unknown:",
+      ),
+    });
     await context.upsert(
       calendarType,
       [...chosen.values()].map((one) => calendarEntry(access.account, one)),
@@ -195,32 +271,72 @@ export async function readCalendars(reading: Reading): Promise<void> {
     return;
   }
 
-  const known = new Set<string>([
+  const calendarRows = await context.held(calendarType, { state: "active" });
+  const progress = progressOf(context.state.get("calendars"));
+  const before = new Set<string>([
     ...calendarRows.flatMap((row) => {
       const id = row.properties["calendar_id"];
       return typeof id === "string" ? [id] : [];
     }),
-    ...held.byCalendar.keys(),
     ...Object.keys(progress),
   ]);
-  for (const id of known) {
+  const run: Run = {
+    ...reading,
+    holdings: new Holdings(context),
+    before,
+    claimed: new Set(),
+    retry: {
+      retry: {
+        mode: "refetch",
+        context: createHash("sha256")
+          .update(
+            JSON.stringify([
+              version,
+              access.account,
+              [...context.written(calendarType)].sort(),
+              [...context.written(eventType)].sort(),
+            ]),
+          )
+          .digest("hex"),
+      },
+    },
+  };
+
+  for (const id of before) {
     if (chosen.has(id)) continue;
-    const scoped = context.forScope(`calendar:${id}`);
-    const links = (held.byCalendar.get(id) ?? []).flatMap((row) => {
-      const link = linkIn(row);
-      return link === undefined ? [] : [link];
-    });
-    await scoped.archive(eventType, links);
-    await scoped.archive(calendarType, [id]);
-    await save(scoped, context, id, id, undefined);
-    log.info(
-      `${id} is no longer a calendar this connector reads, so it and its events are archived`,
-    );
+    if (!onList.has(id) && !deleted.has(id)) {
+      // One listing that leaves a calendar out is not Google removing it.
+      let found: Json | "gone";
+      try {
+        found = await api.calendar(id);
+      } catch (error) {
+        if (
+          !(error instanceof GoogleError) ||
+          !["refused", "passing", "quota"].includes(error.kind)
+        ) {
+          throw error;
+        }
+        log.condition(
+          `calendar-unconfirmed:${id}`,
+          `${id} is missing from the account's calendar list, and Google could not say whether it was removed (${error.message}), so it and its events are kept.`,
+        );
+        unreachedCalendar(context, id);
+        continue;
+      }
+      if (found !== "gone" && found["deleted"] !== true) {
+        log.info(
+          `${id} is missing from the account's calendar list, but Google still has it there, so it and its events are kept`,
+        );
+        unreachedCalendar(context, id);
+        continue;
+      }
+    }
+    await leave(run, id);
   }
 
   for (const calendar of chosen.values()) {
     try {
-      await syncCalendar(reading, calendar, held, progress[calendar.id]);
+      await syncCalendar(run, calendar, progress[calendar.id]);
     } catch (error) {
       if (!(error instanceof GoogleError) || error.kind !== "refused") {
         throw error;
@@ -229,15 +345,39 @@ export async function readCalendars(reading: Reading): Promise<void> {
         `calendar-refused:${calendar.id}`,
         `${calendar.title} could not be read (${error.message}), so its rows are left as they are and the other calendars were read.`,
       );
+      unreachedCalendar(context, calendar.id);
     }
   }
+}
+
+/** Archives a calendar the connector no longer reads, with its events. */
+async function leave(run: Run, id: string): Promise<void> {
+  const { context } = run;
+  const scoped = context.forScope(`calendar:${id}`, run.retry);
+  const links = new Set(
+    (await run.holdings.of(id)).flatMap((row) => {
+      const link = linkIn(row);
+      return link === undefined ? [] : [link];
+    }),
+  );
+  // A row kept for a retry settles with the archive.
+  for (const { record } of scoped.refusals.pending()) {
+    if (record.identity.type === eventType) links.add(refusedLink(record));
+  }
+  await scoped.archive(eventType, [...links]);
+  await scoped.archive(calendarType, [id]);
+  await save(scoped, context, id, id, undefined);
+  nameRefused(scoped, context, id, new Map());
+  context.log.info(
+    `${id} is no longer a calendar this connector reads, so it and its events are archived`,
+  );
 }
 
 function shapeOf(context: Context, calendar: CalendarInfo): string {
   return createHash("sha256")
     .update(
       JSON.stringify([
-        reading,
+        version,
         context.written(eventType),
         calendar.zone,
         calendar.role,
@@ -249,18 +389,19 @@ function shapeOf(context: Context, calendar: CalendarInfo): string {
 
 interface Plan {
   readonly entries: Entry[];
+  /** The event id of each entry, by its link. */
+  readonly ids: Map<string, string>;
   readonly archive: Set<string>;
   readonly skipped: string[];
 }
 
 async function syncCalendar(
-  reading: Reading,
+  run: Run,
   calendar: CalendarInfo,
-  held: Held,
   kept: Progress | undefined,
 ): Promise<void> {
-  const { context, api, access } = reading;
-  const scoped = context.forScope(`calendar:${calendar.id}`);
+  const { context, api, access } = run;
+  const scoped = context.forScope(`calendar:${calendar.id}`, run.retry);
   await scoped.upsert(calendarType, [calendarEntry(access.account, calendar)]);
   const shape = shapeOf(context, calendar);
   let token = kept?.shape === shape ? kept.token : undefined;
@@ -284,21 +425,22 @@ async function syncCalendar(
   }
   const whole = token === undefined;
   const items = [...answer.items];
+  const asked = new Set(
+    items.flatMap((item) =>
+      typeof item["id"] === "string" ? [item["id"]] : [],
+    ),
+  );
   const gone = new Set<string>();
   const vanished = new Set<string>();
   if (whole) {
     // A whole read lists what Google still holds: a row it does not list is
     // asked about, since only a deleted event may be archived.
-    const listedIds = new Set(
-      items.flatMap((item) =>
-        typeof item["id"] === "string" ? [item["id"]] : [],
-      ),
-    );
-    for (const row of held.byCalendar.get(calendar.id) ?? []) {
+    for (const row of await run.holdings.of(calendar.id)) {
       const link = linkIn(row);
       const parts = link === undefined ? undefined : splitLink(link);
       if (link === undefined || parts === undefined) continue;
-      if (listedIds.has(parts.eventId)) continue;
+      if (asked.has(parts.eventId)) continue;
+      asked.add(parts.eventId);
       const found = await api.event(calendar.id, parts.eventId);
       if (found === "gone") {
         gone.add(link);
@@ -307,18 +449,38 @@ async function syncCalendar(
       } else items.push(found);
     }
   }
+  // A sync token never lists again an event whose row Marfa refused, so once
+  // its retry is due, the event is asked for.
+  for (const { record, due } of scoped.refusals.pending()) {
+    if (!due || record.identity.type !== eventType) continue;
+    const link = refusedLink(record);
+    const parts = splitLink(link);
+    if (parts?.calendarId !== calendar.id) continue;
+    if (asked.has(parts.eventId)) continue;
+    asked.add(parts.eventId);
+    try {
+      const found = await api.event(calendar.id, parts.eventId);
+      if (found === "gone") gone.add(link);
+      else items.push(found);
+    } catch (error) {
+      // The retry stays kept, and is asked for again on the next run.
+      if (!(error instanceof GoogleError) || error.kind !== "refused") {
+        throw error;
+      }
+    }
+  }
   const plan = await planEvents(
-    reading,
+    run,
+    scoped,
     calendar,
-    held,
     items,
     whole,
     gone,
     vanished,
   );
+  await withMoves(run, scoped, calendar.id, plan);
   if (plan.entries.length > 0) await scoped.upsert(eventType, plan.entries);
-  const archive = [...plan.archive].filter((link) => held.links.has(link));
-  if (archive.length > 0) await scoped.archive(eventType, archive);
+  if (plan.archive.size > 0) await scoped.archive(eventType, [...plan.archive]);
   if (plan.skipped.length > 0) {
     context.log.condition(
       `events-skipped:${calendar.id}`,
@@ -335,12 +497,36 @@ async function syncCalendar(
       ? { token: answer.syncToken, shape }
       : { shape },
   );
+  const titles = new Map(
+    plan.entries.flatMap((entry) => {
+      const link = entry.properties["google_id"];
+      const title = entry.properties["title"];
+      return typeof link === "string" && typeof title === "string"
+        ? [[link, title] as const]
+        : [];
+    }),
+  );
+  nameRefused(scoped, context, calendar.title, titles);
 }
 
-function recurrenceOf(held: Held, calendarId: string, id: string): string[] {
-  const row = (held.byCalendar.get(calendarId) ?? []).find(
-    (one) => linkIn(one) === linkOf(calendarId, id),
+/** The active rows Marfa holds under these links, by link. */
+async function rowsOf(
+  scoped: Scoped,
+  links: readonly string[],
+): Promise<Map<string, Item>> {
+  if (links.length === 0) return new Map();
+  const { items } = await scoped.inspect(eventType, { links });
+  return new Map(
+    items.flatMap((item) => {
+      const link = linkIn(item);
+      return item.state === "active" && link !== undefined
+        ? [[link, item] as const]
+        : [];
+    }),
   );
+}
+
+function recurrenceOf(row: Item | undefined): string[] {
   const lines = row?.properties["recurrence"];
   return Array.isArray(lines)
     ? lines.filter((one): one is string => typeof one === "string")
@@ -348,17 +534,22 @@ function recurrenceOf(held: Held, calendarId: string, id: string): string[] {
 }
 
 async function planEvents(
-  reading: Reading,
+  run: Run,
+  scoped: Scoped,
   calendar: CalendarInfo,
-  held: Held,
   items: readonly Json[],
   whole: boolean,
   gone: ReadonlySet<string>,
   vanished: ReadonlySet<string>,
 ): Promise<Plan> {
-  const { api, access } = reading;
+  const { api, access } = run;
   const account = access.account;
-  const plan: Plan = { entries: [], archive: new Set(gone), skipped: [] };
+  const plan: Plan = {
+    entries: [],
+    ids: new Map(),
+    archive: new Set(gone),
+    skipped: [],
+  };
   const byId = new Map<string, GoogleEvent>();
   for (const item of items) {
     const event = eventOf(item);
@@ -369,6 +560,7 @@ async function planEvents(
   const cancelled = new Map<string, Cancellation[]>();
   const restored = new Map<string, Cancellation[]>();
   const touched = new Set<string>(vanished);
+  const dropped = new Set<string>();
   const add = (
     into: Map<string, Cancellation[]>,
     series: string,
@@ -377,15 +569,6 @@ async function planEvents(
     const one = cancellationOf(event);
     if (one !== undefined) into.set(series, [...(into.get(series) ?? []), one]);
     touched.add(series);
-  };
-  const dropSeries = (id: string): void => {
-    plan.archive.add(linkOf(calendar.id, id));
-    for (const row of held.byCalendar.get(calendar.id) ?? []) {
-      if (row.properties["recurring_event_id"] === id) {
-        const link = linkIn(row);
-        if (link !== undefined) plan.archive.add(link);
-      }
-    }
   };
 
   for (const event of byId.values()) {
@@ -397,7 +580,7 @@ async function planEvents(
       plan.archive.add(linkOf(calendar.id, event.id));
       if (event.recurringEventId !== undefined) {
         add(cancelled, event.recurringEventId, event);
-      } else dropSeries(event.id);
+      } else dropped.add(event.id);
       continue;
     }
     if (event.recurringEventId !== undefined) {
@@ -409,23 +592,22 @@ async function planEvents(
     } else others.push(event);
   }
 
-  const push = async (
-    event: GoogleEvent,
-    recurrence?: readonly string[],
-  ): Promise<void> => {
+  const push = (event: GoogleEvent, recurrence?: readonly string[]): void => {
     const mapped = eventEntry(account, calendar, event, recurrence);
     if (mapped === undefined) {
       plan.skipped.push(event.id);
       return;
     }
-    const movedFrom = await movedFromOf(api, calendar.id, event.id, held);
-    plan.entries.push(
-      movedFrom === undefined
-        ? mapped.entry
-        : { ...mapped.entry, movedFrom: [movedFrom] },
-    );
+    plan.entries.push(mapped.entry);
+    plan.ids.set(linkOf(calendar.id, event.id), event.id);
   };
 
+  const seriesRows = await rowsOf(
+    scoped,
+    whole
+      ? [...vanished].map((id) => linkOf(calendar.id, id))
+      : [...touched].map((id) => linkOf(calendar.id, id)),
+  );
   for (const id of touched) {
     let master = masters.get(id);
     if (master === undefined) {
@@ -433,7 +615,7 @@ async function planEvents(
       const found = await api.event(calendar.id, id);
       const event = found === "gone" ? undefined : eventOf(found);
       if (event === undefined || event.status === "cancelled") {
-        dropSeries(id);
+        dropped.add(id);
         continue;
       }
       if (event.recurrence.length === 0) {
@@ -455,7 +637,7 @@ async function planEvents(
         0,
       );
       const horizon = Math.max(
-        Math.max(reading.now(), first.startMs) + horizonYears * 365 * day,
+        Math.max(run.now(), first.startMs) + horizonYears * 365 * day,
         latest + day,
       );
       const asked = await api.cancelled(
@@ -471,7 +653,7 @@ async function planEvents(
       });
       const back = new Set((restored.get(id) ?? []).map(keyOf));
       const before = carried(
-        recurrenceOf(held, calendar.id, id),
+        recurrenceOf(seriesRows.get(linkOf(calendar.id, id))),
         master.recurrence,
         first.zone,
         { ms: horizon, day: new Date(horizon).toISOString().slice(0, 10) },
@@ -479,35 +661,86 @@ async function planEvents(
       all = [...seen, ...fromGoogle, ...before];
     }
     const unique = new Map(all.map((one) => [keyOf(one), one]));
-    await push(
+    push(
       master,
       withCancellations(master.recurrence, [...unique.values()], first.zone),
     );
   }
-  for (const event of others) await push(event);
+  for (const event of others) push(event);
+  for (const id of dropped) plan.archive.add(linkOf(calendar.id, id));
+  // A series that is gone takes its changed occurrences with it. Google's
+  // cancellation carries no rule, so the row says which was a series, or the
+  // retry of a series Marfa refused, which has none.
+  const droppedLinks = [...dropped].map((id) => linkOf(calendar.id, id));
+  const droppedRows = await rowsOf(scoped, droppedLinks);
+  const refused = new Set(
+    scoped.refusals.pending().map(({ record }) => refusedLink(record)),
+  );
+  if (
+    [...droppedRows.values()].some((row) => recurrenceOf(row).length > 0) ||
+    droppedLinks.some((link) => refused.has(link))
+  ) {
+    for (const row of await run.holdings.of(calendar.id)) {
+      const series = row.properties["recurring_event_id"];
+      const link = linkIn(row);
+      if (typeof series === "string" && dropped.has(series) && link) {
+        plan.archive.add(link);
+      }
+    }
+  }
   return plan;
 }
 
 /**
- * The link an event was known by on another calendar, where Google moved it:
- * the old calendar holds a row for the same event id, and Google no longer
- * has the event there. Passing it lets the row keep its identity.
+ * Marks each new entry that Google moved from another calendar with the link
+ * it was known by there, so the row keeps its identity: Marfa holds a row for
+ * the same event id on a calendar read before this run, and Google no longer
+ * has the event there. A calendar that refuses the question is not a move.
  */
-async function movedFromOf(
-  api: CalendarApi,
+async function withMoves(
+  run: Run,
+  scoped: Scoped,
   calendarId: string,
-  eventId: string,
-  held: Held,
-): Promise<string | undefined> {
-  if (held.links.has(linkOf(calendarId, eventId))) return undefined;
-  for (const other of held.byEvent.get(eventId) ?? []) {
-    const link = linkOf(other, eventId);
-    if (other === calendarId || held.claimed.has(link)) continue;
-    const found = await api.event(other, eventId);
-    if (found === "gone" || found["status"] === "cancelled") {
-      held.claimed.add(link);
-      return link;
+  plan: Plan,
+): Promise<void> {
+  const others = [...run.before].filter((one) => one !== calendarId);
+  if (others.length === 0 || plan.entries.length === 0) return;
+  const links = [...plan.ids.keys()];
+  const own = await scoped.known(eventType, links);
+  const fresh = links.filter((link) => !own.has(link));
+  if (fresh.length === 0) return;
+  const candidates = fresh.flatMap((link) =>
+    others.map((other) => linkOf(other, plan.ids.get(link) ?? "")),
+  );
+  const held = await scoped.known(eventType, candidates);
+  const moved = new Map<string, string>();
+  for (const link of fresh) {
+    const eventId = plan.ids.get(link) ?? "";
+    for (const other of others) {
+      const from = linkOf(other, eventId);
+      if (!held.has(from) || run.claimed.has(from)) continue;
+      let found: Json | "gone";
+      try {
+        found = await run.api.event(other, eventId);
+      } catch (error) {
+        if (error instanceof GoogleError && error.kind === "refused") continue;
+        throw error;
+      }
+      if (found === "gone" || found["status"] === "cancelled") {
+        run.claimed.add(from);
+        moved.set(link, from);
+        break;
+      }
     }
   }
-  return undefined;
+  if (moved.size === 0) return;
+  plan.entries.splice(
+    0,
+    plan.entries.length,
+    ...plan.entries.map((entry) => {
+      const link = entry.properties["google_id"];
+      const from = typeof link === "string" ? moved.get(link) : undefined;
+      return from === undefined ? entry : { ...entry, movedFrom: [from] };
+    }),
+  );
 }

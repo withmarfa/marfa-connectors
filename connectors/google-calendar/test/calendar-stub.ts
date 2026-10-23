@@ -20,11 +20,14 @@ interface Failure {
   readonly body?: Json;
 }
 
-/** Stands in for Google's Calendar API: the calendar list, and the events,
- *  one event and the instances of a series, with sync tokens and paging. */
+/** Stands in for Google's Calendar API: the calendar list and its entries,
+ *  and the events, one event and the instances of a series, with sync tokens
+ *  and paging. */
 export class CalendarStub {
   readonly calls: Call[] = [];
   calendars: Json[] = [];
+  /** Calendars on the account's list that one listing leaves out. */
+  unlisted: Json[] = [];
   /** How many items a page holds. */
   pageSize = 2500;
   private readonly stores = new Map<string, Map<string, Stored>>();
@@ -124,6 +127,16 @@ export class CalendarStub {
     const path = call.path.slice(prefix.length);
     if (path === "/users/me/calendarList") {
       return [200, { items: this.calendars }];
+    }
+    const entry = /^\/users\/me\/calendarList\/([^/]+)$/.exec(path);
+    if (entry !== null) {
+      const id = decodeURIComponent(entry[1] ?? "");
+      const found = [...this.calendars, ...this.unlisted].find(
+        (one) => one["id"] === id,
+      );
+      return found === undefined
+        ? [404, { error: { code: 404, message: "Not Found" } }]
+        : [200, found];
     }
     const match =
       /^\/calendars\/([^/]+)\/events(?:\/([^/]+)(\/instances)?)?$/.exec(path);

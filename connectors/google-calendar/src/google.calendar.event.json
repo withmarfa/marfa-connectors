@@ -44,7 +44,7 @@
     },
     "editable": {
       "type": "boolean",
-      "description": "Whether Marfa may change the event in Google: false for a calendar the account can only read, an event someone else organizes, a locked one and a kind of event Google reserves."
+      "description": "Whether Marfa may change the event in Google: false for an event on a calendar the account can only read, a kind of event Google reserves, a locked event, an event someone else organizes and an event with any guest other than the account."
     },
     "uneditable_reason": {
       "type": "string",
