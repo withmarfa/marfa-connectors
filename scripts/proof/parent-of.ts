@@ -146,8 +146,8 @@ export async function proveParentOf(
         ]);
         assert.deepEqual(await seriesOf(id("e1")), [id("t")]);
 
-        // A calendar of many exceptions is read through one listing of the
-        // edge type, not a request for each row, and finds the same edges.
+        // Eight rows or more are read through the listing of the edge type,
+        // and find the same edges as a read of each row.
         const base: Events = [
           ["e1", "t"],
           ["e2", "s"],
@@ -236,7 +236,7 @@ export async function proveParentOf(
           (await edgesFrom(outsider, first)).map((edge) => edge.target_id),
           [second],
         );
-        return "the exceptions' edges point from their series, a move lets the old one go, a removal in Marfa is carried, a trash carries the series once, a restore brings its exceptions back, and a calendar of many exceptions finds the same edges through one listing";
+        return "the exceptions' edges point from their series, a move lets the old one go, a removal in Marfa is carried, a trash carries the series once, a restore brings its exceptions back, and a calendar of many exceptions finds the same edges";
       } finally {
         await rm(directory, { recursive: true, force: true });
       }
