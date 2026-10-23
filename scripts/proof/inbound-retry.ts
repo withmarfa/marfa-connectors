@@ -287,12 +287,13 @@ export async function proveInboundRetry(
       },
     );
   await check(
-    "kit inbound retries: incapable, omitted and unreachable input preserve conservative progress, and an all-refused batch is journaled",
+    "kit inbound retries: incapable, omitted, systemic and unreachable input preserve conservative progress, and an all-refused batch is journaled",
     async () => {
       for (const kind of [
         "incapable",
         "undeclared",
         "unlinked",
+        "systemic",
         "all-refused",
         "unreadable",
         "capability-lost",
@@ -318,7 +319,10 @@ export async function proveInboundRetry(
               fixture.good,
               { source_id: "bad", properties: { title: "Bad" } },
             ];
-          if (kind === "all-refused")
+          // Without a retry capability, two rows refused with one code fail
+          // the run as systemic; with one, the journal takes them.
+          if (kind === "systemic") delete fixture.control.config.mode;
+          if (kind === "systemic" || kind === "all-refused")
             fixture.control.config.entries = [
               fixture.bad,
               {
@@ -405,6 +409,11 @@ export async function proveInboundRetry(
             );
           } else {
             assert.equal(first.code, 1, first.output);
+            if (kind === "systemic")
+              assert.match(
+                first.output,
+                /every one of the 2 rows written was refused/,
+              );
             const saved = await fixture.snapshot();
             assert.notEqual(saved.state.state?.page, 1);
             assert.equal(saved.state.inbound, undefined);
@@ -413,7 +422,7 @@ export async function proveInboundRetry(
           await fixture.stop();
         }
       }
-      return "no incapable advancement, no fabricated skipped intent, all-refused batch journaled with its position, unreadable refetch retains exact marker";
+      return "no incapable advancement, no fabricated skipped intent, all-same-code failure without a capability, all-refused batch journaled with its position, unreadable refetch retains exact marker";
     },
   );
   await check(
