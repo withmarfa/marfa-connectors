@@ -128,7 +128,7 @@ Nothing is written back to Google yet. `editable` and `uneditable_reason` record
 
 The connector keeps a sync token for each calendar, so after the first read it asks Google only for what changed. It saves a calendar's token after that calendar's rows are written. If any event in the calendar can't be read, it keeps no token, raises `events-skipped:<ID>`, and reads the calendar whole on the next run. If Google refuses one calendar, it raises `calendar-refused:<ID>` and reads the others.
 
-When Google says a token has expired (`410`), or something that changes how rows are written has changed, such as the calendar's time zone, the connector reads the calendar whole. In a whole read, a row the listing no longer returns is looked up directly, and only an answer of "gone" or "cancelled" archives it. A failed lookup stops the run and keeps the row.
+When Google says a token has expired (`410`), or something that changes how rows are written has changed, such as the calendar's time zone, the connector reads the calendar whole. In a whole read, a row the listing no longer returns is looked up directly, and only an answer of "gone" or "cancelled" archives it. A lookup that fails keeps the row: if Google refuses it, the connector raises `calendar-refused:<ID>`, and any other failure stops the run.
 
 For a change to a series, the connector asks Google for the series and its instances, from a day before its start to five years past today or past its start, whichever is later, to find cancelled occurrences. Cancelled occurrences further out stay as they were.
 
