@@ -92,7 +92,7 @@ function keptOf(value: unknown, problems: unknown): Kept {
   const relinked: Relinked = {
     rows: Object.fromEntries(
       Object.entries(isRecord(held["rows"]) ? held["rows"] : {}).flatMap(
-        ([id, row]) =>
+        ([id, row]): [string, Relinked["rows"][string]][] =>
           isRecord(row) &&
           (row["link"] === undefined || typeof row["link"] === "string") &&
           typeof row["type"] === "string"
