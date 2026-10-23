@@ -19,7 +19,7 @@
     },
     "starred": {
       "type": "boolean",
-      "description": "Whether the person the personal access token belongs to has starred the repository, as of the last scheduled run that listed their stars. Empty where no run has listed them."
+      "description": "Whether the person the personal access token, or without one the notifications token, belongs to has starred the repository, as of the last scheduled run that listed their stars. Empty where no run has listed them."
     },
     "starred_at": {
       "type": "string",
