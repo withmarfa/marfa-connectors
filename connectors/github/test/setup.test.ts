@@ -378,13 +378,15 @@ describe("setup", () => {
     });
   });
 
-  it("asks to read Discussions only where discussion is read only", async () => {
+  async function manifestFor(
+    readOnlyValue: string,
+  ): Promise<Record<string, unknown> | undefined> {
     const file = join(dir, "secrets.json");
     let manifest: Record<string, unknown> | undefined;
     let visited: Promise<void> | undefined;
     const finished = await setup(
       file,
-      { GITHUB_READ_ONLY: "discussion" },
+      { GITHUB_READ_ONLY: readOnlyValue },
       (line) => {
         const opened = / open (\S+) in a browser/.exec(line)?.[1];
         if (opened === undefined) return;
@@ -403,10 +405,24 @@ describe("setup", () => {
     );
     await visited;
     expect(finished.code).toBe(0);
-    expect(manifest).toMatchObject({
+    return manifest;
+  }
+
+  it("asks to read Discussions only where discussion and comment are both read only", async () => {
+    expect(await manifestFor("discussion,comment")).toMatchObject({
       default_permissions: {
         issues: "write",
         discussions: "read",
+        metadata: "read",
+      },
+    });
+  });
+
+  it("still asks to write Discussions where only discussion is read only, since comments are carried", async () => {
+    expect(await manifestFor("discussion")).toMatchObject({
+      default_permissions: {
+        issues: "write",
+        discussions: "write",
         metadata: "read",
       },
     });

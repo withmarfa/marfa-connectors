@@ -210,7 +210,9 @@ export async function setUp<E extends EnvDeclaration>(
         readOnly:
           readOnly(env.GITHUB_READ_ONLY, "issue") &&
           readOnly(env.GITHUB_READ_ONLY, "comment"),
-        discussionsReadOnly: readOnly(env.GITHUB_READ_ONLY, "discussion"),
+        discussionsReadOnly:
+          readOnly(env.GITHUB_READ_ONLY, "discussion") &&
+          readOnly(env.GITHUB_READ_ONLY, "comment"),
       }),
     ),
   );
