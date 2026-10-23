@@ -1512,11 +1512,12 @@ describe("a series", () => {
     ["answers it as deleted", false],
   ] as const;
 
-  /** A series trashed and carried, then restored with its recurrence
-   *  changed before the next run, which carries both. */
+  /** A series trashed and carried, then restored with its recurrence, and
+   *  any other field given, changed before the next run, which carries all. */
   async function restoredWith(
     getsCancelled: boolean,
     lines: string[],
+    other: Record<string, unknown> = {},
   ): Promise<Row> {
     calendar.getsCancelled = getsCancelled;
     await landed();
@@ -1525,7 +1526,7 @@ describe("a series", () => {
     await landed();
     expect(calendar.event(me, "weekly")?.["status"]).toBe("cancelled");
     server.restore(one.id);
-    server.edit(one.id, { recurrence: lines });
+    server.edit(one.id, { ...other, recurrence: lines });
     await landed();
     return one;
   }
@@ -1603,6 +1604,86 @@ describe("a series", () => {
       expect(server.byId(one.id)).toMatchObject({
         state: "active",
         properties: { recurrence: lines },
+      });
+    },
+  );
+
+  it.each(answers)(
+    "sends none of a restored series' changed fields when it declines its recurrence change when Google %s",
+    async (_, getsCancelled) => {
+      calendar.put(me, series);
+      const { id, ...rest } = occurrence("2026-10-26T10:00:00Z");
+      calendar.cancel(me, id, {
+        ...rest,
+        organizer: { email: me, self: true },
+        ...guests,
+      });
+      const lines = ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE:20261026T100000Z"];
+      const one = await restoredWith(
+        getsCancelled,
+        ["RRULE:FREQ=WEEKLY;BYDAY=MO"],
+        { title: "Renamed" },
+      );
+
+      expect(calendar.event(me, "weekly")).toMatchObject({
+        status: "confirmed",
+        summary: "Planning",
+      });
+      expect(calendar.event(me, id)?.["status"]).toBe("cancelled");
+      expect(conditions()[`declined:${one.id}`]).toContain(
+        "guests other than the account",
+      );
+      expect(server.byId(one.id)).toMatchObject({
+        state: "active",
+        properties: { title: "Planning", recurrence: lines },
+      });
+
+      await landed();
+      expect(calendar.event(me, "weekly")).toMatchObject({
+        status: "confirmed",
+        summary: "Planning",
+      });
+      expect(server.byId(one.id)).toMatchObject({
+        state: "active",
+        properties: { title: "Planning", recurrence: lines },
+      });
+    },
+  );
+
+  it.each(answers)(
+    "brings back a restored series with its rule and other fields changed in Marfa when Google %s",
+    async (_, getsCancelled) => {
+      calendar.put(me, {
+        ...series,
+        start: { date: "2026-10-19" },
+        end: { date: "2026-10-20" },
+      });
+      const lines = ["RRULE:FREQ=WEEKLY;BYDAY=TU"];
+      const one = await restoredWith(getsCancelled, lines, {
+        title: "Renamed",
+        all_day: undefined,
+        starts_at: "2026-10-20T09:00:00Z",
+        ends_at: "2026-10-20T10:00:00Z",
+      });
+
+      const back = calendar.event(me, "weekly");
+      expect(back).toMatchObject({
+        status: "confirmed",
+        summary: "Renamed",
+        recurrence: lines,
+        start: { dateTime: "2026-10-20T09:00:00Z" },
+        end: { dateTime: "2026-10-20T10:00:00Z" },
+      });
+      expect(back?.["start"]).not.toHaveProperty("date");
+      expect(back?.["end"]).not.toHaveProperty("date");
+      expect(conditions()).toEqual({});
+
+      const sent = writes().length;
+      await landed();
+      expect(writes()).toHaveLength(sent);
+      expect(server.byId(one.id).properties).toMatchObject({
+        title: "Renamed",
+        recurrence: lines,
       });
     },
   );
