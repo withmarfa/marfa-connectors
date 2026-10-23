@@ -34,9 +34,15 @@ function options(extra: Partial<GoogleOptions> = {}): GoogleOptions {
 }
 
 const rowType = "google.test.entry";
+const source = "google-test";
 
 function needs(scopes: string[]) {
-  return { scopes, types: [rowType] };
+  return { source, scopes, types: [rowType] };
+}
+
+/** Rows of the connector's own source, by `source_id`. */
+function own(...sourceIds: string[]) {
+  return sourceIds.map((sourceId) => ({ source, source_id: sourceId }));
 }
 
 function run(token: string, state = new Map<string, unknown>()) {
@@ -491,7 +497,7 @@ describe("the Google account", () => {
 
   it("refuses, where no account is kept, rows the connector wrote for another account, as after its state was cleared", async () => {
     const seen = run(freshToken());
-    seen.rows.set(rowType, ["sub-2222222222:event-1"]);
+    seen.rows.set(rowType, own("sub-2222222222:event-1"));
     const error = await failure(
       connectGoogle(seen.context, needs([A]), options()).ready(),
     );
@@ -499,10 +505,55 @@ describe("the Google account", () => {
     expect(seen.conditions.has("google:account")).toBe(true);
     expect(seen.state.size).toBe(0);
     // The witness: rows of its own account, or without one, are taken.
-    const own = run(freshToken());
-    own.rows.set(rowType, [`${stub.sub}:event-1`, "made-by-hand"]);
-    await connectGoogle(own.context, needs([A]), options()).ready();
-    expect([...own.state.values()]).toEqual([stub.sub]);
+    const mine = run(freshToken());
+    mine.rows.set(rowType, own(`${stub.sub}:event-1`, "made-by-hand"));
+    await connectGoogle(mine.context, needs([A]), options()).ready();
+    expect([...mine.state.values()]).toEqual([stub.sub]);
+  });
+
+  it("judges only rows of the connector's own source, whatever another source puts in its source_id", async () => {
+    const seen = run(freshToken());
+    seen.rows.set(rowType, [
+      { source: "person", source_id: "ios:ABC-123" },
+      { source: "another-connector", source_id: "sub-2222222222:event-1" },
+      { source: "person" },
+    ]);
+    await connectGoogle(seen.context, needs([A]), options()).ready();
+    expect([...seen.state.values()]).toEqual([stub.sub]);
+    // The witness: the same source_id under the connector's own source is
+    // another account's row.
+    const refused = run(freshToken());
+    refused.rows.set(rowType, own("sub-2222222222:event-1"));
+    const error = await failure(
+      connectGoogle(refused.context, needs([A]), options()).ready(),
+    );
+    expect(error.kind).toBe("account");
+    expect(refused.state.size).toBe(0);
+  });
+
+  it("refuses a scoped context, which cannot keep the account, when the handle is made", () => {
+    const seen = run(freshToken());
+    const scoped = { ...seen.context, forScope: undefined };
+    expect(() => connectGoogle(scoped, needs([A]), options())).toThrow(
+      /the run's own context/,
+    );
+    // The witness: the run's own context makes a handle.
+    expect(() =>
+      connectGoogle(seen.context, needs([A]), options()),
+    ).not.toThrow();
+  });
+
+  it("refuses needs that name no scope, no type or no source, so the account check has rows to read", () => {
+    const { context } = run(freshToken());
+    const made = (changed: object) => () =>
+      connectGoogle(context, { ...needs([A]), ...changed }, options());
+    expect(made({ scopes: [] })).toThrow(/each scope it needs/);
+    expect(made({ scopes: [`${A} ${B}`] })).toThrow(/each scope it needs/);
+    expect(made({ types: [] })).toThrow(/its own types/);
+    expect(made({ types: [""] })).toThrow(/its own types/);
+    expect(made({ source: "" })).toThrow(/its source/);
+    // The witness: the same needs, whole, make a handle.
+    expect(made({})).not.toThrow();
   });
 
   it("does not keep an account in a run started between scheduled runs", async () => {

@@ -111,6 +111,11 @@ export class GoogleStub {
   }
 }
 
+export interface Held {
+  readonly source: string;
+  readonly source_id?: string;
+}
+
 export interface Captured {
   readonly context: GoogleContext;
   readonly lines: string[];
@@ -118,8 +123,8 @@ export interface Captured {
   readonly secrets: string[];
   /** What the instance keeps of the connector's state, durable at once. */
   readonly state: Map<string, unknown>;
-  /** The `source_id`s of the rows the instance holds, by type. */
-  readonly rows: Map<string, string[]>;
+  /** The rows the instance holds, by type: their source and `source_id`. */
+  readonly rows: Map<string, Held[]>;
   abort(): void;
 }
 
@@ -131,7 +136,7 @@ export function captured(
   state = new Map<string, unknown>(),
   as: "run" | "watch" = "run",
 ): Captured {
-  const rows = new Map<string, string[]>();
+  const rows = new Map<string, Held[]>();
   const lines: string[] = [];
   const conditions = new Map<string, string>();
   const secrets: string[] = [];
@@ -153,10 +158,7 @@ export function captured(
         },
       },
     }),
-    held: (type) =>
-      Promise.resolve(
-        (rows.get(type) ?? []).map((sourceId) => ({ source_id: sourceId })),
-      ),
+    held: (type) => Promise.resolve(rows.get(type) ?? []),
     hints: undefined,
   };
   return {

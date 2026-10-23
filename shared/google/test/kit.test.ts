@@ -34,17 +34,18 @@ afterEach(async () => {
 });
 
 const types = [testType.id];
+const source = "test";
 
 function connector(scopes: string[], reads?: () => void) {
   return defineConnector({
     name: "test",
-    source: "test",
+    source,
     types: [{ type: testType, fields: testFields }],
     env: googleEnv,
     async run(context) {
       const google = connectGoogle(
         context,
-        { scopes, types },
+        { source, scopes, types },
         { endpoints: stub.endpoints },
       );
       await google.ready();
@@ -59,13 +60,13 @@ function connector(scopes: string[], reads?: () => void) {
 function writer(fails = false) {
   return defineConnector({
     name: "test",
-    source: "test",
+    source,
     types: [{ type: linkedType, fields: testFields }],
     env: googleEnv,
     async run(context) {
       const google = connectGoogle(
         context,
-        { scopes: [A], types },
+        { source, scopes: [A], types },
         { endpoints: stub.endpoints },
       );
       const { account } = await google.ready();
@@ -80,7 +81,7 @@ function writer(fails = false) {
     async onChange(change, context) {
       const google = connectGoogle(
         context,
-        { scopes: [A], types },
+        { source, scopes: [A], types },
         { endpoints: stub.endpoints },
       );
       await google.json(`${stub.url}/calendars/primary/events`, {
@@ -257,6 +258,32 @@ describe("through the kit", () => {
     expect(harness.kept()["state"]).toEqual({
       google_account: "sub-1111111111",
     });
+  });
+
+  it("keeps the account on the first run beside another source's linked row whose source_id has a colon, and still refuses its own rows of another account", async () => {
+    harness.server.insert(
+      "ios:ABC-123",
+      { title: "From the phone", vendor_id: "ABC-123" },
+      testType.id,
+      "person",
+    );
+    expect(await start(writer(), signedIn())).toBe(0);
+    expect(Object.keys(harness.problems())).not.toContain("google:account");
+    expect(harness.kept()["state"]).toEqual({ google_account: stub.sub });
+
+    // The witness: a row of the connector's own source for another account
+    // is refused once the kept account is cleared.
+    harness.server.states.delete(harness.server.keySource);
+    harness.server.agreements.clear();
+    harness.server.problems.delete(harness.server.keySource);
+    harness.server.insert(
+      `${other}:event-9`,
+      { title: "Another account's", vendor_id: `${other}:event-9` },
+      testType.id,
+    );
+    expect(await start(writer(), signedIn())).toBe(1);
+    expect(Object.keys(harness.problems())).toContain("google:account");
+    expect(harness.kept()["state"]).toEqual({});
   });
 
   it("sends nothing from the watch phase once the account changed, and raises the account condition", async () => {

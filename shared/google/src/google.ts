@@ -24,7 +24,9 @@ import { largest, readText, send } from "./token.js";
  * What a run hands a Google connector: a run's, or an `onChange`'s,
  * `remake`'s or `preflight`'s, context. A run's also has `forScope`, `held`
  * and `hints`, with which the first run keeps the account; the others
- * have not, so they only check against an account a run kept.
+ * have not, so they only check against an account a run kept. A context
+ * from the run's `forScope` has `held` without `forScope`, cannot keep the
+ * account, and is refused.
  */
 export interface GoogleContext {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -46,13 +48,21 @@ export interface GoogleContext {
     | ((
         type: string,
         options: { state: "any" },
-      ) => Promise<readonly { readonly source_id?: string | undefined }[]>)
+      ) => Promise<
+        readonly {
+          readonly source: string;
+          readonly source_id?: string | undefined;
+        }[]
+      >)
     | undefined;
   readonly hints?: unknown;
 }
 
 /** What a connector signs in to Google for. */
 export interface GoogleNeeds {
+  /** The connector's `source`. Only rows written under it hold the account
+   *  in their `source_id`; another source's rows are never read for it. */
+  readonly source: string;
   /** Every scope the connector needs. */
   readonly scopes: readonly string[];
   /** The connector's own types, whose rows hold the account in their
@@ -95,10 +105,16 @@ function otherAccount(): GoogleError {
   );
 }
 
-/** A row the connector wrote for another account: its `source_id` begins
- *  with an account other than `sub`. */
-function fromAnother(sourceId: string | undefined, sub: string): boolean {
-  if (sourceId === undefined) return false;
+/** A row the connector wrote for another account: it is of the
+ *  connector's own source, and its `source_id` begins with an account other
+ *  than `sub`. */
+function fromAnother(
+  row: { readonly source: string; readonly source_id?: string | undefined },
+  source: string,
+  sub: string,
+): boolean {
+  const sourceId = row.source_id;
+  if (row.source !== source || sourceId === undefined) return false;
   const at = sourceId.indexOf(":");
   return at > 0 && sourceId.slice(0, at) !== sub;
 }
@@ -114,13 +130,28 @@ export function connectGoogle(
   needs: GoogleNeeds,
   options?: GoogleOptions,
 ): Google {
-  const { scopes, types } = needs;
+  const { source, scopes, types } = needs;
   if (
     scopes.length === 0 ||
     scopes.some((scope) => scope === "" || /\s/.test(scope))
   ) {
     throw new Error(
       "a Google connector declares each scope it needs, without spaces",
+    );
+  }
+  if (types.length === 0 || types.includes("")) {
+    throw new Error(
+      "a Google connector declares its own types, whose rows hold the account",
+    );
+  }
+  if (source === "") {
+    throw new Error(
+      "a Google connector declares its source, under which its rows hold the account",
+    );
+  }
+  if (context.held !== undefined && context.forScope === undefined) {
+    throw new Error(
+      "connectGoogle takes the run's own context, not one from forScope, which cannot keep the Google account",
     );
   }
   const clientId = context.env["GOOGLE_CLIENT_ID"];
@@ -139,6 +170,7 @@ export function connectGoogle(
   const credentials: Credentials = { clientId, clientSecret, refreshToken };
   return new Google(
     context,
+    source,
     [...new Set(scopes)],
     [...new Set(types)],
     used,
@@ -151,6 +183,7 @@ export class Google {
 
   constructor(
     private readonly context: GoogleContext,
+    private readonly source: string,
     private readonly wanted: readonly string[],
     private readonly types: readonly string[],
     private readonly settings: Settings,
@@ -260,7 +293,7 @@ export class Google {
     }
     for (const type of this.types) {
       const rows = await held(type, { state: "any" });
-      if (rows.some((row) => fromAnother(row.source_id, sub))) {
+      if (rows.some((row) => fromAnother(row, this.source, sub))) {
         throw otherAccount();
       }
     }
