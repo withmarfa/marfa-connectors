@@ -154,8 +154,9 @@ export async function readEdges(
  * The `edge.updated` frames that may have moved the connector's own end, by
  * declared kind and the edge's other end. That end can move only where the
  * other holds one edge of the kind, `one-to-one` or `one-to-many` as
- * declared; and an edge the row it reached has already agreed is the kit's
- * own write or a change to the edge's properties.
+ * declared; and an edge the row it reached has already agreed is a move a
+ * run has carried, or a change to the edge's properties. The kit never
+ * updates an edge itself.
  */
 export function mayHaveLeft(
   kinds: Iterable<ConnectionDefinition>,
