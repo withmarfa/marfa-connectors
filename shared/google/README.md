@@ -45,7 +45,7 @@ export default defineConnector({
 
 Call it once at the start of a run. It:
 
-1. Refreshes the access token, so a revoked grant stops the run here, before any Google call.
+1. Gets an access token, refreshing it when the process holds none or it is near its end. A grant Google already refused stops the run here.
 2. Learns the signed-in account. It reads `sub` from the ID token and asks Google's userinfo endpoint where there is no ID token.
 3. Checks the account against the one saved in the connector's state under `google_account`. The first account is kept, and a later run for another account fails with the account condition.
 4. Raises the notices and conditions below, and returns `Access`.
@@ -97,8 +97,8 @@ A terminal may cut a pasted line that is longer than about 1,000 characters. If 
 All Google connectors share one grant, so a second Google connector's setup widens it rather than replacing it.
 
 - Setup reads the scopes of the grant already in `GOOGLE_REFRESH_TOKEN` and requests them again beside its own, so the new grant holds both.
-- Google may issue a new refresh token. The person then puts the new `GOOGLE_REFRESH_TOKEN` in the environment of **every** Google connector.
-- Until they do, the first connector keeps running on the old token, which may be revoked once Google issues the new one. The new-token condition says so.
+- Setup always writes a new refresh token. The person then puts the new `GOOGLE_REFRESH_TOKEN` in the environment of **every** Google connector.
+- Until they do, the other connectors keep running on the old token, which holds only the scopes it held before. Nothing raises a condition for this, since those connectors do not know setup ran.
 
 If the grant in the environment no longer works (`invalid_grant`), setup warns and requests only the connector's own scopes. If the client is wrong (`invalid_client`), setup stops.
 
@@ -125,7 +125,7 @@ A condition appears on the connector in Marfa until a run no longer raises it. E
 | `google:refresh-token-changed` | Google issued a new refresh token during a run. The connector keeps it in memory only.                                     | Run `--setup <file>` before the connector restarts, then update every Google connector.                    |
 | `google:refresh-token-expires` | Google granted time-based access, which ends on a stated date.                                                             | Before that date, run `--setup <file>`, choose ongoing access, update every Google connector.              |
 
-After `google:reconnect` or `google:client`, the connector makes no further Google calls in that process. It does not retry a grant Google has already refused, since repeated attempts can lock the account.
+After `google:reconnect` or `google:client`, the connector makes no further Google calls in that process. It does not retry a grant Google has already refused.
 
 ## How errors are classified
 
@@ -144,6 +144,6 @@ A `Retry-After` header, as seconds or an HTTP date, sets `retryAt`. A past or in
 
 `toChangeError(error)` turns a `GoogleError` into the kit's error for an `onChange` that fails: `passing` and `quota` become `Unreachable`, with `retryAt` where Google gave one, and `refused` becomes `Refused`. It returns `undefined` for any other error, which the caller rethrows.
 
-## Sharing across connectors in one process
+## Sharing within one process
 
-Connectors in one process that use the same client and refresh token share one access token and one refresh. Once Google ends a grant, every connector in the process fails fast with the same error and none calls Google again.
+Every run and `onChange` in one process that uses the same client and refresh token shares one access token and one refresh. Once Google ends a grant, each later call in the process fails at once with the same error, and none calls Google again.
