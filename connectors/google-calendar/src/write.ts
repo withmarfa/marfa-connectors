@@ -399,14 +399,19 @@ function patchOf(
 }
 
 /** The row's times as a patch to the event Google holds: a switch between
- *  all day and timed clears the key Google held. */
+ *  all day and timed clears the key Google held. Where Google did not show
+ *  the event, as when it answers a deleted one as gone, the other key is
+ *  cleared whatever Google held. */
 function timesPatch(
   item: Item,
-  raw: Json,
+  raw: Json | undefined,
   calendar: CalendarInfo,
 ): { start: Fields; end: Fields } {
   const times = timesOf(item, calendar);
-  const wasAllDay = text(object(raw, "start"), "date") !== undefined;
+  const wasAllDay =
+    raw === undefined
+      ? undefined
+      : text(object(raw, "start"), "date") !== undefined;
   if (wasAllDay === times.allDay) return { start: times.start, end: times.end };
   const other = times.allDay ? "dateTime" : "date";
   return {
@@ -1357,7 +1362,7 @@ async function remade(
       await session.api.patch(
         parts.calendarId,
         parts.eventId,
-        whole(item, calendar),
+        restoring(item, calendar, undefined),
         undefined,
       );
       return true;
@@ -1378,7 +1383,7 @@ async function remade(
     await session.api.patch(
       parts.calendarId,
       parts.eventId,
-      whole(item, calendar),
+      restoring(item, calendar, found),
       text(found, "etag"),
     );
     return true;
@@ -1386,6 +1391,16 @@ async function remade(
     if (!lostSplit(error, parts.eventId)) throw error;
   }
   return splitAgain(change, parts, calendar, session, context, writing);
+}
+
+/** Every field Marfa sets on an event it brings back, as a patch to the
+ *  deleted event Google showed, or to one it answered as gone. */
+function restoring(
+  item: Item,
+  calendar: CalendarInfo,
+  raw: Json | undefined,
+): Record<string, unknown> {
+  return { ...whole(item, calendar), ...timesPatch(item, raw, calendar) };
 }
 
 /** Makes a split piece Google refused to bring back anew under the row's

@@ -740,6 +740,65 @@ describe("a trash, restore and purge", () => {
     expect(writes()).toHaveLength(sent);
   });
 
+  it.each([
+    ["answers it as cancelled", true],
+    ["answers it as deleted", false],
+  ])(
+    "switches a restored event between timed and all day, clearing the key Google held, when Google %s",
+    async (_, getsCancelled) => {
+      calendar.getsCancelled = getsCancelled;
+      calendar.put(
+        me,
+        timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z"),
+      );
+      calendar.put(me, {
+        id: "e2",
+        summary: "Away",
+        start: { date: "2026-11-04", timeZone: london },
+        end: { date: "2026-11-05", timeZone: london },
+        organizer: { email: me, self: true },
+      });
+      await landed();
+      const lunch = row(`${me}/e1`);
+      const away = row(`${me}/e2`);
+      server.trash(lunch.id);
+      server.trash(away.id);
+      await landed();
+
+      server.restore(lunch.id);
+      server.edit(lunch.id, {
+        all_day: true,
+        starts_at: "2026-11-02T00:00:00Z",
+        ends_at: "2026-11-03T00:00:00Z",
+      });
+      server.restore(away.id);
+      server.edit(away.id, {
+        all_day: undefined,
+        starts_at: "2026-11-04T15:00:00Z",
+        ends_at: "2026-11-04T16:00:00Z",
+      });
+      await landed();
+
+      expect(calendar.event(me, "e1")).toMatchObject({
+        status: "confirmed",
+        start: { date: "2026-11-02", timeZone: london },
+        end: { date: "2026-11-03", timeZone: london },
+      });
+      expect(calendar.event(me, "e1")?.["start"]).not.toHaveProperty(
+        "dateTime",
+      );
+      expect(calendar.event(me, "e1")?.["end"]).not.toHaveProperty("dateTime");
+      expect(calendar.event(me, "e2")).toMatchObject({
+        status: "confirmed",
+        start: { dateTime: "2026-11-04T15:00:00Z", timeZone: london },
+        end: { dateTime: "2026-11-04T16:00:00Z", timeZone: london },
+      });
+      expect(calendar.event(me, "e2")?.["start"]).not.toHaveProperty("date");
+      expect(calendar.event(me, "e2")?.["end"]).not.toHaveProperty("date");
+      expect(conditions()).toEqual({});
+    },
+  );
+
   it("makes the event again under the row's own id when Google has forgotten it", async () => {
     calendar.put(
       me,
