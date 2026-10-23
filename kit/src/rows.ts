@@ -208,15 +208,16 @@ const raced = new Set([
 const unmendable = new Set(["type_not_permitted", "type_mismatch"]);
 
 /** The rows one call of `upsert` or `archive` wrote, and how many of them
- *  were refused, by code. */
+ *  were refused, by code, apart from those the retry journal took. */
 interface Batch {
   tried: number;
   refused: number;
+  journaled: number;
   codes: Map<string, Refusal>;
 }
 
 function batch(): Batch {
-  return { tried: 0, refused: 0, codes: new Map() };
+  return { tried: 0, refused: 0, journaled: 0, codes: new Map() };
 }
 
 /** A bulk request's bounds, well inside the door's 5000 entries and
@@ -303,7 +304,7 @@ export interface Hooks {
     error: Refusal,
     singleton: boolean,
     refusedInsert: boolean,
-  ): false | "new" | "retained";
+  ): boolean;
   upserted?(type: string, entry: Entry): void;
   archivePending?(type: string, key: string): boolean;
   archived?(type: string, key: string, absent?: boolean): void;
@@ -1561,9 +1562,9 @@ export class Rows {
     }
     const captured = entry === undefined ? undefined : this.attempts.get(entry);
     const parked =
-      captured === undefined
-        ? false
-        : this.hooks.upsertRefused?.(captured, error, singleton, refusedInsert);
+      captured !== undefined &&
+      this.hooks.upsertRefused?.(captured, error, singleton, refusedInsert) ===
+        true;
     if (!parked) this.hooks.inboundRefused?.();
     this.counts.skipped += 1;
     if (raced.has(error.code)) {
@@ -1573,18 +1574,19 @@ export class Rows {
     this.hooks.refused(sourceId, `${error.code}, ${error.detail}`);
     if (unmendable.has(error.code)) return;
     this.held += 1;
-    if (parked === "retained") {
+    if (parked) {
       this.batch.tried -= 1;
+      this.batch.journaled += 1;
       return;
     }
     this.batch.refused += 1;
     this.batch.codes.set(error.code, error);
   }
 
-  /** Refusals already acknowledged with this intent and context are contained.
+  /** Refusals the retry journal took are contained by its own capacity.
    *  If every other write fails with one code, fail the run as systemic. */
   private judge(): void {
-    const { tried, refused, codes } = this.batch;
+    const { tried, refused, journaled, codes } = this.batch;
     const [only] = codes.values();
     if (
       tried < 2 ||
@@ -1597,7 +1599,7 @@ export class Rows {
     throw new Refusal(
       only.status,
       only.code,
-      `every one of the ${String(tried)} rows written was refused: ${only.detail}`,
+      `every one of the ${String(tried + journaled)} rows written was refused: ${only.detail}`,
       only.details,
     );
   }

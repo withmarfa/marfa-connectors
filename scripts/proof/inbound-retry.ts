@@ -287,13 +287,14 @@ export async function proveInboundRetry(
       },
     );
   await check(
-    "kit inbound retries: incapable, omitted, systemic and unreachable input preserve conservative progress",
+    "kit inbound retries: incapable, omitted, systemic and unreachable input preserve conservative progress, and an all-refused batch is journaled",
     async () => {
       for (const kind of [
         "incapable",
         "undeclared",
         "unlinked",
         "systemic",
+        "all-refused",
         "unreadable",
         "capability-lost",
         "mode-changed",
@@ -318,7 +319,10 @@ export async function proveInboundRetry(
               fixture.good,
               { source_id: "bad", properties: { title: "Bad" } },
             ];
-          if (kind === "systemic")
+          // Without a retry capability, two rows refused with one code fail
+          // the run as systemic; with one, the journal takes them.
+          if (kind === "systemic") delete fixture.control.config.mode;
+          if (kind === "systemic" || kind === "all-refused")
             fixture.control.config.entries = [
               fixture.bad,
               {
@@ -395,8 +399,21 @@ export async function proveInboundRetry(
             const after = await fixture.snapshot();
             assert.deepEqual(after.state.inbound, saved.state.inbound);
             assert.deepEqual(fixture.control.refetches, ["bad"]);
+          } else if (kind === "all-refused") {
+            assert.equal(first.code, 0, first.output);
+            const saved = await fixture.snapshot();
+            assert.equal(saved.state.state?.page, 1);
+            assert.deepEqual(
+              saved.state.inbound?.map((record) => record.identity.sourceId),
+              ["bad", "bad-two"],
+            );
           } else {
             assert.equal(first.code, 1, first.output);
+            if (kind === "systemic")
+              assert.match(
+                first.output,
+                /every one of the 2 rows written was refused/,
+              );
             const saved = await fixture.snapshot();
             assert.notEqual(saved.state.state?.page, 1);
             assert.equal(saved.state.inbound, undefined);
@@ -405,7 +422,7 @@ export async function proveInboundRetry(
           await fixture.stop();
         }
       }
-      return "no incapable advancement, no fabricated skipped intent, all-same-code failure unchanged, unreadable refetch retains exact marker";
+      return "no incapable advancement, no fabricated skipped intent, all-same-code failure without a capability, all-refused batch journaled with its position, unreadable refetch retains exact marker";
     },
   );
   await check(

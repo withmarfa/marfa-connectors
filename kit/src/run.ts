@@ -170,6 +170,10 @@ const moreNote = 80;
 /** The longest a single condition may be, so one never crowds out the rest. */
 const conditionCap = 500;
 
+/** The condition key, before the scope's name, of a retry journal with no
+ *  room for that scope's refusal. */
+const journalFull = "retry-journal-full:";
+
 /** The most conditions kept in the source's explicit problem snapshot. */
 const keptConditions = 200;
 
@@ -407,6 +411,9 @@ export async function runOnce<E extends EnvDeclaration>(
     blocked?: "row-refused" | "connection-unresolved";
   }
   const scopes = new Map<string, Scope>();
+  // The condition keys of the full retry journal whose scope committed a
+  // checkpoint this run, which proves the journal had room for it.
+  const roomProven = new Set<string>();
   const owners = new Map<string, Set<Scope | undefined>>();
   let activeScope: Scope | undefined;
   const phase = {
@@ -753,7 +760,7 @@ export async function runOnce<E extends EnvDeclaration>(
       error: Refusal,
       singleton: boolean,
       refusedInsert: boolean,
-    ): false | "new" | "retained" => {
+    ): boolean => {
       const scope = activeScope;
       if (
         scope?.retry === undefined ||
@@ -790,19 +797,13 @@ export async function runOnce<E extends EnvDeclaration>(
         scope.journal.set(key, record);
         if (!fitsJournal(journalFor(scope))) {
           scope.blocked = "row-refused";
+          raised.set(
+            `${journalFull}${scope.name}`,
+            `the retry journal has no room for another refusal from scope ${scope.name} (it holds at most 128 records and 64 KiB across all scopes), so the scope keeps its position until refused rows are written or archived`,
+          );
           return false;
         }
-        const retained = (acknowledged.inbound ?? []).some(
-          (saved) =>
-            identityKey(saved.identity.type, saved.identity.sourceId) === key &&
-            saved.identity.link === identity.link &&
-            saved.scope === scope.name &&
-            saved.mode === scope.retry?.mode &&
-            saved.fingerprint === fingerprint &&
-            saved.context === context &&
-            saved.code === error.code,
-        );
-        return retained ? "retained" : "new";
+        return true;
       } catch {
         return false;
       }
@@ -1619,6 +1620,7 @@ export async function runOnce<E extends EnvDeclaration>(
     }
     scope.ids.clear();
     scope.journal.clear();
+    roomProven.add(logger.redact(`${journalFull}${scope.name}`));
     for (const [identity, owner] of retryOwners)
       if (owner === scope) retryOwners.delete(identity);
     return { committed: true };
@@ -2985,6 +2987,12 @@ export async function runOnce<E extends EnvDeclaration>(
       `inbound:${identityKey(record.identity.type, record.identity.sourceId)}`,
       `the server refused ${record.identity.type} ${record.identity.sourceId}: ${record.code}, ${record.reason}; durable retry intent waits`,
     );
+  }
+  // A full journal stands until its scope commits, whether or not this run
+  // reached the scope.
+  for (const [key, message] of Object.entries(acknowledged.conditions)) {
+    if (key.startsWith(journalFull) && !roomProven.has(key) && !raised.has(key))
+      raised.set(key, message);
   }
   const keptPurges = keepPurges(true);
   // Kept redacted, key and message, since the conditions are kept on the
