@@ -160,12 +160,14 @@ function timesOf(event: GoogleEvent, calendar: CalendarInfo) {
   if (start.date !== undefined) {
     const zone = zoneOf(start.timeZone, calendar.zone);
     const first = dayStart(zone, start.date);
-    const lastDate =
-      end?.date !== undefined && end.date > start.date
-        ? end.date
-        : nextDay(start.date);
-    const last = dayStart(zone, lastDate);
-    if (first === undefined || last === undefined) return undefined;
+    if (first === undefined) return undefined;
+    const after =
+      end?.date === undefined ? undefined : dayStart(zone, end.date);
+    const last =
+      after !== undefined && after > first
+        ? after
+        : dayStart(zone, nextDay(start.date));
+    if (last === undefined) return undefined;
     return {
       allDay: true,
       zone,

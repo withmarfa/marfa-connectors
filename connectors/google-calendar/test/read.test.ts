@@ -944,6 +944,60 @@ describe("a later run", () => {
     expect(conditions()).toContain(`events-skipped:${me}`);
     expect(tokens()[me]?.token).toBeUndefined();
   });
+
+  it.each([
+    ["no end", {}],
+    ["an end that cannot be read", { end: { date: "never" } }],
+    ["a timed end", { end: { dateTime: "2026-11-03T10:00:00Z" } }],
+  ])(
+    "skips an all-day event whose start date cannot be read, with %s, and still reads the other calendars",
+    async (_, end) => {
+      calendar.put(me, { id: "broken", start: { date: "invalid" }, ...end });
+      calendar.put(
+        me,
+        timed("fine", "Fine", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+      );
+      calendar.put(
+        team,
+        timed("t", "T", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+      );
+
+      expect(await once()).toBe(0);
+
+      expect(active()).toEqual([`${me}/fine`, `${team}/t`]);
+      expect(conditions()).toContain(`events-skipped:${me}`);
+      expect(conditions()).not.toContain(`events-skipped:${team}`);
+      expect(tokens()[me]?.token).toBeUndefined();
+      expect(tokens()[team]?.token).toBeDefined();
+    },
+  );
+
+  it("reads an event whose end cannot be read as ending where it starts, or a day later for an all-day one", async () => {
+    calendar.put(me, {
+      id: "day",
+      summary: "Day",
+      start: { date: "2026-11-02" },
+      end: { date: "never" },
+    });
+    calendar.put(me, {
+      id: "slot",
+      summary: "Slot",
+      start: { dateTime: "2026-11-02T09:00:00Z" },
+      end: { dateTime: "never" },
+    });
+
+    expect(await once()).toBe(0);
+
+    expect(row(`${me}/day`).properties).toMatchObject({
+      starts_at: "2026-11-02T00:00:00Z",
+      ends_at: "2026-11-03T00:00:00Z",
+    });
+    expect(row(`${me}/slot`).properties).toMatchObject({
+      starts_at: "2026-11-02T09:00:00Z",
+      ends_at: "2026-11-02T09:00:00Z",
+    });
+    expect(conditions()).not.toContain(`events-skipped:${me}`);
+  });
 });
 
 describe("read only calendars", () => {
