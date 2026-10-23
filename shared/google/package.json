@@ -1,0 +1,17 @@
+{
+  "name": "@withmarfa/google",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@withmarfa/connector": "workspace:*"
+  }
+}

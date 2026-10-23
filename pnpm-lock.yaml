@@ -147,6 +147,12 @@ importers:
         specifier: workspace:*
         version: link:../kit
 
+  shared/google:
+    dependencies:
+      '@withmarfa/connector':
+        specifier: workspace:*
+        version: link:../../kit
+
   shared/readwise:
     dependencies:
       '@withmarfa/connector':

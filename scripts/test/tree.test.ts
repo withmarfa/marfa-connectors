@@ -28,6 +28,36 @@ function tree(): { path: string; text: string }[] {
     });
 }
 
+/** Whether Docker leaves `path` out of the build context: the last rule
+ *  that matches it, or a folder it is in, decides, and `!` takes it back. */
+function dockerIgnores(rules: readonly string[], path: string): boolean {
+  const parts = path.split("/");
+  const within = parts.map((_, end) => parts.slice(0, end + 1).join("/"));
+  let ignored = false;
+  for (const rule of rules) {
+    const keep = rule.startsWith("!");
+    const glob = (keep ? rule.slice(1) : rule).replace(/^\//, "");
+    const pattern = new RegExp(
+      `^${glob
+        .split(/(\*\*\/|\*\*|\*|\?)/)
+        .map((token) =>
+          token === "**/"
+            ? "(?:.*/)?"
+            : token === "**"
+              ? ".*"
+              : token === "*"
+                ? "[^/]*"
+                : token === "?"
+                  ? "[^/]"
+                  : token.replace(/[.+^${}()|[\]\\]/g, "\\$&"),
+        )
+        .join("")}$`,
+    );
+    if (within.some((one) => pattern.test(one))) ignored = !keep;
+  }
+  return ignored;
+}
+
 function declaresVersion(manifest: string): boolean {
   return Object.hasOwn(JSON.parse(manifest) as object, "version");
 }
@@ -202,6 +232,59 @@ describe("the tree", () => {
     expect(
       unbuilt(packages, readFileSync(resolve(root, "tsconfig.json"), "utf8")),
     ).toEqual([]);
+  });
+
+  it("copies every shared package into the image without naming one", () => {
+    const dockerfile = readFileSync(
+      resolve(root, "template/Dockerfile"),
+      "utf8",
+    );
+    const copied = [...dockerfile.matchAll(/^COPY\s+(\S+)/gm)].map(
+      ([, source = ""]) => source,
+    );
+    expect(copied).toContain("shared");
+    expect(copied.filter((source) => source.startsWith("shared/"))).toEqual([]);
+    const shared = trackedPaths()
+      .filter((path) => /^shared\/[^/]+\/package\.json$/.test(path))
+      .map((path) => path.split("/")[1]);
+    expect(shared).toContain("google");
+    expect(shared).toContain("readwise");
+  });
+
+  it("takes only the shared packages' manifests and sources into the image, and no .env file at any depth", () => {
+    const rules = readFileSync(resolve(root, ".dockerignore"), "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    const kept = [
+      "shared/google/package.json",
+      "shared/google/tsconfig.json",
+      "shared/google/src/index.ts",
+      "shared/google/src/env.ts",
+      "shared/readwise/src/nested/deep.ts",
+      "kit/src/env.ts",
+      "connectors/rss/src/.envrc.ts",
+    ];
+    const left = [
+      ".env",
+      ".env.development",
+      "shared/google/.env",
+      "shared/google/src/.env",
+      "shared/google/src/nested/.env.production",
+      "kit/src/.env",
+      "kit/.env.staging",
+      "connectors/rss/src/.env",
+      "template/connector/.env.example",
+      "shared/google/secrets.json",
+      "shared/google/README.md",
+      "shared/google/test/google.test.ts",
+      "shared/google/dist/index.js",
+      "shared/google/node_modules/x/index.js",
+      "shared/readwise/notes/package.json",
+      "shared/readwise/vitest.config.ts",
+    ];
+    expect(kept.filter((path) => dockerIgnores(rules, path))).toEqual([]);
+    expect(left.filter((path) => !dockerIgnores(rules, path))).toEqual([]);
   });
 
   it("runs every workflow job on standard hosted Linux", () => {

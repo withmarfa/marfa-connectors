@@ -1,3 +1,5 @@
+import type { Readable } from "node:stream";
+
 export interface Clock {
   now(): Date;
   sleep(ms: number, signal: AbortSignal): Promise<void>;
@@ -12,6 +14,9 @@ export interface Runtime {
   /** A number from 0 up to, not including, 1. */
   readonly random: () => number;
   onStop(listener: () => void): void;
+  /** What a person types or pastes into the terminal. Read only during
+   *  setup, and only while a `listen` that takes a paste waits. */
+  readonly stdin?: Readable | undefined;
 }
 
 /** The longest delay a timer holds; a longer one fires at once. */
@@ -55,6 +60,14 @@ export function nodeRuntime(): Runtime {
     clock: systemClock,
     requestTimeoutMs: 60_000,
     random: Math.random,
+    get stdin() {
+      // A process started without a standard input may refuse to open it.
+      try {
+        return process.stdin;
+      } catch {
+        return undefined;
+      }
+    },
     onStop: (listener) => {
       let called = false;
       const once = (): void => {

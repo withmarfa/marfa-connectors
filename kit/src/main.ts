@@ -502,6 +502,7 @@ interface Shared<E extends EnvDeclaration> {
   readonly clock: Runtime["clock"];
   readonly random: () => number;
   readonly stop: AbortController;
+  readonly stdin: () => Runtime["stdin"];
   readonly telemetry: Telemetry;
 }
 
@@ -648,6 +649,7 @@ async function started<E extends EnvDeclaration>(
     clock,
     random: runtime.random,
     stop,
+    stdin: () => runtime.stdin,
     telemetry,
   };
   let lostAt: number | undefined;
@@ -686,6 +688,7 @@ async function serve<E extends EnvDeclaration>(
     clock,
     random,
     stop,
+    stdin,
     telemetry,
   } = shared;
   const stopped = (): boolean => stop.signal.aborted;
@@ -753,6 +756,7 @@ async function serve<E extends EnvDeclaration>(
       stop.signal,
       schedule.file,
       clock.now().toISOString(),
+      stdin,
     );
   }
 

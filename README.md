@@ -4,7 +4,8 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
 
 ## What is here
 
-- [`kit/`](./kit): the package `@withmarfa/connector`, which makes a connector a page of code. It is the only package here that is imported.
+- [`kit/`](./kit): the package `@withmarfa/connector`, which makes a connector a page of code.
+- [`shared/`](./shared): private packages that related connectors share: Readwise's schemas and mappings, and the Google sign-in in [`shared/google`](./shared/google/README.md). They are never published.
 - [`template/`](./template): what a new connector starts from. Its [README](./template/README.md) is the guide to writing one, minting its key, running it, and deploying it with launchd or Docker.
 - [`connectors/`](./connectors): the connectors, one folder each, run and never published.
   - [`github`](./connectors/github/README.md): repositories, issues, comments, read-only pull requests and retained issue/comment files from a personal token or GitHub App, with relations, closing issues and checks; App runs carry issue and comment edits back.

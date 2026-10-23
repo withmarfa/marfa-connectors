@@ -4,9 +4,12 @@ import { open, rm } from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
+import { createInterface, type Interface } from "node:readline";
+import type { Readable } from "node:stream";
 import type {
   Connector,
   EnvDeclaration,
+  ListenOptions,
   LocalCallback,
   SetupContext,
 } from "./define.js";
@@ -23,6 +26,83 @@ const failed =
 interface Served {
   readonly server: Server;
   release(succeeded: boolean): void;
+}
+
+const notTheAddress =
+  "what was pasted is not the address the browser ended on after the vendor sent it back: paste the whole address from the browser's address bar, or finish in a browser on this machine";
+
+const ignore = (): void => undefined;
+
+/**
+ * Reads the lines a person pastes into the terminal while setup waits for a
+ * redirect, and hands each address to whoever waits for one like it. It
+ * reads nothing until something waits, and nothing once nothing does, so
+ * standard input never holds the process after setup ends.
+ */
+class Pasted {
+  private readonly waiting = new Set<(address: URL) => boolean>();
+  private lines: Interface | undefined;
+
+  constructor(
+    private readonly input: () => Readable | undefined,
+    private readonly logger: Logger,
+  ) {}
+
+  /** Whether a person could paste at all: a closed input cannot. */
+  get possible(): boolean {
+    return this.input()?.readable === true;
+  }
+
+  /** Offers each pasted address to `accept`, which answers whether it took
+   *  it. The answer stops the waiting. */
+  wait(accept: (address: URL) => boolean): () => void {
+    this.waiting.add(accept);
+    this.read();
+    return () => {
+      this.waiting.delete(accept);
+      if (this.waiting.size === 0) this.close();
+    };
+  }
+
+  close(): void {
+    this.waiting.clear();
+    const lines = this.lines;
+    this.lines = undefined;
+    lines?.close();
+  }
+
+  private read(): void {
+    const input = this.input();
+    if (this.lines !== undefined || input?.readable !== true) return;
+    const lines = createInterface({
+      input,
+      terminal: false,
+      crlfDelay: Infinity,
+    });
+    // A terminal that goes away is no reason to stop waiting for the browser;
+    // the interface passes on its input's error.
+    lines.on("error", ignore);
+    lines.on("line", (line) => {
+      this.take(line);
+    });
+    lines.on("close", () => {
+      if (this.lines === lines) this.lines = undefined;
+    });
+    this.lines = lines;
+  }
+
+  private take(line: string): void {
+    const text = line.trim();
+    if (text === "") return;
+    const address = URL.parse(text);
+    if (
+      (address?.protocol === "http:" || address?.protocol === "https:") &&
+      [...this.waiting].some((accept) => accept(address))
+    ) {
+      return;
+    }
+    this.logger.warn(notTheAddress);
+  }
 }
 
 /** The root of the git working tree holding `file`, a checkout's `.git`
@@ -54,6 +134,7 @@ export async function setUp<E extends EnvDeclaration>(
   signal: AbortSignal,
   file: string,
   at: string,
+  stdin: () => Readable | undefined,
 ): Promise<number> {
   const setup = connector.setup;
   if (setup === undefined) throw new Error("the connector has no setup");
@@ -65,6 +146,7 @@ export async function setUp<E extends EnvDeclaration>(
     return 1;
   }
   const servers: Served[] = [];
+  const pasted = new Pasted(stdin, logger);
   const made: { id: string; label: string }[] = [];
   const context: SetupContext<E> = {
     env: environment.values,
@@ -80,7 +162,8 @@ export async function setUp<E extends EnvDeclaration>(
     secret: (value) => {
       keepSecret(logger, value);
     },
-    listen: (page) => serve(page, servers, logger, signal),
+    listen: (page, options) =>
+      serve(page, options, servers, logger, signal, pasted),
     endpoint: async (options = {}) => {
       // The listing shows an address by its last four characters, so the
       // label is what tells this setup's endpoint from an earlier one's.
@@ -139,6 +222,7 @@ export async function setUp<E extends EnvDeclaration>(
     succeeded = code === 0;
     return code;
   } finally {
+    pasted.close();
     for (const served of servers) {
       served.release(succeeded);
       served.server.close();
@@ -166,9 +250,11 @@ async function retire(
 
 function serve(
   page: string | ((callback: string) => string) | undefined,
+  options: ListenOptions | undefined,
   servers: Served[],
   logger: Logger,
   signal: AbortSignal,
+  pasted: Pasted,
 ): Promise<LocalCallback> {
   let arrived!: (query: URLSearchParams) => void;
   let stopped!: (reason: Error) => void;
@@ -176,7 +262,11 @@ function serve(
     arrived = resolve;
     stopped = reject;
   });
+  // The first of the browser and a pasted address wins; the other is ignored.
+  let came: "browser" | "paste" | undefined;
+  let stopWaiting: (() => void) | undefined;
   signal.addEventListener("abort", () => {
+    stopWaiting?.();
     stopped(new Error("stopped before the vendor redirected back"));
   });
   // A setup that never waits for the redirect leaves nothing unhandled.
@@ -190,11 +280,18 @@ function serve(
       .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       .end(html);
   };
+  const arrive = (by: "browser" | "paste", query: URLSearchParams): boolean => {
+    if (came !== undefined) return false;
+    came = by;
+    stopWaiting?.();
+    arrived(query);
+    return true;
+  };
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (url.pathname === `${base}/callback` && held === undefined) {
+    if (url.pathname === `${base}/callback` && came === undefined) {
       held = response;
-      arrived(url.searchParams);
+      arrive("browser", url.searchParams);
       return;
     }
     if (url.pathname !== base || shown === undefined) {
@@ -217,6 +314,10 @@ function serve(
     if (target?.protocol !== "https:" && target?.protocol !== "http:") {
       throw new Error("onward sends the browser only to a web address");
     }
+    if (came === "paste") {
+      logger.info(`open ${target.toString()} in a browser to go on`);
+      return;
+    }
     if (held === undefined) {
       throw new Error(
         "onward sends on the browser the vendor sent back, which has not arrived",
@@ -232,15 +333,28 @@ function serve(
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
       const url = `http://127.0.0.1:${String(port)}${base}`;
+      const callback = `${url}/callback`;
+      let elsewhere: string | undefined;
       try {
-        shown = typeof page === "function" ? page(`${url}/callback`) : page;
+        shown = typeof page === "function" ? page(callback) : page;
+        elsewhere = options?.paste?.(callback);
       } catch (error) {
         server.close();
         reject(error instanceof Error ? error : new Error(String(error)));
         return;
       }
       logger.info(`open ${url} in a browser`);
-      resolve({ url, callback: `${url}/callback`, redirected, onward });
+      if (elsewhere !== undefined && pasted.possible) {
+        logger.info(
+          `from a browser on another machine, open ${elsewhere} there, then paste the address it ends on into this terminal and press Enter`,
+        );
+        stopWaiting = pasted.wait(
+          (address) =>
+            address.pathname === `${base}/callback` &&
+            arrive("paste", address.searchParams),
+        );
+      }
+      resolve({ url, callback, redirected, onward });
     });
   });
 }

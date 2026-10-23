@@ -65,6 +65,16 @@ describe("what a change runs beyond formatting and the scan", () => {
     ["the kit", ["kit/src/main.ts"], ["code", "proof", "image"]],
     ["the kit's tests", ["kit/test/scripted-server.ts"], ["code"]],
     [
+      "a shared package's source",
+      ["shared/google/src/google.ts"],
+      ["code", "proof", "image"],
+    ],
+    [
+      "a shared package's test",
+      ["shared/google/test/google.test.ts"],
+      ["code"],
+    ],
+    [
       "the template",
       ["template/connector/src/main.ts"],
       ["code", "proof", "image"],

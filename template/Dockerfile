@@ -1,9 +1,11 @@
 # Build from the repository root using the published client:
 #   docker build -f template/Dockerfile --build-arg CONNECTOR=<name> -t <name> .
 # CONNECTOR_DIR names the folder when it is not connectors/<name>.
-# Only the manifests and the kit's, shared package's and connector's
-# sources are copied, so no other file in the checkout, such as one of
-# secrets, reaches the build.
+# Only the manifests and the kit's, the shared packages' and the
+# connector's sources are copied: `COPY shared shared` takes each shared
+# package's package.json, tsconfig.json and src, since .dockerignore leaves
+# out everything else under shared/, so no other file in the checkout, such
+# as one of secrets, reaches the build.
 FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS build
 ARG CONNECTOR
 ARG CONNECTOR_DIR=connectors/${CONNECTOR}
@@ -12,8 +14,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY kit/package.json kit/tsconfig.json kit/
 COPY kit/src kit/src
-COPY shared/readwise/package.json shared/readwise/tsconfig.json shared/readwise/
-COPY shared/readwise/src shared/readwise/src
+COPY shared shared
 COPY ${CONNECTOR_DIR}/package.json ${CONNECTOR_DIR}/tsconfig.json ${CONNECTOR_DIR}/
 COPY ${CONNECTOR_DIR}/src ${CONNECTOR_DIR}/src
 RUN pnpm install --frozen-lockfile --filter "${CONNECTOR}..." --filter marfa-connectors \

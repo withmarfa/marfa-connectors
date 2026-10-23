@@ -5,7 +5,7 @@ The connectors for Marfa: a small kit that makes a connector a page of code, a t
 ## Layout
 
 - `kit/`: the reusable connector runtime package `@withmarfa/connector`.
-- `shared/`: private workspace packages for vendor schemas and mappings shared by related connectors.
+- `shared/`: private workspace packages shared by related connectors: vendor schemas and mappings, and the Google sign-in in `shared/google`.
 - `template/`: what a new connector starts from. `template/connector/` is copied to `connectors/<name>/`; beside it are its README, a LaunchAgent and a Dockerfile.
 - `connectors/<name>/`: one folder per connector, run and never published.
 - `scripts/`: the pinned proof-server preparation script, the proof harness, which builds a connector of its own on the kit, with the vendor stubs it shares with the connectors' tests, and tests that refuse a version in a manifest or a file holding one, a home directory, machine name or personal address, tracked build output, a package left out of the build, and a workflow job off standard GitHub-hosted runners.
