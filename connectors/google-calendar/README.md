@@ -170,6 +170,8 @@ A change to a series' `recurrence` sends the rules it holds, and keeps Google's 
 
 A changed occurrence's row changes that occurrence alone. A series can't stop repeating from Marfa: a `recurrence` with no rules left is refused. An occurrence can't move to another calendar on its own, because Google moves a whole series.
 
+When a restored series row's event is gone from Google for good, the connector makes the series again with its rules and every `EXDATE` line the row holds, so the dates the series skipped stay skipped.
+
 ### Errors
 
 A rate limit, a server error or no answer from Google leaves the change in Marfa, raises a condition, and sends it again on the next run. A value Google refuses raises a condition that names the row, and the change isn't sent again until the row changes.

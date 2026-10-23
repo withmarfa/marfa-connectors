@@ -441,20 +441,25 @@ async function create(
       `The account can only read the calendar ${calendar.title}, so ${named(item)} is not made there`,
     );
   }
+  return make(change, makingFor(item, calendar), context, writing);
+}
+
+/**
+ * The write that makes the row's event under its own id. A new event has no
+ * occurrences to cancel one by one, so a series takes every line the row
+ * holds: its rules, and the dates it skips, both Google's own lines and the
+ * ones this connector added for occurrences Google cancelled by name.
+ */
+function makingFor(item: Item, calendar: CalendarInfo): Making {
   const lines = linesOf(item.properties["recurrence"]);
-  return make(
-    change,
-    {
-      calendarId: calendar.id,
-      eventId: eventIdFor(item.id),
-      body: {
-        ...whole(item, calendar),
-        ...(lines.length > 0 && { recurrence: lines }),
-      },
+  return {
+    calendarId: calendar.id,
+    eventId: eventIdFor(item.id),
+    body: {
+      ...whole(item, calendar),
+      ...(lines.length > 0 && { recurrence: lines }),
     },
-    context,
-    writing,
-  );
+  };
 }
 
 /**
@@ -902,22 +907,7 @@ async function remade(
       if (!isGone(error)) throw error;
     }
     // The id is gone for good, so the event is made anew under the row's.
-    const lines = linesOf(item.properties["recurrence"]).filter(
-      (line) => !isExdate(line),
-    );
-    await make(
-      change,
-      {
-        calendarId: calendar.id,
-        eventId: eventIdFor(item.id),
-        body: {
-          ...whole(item, calendar),
-          ...(lines.length > 0 && { recurrence: lines }),
-        },
-      },
-      context,
-      writing,
-    );
+    await make(change, makingFor(item, calendar), context, writing);
     return true;
   }
   const event = eventOf(found);

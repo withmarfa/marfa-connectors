@@ -761,6 +761,67 @@ describe("a series", () => {
     ).toEqual([]);
   });
 
+  it("makes a series Google forgot again with every date it skips, Google's own and those it cancelled by name", async () => {
+    calendar.put(me, {
+      ...series,
+      recurrence: [
+        "RRULE:FREQ=WEEKLY;BYDAY=MO",
+        "EXDATE;TZID=Europe/London:20261026T100000",
+      ],
+    });
+    const { id, ...rest } = occurrence("2026-11-02T10:00:00Z");
+    calendar.cancel(me, id, rest);
+    await landed();
+    const one = row(`${me}/weekly`);
+    const lines = [
+      "RRULE:FREQ=WEEKLY;BYDAY=MO",
+      "EXDATE;TZID=Europe/London:20261026T100000",
+      "EXDATE:20261102T100000Z",
+    ];
+    expect(one.properties["recurrence"]).toEqual(lines);
+    server.trash(one.id);
+    await landed();
+    calendar.forget(me, "weekly");
+
+    server.restore(one.id);
+    await landed();
+
+    const made = writes("POST").at(-1);
+    expect(made?.body?.["id"]).toBe(eventIdFor(one.id));
+    expect(made?.body?.["recurrence"]).toEqual(lines);
+    expect(server.byId(one.id).properties["recurrence"]).toEqual(lines);
+  });
+
+  it("makes an all-day series Google forgot again with the dates it cancelled by name", async () => {
+    calendar.put(me, {
+      ...series,
+      id: "daily",
+      start: { date: "2026-10-19" },
+      end: { date: "2026-10-20" },
+      recurrence: ["RRULE:FREQ=DAILY;COUNT=30"],
+    });
+    calendar.cancel(me, "daily_20261102", {
+      recurringEventId: "daily",
+      originalStartTime: { date: "2026-11-02" },
+    });
+    await landed();
+    const one = row(`${me}/daily`);
+    const lines = ["RRULE:FREQ=DAILY;COUNT=30", "EXDATE;VALUE=DATE:20261102"];
+    expect(one.properties["recurrence"]).toEqual(lines);
+    server.trash(one.id);
+    await landed();
+    calendar.forget(me, "daily");
+
+    server.restore(one.id);
+    await landed();
+
+    expect(writes("POST").at(-1)?.body).toMatchObject({
+      id: eventIdFor(one.id),
+      start: { date: "2026-10-19" },
+      recurrence: lines,
+    });
+  });
+
   it("edits a changed occurrence on its own", async () => {
     calendar.put(me, series);
     calendar.put(me, {
