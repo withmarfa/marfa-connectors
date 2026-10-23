@@ -8,7 +8,7 @@ import type {
   ConnectionDefinition,
 } from "@withmarfa/connector";
 import { assetsIn, openAsset, type Asset } from "./assets.js";
-import { batches, queryNodes, type Client } from "./github.js";
+import { batches, query, type Client } from "./github.js";
 
 export const fileFields = [
   "github_id",
@@ -276,6 +276,18 @@ async function keep(
       await opened.bytes.cancel().catch(() => undefined);
   }
 }
+/** Discussions are outside the attachment import, and the issues token that
+ *  reads these bodies may not ask for their comments. A discussion comment's
+ *  address is the one thing its row holds that says so. */
+function inDiscussion(row: Item): boolean {
+  const url = row.properties["url"];
+  return (
+    row.type === "github.comment" &&
+    typeof url === "string" &&
+    /\/discussions\/\d+#discussioncomment-/.test(url)
+  );
+}
+
 export interface Repository {
   id: string;
   name: string;
@@ -305,6 +317,7 @@ export async function preserveFiles(
     for (const row of await context.held(type, { state: "any" }))
       if (
         row.state !== "trashed" &&
+        !inDiscussion(row) &&
         (connected.has(row.id) ||
           noteOf(row.properties["github_files"])?.repository_id ===
             repository.id)
@@ -347,13 +360,11 @@ export async function preserveFiles(
     const variant = type === "github.issue" ? "Issue" : "IssueComment";
     const operation = type === "github.issue" ? "FileIssues" : "FileComments";
     for (const ids of batches([...byId.keys()])) {
-      const answer = (
-        await queryNodes(
-          client,
-          `query ${operation}($ids: [ID!]!) { nodes(ids: $ids) { ... on ${variant} { id bodyHTML } } }`,
-          ids,
-        )
-      ).data as { nodes: ({ id: string; bodyHTML: string } | null)[] };
+      const answer = (await query(
+        client,
+        `query ${operation}($ids: [ID!]!) { nodes(ids: $ids) { ... on ${variant} { id bodyHTML } } }`,
+        { ids },
+      )) as { nodes: ({ id: string; bodyHTML: string } | null)[] };
       for (const id of ids) {
         const parent = byId.get(id);
         if (parent === undefined) continue;

@@ -1593,11 +1593,13 @@ async function checkComments(
       ? []
       : [link];
   });
-  // A comment GitHub refuses to show the token is not proven gone.
+  // A comment GitHub refuses the token, or shows as another kind of node, is
+  // not proven gone.
   const asked = await commentsByNode(octokit, absent);
   const still = new Set([
     ...asked.found.map((comment) => comment.node),
     ...asked.refused,
+    ...asked.elsewhere,
   ]);
   // A comment of an issue that moved, whose row is still active, is not
   // proven gone: its issue's row was kept apart from the issue it became, and
@@ -1767,7 +1769,7 @@ async function readNamed(
   // What GitHub shows anywhere is not gone, though outside the sync.
   const shown = new Set<string>();
   const notApplied = new Set<string>();
-  let namedComments = [...(hints?.get(commentType) ?? [])];
+  const namedComments = [...(hints?.get(commentType) ?? [])];
   const namedIssues = new Set(hints?.get(issueType) ?? []);
   const pullHints = [...(hints?.get(pullRequestType) ?? [])];
   const namedPRs = new Set<string>();
@@ -1820,33 +1822,16 @@ async function readNamed(
   };
   await askPRs([...namedPRs]);
 
-  // A discussion comment is none of an issue's, and the token that reads
-  // issues may not ask for it: the read of its discussion deals with it.
-  const namedDiscussions = new Set(hints?.get(discussionType) ?? []);
-  let unseenDiscussions = new Set<string>();
-  if (namedDiscussions.size > 0) {
-    const read = await readNamedDiscussions(context, namedDiscussions, {
-      listed,
-      synced,
-      clients: new Map(
-        [...discussionClients].filter(([installation]) =>
-          clients.has(installation),
-        ),
-      ),
-      hidden: (node) => privateIn(privacy, node),
-      attempt,
-      deferred: () => deferred.size > 0,
-    });
-    unseenDiscussions = read.unseen;
-    namedComments = namedComments.filter((id) => !read.handled.has(id));
-  }
   for (const [installation, octokit] of clients) {
     const wanted = namedComments.filter((id) => !comments.has(id));
     const asked = await attempt(installation, () =>
       commentsByNode(octokit, wanted),
     );
-    // What the token was refused is not gone, only unread by it.
-    for (const id of asked?.refused ?? []) shown.add(id);
+    // A discussion comment is not an issue's, and the token that reads issues
+    // may not show it: it is not gone, and the read of its discussion deals
+    // with it.
+    for (const id of [...(asked?.refused ?? []), ...(asked?.elsewhere ?? [])])
+      shown.add(id);
     for (const comment of asked?.found ?? []) {
       shown.add(comment.node);
       if (!synced.has(comment.repository.node)) {
@@ -2097,6 +2082,26 @@ async function readNamed(
       ),
     ),
   );
+
+  const namedDiscussions = new Set(hints?.get(discussionType) ?? []);
+  let unseenDiscussions = new Set<string>();
+  if (namedDiscussions.size > 0) {
+    const read = await readNamedDiscussions(context, namedDiscussions, {
+      listed,
+      synced,
+      clients: new Map(
+        [...discussionClients].filter(([installation]) =>
+          clients.has(installation),
+        ),
+      ),
+      hidden: (node) => privateIn(privacy, node),
+      deferred: deferred.size > 0,
+    });
+    unseenDiscussions = read.unseen;
+    // A discussion comment is none of an issue's: what its discussion's read
+    // settled is not judged again as one.
+    for (const link of read.handled) shown.add(link);
+  }
 
   const unfinished = (): void => {
     if (

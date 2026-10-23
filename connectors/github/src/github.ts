@@ -572,20 +572,25 @@ export async function query(
 }
 
 /** GraphQL's answer to a query of `nodes(ids:)`, in the order asked, with null
- *  for a node that is gone or that the token may not read. A node GitHub
- *  refuses with FORBIDDEN, as it does a Discussions node asked for by a token
- *  without the Discussions permission, is named in `refused` and never taken
- *  for gone: the rest of the batch is answered either way. A refusal that
- *  names no node, such as one for the whole query, still throws. */
+ *  for a node that is gone and for a node GitHub refuses the token with
+ *  FORBIDDEN, as it does a private repository's Discussions node asked for by
+ *  a token without the Discussions permission. A node refused, at any path
+ *  under it, is named in `refused` and its data is nulled, so it is never
+ *  taken for gone or read in part. A refusal that names no node, such as one
+ *  for the whole query, still throws, as does any other error. */
 export async function queryNodes(
   octokit: Client,
   text: string,
   ids: readonly string[],
-): Promise<{ data: unknown; refused: Set<string> }> {
+): Promise<{ nodes: unknown[]; refused: Set<string> }> {
   try {
-    return { data: await octokit.graphql(text, { ids }), refused: new Set() };
+    const answer = await octokit.graphql<{ nodes: unknown[] }>(text, { ids });
+    return { nodes: answer.nodes, refused: new Set() };
   } catch (error) {
     if (!(error instanceof GraphqlResponseError)) throw error;
+    const data = error.data as { nodes?: unknown } | null;
+    if (!Array.isArray(data?.nodes)) throw error;
+    const nodes: unknown[] = [...(data.nodes as unknown[])];
     const refused = new Set<string>();
     for (const one of error.errors ?? []) {
       if (one.type === "NOT_FOUND") continue;
@@ -595,10 +600,9 @@ export async function queryNodes(
       if (one.type !== "FORBIDDEN" || field !== "nodes" || id === undefined)
         throw error;
       refused.add(id);
+      nodes[at as number] = null;
     }
-    if ((error.data as { nodes?: unknown } | null)?.nodes === undefined)
-      throw error;
-    return { data: error.data, refused };
+    return { nodes, refused };
   }
 }
 

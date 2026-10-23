@@ -130,16 +130,6 @@ async function watching(
   }
 }
 
-/** The requests that asked GitHub for a comment as an issue comment. */
-function askedForAsIssueComment(node: string): unknown[] {
-  return github.asked.filter(
-    (one) =>
-      one.path === "/graphql" &&
-      /query\s+(?:File)?Comments\b/.test(JSON.stringify(one.body)) &&
-      JSON.stringify(one.body).includes(node),
-  );
-}
-
 function kept(): unknown {
   return structuredClone(marfa.states.get("github")?.["state"]);
 }
@@ -630,65 +620,100 @@ describe("a run for deliveries", () => {
     });
   });
 
-  it("succeeds on a discussion comment's delivery, edited or created, without asking the issues token for the comment, and takes the delivery after it", async () => {
-    const repository = github.addRepository("someone/tracker");
-    const issue = github.addIssue(repository);
-    const discussion = github.addDiscussion(repository);
-    const comment = github.addDiscussionComment(discussion, "Before");
-    await watching(async () => {
-      deliver("ping", {});
-      await until(() => marfa.runs.length > 1, "the first run for deliveries");
-      github.asked.length = 0;
-      github.editDiscussionComment(comment, "After");
-      deliver("discussion_comment", {
-        action: "edited",
-        comment: { node_id: comment.node },
-        discussion: { node_id: discussion.node },
+  it.each([true, false])(
+    "succeeds on a discussion comment's delivery and takes the delivery after it (private: %s)",
+    async (hidden) => {
+      const repository = github.addRepository("someone/tracker", {
+        private: hidden,
       });
-      await until(
-        () => row(comment.node).properties["body"] === "After",
-        "the edited comment being written",
-      );
-      await until(
-        () => marfa.deliveries.at(-1)?.outcome === "processed",
-        "the delivery being processed",
-      );
-      expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
-      expect(askedForAsIssueComment(comment.node)).toEqual([]);
-      const issueComment = github.addComment(issue, "Seen on GitHub");
-      deliver("issue_comment", {
-        action: "created",
-        comment: { node_id: issueComment.node },
-        issue: { node_id: issue.node },
+      const issue = github.addIssue(repository);
+      const discussion = github.addDiscussion(repository);
+      const comment = github.addDiscussionComment(discussion, "Before");
+      await watching(async () => {
+        deliver("ping", {});
+        await until(
+          () => marfa.runs.length > 1,
+          "the first run for deliveries",
+        );
+        github.editDiscussionComment(comment, "After");
+        deliver("discussion_comment", {
+          action: "edited",
+          comment: { node_id: comment.node },
+          discussion: { node_id: discussion.node },
+        });
+        await until(
+          () => row(comment.node).properties["body"] === "After",
+          "the edited comment being written",
+        );
+        await until(
+          () => marfa.deliveries.at(-1)?.outcome === "processed",
+          "the delivery being processed",
+        );
+        expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+        const issueComment = github.addComment(issue, "Seen on GitHub");
+        deliver("issue_comment", {
+          action: "created",
+          comment: { node_id: issueComment.node },
+          issue: { node_id: issue.node },
+        });
+        await until(
+          () =>
+            marfa.rows.some(
+              (one) => one.properties["github_id"] === issueComment.node,
+            ),
+          "the next delivery's comment being written",
+        );
+        expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
       });
-      await until(
-        () =>
-          marfa.rows.some(
-            (one) => one.properties["github_id"] === issueComment.node,
-          ),
-        "the next delivery's comment being written",
-      );
-      expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
-    });
-  });
+    },
+  );
 
-  it("reads an issue comment and a discussion comment named in one run, and leaves the discussion comment as it was where GitHub refuses Discussions", async () => {
+  it.each([true, false])(
+    "leaves a named discussion comment as it was, never archived, where GitHub refuses Discussions (private: %s)",
+    async (hidden) => {
+      const repository = github.addRepository("someone/tracker", {
+        private: hidden,
+      });
+      const discussion = github.addDiscussion(repository);
+      const comment = github.addDiscussionComment(discussion, "Before");
+      const deleted = github.addDiscussionComment(discussion, "Deleted soon");
+      await watching(async () => {
+        github.discussionsForbidden = true;
+        github.editDiscussionComment(comment, "After");
+        github.removeDiscussionComment(deleted);
+        deliver("discussion_comment", {
+          action: "deleted",
+          comment: { node_id: deleted.node },
+          discussion: { node_id: discussion.node },
+        });
+        deliver("discussion_comment", {
+          action: "edited",
+          comment: { node_id: comment.node },
+          discussion: { node_id: discussion.node },
+        });
+        await until(
+          () =>
+            marfa.deliveries.filter((one) => one.outcome === "processed")
+              .length === 2,
+          "both deliveries being processed",
+        );
+        expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+        expect(row(deleted.node).state).toBe("active");
+        expect(row(comment.node).state).toBe("active");
+        expect(row(comment.node).properties["body"]).toBe("Before");
+      });
+    },
+  );
+
+  it("updates an issue comment and handles a discussion comment named in one delivery run", async () => {
     const repository = github.addRepository("someone/tracker");
     const issue = github.addIssue(repository);
     const issueComment = github.addComment(issue, "Before");
     const discussion = github.addDiscussion(repository);
     const comment = github.addDiscussionComment(discussion, "Before");
-    const deleted = github.addDiscussionComment(discussion, "Deleted soon");
     await watching(async () => {
-      github.discussionsForbidden = true;
       github.editComment(issueComment, "After");
       github.editDiscussionComment(comment, "After");
-      github.removeDiscussionComment(deleted);
-      deliver("discussion_comment", {
-        action: "deleted",
-        comment: { node_id: deleted.node },
-        discussion: { node_id: discussion.node },
-      });
       deliver("discussion_comment", {
         action: "edited",
         comment: { node_id: comment.node },
@@ -700,20 +725,46 @@ describe("a run for deliveries", () => {
         issue: { node_id: issue.node },
       });
       await until(
-        () => row(issueComment.node).properties["body"] === "After",
-        "the issue comment being written",
-      );
-      await until(
         () =>
           marfa.deliveries.filter((one) => one.outcome === "processed")
-            .length === 3,
-        "all three deliveries being processed",
+            .length === 2,
+        "both deliveries being processed",
       );
       expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
-      expect(row(deleted.node).state).toBe("active");
+      expect(row(issueComment.node).properties["body"]).toBe("After");
+      expect(row(comment.node).properties["body"]).toBe("After");
       expect(row(comment.node).state).toBe("active");
-      expect(row(comment.node).properties["body"]).toBe("Before");
     });
+  });
+
+  it("keeps a delivery naming a discussion comment unfinished when a limit stops the read of its discussion, and replays it", async () => {
+    github.discussionPageSize = 2;
+    const repository = github.addRepository("someone/tracker");
+    const discussion = github.addDiscussion(repository);
+    github.addDiscussionComment(discussion, "One");
+    github.addDiscussionComment(discussion, "Two");
+    const comment = github.addDiscussionComment(discussion, "Three before");
+    await watching(async () => {
+      github.editDiscussionComment(comment, "Three after");
+      github.onAsked = (asked) => {
+        const query = (asked.body as { query?: string } | undefined)?.query;
+        if (asked.path === "/graphql" && query?.includes("DiscussionComments"))
+          github.exhaust("graphql", 1);
+      };
+      deliver("discussion_comment", {
+        action: "edited",
+        comment: { node_id: comment.node },
+        discussion: { node_id: discussion.node },
+      });
+      await until(() => marfa.runs.length > 1, "the run for the delivery");
+      expect(marfa.deliveries[0]?.outcome).not.toBe("processed");
+      expect(row(comment.node).properties["body"]).toBe("Three before");
+    });
+    github.onAsked = undefined;
+    github.refill("graphql", 1);
+    await once();
+    expect(marfa.deliveries[0]?.outcome).toBe("processed");
+    expect(row(comment.node).properties["body"]).toBe("Three after");
   });
 
   it("archives a discussion comment GitHub deleted when its delivery arrives, once a lookup by its node agrees, and keeps one still there", async () => {

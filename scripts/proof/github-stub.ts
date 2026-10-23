@@ -2423,23 +2423,50 @@ export class GitHubStub {
       return;
     }
     const errors: { type: string; message: string; path: unknown[] }[] = [];
-    // GitHub answers a Discussions node asked for by a token without the
-    // Discussions permission with FORBIDDEN for that node alone, whatever the
-    // query names of it, and answers the rest of the batch.
-    const needsDiscussions = (id: string): boolean =>
-      this.discussion(id) !== undefined ||
-      this.discussionComments.some((one) => one.node === id);
+    // A token without the Discussions permission is refused a private
+    // repository's Discussions node with FORBIDDEN for that node alone,
+    // whatever the query names of it, and the rest of the batch is answered.
+    // Any other token, and any token in a public repository, is shown the node
+    // under its own type, which a query that names only other types matches
+    // nothing of.
+    const discussionKind = (
+      id: string,
+    ): { type: string; private: boolean } | undefined => {
+      const discussion = this.discussion(id);
+      if (discussion !== undefined)
+        return {
+          type: "Discussion",
+          private: this.repositoryByNode(discussion.repository).private,
+        };
+      const comment = this.discussionComments.find((one) => one.node === id);
+      const parent =
+        comment === undefined ? undefined : this.discussion(comment.discussion);
+      return comment === undefined ||
+        comment.deleted === true ||
+        parent === undefined
+        ? undefined
+        : {
+            type: "DiscussionComment",
+            private: this.repositoryByNode(parent.repository).private,
+          };
+    };
     const nodes = (ids: unknown, find: (id: string) => unknown): unknown[] =>
       (ids as string[]).map((id, at) => {
-        if (needsDiscussions(id) && !this.allows(req, "read", "discussions")) {
-          errors.push({
-            type: "FORBIDDEN",
-            message: this.isPersonal(req)
-              ? "Resource not accessible by personal access token"
-              : "Resource not accessible by integration",
-            path: ["nodes", at],
-          });
-          return null;
+        const kind = operation?.includes("Discussion")
+          ? undefined
+          : discussionKind(id);
+        if (kind !== undefined) {
+          if (kind.private && !this.allows(req, "read", "discussions")) {
+            errors.push({
+              type: "FORBIDDEN",
+              message: this.isPersonal(req)
+                ? "Resource not accessible by personal access token"
+                : "Resource not accessible by integration",
+              path: ["nodes", at],
+            });
+            return null;
+          }
+          return { __typename: kind.type };
         }
         const found = find(id);
         if (found === undefined) {

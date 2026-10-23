@@ -1,4 +1,4 @@
-import { batches, query, queryNodes, type Client } from "./github.js";
+import { batches, query, type Client } from "./github.js";
 import { loginOf } from "./graph.js";
 import type { CheckCounts, PullRequest, Related } from "./entries.js";
 
@@ -136,13 +136,11 @@ export async function pullRequestsByNode(
 ): Promise<PullRequest[]> {
   const found: PullRequest[] = [];
   for (const batch of batches([...new Set(ids)])) {
-    const result = (
-      await queryNodes(
-        octokit,
-        `query PullRequests($ids: [ID!]!) { nodes(ids: $ids) { __typename ... on PullRequest { ${fields} } } }`,
-        batch,
-      )
-    ).data as { nodes: (GraphPR | null)[] };
+    const result = (await query(
+      octokit,
+      `query PullRequests($ids: [ID!]!) { nodes(ids: $ids) { __typename ... on PullRequest { ${fields} } } }`,
+      { ids: batch },
+    )) as { nodes: (GraphPR | null)[] };
     for (const one of result.nodes)
       if (one?.__typename === "PullRequest")
         found.push(await mapped(octokit, one));

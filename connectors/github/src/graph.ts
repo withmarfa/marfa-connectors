@@ -212,8 +212,9 @@ export async function issuesByNode(
 ): Promise<{ issue: Issue; relations: Relations }[]> {
   const found: { issue: Issue; relations: Relations }[] = [];
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await queryNodes(octokit, issuesQuery, batch))
-      .data as Nodes<GraphIssue>;
+    const answer = (await query(octokit, issuesQuery, {
+      ids: batch,
+    })) as Nodes<GraphIssue>;
     for (const node of known(answer.nodes, "Issue")) {
       found.push({
         issue: {
@@ -264,8 +265,9 @@ export async function relationsOf(
 ): Promise<Map<string, Relations & Linked>> {
   const found = new Map<string, Relations & Linked>();
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await queryNodes(octokit, relationsQuery, batch))
-      .data as Nodes<GraphRelations>;
+    const answer = (await query(octokit, relationsQuery, {
+      ids: batch,
+    })) as Nodes<GraphRelations>;
     for (const node of known(answer.nodes, "Issue")) {
       found.set(node.id, {
         parent: node.parent,
@@ -287,22 +289,33 @@ export async function relationsOf(
   return found;
 }
 
-/** The issue comments among the nodes, and those GitHub refused to show the
- *  token, which are not known to be gone: a discussion comment is refused to
- *  a token without the Discussions permission. */
+/** The issue comments among the nodes, and the nodes that are not known to be
+ *  gone: `refused`, which GitHub would not show the token (a discussion
+ *  comment in a private repository, to a token without the Discussions
+ *  permission), and `elsewhere`, which it showed as another kind of node (a
+ *  discussion comment in a public repository, which any token reads). Both
+ *  belong to a read of their discussion, not to this one. */
 export async function commentsByNode(
   octokit: Client,
   ids: readonly string[],
-): Promise<{ found: Comment[]; refused: Set<string> }> {
+): Promise<{
+  found: Comment[];
+  refused: Set<string>;
+  elsewhere: Set<string>;
+}> {
   const found: Comment[] = [];
   const refused = new Set<string>();
+  const elsewhere = new Set<string>();
   for (const batch of batches([...new Set(ids)])) {
     const answer = await queryNodes(octokit, commentsQuery, batch);
     for (const id of answer.refused) refused.add(id);
-    for (const node of known(
-      (answer.data as Nodes<GraphComment>).nodes,
-      "IssueComment",
-    )) {
+    (answer.nodes as (GraphComment | null)[]).forEach((node, at) => {
+      if (node === null) return;
+      if (node.__typename !== "IssueComment") {
+        const id = batch[at];
+        if (id !== undefined) elsewhere.add(id);
+        return;
+      }
       found.push({
         node: node.id,
         body: node.body,
@@ -316,9 +329,9 @@ export async function commentsByNode(
           name: node.issue.repository.nameWithOwner,
         },
       });
-    }
+    });
   }
-  return { found, refused };
+  return { found, refused, elsewhere };
 }
 
 export async function repositoriesByNode(
@@ -332,8 +345,9 @@ export async function repositoriesByNode(
     { name: string; issues: boolean; discussions: boolean }
   >();
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await queryNodes(octokit, repositoriesQuery, batch))
-      .data as Nodes<{
+    const answer = (await query(octokit, repositoriesQuery, {
+      ids: batch,
+    })) as Nodes<{
       __typename: string;
       id: string;
       nameWithOwner: string;
@@ -468,9 +482,13 @@ export async function updateComment(
   };
 }
 
-async function gone(octokit: Client, id: string): Promise<boolean> {
-  const { found, refused } = await commentsByNode(octokit, [id]);
-  return found.length === 0 && !refused.has(id);
+async function commentIsGone(octokit: Client, id: string): Promise<boolean> {
+  const answer = await commentsByNode(octokit, [id]);
+  return (
+    answer.found.length === 0 &&
+    answer.refused.size === 0 &&
+    answer.elsewhere.size === 0
+  );
 }
 
 /** GraphQL answers NOT_FOUND alike for a comment gone and for one it will
@@ -487,7 +505,7 @@ export async function deleteComment(
     if (
       error instanceof GraphqlResponseError &&
       error.errors?.every((one) => one.type === "NOT_FOUND") === true &&
-      (await gone(octokit, id)) &&
+      (await commentIsGone(octokit, id)) &&
       (await reads(octokit, where.owner, where.repo))
     ) {
       return;
