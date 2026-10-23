@@ -319,9 +319,9 @@ export interface Change {
    * For a create, the trash of a row whose create got no link, a remake, or
    * a trash or purge that overtakes a journaled create or remake whose
    * answer was lost: when it was first sent, so the vendor may hold what it
-   * made; look for it there before making another, or delete it. It can be long ago, for a create abandoned
-   * then sent again, so a match may belong to another row, which `setLink`
-   * refuses.
+   * made; look for it there before making another, or delete it. It can be
+   * long ago, for a create abandoned then sent again, so a match may belong
+   * to another row, which `setLink` refuses.
    */
   readonly attempted?: string;
   /**
@@ -609,10 +609,10 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
    * `onChange` would see it: every pending purge (not-due retries, cascade
    * observations, every journaled purge and each purge overtaking a pending
    * create or remake included) and every trash the run would send, carried,
-   * replayed or overtaking a pending create or remake. A cascade's trash is not among the
-   * trashes, since it is never carried, nor is a refused trash that still
-   * stands or a journaled trash the vendor answered or whose replay waits.
-   * A row trashed and then purged is among the purges alone. Read
+   * replayed or overtaking a pending create or remake. A cascade's trash is
+   * not among the trashes, since it is never carried, nor is a refused trash
+   * that still stands or a journaled trash the vendor answered or whose
+   * replay waits. A row trashed and then purged is among the purges alone. Read
    * the vendor as necessary and throw to hold the complete batch: the run
    * fails before the vendor is read, nothing is carried, and what waits is
    * offered again next run. A trash the hook did not see is not sent this

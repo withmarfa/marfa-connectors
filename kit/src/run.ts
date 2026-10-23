@@ -1314,7 +1314,7 @@ export async function runOnce<E extends EnvDeclaration>(
             superseding: captureChange(activeOutbound.change),
           }),
         };
-        // Settled in the trash's or purge's place, the refusal is answered.
+        // An answer settles a refusal; a saved record never holds both.
         Reflect.deleteProperty(next, "rejected");
         outbound.set(id, next);
         await saveOutbound();
