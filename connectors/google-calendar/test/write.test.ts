@@ -522,6 +522,34 @@ describe("an edit made in Marfa", () => {
     ).toHaveLength(1);
   });
 
+  it("moves the event when its edge is moved to another calendar", async () => {
+    const one = await read();
+    const etag = one.properties["etag"];
+    const edge = server.edges.find(
+      (e) => e.source_id === one.id && e.edge_type === inCalendar,
+    );
+    if (edge === undefined) throw new Error("no edge");
+    await landed();
+    expect(writes()).toEqual([]);
+
+    server.updateEdge(edge.id, { target_id: calendarRow(team).id });
+    await landed();
+
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        path: `${eventPath(me, "e1")}/move`,
+        query: { destination: team, sendUpdates: "none" },
+        ifMatch: etag,
+      }),
+    ]);
+    expect(server.byId(one.id).properties).toMatchObject({
+      google_id: `${team}/e1`,
+      calendar_id: team,
+    });
+    expect(placesOf(one.id)).toEqual([team]);
+  });
+
   it("does not move an event that Google changed after the connector checked it", async () => {
     const one = await read();
     const etag = one.properties["etag"];
