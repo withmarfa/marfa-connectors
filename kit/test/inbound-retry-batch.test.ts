@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import type { Entry, PendingInbound } from "../src/define.js";
+import type {
+  Entry,
+  EnvDeclaration,
+  PendingInbound,
+  ScopedRunContext,
+} from "../src/define.js";
 import { Harness, testType, vendor } from "./harness.js";
 
 let harness: Harness;
@@ -202,8 +207,8 @@ it("still fails an all-refused batch in a scope without a retry capability", asy
   );
   expect(harness.kept()["inbound"]).toBeUndefined();
 });
-it.each([129, 130])(
-  "blocks %i refusals at the journal's capacity and says the journal is full",
+it.each([128, 129, 130])(
+  "takes %i refusals up to the journal's capacity of 128, and says when it is full",
   async (count) => {
     const entries = Array.from({ length: count }, (_, index) => ({
       source_id: `bad-${String(index)}`,
@@ -226,6 +231,14 @@ it.each([129, 130])(
       }
     };
     const code = await harness.once(source);
+    if (count === 128) {
+      expect(code).toBe(0);
+      expect(checkpoint).toEqual({ committed: true });
+      expect(harness.kept()["state"]).toEqual({ page: 1 });
+      expect(records()).toHaveLength(128);
+      expect(harness.problems()).not.toHaveProperty("retry-journal-full:A");
+      return;
+    }
     expect(checkpoint).toEqual({ committed: false, reason: "state-oversized" });
     expect(harness.kept()).not.toHaveProperty("state.page");
     expect(harness.kept()["inbound"]).toBeUndefined();
@@ -239,6 +252,51 @@ it.each([129, 130])(
         "every one of the 130 rows written was refused",
       );
     } else expect(code).toBe(0);
+  },
+);
+it.each(["replay", "refetch"] as const)(
+  "bounds a %s journal by its 64 KiB of records",
+  async (mode) => {
+    // A replay record keeps the whole intent, so 100 of these outgrow 64 KiB;
+    // a refetch record keeps only the identity, so 100 fit.
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      source_id: `big-${String(index)}`,
+      properties: { title: "x".repeat(800) },
+    }));
+    for (const entry of entries)
+      harness.server.entryRefusals.set(entry.source_id, {
+        status: 400,
+        code: "invalid_properties",
+        message: "Bad",
+      });
+    const source = vendor();
+    let checkpoint: unknown;
+    source.read = async (ctx) => {
+      const scope = ctx.forScope("A", { retry: { ...retry, mode } });
+      try {
+        await scope.upsert(testType.id, entries);
+      } finally {
+        checkpoint = await scope.state.checkpoint("page", 1);
+      }
+    };
+    const code = await harness.once(source);
+    if (mode === "refetch") {
+      expect(code).toBe(0);
+      expect(checkpoint).toEqual({ committed: true });
+      expect(records()).toHaveLength(100);
+      expect(harness.problems()).not.toHaveProperty("retry-journal-full:A");
+      return;
+    }
+    expect(code).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      "every one of the 100 rows written was refused",
+    );
+    expect(checkpoint).toEqual({ committed: false, reason: "state-oversized" });
+    expect(harness.kept()).not.toHaveProperty("state.page");
+    expect(harness.kept()["inbound"]).toBeUndefined();
+    expect(harness.problems()["retry-journal-full:A"]).toContain(
+      "no room for another refusal from scope A",
+    );
   },
 );
 it.each([401, 503])(
@@ -280,4 +338,67 @@ it("blocks a retry checkpoint when its refreshed records exceed the journal boun
   expect(checkpoint).toEqual({ committed: false, reason: "state-oversized" });
   expect(records()).toEqual(before);
   expect(harness.kept()["state"]).toEqual({ page: 1 });
+});
+it("keeps the full journal's condition through runs that do not commit the scope", async () => {
+  const entries = Array.from({ length: 129 }, (_, index) => ({
+    source_id: `bad-${String(index)}`,
+    properties: { title: "Bad" },
+  }));
+  for (const entry of entries)
+    harness.server.entryRefusals.set(entry.source_id, {
+      status: 400,
+      code: "invalid_properties",
+      message: "Bad",
+    });
+  const run = async (
+    work?: (scope: ScopedRunContext<EnvDeclaration>) => Promise<unknown>,
+  ) => {
+    const source = vendor();
+    source.read = async (ctx) => {
+      if (work === undefined) {
+        const other = ctx.forScope("B", { retry });
+        expect(await other.state.checkpoint("other", 1)).toEqual({
+          committed: true,
+        });
+        return;
+      }
+      await work(ctx.forScope("A", { retry: { ...retry, mode: "refetch" } }));
+    };
+    expect(await harness.once(source)).toBe(0);
+  };
+  await run(async (scope) => {
+    await scope.upsert(testType.id, entries.slice(0, 128));
+    expect(await scope.state.checkpoint("page", 1)).toEqual({
+      committed: true,
+    });
+  });
+  await run(async (scope) => {
+    await scope.upsert(testType.id, entries.slice(128));
+    expect(await scope.state.checkpoint("page", 2)).toEqual({
+      committed: false,
+      reason: "state-oversized",
+    });
+  });
+  const full = harness.problems()["retry-journal-full:A"];
+  expect(full).toContain("no room for another refusal from scope A");
+  // Neither a run that skips the scope and commits another nor one that opens
+  // it and commits nothing proves the journal has room for it.
+  for (const work of [undefined, () => Promise.resolve()]) {
+    await run(work);
+    expect(harness.problems()["retry-journal-full:A"]).toBe(full);
+    expect(harness.kept()["state"]).toEqual({ page: 1, other: 1 });
+    expect(records()).toHaveLength(128);
+  }
+  // A commit in the scope proves the journal had room, so it clears.
+  harness.server.entryRefusals.delete("bad-0");
+  await run(async (scope) => {
+    await scope.upsert(testType.id, [
+      { source_id: "bad-0", properties: { title: "Fixed" } },
+    ]);
+    expect(await scope.state.checkpoint("page", 2)).toEqual({
+      committed: true,
+    });
+  });
+  expect(records()).toHaveLength(127);
+  expect(harness.problems()).not.toHaveProperty("retry-journal-full:A");
 });
