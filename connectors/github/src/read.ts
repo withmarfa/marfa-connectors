@@ -72,6 +72,7 @@ import {
   conditionKeys as notificationConditions,
   readNotifications,
 } from "./notifications.js";
+import { Stars } from "./stars.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
@@ -172,6 +173,7 @@ class Coverage {
     "rate-limit-reserve",
     "clock-skew",
     ...notificationConditions,
+    "stars-unreadable",
   ]);
   readonly prefixes = new Set(readPrefixes);
 
@@ -369,6 +371,12 @@ async function readAll(
       );
     }
   }
+  // Only a scheduled run lists the stars; the rest keep each mark as it was.
+  const scheduled = context.hints === undefined;
+  const stars = await Stars.open(context, personal, scheduled);
+  if (scheduled) coverage.reached("stars-unreadable");
+  for (const [node, at] of listed)
+    listed.set(node, { ...at, repository: stars.mark(at.repository) });
   const synced = new Set(listed.keys());
   const retained = new Set(
     Object.entries(kept).flatMap(([node, old]) =>
@@ -536,7 +544,13 @@ async function readAll(
       continue;
     }
     if (answered.has(repository.installation)) {
-      await takeOut(scoped, node, repository.name, personal !== undefined);
+      await takeOut(
+        scoped,
+        node,
+        repository.name,
+        personal !== undefined,
+        stars.starred(node),
+      );
       await save(scoped, node);
       continue;
     }
@@ -716,6 +730,11 @@ async function readAll(
   }
   if (permissions.length > 0 && permissions.length === listed.size)
     throw new Error(permissions.join("; "));
+  await stars.settle(context, {
+    listed: new Set(listed.keys()),
+    kept: new Set([...Object.keys(next), ...retained]),
+    complete: answered.size === installations.length,
+  });
   if (waiting.length > 0) {
     log.condition(
       "rate-limit-reserve",
@@ -736,7 +755,8 @@ async function takeOut(
   context: Context,
   node: string,
   name: string,
-  personal = false,
+  personal: boolean,
+  starred: boolean,
 ) {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
@@ -755,9 +775,10 @@ async function takeOut(
     pullRequestType,
     links(await linked(pullRequestType, inRepository, under)),
   );
-  await archive(repositoryType, [node]);
+  // A starred repository stays as the repository row alone, which a star keeps.
+  if (!starred) await archive(repositoryType, [node]);
   log.info(
-    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived`,
+    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : ""}`,
   );
 }
 

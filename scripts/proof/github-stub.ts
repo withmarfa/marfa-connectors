@@ -186,6 +186,12 @@ export class GitHubStub {
   personalToken: string | undefined;
   personalRepositories: ReadonlySet<string> | undefined;
   personalDenied = new Map<string, string>();
+  /** The person's stars by repository node, with when each was made; the
+   *  personal token lists them. Only a private one the token reaches shows. */
+  stars = new Map<string, string>();
+  /** Answers the star listing's page this number with the status, as a
+   *  listing GitHub fails partway does. */
+  starsFailAt: { page: number; status: number } | undefined;
   relationsRefused = false;
   relatedPageSize = 100;
   installations: Installation[] = [{ id: 1, login: "someone" }];
@@ -362,6 +368,15 @@ export class GitHubStub {
     };
     this.repositories.push(made);
     return made;
+  }
+
+  /** Stars the repository for the person, at the stub's next second. */
+  star(repository: Repository, at = this.now()): void {
+    this.stars.set(repository.node, at);
+  }
+
+  unstar(repository: Repository): void {
+    this.stars.delete(repository.node);
   }
 
   addIssue(repository: Repository, fields: Partial<Issue> = {}): Issue {
@@ -1034,6 +1049,43 @@ export class GitHubStub {
     ) {
       this.listingsFailing -= 1;
       send(404, { message: "Not Found" });
+      return;
+    }
+    if (method === "GET" && path === "/user/starred") {
+      if (!this.isPersonal(req)) {
+        send(401, { message: "Bad credentials" });
+        return;
+      }
+      const failing = this.starsFailAt;
+      if (failing?.page === Number(url.searchParams.get("page") ?? "1")) {
+        send(failing.status, { message: "Resource not accessible" });
+        return;
+      }
+      const stamped = (req.headers.accept ?? "").includes(
+        "application/vnd.github.star+json",
+      );
+      page(
+        [...this.stars]
+          .flatMap(([node, starredAt]) => {
+            const repository = this.repositories.find(
+              (one) => one.node === node,
+            );
+            return repository !== undefined &&
+              repository.hidden !== true &&
+              (!repository.private || this.reaches(req, repository))
+              ? [{ repository, starredAt }]
+              : [];
+          })
+          .sort((a, b) => b.starredAt.localeCompare(a.starredAt))
+          .map(({ repository, starredAt }) =>
+            stamped
+              ? {
+                  starred_at: starredAt,
+                  repo: this.restRepository(repository),
+                }
+              : this.restRepository(repository),
+          ),
+      );
       return;
     }
     if (method === "GET" && path === "/user/repos") {

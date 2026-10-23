@@ -55,6 +55,10 @@ export interface RestRepository {
   archived: boolean;
   has_issues?: boolean;
   updated_at: string;
+  /** From the person's stars, which only a scheduled run with a token lists:
+   *  absent where the stars were never listed. */
+  starred?: boolean;
+  starred_at?: string | null;
 }
 
 export interface RestIssue {
@@ -208,6 +212,8 @@ export function repositoryEntry(repository: RestRepository): Entry {
       description: repository.description,
       private: repository.private,
       archived_on_github: repository.archived,
+      starred: repository.starred,
+      starred_at: repository.starred_at,
     },
     changed_at: repository.updated_at,
   };
