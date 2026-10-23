@@ -281,6 +281,7 @@ export class GitHubStub {
   private behind = 0;
   private ids = 1000;
   private tokens = 0;
+  private unsettled: { from: Issue; to: Issue; comments: Comment[] }[] = [];
 
   async start(): Promise<this> {
     const server = createServer((req, res) => {
@@ -580,15 +581,18 @@ export class GitHubStub {
    *  number, keeps the old one's times, author and text, and gets copies of
    *  its comments with new ids and the old times. The old node stops
    *  resolving, its comments answer 404 and its address answers 301, with an
-   *  empty Location where the asker cannot read the target. With `late`, the
-   *  new issue's timeline lacks the TransferredEvent until `settleTransfers`. */
+   *  empty Location where the asker cannot read the target. With `lagging`,
+   *  the new issue's timeline lacks the TransferredEvent until
+   *  `settleTransfers`. With `late`, the old issue also stays as it was, as
+   *  GitHub's does for a moment: the transfer has not settled. */
   transfer(
     issue: Issue,
     target: Repository,
-    options: { late?: boolean } = {},
+    options: { late?: boolean; lagging?: boolean } = {},
   ): Issue {
     const id = this.ids++;
     const at = this.now();
+    const hidden = options.late === true || options.lagging === true;
     const number =
       Math.max(
         0,
@@ -606,14 +610,15 @@ export class GitHubStub {
       transferred: {
         from: issue.repository,
         at,
-        ...(options.late === true && { late: true }),
+        ...(hidden && { late: true }),
       },
     };
     delete made.movedTo;
     this.issues.push(made);
-    for (const comment of this.comments.filter(
+    const copied = this.comments.filter(
       (one) => one.issue === issue.node && one.deleted !== true,
-    )) {
+    );
+    for (const comment of copied) {
       const copy = this.ids++;
       this.comments.push({
         ...comment,
@@ -621,7 +626,6 @@ export class GitHubStub {
         node: `IC_${String(copy)}`,
         issue: made.node,
       });
-      comment.deleted = true;
     }
     // What pointed at the old issue points at the new one.
     for (const other of this.issues) {
@@ -636,12 +640,26 @@ export class GitHubStub {
       }
       if (other.duplicate_of === issue.node) other.duplicate_of = made.node;
     }
-    issue.movedTo = made.node;
+    if (options.late === true) {
+      this.unsettled.push({ from: issue, to: made, comments: copied });
+    } else {
+      this.leave(issue, made, copied);
+    }
     return made;
   }
 
-  /** Shows the TransferredEvent of every transfer made `late`. */
+  /** The old issue stops resolving and its comments are gone. */
+  private leave(from: Issue, to: Issue, comments: Comment[]): void {
+    from.movedTo = to.node;
+    for (const comment of comments) comment.deleted = true;
+  }
+
+  /** Settles every transfer made `late` and shows the TransferredEvent of
+   *  every transfer made `late` or `lagging`. */
   settleTransfers(): void {
+    for (const one of this.unsettled.splice(0)) {
+      this.leave(one.from, one.to, one.comments);
+    }
     for (const one of this.issues) {
       if (one.transferred !== undefined) delete one.transferred.late;
     }

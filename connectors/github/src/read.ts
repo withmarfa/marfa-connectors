@@ -78,6 +78,7 @@ import { everywhere, takeUnsettled } from "./unsettled.js";
 import {
   askIssue,
   commentsOf,
+  duplicateComments,
   follow,
   movedFrom,
   movedComments,
@@ -178,6 +179,7 @@ const readPrefixes = [
   "unsettled:",
   "issue-missing:",
   "issue-moved:",
+  "duplicate:",
   "github-files:",
 ];
 
@@ -1013,7 +1015,9 @@ async function syncRepository(
       .filter(({ issue }) => options.synced.has(issue.repository.node))
       .map(({ issue }) => issue),
   ];
-  const moves = await movedFrom(context, octokit, written);
+  // An issue that may be mid-transfer is written by a later run, when GitHub
+  // has recorded the transfer.
+  const { moves, waiting: moving } = await movedFrom(context, octokit, written);
   await upsert(
     issueType,
     await fileNotes(
@@ -1023,7 +1027,7 @@ async function syncRepository(
         [
           ...listed.flatMap((issue) => {
             const found = relations.get(issue.node_id);
-            if (found === undefined) return [];
+            if (found === undefined || moving.has(issue.node_id)) return [];
             return [
               issueEntry(
                 issueOfRest(issue, at),
@@ -1036,7 +1040,11 @@ async function syncRepository(
             ];
           }),
           ...beside
-            .filter(({ issue }) => options.synced.has(issue.repository.node))
+            .filter(
+              ({ issue }) =>
+                options.synced.has(issue.repository.node) &&
+                !moving.has(issue.node),
+            )
             .map(({ issue, relations: known }) =>
               issueEntry(
                 issue,
@@ -1068,6 +1076,14 @@ async function syncRepository(
     );
   }
 
+  // Comments of an issue that waits are read with it, once it is written.
+  // The page records below stay as they were, so the issue is listed again
+  // and its comments are all read then.
+  const waitingNumbers = new Set(
+    written
+      .filter((one) => moving.has(one.node) && one.repository.node === node)
+      .map((one) => one.number),
+  );
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
   let etag = repository.comments?.etag;
@@ -1102,7 +1118,7 @@ async function syncRepository(
       full = changed.full;
     }
     for (const number of scope) {
-      if (before.has(number)) continue;
+      if (before.has(number) || waitingNumbers.has(number)) continue;
       if ((byNumber.get(number)?.comments ?? 0) === 0) continue;
       for (const comment of (await octokit.paginate(
         "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
@@ -1112,7 +1128,16 @@ async function syncRepository(
       }
     }
   }
-  const where = { node, owner, name, scope, hidden };
+  for (const [key, comment] of comments) {
+    if (waitingNumbers.has(numberOf(comment))) comments.delete(key);
+  }
+  const where = {
+    node,
+    owner,
+    name,
+    scope: new Set([...scope].filter((one) => !waitingNumbers.has(one))),
+    hidden,
+  };
   const wrote = await writeComments(
     context,
     octokit,
@@ -1128,8 +1153,17 @@ async function syncRepository(
     installation: repository.installation,
     name: repository.name,
     ...(repository.id !== undefined && { id: repository.id }),
-    open: open.pages,
-    closed: { since: windowStart, pages: closed.pages },
+    // While an issue waits, the listing is not recorded as read, so the next
+    // run lists the issue again.
+    ...(waitingNumbers.size === 0
+      ? {
+          open: open.pages,
+          closed: { since: windowStart, pages: closed.pages },
+        }
+      : {
+          ...(repository.open !== undefined && { open: repository.open }),
+          ...(repository.closed !== undefined && { closed: repository.closed }),
+        }),
     comments: {
       since,
       ...(etag !== undefined && { etag }),
@@ -1332,12 +1366,17 @@ async function checkIssues(
   await archiveGone(context, octokit, where, unlisted, follower);
 }
 
+/** Asks GitHub about rows it no longer lists. A row whose issue was
+ *  transferred to an issue Marfa has no other row for follows it. With
+ *  `archiving` false, only that: the run may not archive these rows, so it
+ *  says nothing of archiving them. */
 async function archiveGone(
   context: Context,
   octokit: Client,
   where: { owner: string; name: string },
   rows: readonly Item[],
   follower: Follower,
+  archiving = true,
 ): Promise<void> {
   const { log } = context;
   const gone: string[] = [];
@@ -1347,27 +1386,44 @@ async function archiveGone(
     const link = linkOf(row);
     if (typeof number !== "number" || link === undefined) continue;
     const said = await askIssue(octokit, where.owner, where.name, number);
-    if (said.kind === "deleted") gone.push(link);
-    else if (said.kind === "moved") {
+    const here = `${where.owner}/${where.name}#${String(number)}`;
+    if (said.kind === "deleted") {
+      if (archiving) gone.push(link);
+    } else if (said.kind === "moved") {
       // GitHub answers an empty address for a move to a repository the
       // token cannot see.
       const next: Followed =
         said.to === undefined
           ? { kind: "away", why: unreadable }
-          : await follow(octokit, row, link, said.to, follower);
+          : await follow(context, octokit, row, link, said.to, follower);
       if (next.kind === "followed") {
         followed.push(next);
         continue;
       }
+      if (next.kind === "duplicate") {
+        log.condition(
+          `duplicate:${next.other.id}`,
+          `${here} was transferred to ${next.issue.repository.name}#${String(next.issue.number)}, which row ${next.other.id} already holds, so row ${row.id} and row ${next.other.id} are both kept`,
+        );
+        await duplicateComments(
+          context,
+          octokit,
+          next.issue,
+          link,
+          follower.hidden,
+        );
+        continue;
+      }
+      if (!archiving) continue;
       gone.push(link);
       log.condition(
         `issue-moved:${link}`,
-        `${where.owner}/${where.name}#${String(number)} was moved to ${next.why}, so its row here is archived`,
+        `${here} was moved to ${next.why}, so its row here is archived`,
       );
-    } else if (said.kind === "missing") {
+    } else if (said.kind === "missing" && archiving) {
       log.condition(
         `issue-missing:${link}`,
-        `${where.owner}/${where.name}#${String(number)} answered 404 though its repository reads, so its row is left as it is`,
+        `${here} answered 404 though its repository reads, so its row is left as it is`,
       );
     }
   }
@@ -1394,7 +1450,7 @@ async function archiveGone(
       ),
     );
   }
-  await context.archive(issueType, gone);
+  if (archiving) await context.archive(issueType, gone);
 }
 
 async function checkComments(
@@ -1445,10 +1501,47 @@ async function checkComments(
   const still = new Set(
     (await commentsByNode(octokit, absent)).map((comment) => comment.node),
   );
+  // A comment of an issue that moved, whose row is still active, is not
+  // proven gone: its issue's row was kept apart from the issue it became, and
+  // its copy is a row of its own.
+  const moved = await movedThreads(
+    context,
+    octokit,
+    where,
+    rows.filter((row) => absent.includes(linkOf(row) ?? "")),
+  );
   await archive(
     commentType,
-    absent.filter((link) => !still.has(link)),
+    absent.filter((link) => !still.has(link) && !moved.has(link)),
   );
+}
+
+/** The comment rows, of those given, that belong to an active issue row whose
+ *  address answers a move. */
+async function movedThreads(
+  context: Context,
+  octokit: Client,
+  where: { node: string; owner: string; name: string },
+  commentRows: readonly Item[],
+): Promise<Set<string>> {
+  const kept = new Set<string>();
+  if (commentRows.length === 0) return kept;
+  const issues = await issuesOfComments(
+    context,
+    { type: repositoryType, id: where.node },
+    commentRows,
+  );
+  for (const issue of issues) {
+    const number = issue.properties["number"];
+    if (typeof number !== "number") continue;
+    const said = await askIssue(octokit, where.owner, where.name, number);
+    if (said.kind !== "moved") continue;
+    for (const row of commentRows) {
+      const link = linkOf(row);
+      if (link !== undefined && issueNumberOf(row) === number) kept.add(link);
+    }
+  }
+  return kept;
 }
 
 async function retainedTargets(
@@ -1502,27 +1595,32 @@ async function readRelatedSources(
   }
 }
 
-/** The rows of the issues that hold these comment rows, found by the number
- *  in each comment's address, other than those already asked about. */
+/** The number of the issue a comment row's address belongs to. */
+function issueNumberOf(row: Item): number | undefined {
+  const url = row.properties["url"];
+  const found =
+    typeof url === "string"
+      ? /\/(?:issues|pull)\/(\d+)#issuecomment-/.exec(url)
+      : null;
+  return found?.[1] === undefined ? undefined : Number(found[1]);
+}
+
+/** The active rows of the issues that hold these comment rows, found by the
+ *  number in each comment's address, other than those already asked about. */
 async function issuesOfComments(
   context: Context,
   under: { type: string; id: string },
   commentRows: readonly Item[],
-  asked: ReadonlySet<string | undefined>,
+  asked: ReadonlySet<string | undefined> = new Set(),
 ): Promise<Item[]> {
   const numbers = new Set(
-    commentRows.flatMap((row) => {
-      const url = row.properties["url"];
-      const found =
-        typeof url === "string"
-          ? /\/(?:issues|pull)\/(\d+)#issuecomment-/.exec(url)
-          : null;
-      return found?.[1] === undefined ? [] : [Number(found[1])];
-    }),
+    commentRows.flatMap((row) => issueNumberOf(row) ?? []),
   );
   return (await context.linked(issueType, inRepository, under)).filter(
     (row) =>
-      numbers.has(Number(row.properties["number"])) && !asked.has(linkOf(row)),
+      row.state === "active" &&
+      numbers.has(Number(row.properties["number"])) &&
+      !asked.has(linkOf(row)),
   );
 }
 
@@ -1761,10 +1859,21 @@ async function readNamed(
         (issue) =>
           listed.get(issue.repository.node)?.installation === installation,
       );
-    for (const [fresh, old] of (await attempt(installation, () =>
-      movedFrom(context, client, mine),
-    )) ?? []) {
-      moves.set(fresh, old);
+    const found = await attempt(installation, () =>
+      movedFrom(
+        context,
+        client,
+        mine.filter((one) => !moves.has(one.node)),
+      ),
+    );
+    for (const [fresh, old] of found?.moves ?? []) moves.set(fresh, old);
+    // An issue that may be mid-transfer is written by a later run: the
+    // `transferred` delivery that follows it, or the schedule.
+    for (const node of found?.waiting ?? []) {
+      issues.delete(node);
+      for (const [key, comment] of comments) {
+        if (comment.issue === node) comments.delete(key);
+      }
     }
     for (const issue of mine.filter((one) => moves.has(one.node))) {
       for (const comment of (await attempt(installation, () =>
@@ -1918,22 +2027,27 @@ async function readNamed(
         );
         return;
       }
+      const follower: Follower = {
+        synced,
+        entry: ({ issue, relations }) =>
+          issueEntry(
+            issue,
+            relations,
+            new Set([...synced, ...paused]),
+            privateIn(privacy, issue.repository.node),
+          ),
+        hidden: (repositoryNode) => privateIn(privacy, repositoryNode),
+      };
+      await archiveGone(context, octokit, { owner, name }, issueRows, follower);
+      // The delivery did not name these issues, so the run may follow them
+      // and may not archive them.
       await archiveGone(
         context,
         octokit,
         { owner, name },
-        [...issueRows, ...owners],
-        {
-          synced,
-          entry: ({ issue, relations }) =>
-            issueEntry(
-              issue,
-              relations,
-              new Set([...synced, ...paused]),
-              privateIn(privacy, issue.repository.node),
-            ),
-          hidden: (repositoryNode) => privateIn(privacy, repositoryNode),
-        },
+        owners,
+        follower,
+        false,
       );
       await context.archive(
         commentType,

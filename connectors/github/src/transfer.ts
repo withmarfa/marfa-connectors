@@ -26,9 +26,17 @@ import { issuesByNode, nodesOfNumbers } from "./graph.js";
  * so each place that meets the new issue names the old node in `movedFrom`.
  * Nothing is matched by title: the old address answering 301 to the new
  * issue is the proof.
+ *
+ * GitHub shows the new issue before it records the transfer, so an issue that
+ * may be mid-transfer is not written until it is known to be one or not.
  */
 
 type Context = Pick<RunContext<EnvDeclaration>, "linked" | "known" | "log">;
+
+/** How long GitHub may take to record a transfer on the new issue's
+ *  timeline. An issue Marfa has no row for, changed within it and made
+ *  earlier than it, with no transfer on its timeline, waits for the next run. */
+export const transferWindow = 2 * 60 * 1000;
 
 export interface Address {
   owner: string;
@@ -77,23 +85,26 @@ function sameInstant(a: string | undefined, b: string | undefined): boolean {
   return !Number.isNaN(first) && first === Date.parse(b);
 }
 
-/** Where the newest transfer of each issue came from, for those whose
- *  timeline has one and names a repository the token can see. */
+/** The issues whose timeline has a transfer, each with where the newest
+ *  came from, or null where the token cannot see that repository. */
 async function transfersOf(
   octokit: Client,
   ids: readonly string[],
-): Promise<Map<string, { id: string; name: string }>> {
-  const found = new Map<string, { id: string; name: string }>();
+): Promise<Map<string, { id: string; name: string } | null>> {
+  const found = new Map<string, { id: string; name: string } | null>();
   for (const batch of batches([...new Set(ids)])) {
     const answer = (await query(octokit, transfersQuery, {
       ids: batch,
     })) as { nodes: (TransferNode | null)[] };
     for (const node of answer.nodes) {
       if (node?.__typename !== "Issue") continue;
-      const from = node.timelineItems.nodes[0]?.fromRepository;
-      if (from) {
-        found.set(node.id, { id: from.id, name: from.nameWithOwner });
-      }
+      const event = node.timelineItems.nodes[0];
+      if (event?.__typename !== "TransferredEvent") continue;
+      const from = event.fromRepository;
+      found.set(
+        node.id,
+        from ? { id: from.id, name: from.nameWithOwner } : null,
+      );
     }
   }
   return found;
@@ -152,22 +163,38 @@ export async function askIssue(
   }
 }
 
-/** The old row of each new issue Marfa has not seen that was transferred
- *  from a repository whose rows it holds, by the issue's creation time, which
- *  a transfer keeps, and then the old address's answer. Title and text are
- *  not used: either may have been edited on one side only. */
+/** Whether GitHub changed the issue lately, though it was made well before:
+ *  what a transfer does, and an edit to an old issue does too. */
+function mayBeMoving(issue: Issue, now: number): boolean {
+  const changed = Date.parse(issue.updatedAt);
+  const made = Date.parse(issue.createdAt);
+  return (
+    !Number.isNaN(changed) &&
+    !Number.isNaN(made) &&
+    now - changed <= transferWindow &&
+    changed - made > transferWindow
+  );
+}
+
+/** For the issues Marfa has no row for: the old row of each that was
+ *  transferred from a repository whose rows it holds, by the issue's creation
+ *  time, which a transfer keeps, and then the old address's answer; and those
+ *  that may be mid-transfer, which are not written yet. Title and text are not
+ *  used: either may have been edited on one side only. */
 export async function movedFrom(
   context: Context,
   octokit: Client,
   issues: readonly Issue[],
-): Promise<Map<string, string>> {
+  now: number = Date.now(),
+): Promise<{ moves: Map<string, string>; waiting: Set<string> }> {
   const moves = new Map<string, string>();
+  const waiting = new Set<string>();
   const seen = await context.known(
     issueType,
     issues.map((one) => one.node),
   );
   const fresh = issues.filter((one) => !seen.has(one.node));
-  if (fresh.length === 0) return moves;
+  if (fresh.length === 0) return { moves, waiting };
   const events = await transfersOf(
     octokit,
     fresh.map((one) => one.node),
@@ -176,7 +203,11 @@ export async function movedFrom(
   const held = new Map<string, Item[]>();
   for (const issue of fresh) {
     const from = events.get(issue.node);
-    if (from === undefined) continue;
+    if (from === undefined) {
+      if (mayBeMoving(issue, now)) waiting.add(issue.node);
+      continue;
+    }
+    if (from === null) continue;
     const [owner = "", name = ""] = from.name.split("/");
     let rows = held.get(from.id);
     if (rows === undefined) {
@@ -205,21 +236,30 @@ export async function movedFrom(
       break;
     }
   }
-  return moves;
+  return { moves, waiting };
 }
 
 /** The old row of each new issue a delivery names together with the old
  *  issue, where the timeline has no transfer event yet: GitHub records it
  *  about when it sends `opened`, so it can be missing. The old address
- *  answering 301 to the new issue is the proof, as for `movedFrom`. */
+ *  answering 301 to the new issue is the proof, as for `movedFrom`. An issue
+ *  Marfa already has a row for is not a move: that is a duplicate, which
+ *  `follow` finds from the old row's side. */
 export async function movedNamed(
   context: Pick<RunContext<EnvDeclaration>, "inspect">,
   unseen: readonly string[],
-  read: readonly Issue[],
+  all: readonly Issue[],
   ask: (repository: string, number: number) => Promise<Asked | undefined>,
 ): Promise<Map<string, string>> {
   const moves = new Map<string, string>();
-  if (unseen.length === 0 || read.length === 0) return moves;
+  if (unseen.length === 0 || all.length === 0) return moves;
+  const held = new Set(
+    (
+      await context.inspect(issueType, { links: all.map((one) => one.node) })
+    ).items.flatMap((row) => linkOf(row) ?? []),
+  );
+  const read = all.filter((one) => !held.has(one.node));
+  if (read.length === 0) return moves;
   const { items } = await context.inspect(issueType, { links: [...unseen] });
   for (const row of items) {
     const link = linkOf(row);
@@ -267,14 +307,19 @@ export function withMoves(
 }
 
 /** Names, on the comments of moved issues, the rows they replace. The copies
- *  keep author, time and text, so those find each one; a row whose text was
- *  edited in Marfa is found by author and time where it is the only one left
- *  once every exact match is made, so the order of the copies does not
- *  matter. */
+ *  keep author, time and text, so those find each one. A row whose text was
+ *  edited in Marfa is found by author and time where, once every exact match
+ *  is made, it is the only row and the copy the only copy left with that
+ *  author and time, so the order of the copies does not matter. A copy that
+ *  has no match becomes a row of its own. Where the copy already has a row of
+ *  its own as well as the row it replaces, both are kept and a `duplicate:`
+ *  condition names them. The rows a copy replaces hang on the issue's own
+ *  node unless `oldThreads` says another, as for an issue held twice. */
 export async function withMovedComments(
   context: Context,
   entries: readonly Entry[],
   moved: ReadonlySet<string>,
+  oldThreads: ReadonlyMap<string, string> = new Map(),
 ): Promise<Entry[]> {
   if (moved.size === 0) return [...entries];
   const wanted = (entry: Entry): string | undefined => {
@@ -282,56 +327,115 @@ export async function withMovedComments(
     return issue !== undefined && moved.has(issue) ? issue : undefined;
   };
   const threads = new Map<string, Item[]>();
+  const copied = new Map<string, Item>();
   for (const issue of new Set(entries.flatMap((one) => wanted(one) ?? []))) {
     const own = new Set(
       entries
         .filter((one) => wanted(one) === issue)
         .map((one) => one.source_id),
     );
+    const rows = await context.linked(commentType, inThread, {
+      type: issueType,
+      id: issue,
+    });
     // A row already under a copy's own node is that copy's.
+    for (const row of rows) {
+      const link = linkOf(row);
+      if (link !== undefined && own.has(link)) copied.set(link, row);
+    }
+    const old = oldThreads.get(issue);
+    const replaced =
+      old === undefined
+        ? rows
+        : await context.linked(commentType, inThread, {
+            type: issueType,
+            id: old,
+          });
     threads.set(
       issue,
-      (
-        await context.linked(commentType, inThread, {
-          type: issueType,
-          id: issue,
-        })
-      ).filter((row) => !own.has(linkOf(row) ?? "")),
+      replaced.filter((row) => !own.has(linkOf(row) ?? "")),
     );
   }
-  const found = new Map<Entry, string>();
+  const found = new Map<Entry, Item>();
   const take = (entry: Entry, issue: string, row: Item): void => {
-    const link = linkOf(row);
-    if (link === undefined) return;
-    found.set(entry, link);
+    found.set(entry, row);
     threads.set(
       issue,
       (threads.get(issue) ?? []).filter((one) => one !== row),
     );
   };
-  const candidates = (entry: Entry, issue: string): Item[] =>
-    (threads.get(issue) ?? []).filter(
-      (row) =>
-        row.properties["from"] === entry.properties["from"] &&
-        sameInstant(row.occurred_at, entry.occurred_at),
-    );
+  const moments = (item: { occurred_at?: string | undefined }): number =>
+    Date.parse(item.occurred_at ?? "");
   for (const entry of entries) {
     const issue = wanted(entry);
     if (issue === undefined) continue;
-    const exact = candidates(entry, issue).find(
-      (row) => row.properties["body"] === entry.properties["body"],
+    const exact = (threads.get(issue) ?? []).find(
+      (row) =>
+        row.properties["from"] === entry.properties["from"] &&
+        sameInstant(row.occurred_at, entry.occurred_at) &&
+        row.properties["body"] === entry.properties["body"],
     );
     if (exact !== undefined) take(entry, issue, exact);
   }
+  // Edited text: by author and time, where exactly one row and one copy of
+  // that author and time are left. With more of either, which is which is a
+  // guess.
+  const groups = new Map<
+    string,
+    { entries: [Entry, string][]; rows: Item[] }
+  >();
+  const groupOf = (
+    issue: string,
+    item: { occurred_at?: string | undefined; properties: object },
+  ): string | undefined => {
+    const at = moments(item);
+    const from = (item.properties as Record<string, unknown>)["from"];
+    return Number.isNaN(at)
+      ? undefined
+      : JSON.stringify([issue, typeof from === "string" ? from : null, at]);
+  };
   for (const entry of entries) {
     const issue = wanted(entry);
     if (issue === undefined || found.has(entry)) continue;
-    const only = candidates(entry, issue);
-    const [row] = only;
-    if (only.length === 1 && row !== undefined) take(entry, issue, row);
+    const key = groupOf(issue, entry);
+    if (key === undefined) continue;
+    const group = groups.get(key) ?? { entries: [], rows: [] };
+    group.entries.push([entry, issue]);
+    groups.set(key, group);
+  }
+  for (const [issue, rows] of threads) {
+    for (const row of rows) {
+      const key = groupOf(issue, row);
+      if (key !== undefined) groups.get(key)?.rows.push(row);
+    }
+  }
+  for (const group of groups.values()) {
+    const [first] = group.entries;
+    const [row] = group.rows;
+    if (
+      group.entries.length === 1 &&
+      group.rows.length === 1 &&
+      first !== undefined &&
+      row !== undefined
+    ) {
+      take(first[0], first[1], row);
+    }
+  }
+  const named = new Map<Entry, string>();
+  for (const [entry, row] of found) {
+    const own = copied.get(entry.source_id);
+    const link = linkOf(row);
+    if (own === undefined) {
+      if (link !== undefined) named.set(entry, link);
+      continue;
+    }
+    context.log.condition(
+      `duplicate:${own.id}`,
+      `comment ${own.id} copies comment ${row.id}, which its issue's transfer replaced, but both rows exist, so both are kept`,
+    );
   }
   return entries.map((entry) => {
-    const link = found.get(entry);
+    const link = named.get(entry);
     return link === undefined ? entry : { ...entry, movedFrom: link };
   });
 }
@@ -381,6 +485,27 @@ export async function movedComments(
   );
 }
 
+/** Raises a condition for each comment of a transferred issue that is a row of
+ *  its own and also copies a comment row the old issue's row holds. Writes
+ *  nothing. */
+export async function duplicateComments(
+  context: Context,
+  octokit: Client,
+  issue: Issue,
+  oldLink: string,
+  hidden: (repository: string) => boolean,
+): Promise<void> {
+  const entries = (await commentsOf(octokit, issue)).map((comment) =>
+    commentEntry(comment, hidden(issue.repository.node)),
+  );
+  await withMovedComments(
+    context,
+    entries,
+    new Set([issue.node]),
+    new Map([[issue.node, oldLink]]),
+  );
+}
+
 export interface Follower {
   /** Repositories whose issues the connector writes. */
   synced: ReadonlySet<string>;
@@ -390,6 +515,7 @@ export interface Follower {
 
 export type Followed =
   | { kind: "followed"; entry: Entry; issue: Issue }
+  | { kind: "duplicate"; other: Item; issue: Issue }
   | { kind: "away"; why: string };
 
 /** The reason an issue moved out of what the connector reads, for the
@@ -397,11 +523,13 @@ export type Followed =
 export const unreadable = "a repository the App cannot read";
 
 /** The entry for the issue an old address now leads to, naming the old row,
- *  where Marfa holds it. A row already under the new issue's node is no
- *  obstacle: the kit merges the two, or keeps both and says why. Otherwise
- *  where the new issue is, so the caller archives the old row: unreadable,
- *  outside the sync, or not the same issue. */
+ *  where Marfa holds it. A different row that already holds the new issue's
+ *  node means the new issue was written before the move was known, which the
+ *  wait for the transfer record is meant to prevent: neither row is touched.
+ *  Otherwise where the new issue is, so the caller archives the old row:
+ *  unreadable, outside the sync, or not the same issue. */
 export async function follow(
+  context: Pick<RunContext<EnvDeclaration>, "inspect">,
   octokit: Client,
   row: Item,
   link: string,
@@ -421,6 +549,14 @@ export async function follow(
   if (!sameInstant(row.occurred_at, found.issue.createdAt)) {
     return { kind: "away", why: `${there}, which is not the same issue` };
   }
+  const { items } = await context.inspect(issueType, {
+    links: [found.issue.node],
+  });
+  const other = items.find(
+    (one) => linkOf(one) === found.issue.node && one.id !== row.id,
+  );
+  if (other !== undefined)
+    return { kind: "duplicate", other, issue: found.issue };
   return {
     kind: "followed",
     entry: { ...how.entry(found), movedFrom: link },

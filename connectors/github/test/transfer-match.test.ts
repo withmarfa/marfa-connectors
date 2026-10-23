@@ -8,12 +8,22 @@ import {
   type Issue,
 } from "../src/entries.js";
 import type { Client } from "../src/github.js";
-import { movedFrom, withMovedComments } from "../src/transfer.js";
+import {
+  movedFrom,
+  transferWindow,
+  withMovedComments,
+} from "../src/transfer.js";
 
 const at = "2026-01-01T00:00:00Z";
 
 function item(properties: Record<string, unknown>, occurred: string): Item {
   return { properties, occurred_at: occurred } as unknown as Item;
+}
+
+function found(entries: readonly Entry[]): Record<string, unknown> {
+  return Object.fromEntries(
+    entries.map((one) => [one.source_id, one.movedFrom]),
+  );
 }
 
 function comment(node: string, body: string, issue: string): Entry {
@@ -45,14 +55,66 @@ describe("matching the comments of a moved issue", () => {
       linked: () => Promise.resolve(held),
     };
     const entries = reversed ? copies().reverse() : copies();
-    const found = await withMovedComments(
+    const matched = await withMovedComments(
       context as never,
       entries,
       new Set(["NI"]),
     );
-    expect(
-      Object.fromEntries(found.map((one) => [one.source_id, one.movedFrom])),
-    ).toEqual({ N1: "C1", N2: "C2" });
+    expect(found(matched)).toEqual({ N1: "C1", N2: "C2" });
+  });
+
+  it.each([
+    ["the copy with a row first", false],
+    ["the copy with a row last", true],
+  ])(
+    "leaves both unmatched where two copies share one row's author and time: %s",
+    async (_, reversed) => {
+      // One edited row, and two copies by the same author in the same second:
+      // either copy could be its.
+      const held = [
+        item({ github_id: "C1", body: "First, edited", from: "alice" }, at),
+      ];
+      const context = { linked: () => Promise.resolve(held) };
+      const copies = [
+        comment("N1", "First", "NI"),
+        comment("N2", "Other", "NI"),
+      ];
+      const entries = reversed ? copies.reverse() : copies;
+      const matched = await withMovedComments(
+        context as never,
+        entries,
+        new Set(["NI"]),
+      );
+      expect(found(matched)).toEqual({ N1: undefined, N2: undefined });
+    },
+  );
+
+  it("keeps both rows, and says so, where the copy already has a row of its own", async () => {
+    const own = {
+      id: "ROW-N1",
+      properties: { github_id: "N1" },
+    } as unknown as Item;
+    const old = {
+      ...item({ github_id: "C1", body: "First", from: "alice" }, at),
+      id: "ROW-C1",
+    };
+    const raised: Record<string, string> = {};
+    const context = {
+      linked: () => Promise.resolve([own, old]),
+      log: {
+        condition: (key: string, message: string) => {
+          raised[key] = message;
+        },
+      },
+    };
+    const matched = await withMovedComments(
+      context as never,
+      [comment("N1", "First", "NI")],
+      new Set(["NI"]),
+    );
+    expect(found(matched)).toEqual({ N1: undefined });
+    expect(raised["duplicate:ROW-N1"]).toContain("ROW-C1");
+    expect(raised["duplicate:ROW-N1"]).toContain("ROW-N1");
   });
 
   it("leaves a copy alone where two rows could be it", async () => {
@@ -61,12 +123,12 @@ describe("matching the comments of a moved issue", () => {
       item({ github_id: "C2", body: "Two, edited", from: "alice" }, at),
     ];
     const context = { linked: () => Promise.resolve(held) };
-    const found = await withMovedComments(
+    const matched = await withMovedComments(
       context as never,
       [comment("N1", "One", "NI")],
       new Set(["NI"]),
     );
-    expect(found[0]?.movedFrom).toBeUndefined();
+    expect(matched[0]?.movedFrom).toBeUndefined();
   });
 });
 
@@ -138,7 +200,7 @@ describe("finding the rows of transferred issues", () => {
           },
         }),
     };
-    const moves = await movedFrom(
+    const { moves } = await movedFrom(
       context as never,
       octokit as unknown as Client,
       fresh,
@@ -149,5 +211,98 @@ describe("finding the rows of transferred issues", () => {
       N3: "O3",
     });
     expect(listings).toBe(1);
+  });
+});
+
+describe("an issue that may be mid-transfer", () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  const iso = (offset: number): string => new Date(now - offset).toISOString();
+
+  function issue(node: string, created: number, updated: number): Issue {
+    return {
+      node,
+      number: 1,
+      title: "T",
+      body: null,
+      open: true,
+      reason: null,
+      url: "",
+      closedAt: null,
+      createdAt: iso(created),
+      updatedAt: iso(updated),
+      author: null,
+      labels: [],
+      assignees: [],
+      repository: { node: "R_target", name: "o/target" },
+    };
+  }
+
+  /** What the run finds out about the issues, with no transfer on any
+   *  timeline and none of them held by a row. */
+  async function waiting(
+    issues: Issue[],
+    options: { held?: string[]; events?: string[] } = {},
+  ): Promise<string[]> {
+    const context = {
+      known: () => Promise.resolve(new Set(options.held ?? [])),
+      linked: () => Promise.resolve([]),
+      log: {},
+    };
+    const octokit = {
+      graphql: (_: string, variables: { ids: string[] }) =>
+        Promise.resolve({
+          nodes: variables.ids.map((id) => ({
+            __typename: "Issue",
+            id,
+            timelineItems: {
+              nodes: (options.events ?? []).includes(id)
+                ? [{ __typename: "TransferredEvent", fromRepository: null }]
+                : [],
+            },
+          })),
+        }),
+    };
+    const found = await movedFrom(
+      context as never,
+      octokit as unknown as Client,
+      issues,
+      now,
+    );
+    return [...found.waiting].sort();
+  }
+
+  const hour = 60 * 60 * 1000;
+
+  it("waits where it was changed lately though made long before", async () => {
+    expect(await waiting([issue("N1", hour, 30_000)])).toEqual(["N1"]);
+  });
+
+  it("is written at once where it was made and changed together", async () => {
+    expect(await waiting([issue("N1", 30_000, 30_000)])).toEqual([]);
+    expect(await waiting([issue("N1", 0, 0)])).toEqual([]);
+  });
+
+  it("is written once the window has passed", async () => {
+    expect(await waiting([issue("N1", hour, transferWindow + 1_000)])).toEqual(
+      [],
+    );
+  });
+
+  it("holds at the edges of the window", async () => {
+    // Changed exactly a window ago still waits; made exactly a window before
+    // the change does not.
+    expect(await waiting([issue("N1", hour, transferWindow)])).toEqual(["N1"]);
+    expect(
+      await waiting([issue("N1", transferWindow + 60_000, 60_000)]),
+    ).toEqual([]);
+    expect(
+      await waiting([issue("N1", transferWindow + 60_001, 60_000)]),
+    ).toEqual(["N1"]);
+  });
+
+  it("is written where its timeline shows a transfer, or Marfa has a row for it", async () => {
+    const lately = [issue("N1", hour, 30_000), issue("N2", hour, 30_000)];
+    expect(await waiting(lately, { events: ["N1"] })).toEqual(["N2"]);
+    expect(await waiting(lately, { held: ["N2"] })).toEqual(["N1"]);
   });
 });

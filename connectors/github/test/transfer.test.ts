@@ -377,8 +377,16 @@ describe("a transferred issue", () => {
   it("keeps two issues with one title and one time apart", async () => {
     repositories(true);
     const at = "2026-01-01T00:00:00Z";
-    const first = github.addIssue(source, { title: "Same", created_at: at });
-    const second = github.addIssue(source, { title: "Same", created_at: at });
+    const first = github.addIssue(source, {
+      title: "Same",
+      created_at: at,
+      updated_at: at,
+    });
+    const second = github.addIssue(source, {
+      title: "Same",
+      created_at: at,
+      updated_at: at,
+    });
     await once();
     const firstId = row(first.node).id;
     const secondId = row(second.node).id;
@@ -401,9 +409,17 @@ describe("a transferred issue", () => {
   it("is not matched to a row by its title alone", async () => {
     repositories(true);
     const at = "2026-01-01T00:00:00Z";
-    const stays = github.addIssue(source, { title: "Same", created_at: at });
+    const stays = github.addIssue(source, {
+      title: "Same",
+      created_at: at,
+      updated_at: at,
+    });
     const other = github.addRepository("someone/third");
-    const away = github.addIssue(other, { title: "Same", created_at: at });
+    const away = github.addIssue(other, {
+      title: "Same",
+      created_at: at,
+      updated_at: at,
+    });
     await once();
     // Neither repository's row answers with a move to the new issue.
     const moved: Issue = github.transfer(away, target);
@@ -423,81 +439,65 @@ function conditions(): Record<string, string> {
   >;
 }
 
+/** A time well before the transfer window, as an old issue has. */
+function earlier(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
+}
+
 describe("a transferred issue whose transfer record is late", () => {
-  /** Edited in Marfa, on an issue and a comment the App may carry back. */
-  function editedInMarfa(moving: Issue) {
+  /** An issue made long ago, with a comment the App may carry back. */
+  function oldIssue(title: string) {
+    const moving = github.addIssue(source, {
+      title,
+      created_at: earlier(60),
+    });
     const said = github.addComment(moving, "Said", "marfa-connectors[bot]");
     said.app = true;
-    return said;
+    // A comment changes the issue; the issue was last changed long ago.
+    moving.updated_at = earlier(59);
+    return { moving, said };
   }
 
-  it("is merged into the older row when the target is read first", async () => {
-    repositories(false);
-    const moving = github.addIssue(source, { title: "Original" });
-    const said = editedInMarfa(moving);
-    await once();
-    const issueId = row(moving.node).id;
-    const commentId = row(said.node).id;
-    marfa.edit(issueId, { title: "Edited in Marfa" });
-    marfa.edit(commentId, { body: "Comment edited in Marfa" });
-
-    const moved = github.transfer(moving, target, { late: true });
-    await once();
-
-    // The copy the target's read made stays as an archived row of the old node.
-    expect(
-      rowsOf("github.issue")
-        .map((one) => one.state)
-        .sort(),
-    ).toEqual(["active", "archived"]);
-    expect(row(moved.node).id).toBe(issueId);
-    expect(row(moved.node).properties["title"]).toBe("Edited in Marfa");
-    expect(moved.title).toBe("Edited in Marfa");
-    const copy = github.comments.find(
-      (one) => one.issue === moved.node && one.deleted !== true,
-    );
-    expect(copy?.body).toBe("Comment edited in Marfa");
-    expect(
-      rowsOf("github.comment")
-        .map((one) => one.state)
-        .sort(),
-    ).toEqual(["active", "archived"]);
-    expect(row(copy?.node ?? "").id).toBe(commentId);
-    expect(conditions()).toEqual({});
-
-    const before = marfa.log.length;
-    await once();
-    expect(lastWrites(before)).toEqual([]);
-  });
-
   it.each([
-    ["opened, then transferred", ["opened", "transferred"]],
-    ["transferred, then opened", ["transferred", "opened"]],
+    ["opened, then transferred", true],
+    ["transferred, then opened", false],
   ])(
     "stays one item, with its edits, when the webhooks arrive %s",
-    async (_, order) => {
+    async (_, openedFirst) => {
       repositories(true);
-      const moving = github.addIssue(source, { title: "Original" });
-      const said = editedInMarfa(moving);
+      const { moving, said } = oldIssue("Original");
       await watching(async () => {
         const issueId = row(moving.node).id;
         const commentId = row(said.node).id;
-        marfa.edit(issueId, { title: "Edited in Marfa" });
-        marfa.edit(commentId, { body: "Comment edited in Marfa" });
         const moved = github.transfer(moving, target, { late: true });
         const sent = github.transferDeliveries(moving, moved);
-        // One delivery at a time, so the first is read before the second.
-        let sentSoFar = 0;
-        for (const action of order) {
-          deliver("issues", sent[action as "opened" | "transferred"]);
-          sentSoFar += 1;
+        const delivered = async (action: "opened" | "transferred") => {
+          const before = marfa.deliveries.length;
+          deliver("issues", sent[action]);
           await until(
             () =>
-              marfa.deliveries.filter((one) => one.outcome === "processed")
-                .length === sentSoFar,
+              marfa.deliveries.length === before + 1 &&
+              marfa.deliveries.every((one) => one.outcome === "processed"),
             "the delivery",
           );
+        };
+        if (openedFirst) {
+          // GitHub has not recorded the transfer: the new issue waits.
+          await delivered("opened");
+          expect(
+            marfa.rows.some(
+              (one) => one.properties["github_id"] === moved.node,
+            ),
+          ).toBe(false);
+          expect(rowsOf("github.issue")).toHaveLength(1);
         }
+        github.settleTransfers();
+        marfa.edit(issueId, { title: "Edited in Marfa" });
+        marfa.edit(commentId, { body: "Comment edited in Marfa" });
+        await delivered("transferred");
+        if (!openedFirst) await delivered("opened");
         const copy = github.comments.find(
           (one) => one.issue === moved.node && one.deleted !== true,
         );
@@ -508,68 +508,127 @@ describe("a transferred issue whose transfer record is late", () => {
         expect(
           rowsOf("github.issue").filter((one) => one.state === "active"),
         ).toHaveLength(1);
+        expect(rowsOf("github.issue")).toHaveLength(1);
         expect(row(moved.node).id).toBe(issueId);
-        expect(rowsOf("github.comment").map((one) => one.state)).toEqual([
-          "active",
-        ]);
+        expect(rowsOf("github.comment")).toHaveLength(1);
         expect(row(copy?.node ?? "").id).toBe(commentId);
         expect(copy?.body).toBe("Comment edited in Marfa");
+        expect(conditions()).toEqual({});
       });
     },
     60_000,
   );
 
-  it("keeps both items, and says why, where the copy was edited in Marfa", async () => {
+  it("waits for the next scheduled run, then keeps the item and its comment", async () => {
+    repositories(false);
+    const { moving, said } = oldIssue("Original");
+    await once();
+    const issueId = row(moving.node).id;
+    const commentId = row(said.node).id;
+
+    const moved = github.transfer(moving, target, { late: true });
+    await once();
+
+    // Written by no run yet: no second row, and no copy of the comment.
+    expect(rowsOf("github.issue")).toHaveLength(1);
+    expect(rowsOf("github.comment")).toHaveLength(1);
+    expect(marfa.byId(issueId).state).toBe("active");
+    expect(conditions()).toEqual({});
+
+    github.settleTransfers();
+    marfa.edit(issueId, { title: "Edited in Marfa" });
+    await once();
+
+    expect(row(moved.node).id).toBe(issueId);
+    expect(rowsOf("github.issue")).toHaveLength(1);
+    expect(rowsOf("github.issue")[0]?.state).toBe("active");
+    const copy = github.comments.find(
+      (one) => one.issue === moved.node && one.deleted !== true,
+    );
+    expect(row(copy?.node ?? "").id).toBe(commentId);
+    expect(rowsOf("github.comment")).toHaveLength(1);
+    expect(moved.title).toBe("Edited in Marfa");
+    expect(conditions()).toEqual({});
+
+    const before = marfa.log.length;
+    await once();
+    expect(lastWrites(before)).toEqual([]);
+  });
+
+  it("writes a new issue at once", async () => {
     repositories(true);
-    const moving = github.addIssue(source, { title: "Original" });
-    await watching(async () => {
+    await once();
+    const fresh = github.addIssue(target, { title: "Brand new" });
+    await once();
+    expect(row(fresh.node).state).toBe("active");
+    expect(row(fresh.node).properties["title"]).toBe("Brand new");
+  });
+
+  it.each([
+    ["the target is read first", false],
+    ["the source is read first", true],
+  ])(
+    "keeps both items, and says why, where the record lags past the window and %s",
+    async (_, sourceFirst) => {
+      repositories(sourceFirst);
+      const { moving, said } = oldIssue("Original");
+      await once();
       const olderId = row(moving.node).id;
-      const moved = github.transfer(moving, target, { late: true });
-      const sent = github.transferDeliveries(moving, moved);
-      deliver("issues", sent.opened);
-      await until(() => rowsOf("github.issue").length === 2, "the copy");
-      const copyId = row(moved.node).id;
-      marfa.edit(copyId, { title: "Edited in Marfa" });
-      deliver("issues", sent.transferred);
-      await until(
-        () => marfa.deliveries.every((one) => one.outcome === "processed"),
-        "the deliveries",
+      const olderComment = row(said.node).id;
+      const moved = github.transfer(moving, target, { lagging: true });
+      // Changed longer ago than the window: the wait is over.
+      moved.updated_at = earlier(10);
+      await once();
+
+      if (sourceFirst) {
+        // The old address is followed before the new issue is listed.
+        expect(row(moved.node).id).toBe(olderId);
+        expect(rowsOf("github.issue")).toHaveLength(1);
+        expect(conditions()).toEqual({});
+        return;
+      }
+      const copy = github.comments.find(
+        (one) => one.issue === moved.node && one.deleted !== true,
       );
-      await until(
-        () => conditions()[`duplicate:${copyId}`] !== undefined,
-        "the condition",
-      );
+      const newerId = row(moved.node).id;
+      const newerComment = row(copy?.node ?? "").id;
+      expect(newerId).not.toBe(olderId);
       expect(rowsOf("github.issue").map((one) => one.state)).toEqual([
         "active",
         "active",
       ]);
-      expect(row(moved.node).id).toBe(copyId);
-      expect(conditions()[`duplicate:${copyId}`]).toContain(olderId);
-      expect(conditions()[`duplicate:${copyId}`]).toContain("title");
-    });
-  }, 60_000);
+      expect(marfa.byId(olderId).properties["github_id"]).toBe(moving.node);
+      const issueCondition = conditions()[`duplicate:${newerId}`];
+      expect(issueCondition).toContain(olderId);
+      expect(issueCondition).toContain(newerId);
+      expect(issueCondition).toContain("transferred");
+      const commentCondition = conditions()[`duplicate:${newerComment}`];
+      expect(commentCondition).toContain(olderComment);
+      expect(commentCondition).toContain(newerComment);
+      expect(rowsOf("github.comment").map((one) => one.state)).toEqual([
+        "active",
+        "active",
+      ]);
 
-  it("keeps the edit of a comment named alone after its issue moved", async () => {
+      const before = marfa.log.length;
+      await once();
+      expect(lastWrites(before)).toEqual([]);
+      expect(rowsOf("github.issue").map((one) => one.state)).toEqual([
+        "active",
+        "active",
+      ]);
+    },
+  );
+
+  it("keeps the edit of a comment waiting after its issue moved, and archives no issue it was not told of", async () => {
     repositories(true);
-    const moving = github.addIssue(source, { title: "Original" });
-    const said = editedInMarfa(moving);
+    const { moving, said } = oldIssue("Original");
     await watching(async () => {
       const issueId = row(moving.node).id;
       const commentId = row(said.node).id;
-      marfa.edit(commentId, { body: "Comment edited in Marfa" });
       const moved = github.transfer(moving, target);
-      deliver("issue_comment", {
-        action: "edited",
-        comment: { node_id: said.node },
-        repository: {
-          node_id: source.node,
-          full_name: "someone/source",
-        },
-      });
-      await until(
-        () => marfa.deliveries.every((one) => one.outcome === "processed"),
-        "the delivery",
-      );
+      // The only thing that names the old comment is the edit waiting in it.
+      marfa.edit(commentId, { body: "Comment edited in Marfa" });
       const copy = github.comments.find(
         (one) => one.issue === moved.node && one.deleted !== true,
       );
@@ -582,6 +641,34 @@ describe("a transferred issue whose transfer record is late", () => {
       expect(row(moved.node).id).toBe(issueId);
       expect(rowsOf("github.issue")).toHaveLength(1);
       expect(rowsOf("github.comment")).toHaveLength(1);
+      expect(conditions()).toEqual({});
+    });
+  }, 60_000);
+
+  it("does not say it archived an issue it was not told of", async () => {
+    repositories(true);
+    const outside = github.addRepository("stranger/private", {
+      installation: 99,
+      private: true,
+    });
+    const { moving, said } = oldIssue("Leaving");
+    await watching(async () => {
+      const issueId = row(moving.node).id;
+      const commentId = row(said.node).id;
+      const runs = marfa.runs.length;
+      github.transfer(moving, outside);
+      marfa.edit(commentId, { body: "Comment edited in Marfa" });
+      // The run's conditions are recorded when it ends.
+      await until(
+        () =>
+          marfa.byId(commentId).state === "archived" &&
+          marfa.runs.length > runs,
+        "the comment row to be archived and the run to end",
+      );
+      expect(marfa.byId(issueId).state).toBe("active");
+      expect(
+        Object.keys(conditions()).filter((one) => one.startsWith("issue-")),
+      ).toEqual([]);
     });
   }, 60_000);
 
