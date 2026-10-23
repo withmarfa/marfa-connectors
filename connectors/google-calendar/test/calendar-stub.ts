@@ -134,16 +134,20 @@ export class CalendarStub {
     return found;
   }
 
-  /** An event is made or changed. */
+  /** An event is made or changed. A change always gets a new etag and
+   *  `updated`, as in Google, even when given the event's old ones. */
   put(calendar: string, event: Json): void {
     this.clock += 1;
-    this.store(calendar).set(String(event["id"]), {
-      event: {
-        updated: this.updated(),
-        etag: `"${String(this.clock)}"`,
-        status: "confirmed",
-        ...event,
-      },
+    const store = this.store(calendar);
+    const id = String(event["id"]);
+    const fresh = {
+      updated: this.updated(),
+      etag: `"${String(this.clock)}"`,
+    };
+    store.set(id, {
+      event: store.has(id)
+        ? { status: "confirmed", ...event, ...fresh }
+        : { ...fresh, status: "confirmed", ...event },
       version: this.clock,
     });
   }
