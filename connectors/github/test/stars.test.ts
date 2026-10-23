@@ -20,6 +20,7 @@ const types = [
   "github.file.image",
   "github.pull_request",
   "github.discussion",
+  "github.notification",
 ];
 const connections = [
   "github.in-repository",
@@ -32,6 +33,7 @@ const connections = [
   "github.closed-by",
   "parent-of",
   "in-thread",
+  "references",
 ];
 
 let key: string;
@@ -608,5 +610,138 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     const output = await sync();
     expect(output).toContain("starred_at");
     expect(repositoryRow(repository).state).toBe("active");
+  });
+});
+
+describe("stars read with the notifications token", { timeout: 90_000 }, () => {
+  const classic = "ghp_classic_notifications_12345678";
+  /** No installation of the App reaches it, so it is a star and nothing else. */
+  const elsewhere = { installation: 99 };
+
+  beforeEach(() => {
+    github.notifications.token = classic;
+    github.notifications.pollInterval = 0;
+  });
+
+  async function syncWithClassic(
+    env: Record<string, string> = {},
+  ): Promise<string> {
+    const result = await exec({
+      GITHUB_APP_ID: "12345",
+      GITHUB_PRIVATE_KEY: key,
+      GITHUB_WEBHOOK_SECRET: "github-test-webhook-secret",
+      GITHUB_NOTIFICATIONS_TOKEN: classic,
+      ...env,
+    });
+    expect(result.code, result.output).toBe(0);
+    return result.output;
+  }
+
+  function starListings(): (string | undefined)[] {
+    return github.asked
+      .filter((one) => one.path === "/user/starred")
+      .map((one) => one.by);
+  }
+
+  it("lists the public stars with it when no personal token is set, beside the App's repositories", async () => {
+    const synced = github.addRepository("someone/tracker", { private: false });
+    const starred = starOnly("someone/starred", elsewhere);
+    const secret = github.addRepository("someone/secret", { private: true });
+    github.star(synced);
+    github.star(secret);
+    await syncWithClassic();
+    expect(starListings()).toEqual(["classic"]);
+    expect(repositoryRow(starred).properties["starred"]).toBe(true);
+    expect(repositoryRow(synced).properties["starred"]).toBe(true);
+    expect(held(secret)?.properties["starred"]).toBe(false);
+  });
+
+  it("lists with the personal token when both are set, and never with the notifications token", async () => {
+    const tracker = listed("someone/tracker");
+    const secret = listed("someone/secret", { private: true });
+    github.star(tracker);
+    github.star(secret);
+    await exec({
+      GITHUB_PERSONAL_TOKEN: token,
+      GITHUB_NOTIFICATIONS_TOKEN: classic,
+    }).then((result) => {
+      expect(result.code, result.output).toBe(0);
+    });
+    expect(starListings()).toEqual(["personal"]);
+    expect(repositoryRow(secret).properties["starred"]).toBe(true);
+    expect(
+      github.asked.filter(
+        (one) => one.by === "classic" && one.path !== "/notifications",
+      ),
+    ).toEqual([]);
+  });
+
+  it("reads no stars where neither token is set, as before", async () => {
+    github.star(github.addRepository("someone/tracker"));
+    await syncWithApp();
+    expect(starRequests()).toBe(0);
+  });
+
+  it("never archives or unmarks a private star it cannot see, and names it", async () => {
+    const secretOnly = listed("someone/secret-only", { private: true });
+    const secretSynced = listed("someone/secret-synced", { private: true });
+    github.star(secretOnly);
+    github.star(secretSynced);
+    await sync();
+    expect(repositoryRow(secretOnly).properties["starred"]).toBe(true);
+    expect(repositoryRow(secretSynced).properties["starred"]).toBe(true);
+    // The person's rows now come from the App, which still reaches
+    // one of them; the other is a star and nothing else.
+    secretOnly.installation = 99;
+
+    for (let at = 0; at < 4; at += 1) await syncWithClassic();
+    expect(repositoryRow(secretOnly).state).toBe("active");
+    expect(repositoryRow(secretOnly).properties["starred"]).toBe(true);
+    expect(repositoryRow(secretSynced).state).toBe("active");
+    expect(repositoryRow(secretSynced).properties["starred"]).toBe(true);
+    expect(conditions()["stars-kept"]).toContain("someone/secret-only");
+  });
+
+  it("archives a public star after two listings and a 200, and unmarks a public synced one", async () => {
+    const open = starOnly("someone/open", elsewhere);
+    const synced = github.addRepository("someone/tracker", { private: false });
+    github.star(synced);
+    await syncWithClassic();
+    github.unstar(open);
+    github.unstar(synced);
+    await syncWithClassic();
+    expect(repositoryRow(open).state).toBe("active");
+    await syncWithClassic();
+    expect(checks("someone/open")).toBe(1);
+    expect(repositoryRow(open).state).toBe("archived");
+    expect(repositoryRow(synced).properties["starred"]).toBe(false);
+    expect(conditions()).not.toHaveProperty("stars-kept");
+  });
+
+  it("keeps a star-only row on a 404, which the notifications token also gets for a private repository", async () => {
+    const gone = starOnly("someone/gone", elsewhere);
+    await syncWithClassic();
+    github.unstar(gone);
+    gone.hidden = true;
+    await syncWithClassic();
+    await syncWithClassic();
+    expect(checks("someone/gone")).toBe(1);
+    expect(repositoryRow(gone).state).toBe("active");
+    expect(repositoryRow(gone).properties["starred"]).toBe(true);
+    expect(conditions()["stars-kept"]).toContain("someone/gone");
+    expect(conditions()["stars-kept"]).toContain("404");
+  });
+
+  it("names a rejected notifications token and carries on with the other kinds", async () => {
+    const tracker = github.addRepository("someone/tracker", { private: false });
+    github.star(tracker);
+    github.notifications.token = classic;
+    await syncWithClassic({
+      GITHUB_NOTIFICATIONS_TOKEN: "ghp_revoked_12345678",
+    });
+    expect(conditions()["stars-unreadable"]).toContain(
+      "GITHUB_NOTIFICATIONS_TOKEN",
+    );
+    expect(held(tracker)?.state).toBe("active");
   });
 });

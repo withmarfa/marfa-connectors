@@ -66,10 +66,11 @@ async function listStars(octokit: Client): Promise<Map<string, Star>> {
 
 const limitSpent = "GitHub's rate limit is spent";
 
-function whyNot(error: unknown): string {
+function whyNot(error: unknown, reading: string): string {
   if (error instanceof PermissionRequired) return error.message;
   if (rateLimited(error)) return limitSpent;
   const code = status(error);
+  if (code === 401) return `GitHub rejected ${reading} (401)`;
   return code === undefined
     ? error instanceof Error
       ? error.message
@@ -82,6 +83,16 @@ function marked(row: Item | undefined): boolean {
     row?.properties["starred"] === true ||
     typeof row?.properties["starred_at"] === "string"
   );
+}
+
+/** The token a run lists stars with. The notifications token is a classic
+ *  token without `repo`, which lists public stars only, so what it does not
+ *  list proves nothing of a private repository. */
+export interface Reader {
+  readonly octokit: Client;
+  /** The setting that holds the token, for what is said of it. */
+  readonly name: string;
+  readonly publicOnly: boolean;
 }
 
 function missedOf(value: unknown): Set<string> {
@@ -111,9 +122,13 @@ export class Stars {
     private readonly rows: ReadonlyMap<string, Item>,
     /** The marked repositories the last complete listing lacked. */
     private readonly missed: ReadonlySet<string>,
-    private readonly octokit: Client | undefined,
+    private readonly reader: Reader | undefined,
     private readonly state: State,
   ) {}
+
+  /** The repositories a run saw private, which a token that lists public
+   *  stars only cannot say are unstarred. */
+  private readonly shielded = new Set<string>();
 
   /**
    * The held rows are read only to carry marks no listing gave: where a token
@@ -124,27 +139,33 @@ export class Stars {
   static async open(
     context: Context,
     state: State,
-    octokit: Client | undefined,
+    reader: Reader | undefined,
     scheduled: boolean,
   ): Promise<Stars> {
     let read: Map<string, Star> | undefined;
-    if (scheduled && octokit !== undefined) {
+    if (scheduled && reader !== undefined) {
       try {
-        read = await listStars(octokit);
+        read = await listStars(reader.octokit);
       } catch (error) {
-        if (context.signal.aborted || status(error) === 401) throw error;
+        // The notifications token has a condition of its own for a refusal;
+        // a rejected personal token ends the run.
+        if (
+          context.signal.aborted ||
+          (status(error) === 401 && !reader.publicOnly)
+        )
+          throw error;
         context.log.condition(
           "stars-unreadable",
-          `${whyNot(error)}, so the starred repositories are not listed: their marks stay as the last scheduled run left them, and no repository is archived or unmarked for losing a star; the other kinds keep syncing`,
+          `${whyNot(error, reader.name)}, so the starred repositories are not listed: their marks stay as the last scheduled run left them, and no repository is archived or unmarked for losing a star; the other kinds keep syncing`,
         );
       }
     }
-    const rows = octokit === undefined ? new Map() : await rowsOf(context);
+    const rows = reader === undefined ? new Map() : await rowsOf(context);
     return new Stars(
       read,
       rows,
       read === undefined ? new Set() : missedOf(state.get(missedKey)),
-      octokit,
+      reader,
       state,
     );
   }
@@ -171,7 +192,10 @@ export class Stars {
     if (star !== undefined)
       return { ...repository, starred: true, starred_at: star.at };
     const row = this.rows.get(node)?.properties;
-    if (
+    const shielded = this.reader?.publicOnly === true && repository.private;
+    if (shielded && this.read !== undefined && marked(this.rows.get(node)))
+      this.shielded.add(node);
+    else if (
       this.read !== undefined &&
       (!marked(this.rows.get(node)) || this.missed.has(node))
     )
@@ -225,30 +249,40 @@ export class Stars {
     const lacking = this.lacking();
     const gone: string[] = [];
     const unmarked: string[] = [];
-    const doubtful: { node: string; name: string }[] = [];
+    const doubtful: { node: string; name: string; kept: boolean }[] = [];
     const unresolved = new Set<string>();
+    const reasons: string[] = [];
+    const publicOnly = this.reader?.publicOnly === true;
+    const nameOf = (node: string): string => {
+      const name = this.rows.get(node)?.properties["name"];
+      return typeof name === "string" ? name : node;
+    };
     for (const node of lacking) {
-      if (!this.missed.has(node)) {
+      if (this.shielded.has(node)) {
+        reasons.push(`${nameOf(node)} (private, and it is not listed)`);
+      } else if (!this.missed.has(node)) {
         unresolved.add(node);
       } else if (where.listed.has(node)) {
         // Unmarked by its own read, which carried the second miss.
-      } else if (where.kept.has(node)) {
+      } else if (where.kept.has(node) && !publicOnly) {
         unmarked.push(node);
-      } else if (where.complete) {
-        const name = this.rows.get(node)?.properties["name"];
-        doubtful.push({ node, name: typeof name === "string" ? name : node });
+      } else if (where.kept.has(node) || where.complete) {
+        doubtful.push({
+          node,
+          name: nameOf(node),
+          kept: where.kept.has(node),
+        });
       } else {
         unresolved.add(node);
       }
     }
-    const reasons: string[] = [];
     let spent = false;
-    for (const { node, name } of doubtful) {
+    for (const { node, name, kept } of doubtful) {
       const why: string | undefined = spent
         ? limitSpent
         : await this.refused(context, name);
       if (why === undefined) {
-        gone.push(node);
+        (kept ? unmarked : gone).push(node);
       } else {
         unresolved.add(node);
         reasons.push(`${name} (${why})`);
@@ -266,7 +300,11 @@ export class Stars {
       const more = reasons.length - namedAtMost;
       context.log.condition(
         starsKept,
-        `the token cannot show that these repositories are no longer starred, so their rows are kept: ${named}${more > 0 ? ` and ${String(more)} more` : ""}. GitHub leaves a star out of the listing when the owner refuses the token, such as an organization that limits fine-grained tokens by lifetime`,
+        `the token cannot show that these repositories are no longer starred, so their rows are kept: ${named}${more > 0 ? ` and ${String(more)} more` : ""}. ${
+          publicOnly
+            ? `${this.reader.name} is a classic token that lists public stars only, and GitHub answers it 404 for a private repository, so neither a missing star nor a 404 shows a private repository is no longer starred`
+            : "GitHub leaves a star out of the listing when the owner refuses the token, such as an organization that limits fine-grained tokens by lifetime"
+        }`,
       );
     }
     this.state.set(missedKey, [...unresolved]);
@@ -279,16 +317,23 @@ export class Stars {
     name: string,
   ): Promise<string | undefined> {
     const [owner, repo, ...rest] = name.split("/");
-    if (this.octokit === undefined || !owner || !repo || rest.length > 0)
+    const reader = this.reader;
+    if (reader === undefined || !owner || !repo || rest.length > 0)
       return "its row names no repository to read";
     try {
-      await this.octokit.request("GET /repos/{owner}/{repo}", { owner, repo });
+      await reader.octokit.request("GET /repos/{owner}/{repo}", {
+        owner,
+        repo,
+      });
       return undefined;
     } catch (error) {
       if (context.signal.aborted) throw error;
-      if (status(error) === 404) return undefined;
       if (rateLimited(error)) return limitSpent;
-      return `${whyNot(error)}${status(error) !== undefined && error instanceof Error ? `: ${error.message}` : ""}`;
+      if (status(error) === 404)
+        return reader.publicOnly
+          ? "GitHub answered 404, which it also says of a private repository"
+          : undefined;
+      return `${whyNot(error, reader.name)}${status(error) !== undefined && error instanceof Error ? `: ${error.message}` : ""}`;
     }
   }
 }

@@ -71,8 +71,9 @@ import { fileNotes, preserveFiles, markFilesPrivate } from "./files.js";
 import {
   conditionKeys as notificationConditions,
   readNotifications,
+  tokenName,
 } from "./notifications.js";
-import { Stars, starsKept } from "./stars.js";
+import { Stars, starsKept, type Reader } from "./stars.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
@@ -200,6 +201,35 @@ class Coverage {
   }
 }
 
+/** The personal token lists the stars; failing that the notifications token,
+ *  a classic token without `repo`, which lists public stars only. */
+function starReader(
+  app: App | Personal,
+  personal: Client | undefined,
+  notificationsToken: string | undefined,
+  secret: RootContext["secret"],
+  signal: AbortSignal,
+): Reader | undefined {
+  if (personal !== undefined)
+    return {
+      octokit: personal,
+      name: "GITHUB_PERSONAL_TOKEN",
+      publicOnly: false,
+    };
+  if (notificationsToken === undefined) return undefined;
+  return {
+    octokit: asPersonalToken(
+      notificationsToken,
+      app.base,
+      secret,
+      signal,
+      tokenName,
+    ),
+    name: tokenName,
+    publicOnly: true,
+  };
+}
+
 export async function read(
   context: RootContext,
   app: App | Personal,
@@ -208,7 +238,7 @@ export async function read(
 ): Promise<void> {
   const coverage = new Coverage();
   try {
-    await readAll(context, app, scope, coverage);
+    await readAll(context, app, scope, coverage, notifications.token);
   } catch (error) {
     if ("token" in app && status(error) === 401)
       throw new Error(
@@ -245,6 +275,7 @@ async function readAll(
   app: App | Personal,
   scope: Scope | undefined,
   coverage: Coverage,
+  notificationsToken: string | undefined,
 ): Promise<void> {
   const { state, log, secret, signal } = context;
   const unsettled = takeUnsettled(state);
@@ -374,7 +405,12 @@ async function readAll(
   }
   // Only a scheduled run lists the stars; the rest keep each mark as it was.
   const scheduled = context.hints === undefined;
-  const stars = await Stars.open(context, state, personal, scheduled);
+  const stars = await Stars.open(
+    context,
+    state,
+    starReader(app, personal, notificationsToken, secret, signal),
+    scheduled,
+  );
   if (scheduled) coverage.reached("stars-unreadable");
   for (const [node, at] of listed)
     listed.set(node, { ...at, repository: stars.mark(at.repository) });

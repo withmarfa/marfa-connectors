@@ -177,6 +177,8 @@ export interface Asked {
   remaining?: number;
   /** Whether the answer refused the request for a rate limit. */
   limited?: boolean;
+  /** Which of the person's tokens signed the request, if one did. */
+  by?: "personal" | "classic";
 }
 
 // GitHub's clock keeps to real time, as the connector compares it with the
@@ -702,6 +704,19 @@ export class GitHubStub {
     return held === "write" || held === wanted;
   }
 
+  /** The classic token the notifications use, which reads public repositories
+   *  and the person's stars of them, and private ones only with `repo`. */
+  private isClassic(req: IncomingMessage): boolean {
+    return (
+      this.notifications.token !== undefined &&
+      req.headers.authorization === `Bearer ${this.notifications.token}`
+    );
+  }
+
+  private classicSees(repository: Repository): boolean {
+    return !repository.private || this.notifications.scopes.includes("repo");
+  }
+
   private isPersonal(req: IncomingMessage): boolean {
     return (
       this.personalToken !== undefined &&
@@ -850,6 +865,11 @@ export class GitHubStub {
       body,
       status: 200,
       version: req.headers["x-github-api-version"] as string | undefined,
+      ...(this.isPersonal(req)
+        ? { by: "personal" as const }
+        : this.isClassic(req)
+          ? { by: "classic" as const }
+          : {}),
     };
     this.asked.push(asked);
     this.onAsked?.(asked);
@@ -967,7 +987,11 @@ export class GitHubStub {
     let match: RegExpExecArray | null;
     if (!asApp && req.headers.authorization !== undefined) {
       const grant = this.grantOf(req);
-      if (grant === undefined && !this.isPersonal(req)) {
+      if (
+        grant === undefined &&
+        !this.isPersonal(req) &&
+        !this.isClassic(req)
+      ) {
         send(401, { message: "Bad credentials" });
         return;
       }
@@ -1056,7 +1080,7 @@ export class GitHubStub {
       return;
     }
     if (method === "GET" && path === "/user/starred") {
-      if (!this.isPersonal(req)) {
+      if (!this.isPersonal(req) && !this.isClassic(req)) {
         send(401, { message: "Bad credentials" });
         return;
       }
@@ -1076,8 +1100,10 @@ export class GitHubStub {
             );
             return repository !== undefined &&
               repository.hidden !== true &&
-              !this.personalRefused.has(repository.node) &&
-              (!repository.private || this.reaches(req, repository))
+              (this.isClassic(req)
+                ? this.classicSees(repository)
+                : !this.personalRefused.has(repository.node) &&
+                  (!repository.private || this.reaches(req, repository)))
               ? [{ repository, starredAt }]
               : [];
           })
@@ -1216,7 +1242,8 @@ export class GitHubStub {
         named !== undefined &&
         named.hidden !== true &&
         (this.readable(req, owner, name) !== undefined ||
-          (this.isPersonal(req) && !named.private))
+          (this.isPersonal(req) && !named.private) ||
+          (this.isClassic(req) && this.classicSees(named)))
           ? named
           : undefined;
       if (repository === undefined) send(404, { message: "Not Found" });
