@@ -434,6 +434,33 @@ describe("a row made in Marfa", () => {
     expect(marfa.byId(made.id).properties["number"]).toBe(issue?.number);
   });
 
+  it(
+    "as a conflicted copy of an issue is not sent, and stays in Marfa with a condition",
+    async () => {
+      const issue = github.addIssue(repository, {
+        title: "Before",
+        body: "Mine",
+      });
+      await ok();
+      const original = row(issue.node);
+      // Marfa copies the original's repository edge to the copy it writes.
+      const copy = marfa.conflictedCopy(original.id, { body: "Theirs" });
+      marfa.drawEdge(copy.id, row(repository.node).id, "github.in-repository");
+
+      const output = await ok();
+      await ok();
+      expect(github.writes()).toEqual([]);
+      expect(github.issues).toHaveLength(1);
+      expect(output).toContain(
+        `${copy.id} is a conflicted copy of ${original.id}`,
+      );
+      expect(marfa.byId(copy.id).state).toBe("active");
+      expect(marfa.byId(copy.id).properties["body"]).toBe("Theirs");
+      expect(marfa.byId(copy.id).properties["github_id"]).toBeUndefined();
+    },
+    multiRunTimeout,
+  );
+
   it("naming no repository is not sent, and the run says why; drawing one sends it", async () => {
     await ok();
     const made = marfa.insert(
