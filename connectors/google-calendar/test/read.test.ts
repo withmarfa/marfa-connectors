@@ -1242,6 +1242,43 @@ describe("a row Marfa refuses", () => {
     expect(conditions()).not.toContain(key);
     expect(harness.kept()["inbound"]).toBeUndefined();
   });
+
+  it("still advances the calendar when every event in its delta is refused", async () => {
+    const refusal = {
+      status: 400,
+      code: "invalid_properties",
+      message: "recurrence holds an RDATE period",
+    };
+    calendar.put(
+      me,
+      timed("plain", "Plain", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    expect(await once()).toBe(0);
+    const firstToken = tokens()[me]?.token;
+
+    for (const id of ["a", "b"]) {
+      calendar.put(
+        me,
+        timed(id, id, "2026-11-03T09:00:00Z", "2026-11-03T10:00:00Z", london, {
+          recurrence: [
+            "RRULE:FREQ=WEEKLY;BYDAY=TU",
+            "RDATE;VALUE=PERIOD:20261105T100000Z/20261105T110000Z",
+          ],
+        }),
+      );
+      server.entryRefusals.set(`${sub}:${me}/${id}`, refusal);
+    }
+
+    expect(await once()).toBe(0);
+
+    expect(active()).toEqual([`${me}/plain`]);
+    expect(tokens()[me]?.token).not.toBe(firstToken);
+    for (const id of ["a", "b"]) {
+      expect(conditions()).toContain(
+        `inbound:${JSON.stringify([eventType, `${sub}:${me}/${id}`])}`,
+      );
+    }
+  });
 });
 
 describe("a check a run skips", () => {
