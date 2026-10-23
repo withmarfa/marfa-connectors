@@ -426,10 +426,26 @@ describe("a transferred issue", () => {
     const stub = github.issues.find((one) => one.node === away.node);
     if (stub !== undefined) delete stub.movedTo;
     await once();
+    // Its timeline shows a transfer from a repository Marfa holds a row of,
+    // and no old address confirms it, so it waits.
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === moved.node),
+    ).toBe(false);
+    // Once a full window has passed with no proof, it is a new issue, and
+    // not the row of either of the others that share its title and time.
+    const state = marfa.states.get("github")?.["state"] as
+      | {
+          repositories?: Record<string, Record<string, Record<string, string>>>;
+        }
+      | undefined;
+    const waiting = state?.repositories?.[target.node]?.["waiting"];
+    if (waiting === undefined) throw new Error("nothing waits");
+    waiting[moved.node] = earlier(3);
+    await once();
     expect(row(stays.node).state).toBe("active");
-    expect(rowsOf("github.issue").length).toBeGreaterThanOrEqual(2);
+    expect(rowsOf("github.issue").length).toBeGreaterThanOrEqual(3);
     expect(row(moved.node).id).not.toBe(row(stays.node).id);
-  });
+  }, 120_000);
 });
 
 function conditions(): Record<string, string> {
@@ -461,17 +477,22 @@ describe("a transferred issue whose transfer record is late", () => {
   }
 
   it.each([
-    ["opened, then transferred", true],
-    ["transferred, then opened", false],
+    ["opened, then transferred, the event missing", true, false],
+    ["transferred, then opened, the event missing", false, false],
+    ["opened, then transferred, the event shown first", true, true],
+    ["transferred, then opened, the event shown first", false, true],
   ])(
     "stays one item, with its edits, when the webhooks arrive %s",
-    async (_, openedFirst) => {
+    async (_, openedFirst, showing) => {
       repositories(true);
       const { moving, said } = oldIssue("Original");
       await watching(async () => {
         const issueId = row(moving.node).id;
         const commentId = row(said.node).id;
-        const moved = github.transfer(moving, target, { late: true });
+        const moved = github.transfer(moving, target, {
+          late: true,
+          showing,
+        });
         const sent = github.transferDeliveries(moving, moved);
         const delivered = async (action: "opened" | "transferred") => {
           const before = marfa.deliveries.length;
@@ -519,41 +540,48 @@ describe("a transferred issue whose transfer record is late", () => {
     60_000,
   );
 
-  it("waits for the next scheduled run, then keeps the item and its comment", async () => {
-    repositories(false);
-    const { moving, said } = oldIssue("Original");
-    await once();
-    const issueId = row(moving.node).id;
-    const commentId = row(said.node).id;
+  it.each([
+    ["the event missing", false],
+    ["the event shown first", true],
+  ])(
+    "waits for the next scheduled run, then keeps the item and its comment, with %s",
+    async (_, showing) => {
+      repositories(false);
+      const { moving, said } = oldIssue("Original");
+      await once();
+      const issueId = row(moving.node).id;
+      const commentId = row(said.node).id;
 
-    const moved = github.transfer(moving, target, { late: true });
-    await once();
+      const moved = github.transfer(moving, target, { late: true, showing });
+      await once();
 
-    // Written by no run yet: no second row, and no copy of the comment.
-    expect(rowsOf("github.issue")).toHaveLength(1);
-    expect(rowsOf("github.comment")).toHaveLength(1);
-    expect(marfa.byId(issueId).state).toBe("active");
-    expect(conditions()).toEqual({});
+      // Written by no run yet: no second row, and no copy of the comment.
+      expect(rowsOf("github.issue")).toHaveLength(1);
+      expect(rowsOf("github.comment")).toHaveLength(1);
+      expect(marfa.byId(issueId).state).toBe("active");
+      expect(conditions()).toEqual({});
 
-    github.settleTransfers();
-    marfa.edit(issueId, { title: "Edited in Marfa" });
-    await once();
+      github.settleTransfers();
+      marfa.edit(issueId, { title: "Edited in Marfa" });
+      await once();
 
-    expect(row(moved.node).id).toBe(issueId);
-    expect(rowsOf("github.issue")).toHaveLength(1);
-    expect(rowsOf("github.issue")[0]?.state).toBe("active");
-    const copy = github.comments.find(
-      (one) => one.issue === moved.node && one.deleted !== true,
-    );
-    expect(row(copy?.node ?? "").id).toBe(commentId);
-    expect(rowsOf("github.comment")).toHaveLength(1);
-    expect(moved.title).toBe("Edited in Marfa");
-    expect(conditions()).toEqual({});
+      expect(row(moved.node).id).toBe(issueId);
+      expect(rowsOf("github.issue")).toHaveLength(1);
+      expect(rowsOf("github.issue")[0]?.state).toBe("active");
+      const copy = github.comments.find(
+        (one) => one.issue === moved.node && one.deleted !== true,
+      );
+      expect(row(copy?.node ?? "").id).toBe(commentId);
+      expect(rowsOf("github.comment")).toHaveLength(1);
+      expect(moved.title).toBe("Edited in Marfa");
+      expect(conditions()).toEqual({});
 
-    const before = marfa.log.length;
-    await once();
-    expect(lastWrites(before)).toEqual([]);
-  });
+      const before = marfa.log.length;
+      await once();
+      expect(lastWrites(before)).toEqual([]);
+    },
+    120_000,
+  );
 
   it("writes a new issue at once", async () => {
     repositories(true);
@@ -598,11 +626,11 @@ describe("a transferred issue whose transfer record is late", () => {
         "active",
       ]);
       expect(marfa.byId(olderId).properties["github_id"]).toBe(moving.node);
-      const issueCondition = conditions()[`duplicate:${newerId}`];
+      const issueCondition = conditions()[`duplicate:${olderId}`];
       expect(issueCondition).toContain(olderId);
       expect(issueCondition).toContain(newerId);
       expect(issueCondition).toContain("transferred");
-      const commentCondition = conditions()[`duplicate:${newerComment}`];
+      const commentCondition = conditions()[`duplicate:${olderComment}`];
       expect(commentCondition).toContain(olderComment);
       expect(commentCondition).toContain(newerComment);
       expect(rowsOf("github.comment").map((one) => one.state)).toEqual([
@@ -618,7 +646,86 @@ describe("a transferred issue whose transfer record is late", () => {
         "active",
       ]);
     },
+    120_000,
   );
+
+  /** The daily check is due again in every repository. */
+  function checkDue(): void {
+    const state = marfa.states.get("github")?.["state"] as
+      { repositories?: Record<string, Record<string, unknown>> } | undefined;
+    for (const repository of Object.values(state?.repositories ?? {})) {
+      Reflect.deleteProperty(repository, "checked");
+    }
+  }
+
+  async function duplicated() {
+    repositories(false);
+    const { moving, said } = oldIssue("Original");
+    await once();
+    const olderId = row(moving.node).id;
+    const olderComment = row(said.node).id;
+    const moved = github.transfer(moving, target, { lagging: true });
+    moved.updated_at = earlier(10);
+    await once();
+    const copy = github.comments.find(
+      (one) => one.issue === moved.node && one.deleted !== true,
+    );
+    const newerId = row(moved.node).id;
+    const newerComment = row(copy?.node ?? "").id;
+    expect(Object.keys(conditions()).sort()).toEqual(
+      [`duplicate:${olderId}`, `duplicate:${olderComment}`].sort(),
+    );
+    return { olderId, newerId, olderComment, newerComment };
+  }
+
+  it("keeps the duplicate condition while both rows stand, or while only the newer is archived", async () => {
+    const { olderId, newerId, olderComment } = await duplicated();
+    checkDue();
+    await once();
+    expect(conditions()).toHaveProperty(`duplicate:${olderId}`);
+    expect(conditions()).toHaveProperty(`duplicate:${olderComment}`);
+
+    // The older row cannot take the newer issue's key, which its row holds,
+    // so archiving the newer row resolves nothing.
+    marfa.transition(newerId, "archived");
+    checkDue();
+    await once();
+    expect(conditions()).toHaveProperty(`duplicate:${olderId}`);
+    expect(marfa.byId(olderId).state).toBe("active");
+  }, 120_000);
+
+  it("clears the duplicate condition once the older rows are archived", async () => {
+    const { olderId, newerId } = await duplicated();
+    marfa.transition(olderId, "archived");
+    checkDue();
+    await once();
+    expect(
+      Object.keys(conditions()).filter((key) => key.startsWith("duplicate:")),
+    ).toEqual([]);
+    expect(marfa.byId(newerId).state).toBe("active");
+    expect(marfa.byId(olderId).state).toBe("archived");
+  }, 120_000);
+
+  it("clears a moved, missing or duplicate condition whose cause is gone, and keeps one it did not check", async () => {
+    repositories(true);
+    const issue = github.addIssue(source, { title: "Fine" });
+    const comment = github.addComment(issue, "Said", "alice");
+    await once();
+    marfa.problems.set("github", {
+      [`issue-moved:${issue.node}`]: "moved, though it answers",
+      [`issue-missing:${issue.node}`]: "missing, though it answers",
+      [`duplicate:${row(issue.node).id}`]: "a duplicate, though it is not",
+      [`duplicate:${row(comment.node).id}`]: "a comment duplicate",
+      "issue-missing:I_unknown": "an issue this read never held",
+      "duplicate:unknown-row": "a row this read never held",
+    });
+    checkDue();
+    await once();
+    expect(conditions()).toEqual({
+      "issue-missing:I_unknown": "an issue this read never held",
+      "duplicate:unknown-row": "a row this read never held",
+    });
+  }, 120_000);
 
   it("keeps the edit of a comment waiting after its issue moved, and archives no issue it was not told of", async () => {
     repositories(true);
@@ -672,6 +779,71 @@ describe("a transferred issue whose transfer record is late", () => {
     });
   }, 60_000);
 
+  it.each([
+    ["opened", "the transfer check"],
+    ["opened", "the old address"],
+    ["transferred", "the old address"],
+  ] as const)(
+    "writes no new row for an issue a %s delivery names while a rate limit stops %s",
+    async (action, limited) => {
+      repositories(true);
+      const { moving, said } = oldIssue("Original");
+      let issueId = "";
+      let commentId = "";
+      let moved: Issue | undefined;
+      await watching(async () => {
+        issueId = row(moving.node).id;
+        commentId = row(said.node).id;
+        const copy = github.transfer(moving, target);
+        moved = copy;
+        const address = `/repos/someone/source/issues/${String(moving.number)}`;
+        github.onAsked = (asked) => {
+          if (
+            limited === "the transfer check" &&
+            asked.path === "/graphql" &&
+            JSON.stringify(asked.body).includes("query Transfers")
+          ) {
+            github.exhaust("graphql");
+          }
+          if (limited === "the old address" && asked.path === address) {
+            github.exhaust("core");
+          }
+        };
+        const runs = marfa.runs.length;
+        deliver("issues", github.transferDeliveries(moving, copy)[action]);
+        await until(
+          () => github.asked.some((one) => one.limited === true),
+          "the rate limit",
+        );
+        await until(() => marfa.runs.length > runs, "the run to end");
+
+        expect(
+          marfa.rows.some((one) => one.properties["github_id"] === copy.node),
+        ).toBe(false);
+        expect(rowsOf("github.issue")).toHaveLength(1);
+        expect(rowsOf("github.comment")).toHaveLength(1);
+      });
+
+      // The delivery is kept, and read again once the budget is back.
+      github.onAsked = undefined;
+      github.refill("graphql");
+      github.refill("core");
+      await once();
+      const node = moved?.node ?? "";
+      expect(row(node).id).toBe(issueId);
+      expect(rowsOf("github.issue")).toHaveLength(1);
+      expect(
+        row(
+          github.comments.find(
+            (one) => one.issue === node && one.deleted !== true,
+          )?.node ?? "",
+        ).id,
+      ).toBe(commentId);
+      expect(rowsOf("github.comment")).toHaveLength(1);
+    },
+    60_000,
+  );
+
   it("archives the row of an issue that moved out of reach, with its true reason", async () => {
     repositories(true);
     const moving = github.addIssue(source, { title: "Leaving" });
@@ -696,4 +868,73 @@ describe("a transferred issue whose transfer record is late", () => {
       expect(gone[0]?.[1]).toContain("a repository the App cannot read");
     });
   }, 60_000);
+});
+
+describe("an issue that waits for its transfer record on a first sync", () => {
+  function waited(): Record<string, string> | undefined {
+    const state = marfa.states.get("github")?.["state"] as
+      { repositories?: Record<string, Record<string, unknown>> } | undefined;
+    return state?.repositories?.[source.node]?.["waiting"] as
+      Record<string, string> | undefined;
+  }
+
+  function listed(): Record<string, unknown> {
+    const state = marfa.states.get("github")?.["state"] as
+      { repositories?: Record<string, Record<string, unknown>> } | undefined;
+    return state?.repositories?.[source.node] ?? {};
+  }
+
+  function commentReads(): number {
+    return github.asked.filter((one) =>
+      /\/issues\/\d+\/comments$/.test(one.path),
+    ).length;
+  }
+
+  it("records the listing as read, waits one window at most, then writes it as a new issue", async () => {
+    repositories(true);
+    const quiet = github.addIssue(source, { title: "Quiet" });
+    github.addComment(quiet, "Hello", "alice");
+    const busy = github.addIssue(source, {
+      title: "Busy",
+      created_at: earlier(60),
+    });
+    github.addComment(busy, "Said", "alice");
+    const touch = (): void => {
+      busy.updated_at = earlier(0.5);
+    };
+    touch();
+
+    await once();
+    expect(row(quiet.node).state).toBe("active");
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === busy.node),
+    ).toBe(false);
+    expect(Object.keys(waited() ?? {})).toEqual([busy.node]);
+    expect(listed()["open"]).toBeDefined();
+
+    // Another change inside the window: it keeps waiting, and nothing already
+    // read is read again.
+    touch();
+    github.asked = [];
+    await once();
+    expect(
+      marfa.rows.some((one) => one.properties["github_id"] === busy.node),
+    ).toBe(false);
+    expect(commentReads()).toBe(0);
+
+    // A full window on, with no proof of a transfer: it is a new issue.
+    const first = waited();
+    if (first === undefined) throw new Error("nothing waits");
+    first[busy.node] = earlier(3);
+    touch();
+    await once();
+    expect(row(busy.node).state).toBe("active");
+    expect(rowsOf("github.issue")).toHaveLength(2);
+    expect(rowsOf("github.comment")).toHaveLength(2);
+    expect(waited()).toBeUndefined();
+
+    const before = marfa.log.length;
+    await once();
+    expect(lastWrites(before)).toEqual([]);
+  }, 120_000);
 });

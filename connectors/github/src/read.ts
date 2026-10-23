@@ -111,6 +111,9 @@ export interface Kept {
   paused?: boolean;
   /** The repository's visibility as its rows last said it. */
   private?: boolean;
+  /** Issues Marfa has no row for that may be mid-transfer, each with when
+   *  this read first held it back. */
+  waiting?: Record<string, string>;
 }
 
 type RootContext = RunContext<EnvDeclaration>;
@@ -314,6 +317,8 @@ async function readAll(
       ? [{ id: 0, account: { login: "the personal token" } }]
       : await asApp(app, signal).paginate("GET /app/installations");
   coverage.reached("clock-skew");
+  // A person who archived or trashed a row has settled a duplicate it was in.
+  coverage.reached(...(await settledDuplicates(context)));
   const clients = new Map<number, Client>();
   // Discussions are read with their own token, so an installation that has
   // not accepted their permission still reads everything else.
@@ -703,6 +708,9 @@ async function readAll(
           retainedRepositories: retained,
           privacy,
           check,
+          reached: (keys) => {
+            coverage.reached(...keys);
+          },
         })),
         ...(repository.discussions !== undefined && {
           discussions: repository.discussions,
@@ -846,6 +854,9 @@ async function syncRepository(
     retainedRepositories: ReadonlySet<string>;
     privacy: Privacy;
     check: boolean;
+    /** Marks conditions the check ran in full for, so any it did not raise
+     *  again are cleared. */
+    reached: (keys: readonly string[]) => void;
   },
 ): Promise<Kept> {
   const { upsert } = context;
@@ -925,8 +936,10 @@ async function syncRepository(
       }
     }
   }
+  const waitedBefore = new Map(Object.entries(repository.waiting ?? {}));
   const around = [
     ...held,
+    ...waitedBefore.keys(),
     ...prs.flatMap((pr) =>
       pr.closingIssues
         .filter((one) => options.synced.has(one.repository.id))
@@ -1016,8 +1029,14 @@ async function syncRepository(
       .map(({ issue }) => issue),
   ];
   // An issue that may be mid-transfer is written by a later run, when GitHub
-  // has recorded the transfer.
-  const { moves, waiting: moving } = await movedFrom(context, octokit, written);
+  // has recorded the transfer, or once it has waited a window.
+  const { moves, waiting: moving } = await movedFrom(
+    context,
+    octokit,
+    written,
+    started.getTime(),
+    waitedBefore,
+  );
   await upsert(
     issueType,
     await fileNotes(
@@ -1076,13 +1095,18 @@ async function syncRepository(
     );
   }
 
-  // Comments of an issue that waits are read with it, once it is written.
-  // The page records below stay as they were, so the issue is listed again
-  // and its comments are all read then.
-  const waitingNumbers = new Set(
-    written
-      .filter((one) => moving.has(one.node) && one.repository.node === node)
-      .map((one) => one.number),
+  // Comments of an issue that waits are read with it, once it is written: the
+  // run that lets it go reads them all, as for a new issue.
+  const waitingHere = written.filter(
+    (one) => moving.has(one.node) && one.repository.node === node,
+  );
+  const waitingNumbers = new Set(waitingHere.map((one) => one.number));
+  const released = written.filter(
+    (one) =>
+      waitedBefore.has(one.node) &&
+      !moving.has(one.node) &&
+      !moves.has(one.node) &&
+      one.repository.node === node,
   );
   const comments = new Map<string, RestComment>();
   let since = repository.comments?.since ?? started.toISOString();
@@ -1128,6 +1152,14 @@ async function syncRepository(
       }
     }
   }
+  for (const issue of released) {
+    for (const comment of (await octokit.paginate(
+      "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      { owner, repo: name, issue_number: issue.number, per_page: 100 },
+    )) as RestComment[]) {
+      comments.set(comment.node_id, comment);
+    }
+  }
   for (const [key, comment] of comments) {
     if (waitingNumbers.has(numberOf(comment))) comments.delete(key);
   }
@@ -1135,7 +1167,10 @@ async function syncRepository(
     node,
     owner,
     name,
-    scope: new Set([...scope].filter((one) => !waitingNumbers.has(one))),
+    scope: new Set([
+      ...[...scope].filter((one) => !waitingNumbers.has(one)),
+      ...released.map((one) => one.number),
+    ]),
     hidden,
   };
   const wrote = await writeComments(
@@ -1153,17 +1188,18 @@ async function syncRepository(
     installation: repository.installation,
     name: repository.name,
     ...(repository.id !== undefined && { id: repository.id }),
-    // While an issue waits, the listing is not recorded as read, so the next
-    // run lists the issue again.
-    ...(waitingNumbers.size === 0
-      ? {
-          open: open.pages,
-          closed: { since: windowStart, pages: closed.pages },
-        }
-      : {
-          ...(repository.open !== undefined && { open: repository.open }),
-          ...(repository.closed !== undefined && { closed: repository.closed }),
-        }),
+    open: open.pages,
+    closed: { since: windowStart, pages: closed.pages },
+    // The next run reads these by node, and writes each as a new issue once
+    // it has waited a window.
+    ...(waitingHere.length > 0 && {
+      waiting: Object.fromEntries(
+        waitingHere.map((one) => [
+          one.node,
+          waitedBefore.get(one.node) ?? started.toISOString(),
+        ]),
+      ),
+    }),
     comments: {
       since,
       ...(etag !== undefined && { etag }),
@@ -1177,6 +1213,7 @@ async function syncRepository(
       context,
       octokit,
       { node, owner, name, scope, windowStart },
+      options.reached,
       {
         synced: options.synced,
         entry: ({ issue, relations: known }) =>
@@ -1337,6 +1374,16 @@ async function changedComments(
   return { comments, etag: first.etag, full };
 }
 
+async function settledDuplicates(context: Context): Promise<string[]> {
+  const rows = [
+    ...(await context.held(issueType, { state: "any" })),
+    ...(await context.held(commentType, { state: "any" })),
+  ];
+  return rows
+    .filter((row) => row.state !== "active")
+    .map((row) => `duplicate:${row.id}`);
+}
+
 // A closed issue quiet since before the window is outside it, not gone.
 async function checkIssues(
   context: Context,
@@ -1348,14 +1395,18 @@ async function checkIssues(
     scope: ReadonlySet<number>;
     windowStart: string;
   },
+  reached: (keys: readonly string[]) => void,
   follower: Follower,
 ): Promise<void> {
   const under = { type: repositoryType, id: where.node };
-  const unlisted = (
-    await context.linked(issueType, inRepository, under)
-  ).filter((row) => {
+  const rows = await context.linked(issueType, inRepository, under);
+  const listed = (row: Item): boolean => {
     const number = row.properties["number"];
-    if (typeof number !== "number" || where.scope.has(number)) return false;
+    return typeof number === "number" && where.scope.has(number);
+  };
+  const unlisted = rows.filter((row) => {
+    if (typeof row.properties["number"] !== "number" || listed(row))
+      return false;
     const updated = row.properties["github_updated_at"];
     const quiet = typeof updated === "string" ? updated : "";
     const closed = ["completed", "canceled"].includes(
@@ -1364,6 +1415,42 @@ async function checkIssues(
     return !closed || quiet >= where.windowStart;
   });
   await archiveGone(context, octokit, where, unlisted, follower);
+  // Every row listed or asked about has been through the whole check, so a
+  // condition about one that is no longer raised is gone. A row left out
+  // as closed and quiet was not checked, and keeps its conditions.
+  const asked = new Set(unlisted);
+  const checked = rows.filter((row) => listed(row) || asked.has(row));
+  const numbers = new Set(
+    checked.flatMap((row) => {
+      const number = row.properties["number"];
+      return typeof number === "number" ? [number] : [];
+    }),
+  );
+  // A comment of an issue no active row holds raises nothing either.
+  const active = new Set(
+    rows.flatMap((row) => {
+      const number = row.properties["number"];
+      return typeof number === "number" ? [number] : [];
+    }),
+  );
+  const comments = (
+    await context.linked(commentType, inRepository, under)
+  ).filter((row) => {
+    const number = issueNumberOf(row) ?? Number.NaN;
+    return numbers.has(number) || !active.has(number);
+  });
+  reached([
+    ...checked.flatMap((row) => {
+      const link = linkOf(row);
+      return [
+        `duplicate:${row.id}`,
+        ...(link === undefined
+          ? []
+          : [`issue-moved:${link}`, `issue-missing:${link}`]),
+      ];
+    }),
+    ...comments.map((row) => `duplicate:${row.id}`),
+  ]);
 }
 
 /** Asks GitHub about rows it no longer lists. A row whose issue was
@@ -1401,9 +1488,11 @@ async function archiveGone(
         continue;
       }
       if (next.kind === "duplicate") {
+        // A person who archived this row has settled it.
+        if (row.state !== "active") continue;
         log.condition(
-          `duplicate:${next.other.id}`,
-          `${here} was transferred to ${next.issue.repository.name}#${String(next.issue.number)}, which row ${next.other.id} already holds, so row ${row.id} and row ${next.other.id} are both kept`,
+          `duplicate:${row.id}`,
+          `${here} was transferred to ${next.issue.repository.name}#${String(next.issue.number)}, which row ${next.other.id}${next.other.state === "active" ? "" : ` (${next.other.state})`} already holds, so row ${row.id} and row ${next.other.id} are both kept`,
         );
         await duplicateComments(
           context,
@@ -1852,6 +1941,19 @@ async function readNamed(
       return attempt(installation, () => askIssue(client, owner, name, number));
     },
   );
+  // Issues that cannot be written yet because a rate limit stopped a check
+  // that says whether they are a transfer, or the copy of a moved issue's
+  // comments: written by a later run.
+  const stalled = new Set<string>();
+  const stall = (node: string): void => {
+    stalled.add(node);
+    issues.delete(node);
+    moves.delete(node);
+    for (const [key, comment] of comments) {
+      if (comment.issue === node) comments.delete(key);
+    }
+  };
+  const checked = new Set<number>();
   for (const [installation, client] of clients) {
     const mine = [...issues.values()]
       .map(({ issue }) => issue)
@@ -1866,6 +1968,7 @@ async function readNamed(
         mine.filter((one) => !moves.has(one.node)),
       ),
     );
+    if (found !== undefined) checked.add(installation);
     for (const [fresh, old] of found?.moves ?? []) moves.set(fresh, old);
     // An issue that may be mid-transfer is written by a later run: the
     // `transferred` delivery that follows it, or the schedule.
@@ -1876,12 +1979,31 @@ async function readNamed(
       }
     }
     for (const issue of mine.filter((one) => moves.has(one.node))) {
-      for (const comment of (await attempt(installation, () =>
+      const copies = await attempt(installation, () =>
         commentsOf(client, issue),
-      )) ?? []) {
-        comments.set(comment.node, comment);
+      );
+      if (copies === undefined) {
+        stall(issue.node);
+        continue;
       }
+      for (const comment of copies) comments.set(comment.node, comment);
     }
+  }
+  // An installation whose check did not complete, or left before it, leaves
+  // its new issues for the next run, and so a moved issue whose comments were
+  // not read.
+  const unchecked = [...issues.values()]
+    .map(({ issue }) => issue)
+    .filter(
+      (issue) =>
+        !checked.has(listed.get(issue.repository.node)?.installation ?? -1),
+    );
+  const have = await context.known(
+    issueType,
+    unchecked.map((issue) => issue.node),
+  );
+  for (const issue of unchecked) {
+    if (moves.has(issue.node) || !have.has(issue.node)) stall(issue.node);
   }
   const touched = new Set([
     ...[...issues.values()].map(({ issue }) => issue.repository.node),
@@ -1965,6 +2087,7 @@ async function readNamed(
       deferred.size > 0 &&
       (closingReadIncomplete ||
         unseenDiscussions.size > 0 ||
+        stalled.size > 0 ||
         [
           ...neededIssues,
           ...namedComments,
