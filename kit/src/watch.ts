@@ -13,9 +13,21 @@ export interface Seen {
   readonly purged: boolean;
 }
 
+/** An edge the log showed changed in place, as it stands now: a move keeps
+ *  the edge's id and names only the ends it reached. */
+export interface Updated {
+  readonly edgeType: string;
+  /** The connector's end. */
+  readonly row: string;
+  /** The other end. */
+  readonly other: string;
+  readonly at: string;
+}
+
 export interface LogRead {
   readonly rows: Map<string, Seen>;
   readonly connected: Map<string, string>;
+  readonly updated: Updated[];
   readonly cursor: string | undefined;
   readonly resync: boolean;
   readonly incomplete: string | undefined;
@@ -32,7 +44,7 @@ function parse(data: string): Record<string, unknown> {
   }
 }
 
-const edgeEvents = new Set(["edge.created", "edge.deleted"]);
+const edgeEvents = new Set(["edge.created", "edge.updated", "edge.deleted"]);
 
 const itemEvents = new Set([
   "item.created",
@@ -83,6 +95,7 @@ export class Watch {
   async read(): Promise<LogRead> {
     const rows = new Map<string, Seen>();
     const connected = new Map<string, string>();
+    const updated: Updated[] = [];
     let last: string | undefined;
     let live: string | undefined;
     let resync = false;
@@ -126,20 +139,28 @@ export class Watch {
           if (edgeEvents.has(frame.event)) {
             const data = parse(frame.data);
             const edge = data["edge"] as Edge | undefined;
-            const row =
+            const end =
               edge === undefined
                 ? undefined
-                : this.connections.get(edge.edge_type) === "target"
-                  ? edge.target_id
-                  : edge.source_id;
+                : this.connections.get(edge.edge_type);
             if (
-              edge !== undefined &&
-              row !== undefined &&
-              this.connections.has(edge.edge_type) &&
-              data["purged_with"] === undefined &&
-              !connected.has(row)
-            ) {
-              connected.set(row, edge.updated_at);
+              edge === undefined ||
+              end === undefined ||
+              data["purged_with"] !== undefined
+            )
+              continue;
+            const [row, other] =
+              end === "target"
+                ? [edge.target_id, edge.source_id]
+                : [edge.source_id, edge.target_id];
+            if (!connected.has(row)) connected.set(row, edge.updated_at);
+            if (frame.event === "edge.updated") {
+              updated.push({
+                edgeType: edge.edge_type,
+                row,
+                other,
+                at: edge.updated_at,
+              });
             }
             continue;
           }
@@ -182,6 +203,7 @@ export class Watch {
       return {
         rows: listed,
         connected: every,
+        updated: [],
         cursor,
         resync: true,
         incomplete:
@@ -196,6 +218,7 @@ export class Watch {
     return {
       rows,
       connected,
+      updated,
       cursor: furthest(live, last, this.cursor),
       resync: false,
       incomplete:

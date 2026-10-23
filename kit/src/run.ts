@@ -29,6 +29,7 @@ import type {
 import {
   Connections,
   connectionsKey,
+  mayHaveLeft,
   readEdges,
   type Carried,
 } from "./connections.js";
@@ -2643,6 +2644,12 @@ export async function runOnce<E extends EnvDeclaration>(
       ...waitingIds,
       ...outbound.keys(),
     ]);
+    // After the rows the log named, so a put-back removes the moved edge
+    // before it draws the agreed one again.
+    const connected = new Map(read.connected);
+    for (const [id, since] of await connections.leftBehind(read.updated)) {
+      if (!connected.has(id)) connected.set(id, since);
+    }
     for (const record of outbound.values()) {
       const change = restoreChange(record.change);
       if (record.rejected !== undefined)
@@ -2652,7 +2659,7 @@ export async function runOnce<E extends EnvDeclaration>(
         });
     }
     await fetchRows([
-      ...read.connected.keys(),
+      ...connected.keys(),
       ...[...read.rows].filter(([, seen]) => !seen.purged).map(([id]) => id),
       ...waitingIds,
     ]);
@@ -2748,9 +2755,9 @@ export async function runOnce<E extends EnvDeclaration>(
     // Not the connector's to carry: a row nothing was agreed for, or one whose
     // connections are what was agreed, as the kit's own writes leave them.
     const edges = await connections.edgesOf(
-      [...read.connected.keys()].filter((id) => store.get(id) !== undefined),
+      [...connected.keys()].filter((id) => store.get(id) !== undefined),
     );
-    for (const [id, since] of read.connected) {
+    for (const [id, since] of connected) {
       const agreement = store.get(id);
       if (agreement === undefined) continue;
       const found = edges.get(id);
@@ -3604,9 +3611,15 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
     if (agreement === undefined) return spec.twoWay && last.state === "active";
     return carriable(observe(spec, seen, agreement).next.waiting);
   });
-  if (waiting || read.connected.size === 0) {
-    return { waiting, cursor: read.cursor };
+  if (
+    waiting ||
+    mayHaveLeft(setup.connector.connections ?? [], read.updated, (id) =>
+      store.get(id),
+    ).size > 0
+  ) {
+    return { waiting: true, cursor: read.cursor };
   }
+  if (read.connected.size === 0) return { waiting: false, cursor: read.cursor };
   const [first] = specs.keys();
   const connected =
     first === undefined

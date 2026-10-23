@@ -18,6 +18,7 @@ import {
 } from "./rows.js";
 import { wireOf } from "./shipped.js";
 import type { Store } from "./store.js";
+import type { Updated } from "./watch.js";
 
 export const connectionsKey = "@connections";
 
@@ -149,6 +150,38 @@ export async function readEdges(
   return found;
 }
 
+/**
+ * The `edge.updated` frames that may have moved the connector's own end, by
+ * declared kind and the edge's other end. That end can move only where the
+ * other holds one edge of the kind, `one-to-one` or `one-to-many` as
+ * declared; and an edge the row it reached has already agreed is the kit's
+ * own write or a change to the edge's properties.
+ */
+export function mayHaveLeft(
+  kinds: Iterable<ConnectionDefinition>,
+  updated: readonly Updated[],
+  agreed: (id: string) => Agreement | undefined,
+): Map<string, Map<string, { row: string; at: string }>> {
+  const sought = new Map<string, Map<string, { row: string; at: string }>>();
+  const declared = [...kinds];
+  for (const { edgeType, row, other, at } of updated) {
+    for (const kind of declared) {
+      if (
+        wireOf(kind.id).edge !== edgeType ||
+        (kind.cardinality !== "one-to-one" &&
+          kind.cardinality !== "one-to-many") ||
+        agreed(row)?.connections?.[kind.id]?.includes(other) === true
+      )
+        continue;
+      const others =
+        sought.get(kind.id) ?? new Map<string, { row: string; at: string }>();
+      others.set(other, { row, at });
+      sought.set(kind.id, others);
+    }
+  }
+  return sought;
+}
+
 export interface Carried {
   readonly connections: Record<string, Connected>;
   readonly agreed: Record<string, string[]>;
@@ -184,6 +217,41 @@ export class Connections {
     const [type] = this.lanes.keys();
     if (ids.length === 0 || type === undefined) return new Map();
     return readEdges(this.marfa, type, ids, this.kinds.values());
+  }
+
+  /**
+   * The rows a person moved an edge away from, by when, which the edge's
+   * `edge.updated` does not name: it carries the edge only as it stands. For
+   * each edge that may have left one, every agreement the connector keeps is
+   * read once, for the rows that agreed the edge's other end; the row that
+   * agreed it is the one it left.
+   */
+  async leftBehind(updated: readonly Updated[]): Promise<Map<string, string>> {
+    const sought = mayHaveLeft(this.kinds.values(), updated, (id) =>
+      this.store.get(id),
+    );
+    if (sought.size === 0) return new Map();
+    const holds = (agreement: Agreement) =>
+      [...sought].flatMap(([kind, others]) =>
+        (agreement.connections?.[kind] ?? []).flatMap((other) => {
+          const moved = others.get(other);
+          return moved === undefined ? [] : [moved];
+        }),
+      );
+    const ids = await this.store.holding(
+      (agreement) => holds(agreement).length > 0,
+      this.signal,
+    );
+    await this.store.fetch(ids);
+    const left = new Map<string, string>();
+    for (const id of ids) {
+      const agreement = this.store.get(id);
+      if (agreement === undefined) continue;
+      for (const { row, at } of holds(agreement)) {
+        if (row !== id && !left.has(id)) left.set(id, at);
+      }
+    }
+    return left;
   }
 
   /** Removals go first, so a target with one source moves, not refused. */

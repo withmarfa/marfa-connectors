@@ -256,8 +256,38 @@ export class Store {
     }
   }
 
-  waiting(signal: AbortSignal): Promise<string[]> {
-    return this.marfa.waitingAgreements(this.connectorId, signal);
+  async waiting(signal: AbortSignal): Promise<string[]> {
+    const ids: string[] = [];
+    for await (const row of this.marfa.agreements(
+      this.connectorId,
+      signal,
+      true,
+    ))
+      ids.push(row.item_id);
+    return ids;
+  }
+
+  /** The rows whose agreement, as this run holds it, passes `test`, out of
+   *  every agreement the connector keeps: a read of them all, page by page,
+   *  none of them kept beyond the test. */
+  async holding(
+    test: (agreement: Agreement) => boolean,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const found = new Set<string>();
+    for (const id of this.pending.keys()) {
+      const agreement = this.get(id);
+      if (agreement !== undefined && test(agreement)) found.add(id);
+    }
+    for await (const row of this.marfa.agreements(this.connectorId, signal)) {
+      const id = row.item_id;
+      const agreement =
+        this.pending.has(id) || this.read.has(id)
+          ? this.get(id)
+          : agreementOf(row.record);
+      if (agreement !== undefined && test(agreement)) found.add(id);
+    }
+    return [...found];
   }
 
   get(id: string): Agreement | undefined {

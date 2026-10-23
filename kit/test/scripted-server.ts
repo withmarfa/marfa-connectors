@@ -822,12 +822,24 @@ export class ScriptedServer {
     this.announceEdge("edge.deleted", edge);
   }
 
-  /** Moves an edge to another target as `PATCH /edges/{id}` does: the edge
-   *  keeps its id, and the log carries one `edge.updated`. */
-  moveEdge(id: string, targetId: string): EdgeRow {
+  /** Changes an edge as `PATCH /edges/{id}` does, moving one end or merging
+   *  properties: the edge keeps its id, and the log carries one
+   *  `edge.updated` with the edge as it now stands. */
+  updateEdge(
+    id: string,
+    change: {
+      source_id?: string;
+      target_id?: string;
+      properties?: Record<string, unknown>;
+    },
+  ): EdgeRow {
     const edge = this.edges.find((candidate) => candidate.id === id);
     if (edge === undefined) throw new Error(`no scripted edge ${id}`);
-    edge.target_id = targetId;
+    if (change.source_id !== undefined && change.target_id !== undefined)
+      throw new Error("an update moves one end of an edge at a time");
+    if (change.source_id !== undefined) edge.source_id = change.source_id;
+    if (change.target_id !== undefined) edge.target_id = change.target_id;
+    edge.properties = { ...edge.properties, ...change.properties };
     edge.version += 1;
     edge.updated_at = this.now();
     this.announceEdge("edge.updated", edge);
@@ -1394,13 +1406,16 @@ export class ScriptedServer {
     ) {
       const limit = Number(url.searchParams.get("limit") ?? "50");
       const from = Number(url.searchParams.get("cursor") ?? "0");
-      const waiting = [...this.agreements]
-        .filter(([, held]) => held.waiting)
+      const waiting = url.searchParams.get("waiting");
+      const listed = [...this.agreements]
+        .filter(
+          ([, held]) =>
+            waiting === null || held.waiting === (waiting === "true"),
+        )
         .map(([id, held]) => ({ item_id: id, ...structuredClone(held) }));
       send(200, {
-        data: waiting.slice(from, from + limit),
-        next_cursor:
-          from + limit < waiting.length ? String(from + limit) : null,
+        data: listed.slice(from, from + limit),
+        next_cursor: from + limit < listed.length ? String(from + limit) : null,
       });
       return;
     }

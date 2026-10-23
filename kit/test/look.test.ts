@@ -295,6 +295,32 @@ describe("the look, for connections", () => {
     expect(await exit).toBe(0);
   });
 
+  it("starts no run for a change to an edge's properties, and one for its move to another row", async () => {
+    const held = blocking();
+    held.entries.push({
+      source_id: "a:3",
+      properties: { title: "Three", vendor_id: "v3" },
+    });
+    const exit = harness.twoWayRunning(held, ["--every", "15m"]);
+    await harness.clock.sleeping(10_000);
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    const edge = harness.server.edges[0];
+    if (edge === undefined) throw new Error("no edge");
+    harness.server.updateEdge(edge.id, { properties: { note: "by a person" } });
+    await harness.clock.wake(10_000);
+    await harness.clock.sleeping(10_000);
+    expect(held.runs).toBe(1);
+    harness.server.updateEdge(edge.id, {
+      target_id: harness.server.row("a:3").id,
+    });
+    await harness.clock.wake(10_000);
+    await until(() => held.runs === 2);
+    await until(() => held.changes.length === 1);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
   it("reads nothing for connections a purge took", async () => {
     const held = blocking();
     const exit = harness.twoWayRunning(held, ["--every", "15m"]);
