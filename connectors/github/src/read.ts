@@ -1620,7 +1620,7 @@ async function readNamed(
   const namedDiscussions = new Set(hints?.get(discussionType) ?? []);
   let unseenDiscussions = new Set<string>();
   if (namedDiscussions.size > 0) {
-    unseenDiscussions = await readNamedDiscussions(context, namedDiscussions, {
+    const read = await readNamedDiscussions(context, namedDiscussions, {
       listed,
       synced,
       clients: new Map(
@@ -1631,6 +1631,10 @@ async function readNamed(
       hidden: (node) => privateIn(privacy, node),
       deferred: deferred.size > 0,
     });
+    unseenDiscussions = read.unseen;
+    // A discussion comment is none of an issue's: what its discussion's read
+    // settled is not judged again as one.
+    for (const link of read.handled) shown.add(link);
   }
 
   const unfinished = (): void => {
@@ -1678,16 +1682,7 @@ async function readNamed(
             await context.linked(commentType, inRepository, under),
             unseenComments,
           );
-    // A comment under a discussion is no issue comment, so GitHub not showing
-    // it as one says nothing; its discussion's read finds a deletion.
-    const inDiscussions =
-      commentRows.length === 0
-        ? new Set<string>()
-        : new Set([...(await heldIn(context, node)).values()].flat());
-    const issueComments = commentRows.filter(
-      (row) => !inDiscussions.has(linkOf(row) ?? ""),
-    );
-    if (issueRows.length === 0 && issueComments.length === 0) continue;
+    if (issueRows.length === 0 && commentRows.length === 0) continue;
     const [owner = "", name = ""] = repository.full_name.split("/");
     await attempt(installation, async () => {
       if (!(await reads(octokit, owner, name))) {
@@ -1700,7 +1695,7 @@ async function readNamed(
       await archiveGone(context, octokit, { owner, name }, issueRows);
       await context.archive(
         commentType,
-        issueComments.flatMap((row) => linkOf(row) ?? []),
+        commentRows.flatMap((row) => linkOf(row) ?? []),
       );
     });
   }

@@ -203,6 +203,9 @@ export class GitHubStub {
   /** Answers every Discussions query of the App as FORBIDDEN, though its
    *  token mints: the installation holds the permission, GitHub still says no. */
   discussionsForbidden = false;
+  /** Shows a discussion by its node though its repository turned Discussions
+   *  off, as GitHub may: it does not say. */
+  discussionsOffStillShown = false;
   asked: Asked[] = [];
   manifestCode: string | undefined = "manifest-code";
   /** The App's private key. GitHub holds its public half to check the App's
@@ -490,6 +493,11 @@ export class GitHubStub {
     };
     this.discussionComments.push(made);
     return made;
+  }
+
+  editDiscussionComment(comment: DiscussionComment, body: string): void {
+    comment.body = body;
+    comment.updated_at = this.now();
   }
 
   editDiscussion(discussion: Discussion, fields: Partial<Discussion>): void {
@@ -1544,7 +1552,7 @@ export class GitHubStub {
     const repository = this.repositoryByNode(discussion.repository);
     return (
       discussion.deleted !== true &&
-      repository.discussionsOff !== true &&
+      (repository.discussionsOff !== true || this.discussionsOffStillShown) &&
       (this.visible(req, repository.node) || !repository.private)
     );
   }
@@ -1634,6 +1642,23 @@ export class GitHubStub {
       ...this.graphDiscussion(one),
       ...(withComments && { comments: this.commentsPage(one, 0) }),
     });
+    if (operation === "DiscussionsSwitch") {
+      const repository = this.repositories.find(
+        (one) =>
+          one.owner === variables["owner"] &&
+          one.name === variables["name"] &&
+          this.visible(req, one.node),
+      );
+      send(200, {
+        data: {
+          repository:
+            repository === undefined
+              ? null
+              : { hasDiscussionsEnabled: repository.discussionsOff !== true },
+        },
+      });
+      return true;
+    }
     if (
       operation === "DiscussionList" ||
       operation === "DiscussionCategories"

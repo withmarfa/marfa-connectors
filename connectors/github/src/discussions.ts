@@ -355,6 +355,23 @@ export async function listDiscussions(
   }
 }
 
+/** Whether a repository has Discussions turned on, asked with the token that
+ *  reads them. False where GitHub does not show the repository to it. */
+async function discussionsOn(
+  octokit: Client,
+  fullName: string,
+): Promise<boolean> {
+  const [owner = "", name = ""] = fullName.split("/");
+  const answer = (await query(
+    octokit,
+    `query DiscussionsSwitch($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) { hasDiscussionsEnabled }
+    }`,
+    { owner, name },
+  )) as { repository: { hasDiscussionsEnabled: boolean } | null };
+  return answer.repository?.hasDiscussionsEnabled === true;
+}
+
 export async function discussionCategories(
   octokit: Client,
   owner: string,
@@ -533,7 +550,7 @@ export async function deleteDiscussionComment(
 
 type Reading = Pick<
   RunContext<EnvDeclaration>,
-  "upsert" | "linked" | "archive" | "log"
+  "upsert" | "linked" | "archive" | "log" | "hints"
 >;
 
 /** The links of the comments and replies Marfa holds under a discussion. */
@@ -595,24 +612,39 @@ async function write(
 }
 
 /** The comments held under discussions that were read in full, which that
- *  read did not return and a lookup by their own node does not find either.
- *  A comment that was deleted but has replies is returned, blank, and is not
- *  among them. */
+ *  read did not return, each with its discussion. */
+function absentFrom(
+  held: ReadonlyMap<string, readonly string[]>,
+  comments: ReadonlyMap<string, readonly DiscussionComment[]>,
+): Map<string, string> {
+  const absent = new Map<string, string>();
+  for (const [link, read] of comments) {
+    const shown = new Set(read.map((one) => one.node));
+    for (const comment of held.get(link) ?? [])
+      if (!shown.has(comment)) absent.set(comment, link);
+  }
+  return absent;
+}
+
+/** Those of these comments that a lookup by their own node does not find
+ *  either. A comment that was deleted but has replies is returned, blank, and
+ *  is not among them. */
+async function confirmedGone(
+  octokit: Client,
+  absent: readonly string[],
+): Promise<string[]> {
+  const alive = new Set(
+    (await discussionCommentsByNode(octokit, absent)).map((one) => one.node),
+  );
+  return absent.filter((link) => !alive.has(link));
+}
+
 async function missingComments(
   octokit: Client,
   held: ReadonlyMap<string, readonly string[]>,
   comments: ReadonlyMap<string, readonly DiscussionComment[]>,
 ): Promise<string[]> {
-  const absent: string[] = [];
-  for (const [link, read] of comments) {
-    const shown = new Set(read.map((one) => one.node));
-    for (const comment of held.get(link) ?? [])
-      if (!shown.has(comment)) absent.push(comment);
-  }
-  const alive = new Set(
-    (await discussionCommentsByNode(octokit, absent)).map((one) => one.node),
-  );
-  return absent.filter((link) => !alive.has(link));
+  return confirmedGone(octokit, [...absentFrom(held, comments).keys()]);
 }
 
 /** Reads a repository's discussions with every comment and reply, and writes
@@ -699,14 +731,18 @@ async function archiveGone(
 
 /** The discussions a delivery named, read in full where GitHub shows them in
  *  a synced repository. Each one read in full also has archived the comments
- *  Marfa holds that it no longer returns, if the delivery named the comment
- *  and a lookup by its own node agrees. A discussion GitHub shows nowhere,
- *  with nothing deferred and its repository still reading, is archived if
- *  Marfa holds no comment under it; one that does is left to the daily
- *  check. Nothing is archived once any lookup was refused: the discussion
- *  may be there, and the scheduled read says the refusal for the
- *  repository. Returns those not shown yet because a limit deferred the
- *  look. */
+ *  the delivery named that Marfa holds and it no longer returns, if a lookup
+ *  by the comment's own node agrees. A discussion GitHub shows nowhere, with
+ *  nothing deferred and its repository still reading, is archived if Marfa
+ *  holds no comment under it; one that does is left to the daily check.
+ *  Nothing is archived while the repository has Discussions turned off, nor
+ *  once any lookup was refused: the discussion may be there, and the
+ *  scheduled read says the refusal for the repository.
+ *
+ *  Returns the discussions not shown yet because a limit deferred the look,
+ *  and the comments the delivery named that this read dealt with: read in
+ *  full, confirmed gone, or left on purpose to the daily check. A caller
+ *  must not judge those as issue comments. */
 export async function readNamedDiscussions(
   context: Reading,
   ids: ReadonlySet<string>,
@@ -720,11 +756,31 @@ export async function readNamedDiscussions(
     hidden: (node: string) => boolean;
     deferred: boolean;
   },
-): Promise<Set<string>> {
+): Promise<{ unseen: Set<string>; handled: Set<string> }> {
   const unseen = new Set(ids);
+  const named = context.hints?.get(commentType) ?? new Set<string>();
+  const handled = new Set<string>();
+  const settle = (links: Iterable<string>): void => {
+    for (const link of links) if (named.has(link)) handled.add(link);
+  };
+  const switches = new Map<string, boolean>();
+  // A repository is judged by what its discussions leave out only while
+  // GitHub says it has Discussions on; a repository it does not show is not
+  // proven on.
+  const switchedOn = async (
+    octokit: Client,
+    fullName: string,
+  ): Promise<boolean> => {
+    let on = switches.get(fullName);
+    if (on === undefined) {
+      on = await discussionsOn(octokit, fullName);
+      switches.set(fullName, on);
+    }
+    return on;
+  };
   let refused = false;
   for (const [, octokit] of where.clients) {
-    if (unseen.size === 0) return unseen;
+    if (unseen.size === 0) break;
     let read: Read;
     try {
       read = await readNodes(octokit, [...unseen], true);
@@ -734,12 +790,16 @@ export async function readNamedDiscussions(
       continue;
     }
     const written: Discussion[] = [];
+    const vanished: string[] = [];
     const comments = new Map<string, DiscussionComment[]>();
     for (const one of read.found) {
       unseen.delete(one.node);
       if (!where.synced.has(one.repository.node)) continue;
       const all = await commentsOf(octokit, one, read.first.get(one.node));
-      if (all === undefined) continue;
+      if (all === undefined) {
+        vanished.push(one.node);
+        continue;
+      }
       written.push(one);
       comments.set(one.node, all);
     }
@@ -747,6 +807,7 @@ export async function readNamedDiscussions(
     for (const one of written) {
       held.set(one.node, await heldComments(context, one.node));
     }
+    for (const node of vanished) settle(await heldComments(context, node));
     for (const node of new Set(written.map((one) => one.repository.node))) {
       await write(
         context,
@@ -759,19 +820,39 @@ export async function readNamedDiscussions(
         where.hidden(node),
       );
     }
+    for (const all of comments.values()) settle(all.map((one) => one.node));
+    const repositoryOf = new Map(
+      written.map((one) => [one.node, one.repository.name]),
+    );
     try {
-      await context.archive(
-        commentType,
-        await missingComments(octokit, held, comments),
-      );
+      const asked: string[] = [];
+      for (const [link, discussion] of absentFrom(
+        new Map(
+          [...held].map(([link, all]) => [
+            link,
+            all.filter((one) => named.has(one)),
+          ]),
+        ),
+        comments,
+      )) {
+        if (await switchedOn(octokit, repositoryOf.get(discussion) ?? "")) {
+          asked.push(link);
+        } else {
+          settle([link]);
+        }
+      }
+      await context.archive(commentType, await confirmedGone(octokit, asked));
+      settle(asked);
     } catch (error) {
       if (discussionsRefusal(error) === undefined) throw error;
       refused = true;
     }
   }
-  if (unseen.size === 0) return unseen;
-  if (where.deferred) return unseen;
-  if (refused) return new Set();
+  if (refused) {
+    settle(named);
+    return { unseen: new Set(), handled };
+  }
+  if (unseen.size === 0 || where.deferred) return { unseen, handled };
   for (const [node, { repository, installation }] of where.listed) {
     if (!where.synced.has(node)) continue;
     const octokit = where.clients.get(installation);
@@ -779,12 +860,19 @@ export async function readNamedDiscussions(
     const held = await heldIn(context, node);
     const gone = [...held.keys()].filter((link) => unseen.has(link));
     if (gone.length === 0) continue;
+    settle(gone.flatMap((link) => held.get(link) ?? []));
     const [owner = "", name = ""] = repository.full_name.split("/");
     if (!(await reads(octokit, owner, name))) {
       context.log.condition(
         `repository-unreadable:${node}`,
         `${repository.full_name} is listed for the App but does not read, so its rows are left as they are`,
       );
+      continue;
+    }
+    try {
+      if (!(await switchedOn(octokit, repository.full_name))) continue;
+    } catch (error) {
+      if (discussionsRefusal(error) === undefined) throw error;
       continue;
     }
     // A run for deliveries archives only what a delivery named, and a
@@ -797,5 +885,5 @@ export async function readNamedDiscussions(
     );
     for (const link of gone) unseen.delete(link);
   }
-  return new Set();
+  return { unseen: new Set(), handled };
 }
