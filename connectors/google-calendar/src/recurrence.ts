@@ -6,7 +6,7 @@ export type Cancellation =
   | { readonly kind: "instant"; readonly ms: number }
   | { readonly kind: "day"; readonly day: string };
 
-const line = /^EXDATE((?:;[^:]*)*):(.*)$/is;
+const line = /^EXDATE((?:;[^:;]*)*):(.*)$/is;
 const dateOnly = /^(\d{4})(\d{2})(\d{2})$/;
 const dateTime = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/;
 
