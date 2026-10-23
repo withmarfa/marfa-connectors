@@ -483,6 +483,19 @@ async function rowsOf(
   );
 }
 
+/** Whether a row Marfa holds or held under one of these links, in any state,
+ *  was a series. */
+async function maybeSeries(
+  scoped: Scoped,
+  links: readonly string[],
+): Promise<boolean> {
+  if (links.length === 0) return false;
+  const { items, tombstones } = await scoped.inspect(eventType, { links });
+  return (
+    tombstones.length > 0 || items.some((item) => recurrenceOf(item).length > 0)
+  );
+}
+
 function recurrenceOf(row: Item | undefined): string[] {
   const lines = row?.properties["recurrence"];
   return Array.isArray(lines)
@@ -630,16 +643,16 @@ async function planEvents(
   for (const event of others) push(event);
   for (const id of dropped) plan.archive.add(linkOf(calendar.id, id));
   // A series that is gone takes its changed occurrences with it. Google's
-  // cancellation carries no rule, so the row says which was a series, or the
-  // retry of a series Marfa refused, which has none.
+  // cancellation carries no rule, so the row says which was a series, in
+  // whatever state the person left it, or the retry of a series Marfa
+  // refused, which has none. A purged row no longer says, so it may have been.
   const droppedLinks = [...dropped].map((id) => linkOf(calendar.id, id));
-  const droppedRows = await rowsOf(scoped, droppedLinks);
   const refused = new Set(
     scoped.refusals.pending().map(({ record }) => refusedLink(record)),
   );
   if (
-    [...droppedRows.values()].some((row) => recurrenceOf(row).length > 0) ||
-    droppedLinks.some((link) => refused.has(link))
+    droppedLinks.some((link) => refused.has(link)) ||
+    (await maybeSeries(scoped, droppedLinks))
   ) {
     for (const row of await run.holdings.of(calendar.id)) {
       const series = row.properties["recurring_event_id"];

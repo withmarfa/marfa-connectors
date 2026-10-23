@@ -701,6 +701,23 @@ describe("a series", () => {
     expect(active()).toEqual([]);
   });
 
+  it.each(["archived", "trashed", "purged"] as const)(
+    "archives the changed occurrences of a series deleted in Google after it was %s in Marfa",
+    async (state) => {
+      await seeded();
+      const series = row(`${me}/weekly`).id;
+      if (state === "purged") server.purgeById(series);
+      else server.transition(series, state);
+      calendar.cancel(me, "weekly");
+
+      expect(await once()).toBe(0);
+
+      expect(active()).toEqual([]);
+      expect(row(`${me}/weekly_20261026T100000Z`).state).toBe("archived");
+      if (state !== "purged") expect(row(`${me}/weekly`).state).toBe(state);
+    },
+  );
+
   it("leaves out a working-location series and entry that a later cancellation names", async () => {
     calendar.put(
       me,
