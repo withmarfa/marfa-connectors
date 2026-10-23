@@ -58,6 +58,7 @@ const kindsOf = [
   "comment",
   "discussion",
   "pull_request",
+  "notification",
   "file",
   "image",
 ];

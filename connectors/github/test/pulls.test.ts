@@ -14,6 +14,7 @@ const types = [
   "github.comment",
   "github.pull_request",
   "github.discussion",
+  "github.notification",
   "github.file",
   "github.file.image",
 ];
@@ -26,6 +27,7 @@ const edges = [
   "github.closes",
   "github.closed-by",
   "parent-of",
+  "github.notification-of",
   "in-thread",
   "attached-to",
 ];
