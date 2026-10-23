@@ -603,11 +603,19 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   ) => Promise<Readonly<Record<string, string>>>;
   run(context: RunContext<E>): Promise<void>;
   /** Runs before any outbound callback, with every pending purge, including
-   * not-due retries and cascade observations. Read the vendor as necessary
-   * and throw to block the complete batch. An incomplete watch never enters
-   * this hook or an outbound callback. This hook must not mutate the vendor. */
+   * not-due retries and cascade observations, and every trash the run would
+   * carry, each as `onChange` would see it. A cascade's trash is not among
+   * them, since it is never carried, and a row trashed and then purged is
+   * among the purges alone. Read the vendor as necessary and throw to hold
+   * the complete batch: the run fails before the vendor is read, nothing is
+   * carried, and what waits is offered again next run. A trash the hook did
+   * not see is not carried this run. An incomplete watch never enters this
+   * hook or an outbound callback. This hook must not mutate the vendor. */
   preflight?(
-    inventory: { readonly purges: readonly Change[] },
+    inventory: {
+      readonly purges: readonly Change[];
+      readonly trashes: readonly Change[];
+    },
     context: WatchContext<E>,
   ): Promise<void>;
   /**

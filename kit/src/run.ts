@@ -1493,17 +1493,22 @@ export async function runOnce<E extends EnvDeclaration>(
     outbound.delete(id);
     await saveOutbound();
   };
-  const releaseRefused = async (change: Change): Promise<boolean> => {
+  const refusalStands = (change: Change): boolean => {
     const held = refusedOutbound.get(change.item.id);
-    if (held === undefined) return true;
+    if (held === undefined) return false;
     const refused = held.change;
     const changed = new Set([...refused.changed, ...change.changed]);
     const current = { ...change, kind: refused.kind, changed };
     Reflect.deleteProperty(current, "was");
     if (refused.was !== undefined) Object.assign(current, { was: refused.was });
     // A confirmed create may now be an update; its link alone is no new edit.
-    if (sending(current) === sending({ ...refused, changed })) {
-      refusedOf(change.item.id, refused.kind, held.reason);
+    return sending(current) === sending({ ...refused, changed });
+  };
+  const releaseRefused = async (change: Change): Promise<boolean> => {
+    const held = refusedOutbound.get(change.item.id);
+    if (held === undefined) return true;
+    if (refusalStands(change)) {
+      refusedOf(change.item.id, held.change.kind, held.reason);
       return false;
     }
     await finishOutbound(change.item.id);
@@ -1686,6 +1691,8 @@ export async function runOnce<E extends EnvDeclaration>(
     return off.length === 0 ? undefined : new Set(off);
   };
   let recorded = false;
+  // The trashes preflight saw, when the connector has one.
+  let previewed: ReadonlySet<string> | undefined;
   let unagreed = 0;
 
   const withoutWaiting = (agreement: Agreement): Agreement => {
@@ -1855,50 +1862,40 @@ export async function runOnce<E extends EnvDeclaration>(
     if (Object.keys(waiting).length > 0) next.waiting = waiting;
     store.set(item.id, next);
   };
-  const carry = async (
+  interface Planned {
+    readonly kind: Spec;
+    readonly current: Item;
+    readonly changeKind: ChangeKind;
+    readonly unlinked: boolean;
+    readonly skip?: undefined;
+  }
+  // What `carry` does with a row as it stands, before any side effect.
+  const planOf = (
+    spec: Spec,
     item: Item,
     agreement: Agreement,
-  ): Promise<"unplaced" | undefined> => {
-    if (recovered.has(item.id)) return;
-    if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
-    const { spec, rows } = lane(item.type);
-    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
-      const fresh = await currentItem(item.type, item.id);
-      if (fresh?.type !== item.type) return;
-      rows.adopt(fresh);
-      item = fresh;
-    }
+  ):
+    | { readonly skip: "foreign" }
+    | { readonly skip: "cascade" | "cascaded" | "untold"; readonly kind: Spec }
+    | Planned => {
     const kind = forRow(spec, item);
-    if (kind.owned === false) return;
-    if (connector.onChange === undefined || !kind.twoWay) return;
-    keepAgreedLink(kind, item, agreement);
+    if (kind.owned === false) return { skip: "foreign" };
+    if (connector.onChange === undefined || !kind.twoWay)
+      return { skip: "foreign" };
     // What changed before another row's trash took it waits for its restore.
-    if (agreement.stateBy === "cascade") return;
-    if (item.state === "trashed" && cascaded(item)) {
-      // Taken after the log was read: the log's frame will say the same.
-      store.set(item.id, {
-        ...agreement,
-        state: "trashed",
-        stateBy: "cascade",
-        stateAt: item.updated_at,
-      });
-      return;
-    }
-    const carriable = watchedFields(kind).filter(
-      (field) => !kind.readOnly.has(field),
-    );
+    if (agreement.stateBy === "cascade") return { skip: "cascade", kind };
+    if (item.state === "trashed" && cascaded(item))
+      return { skip: "cascaded", kind };
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
-      rows.linkOf(item.properties) === undefined;
+      lane(kind.type).rows.linkOf(item.properties) === undefined;
     if (
       unlinked &&
       item.state === "trashed" &&
       agreement.attempted === undefined
-    ) {
-      store.clear(item.id);
-      return;
-    }
+    )
+      return { skip: "untold", kind };
     const current = byAgreedLink(kind, item, agreement);
     // A trash of a row whose create got no link back may still find it made.
     const changeKind: ChangeKind = unlinked
@@ -1912,6 +1909,91 @@ export async function runOnce<E extends EnvDeclaration>(
             ? "archived"
             : "restored"
         : "updated";
+    return { kind, current, changeKind, unlinked };
+  };
+  const changeOf = async (
+    { kind, current, changeKind, unlinked }: Planned,
+    agreement: Agreement,
+    changed: readonly string[],
+    moved: Carried | undefined,
+  ): Promise<Change> => {
+    const attempted = unlinked ? agreement.attempted : undefined;
+    // A run that died after the link landed on the row, before the agreement
+    // kept it, left the first send's time as `attempted` alone.
+    const made = unlinked
+      ? undefined
+      : (agreement.made ??
+        (agreement.link === undefined ? agreement.attempted : undefined));
+    const change: Change = {
+      kind: changeKind,
+      item: current,
+      changed: new Set(changed),
+      ...(attempted !== undefined && { attempted }),
+      ...(made !== undefined && { made }),
+      ...(changeKind === "restored" &&
+        (agreement.state === "trashed" || agreement.state === "archived") && {
+          was: agreement.state,
+        }),
+      ...(moved !== undefined && { connections: moved.connections }),
+      ...(agreement.refused !== undefined && {
+        refused: agreement.refused.change,
+      }),
+    };
+    const unagreed = unagreedOf(kind, current, agreement);
+    if (unagreed !== undefined) Object.assign(change, { unagreed });
+    const placement = await connections.placementOf(current, kind, agreement);
+    if (placement !== undefined) Object.assign(change, { placement });
+    return change;
+  };
+  // The trash `carry` would send for a row this run, as it would send it;
+  // none for one whose refusal stands, since that is not sent again.
+  const trashOf = async (id: string): Promise<Change | undefined> => {
+    const agreement = store.get(id);
+    if (agreement === undefined) return undefined;
+    if (agreement.waiting === undefined && !refusedOutbound.has(id))
+      return undefined;
+    const found = await find(id);
+    if (found === undefined) return undefined;
+    const plan = planOf(found.spec, found.item, agreement);
+    if (plan.skip !== undefined || plan.changeKind !== "trashed")
+      return undefined;
+    const change = await changeOf(plan, agreement, [], undefined);
+    if (refusalStands(change) || agreement.refused?.change === sending(change))
+      return undefined;
+    return change;
+  };
+  const carry = async (
+    item: Item,
+    agreement: Agreement,
+  ): Promise<"unplaced" | undefined> => {
+    if (recovered.has(item.id)) return;
+    if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
+    const { spec, rows } = lane(item.type);
+    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
+      const fresh = await currentItem(item.type, item.id);
+      if (fresh?.type !== item.type) return;
+      rows.adopt(fresh);
+      item = fresh;
+    }
+    const plan = planOf(spec, item, agreement);
+    if (plan.skip === "foreign") return;
+    const { kind } = plan;
+    keepAgreedLink(kind, item, agreement);
+    if (plan.skip === "cascaded") {
+      // Taken after the log was read: the log's frame will say the same.
+      store.set(item.id, {
+        ...agreement,
+        state: "trashed",
+        stateBy: "cascade",
+        stateAt: item.updated_at,
+      });
+    }
+    if (plan.skip === "untold") store.clear(item.id);
+    if (plan.skip !== undefined) return;
+    const { current, changeKind, unlinked } = plan;
+    const carriable = watchedFields(kind).filter(
+      (field) => !kind.readOnly.has(field),
+    );
     const changed =
       changeKind === "trashed"
         ? []
@@ -1971,35 +2053,21 @@ export async function runOnce<E extends EnvDeclaration>(
     ) {
       return;
     }
-    const attempted = unlinked ? agreement.attempted : undefined;
-    // A run that died after the link landed on the row, before the agreement
-    // kept it, left the first send's time as `attempted` alone.
-    const made = unlinked
-      ? undefined
-      : (agreement.made ??
-        (agreement.link === undefined ? agreement.attempted : undefined));
-    const change: Change = {
-      kind: changeKind,
-      item: current,
-      changed: new Set(changed),
-      ...(attempted !== undefined && { attempted }),
-      ...(made !== undefined && { made }),
-      ...(changeKind === "restored" &&
-        (agreement.state === "trashed" || agreement.state === "archived") && {
-          was: agreement.state,
-        }),
-      ...(connected &&
-        moved !== undefined && { connections: moved.connections }),
-      ...(agreement.refused !== undefined && {
-        refused: agreement.refused.change,
-      }),
-    };
-    const unagreed = unagreedOf(kind, current, agreement);
-    if (unagreed !== undefined) Object.assign(change, { unagreed });
-    const placement = await connections.placementOf(current, kind, agreement);
-    if (placement !== undefined) Object.assign(change, { placement });
+    const change = await changeOf(
+      { kind, current, changeKind, unlinked },
+      agreement,
+      changed,
+      connected ? moved : undefined,
+    );
     if (!(await releaseRefused(change))) return;
     if (refusedBefore(current.id, agreement, change)) return;
+    // A trash preflight did not see waits for the next run's.
+    if (
+      changeKind === "trashed" &&
+      previewed !== undefined &&
+      !previewed.has(current.id)
+    )
+      return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
@@ -2486,10 +2554,28 @@ export async function runOnce<E extends EnvDeclaration>(
       for (const pending of outbound.values())
         if (pending.change.kind === "purged")
           inventory.set(pending.change.item.id, restoreChange(pending.change));
+      const trashes = new Map<string, Change>();
+      for (const pending of outbound.values())
+        if (
+          pending.change.kind === "trashed" &&
+          !inventory.has(pending.change.item.id)
+        )
+          trashes.set(pending.change.item.id, restoreChange(pending.change));
+      // A journaled change is replayed, not carried, unless it was refused.
+      for (const id of new Set([...order, ...refusedOutbound.keys()])) {
+        if (inventory.has(id) || trashes.has(id)) continue;
+        if (outbound.has(id) && !refusedOutbound.has(id)) continue;
+        const trash = await trashOf(id);
+        if (trash !== undefined) trashes.set(id, trash);
+      }
+      previewed = new Set(trashes.keys());
       check();
       try {
         await connector.preflight(
-          { purges: structuredClone([...inventory.values()]) },
+          {
+            purges: structuredClone([...inventory.values()]),
+            trashes: structuredClone([...trashes.values()]),
+          },
           watchContext,
         );
       } catch (error) {
