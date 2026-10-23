@@ -177,6 +177,8 @@ export interface Asked {
   remaining?: number;
   /** Whether the answer refused the request for a rate limit. */
   limited?: boolean;
+  /** Which of the person's tokens signed the request, if one did. */
+  by?: "personal" | "classic";
 }
 
 // GitHub's clock keeps to real time, as the connector compares it with the
@@ -186,6 +188,16 @@ export class GitHubStub {
   personalToken: string | undefined;
   personalRepositories: ReadonlySet<string> | undefined;
   personalDenied = new Map<string, string>();
+  /** The person's stars by repository node, with when each was made; the
+   *  personal token lists them. Only a private one the token reaches shows. */
+  stars = new Map<string, string>();
+  /** Answers the star listing's page this number with the status, as a
+   *  listing GitHub fails partway does. */
+  starsFailAt: { page: number; status: number } | undefined;
+  /** Repositories whose owner refuses the personal token, by node, with the
+   *  status a read of one answers: GitHub leaves their stars out of the
+   *  listing and says nothing. */
+  personalRefused = new Map<string, number>();
   relationsRefused = false;
   relatedPageSize = 100;
   installations: Installation[] = [{ id: 1, login: "someone" }];
@@ -362,6 +374,15 @@ export class GitHubStub {
     };
     this.repositories.push(made);
     return made;
+  }
+
+  /** Stars the repository for the person, at the stub's next second. */
+  star(repository: Repository, at = this.now()): void {
+    this.stars.set(repository.node, at);
+  }
+
+  unstar(repository: Repository): void {
+    this.stars.delete(repository.node);
   }
 
   addIssue(repository: Repository, fields: Partial<Issue> = {}): Issue {
@@ -683,6 +704,19 @@ export class GitHubStub {
     return held === "write" || held === wanted;
   }
 
+  /** The classic token the notifications use, which reads public repositories
+   *  and the person's stars of them, and private ones only with `repo`. */
+  private isClassic(req: IncomingMessage): boolean {
+    return (
+      this.notifications.token !== undefined &&
+      req.headers.authorization === `Bearer ${this.notifications.token}`
+    );
+  }
+
+  private classicSees(repository: Repository): boolean {
+    return !repository.private || this.notifications.scopes.includes("repo");
+  }
+
   private isPersonal(req: IncomingMessage): boolean {
     return (
       this.personalToken !== undefined &&
@@ -831,6 +865,11 @@ export class GitHubStub {
       body,
       status: 200,
       version: req.headers["x-github-api-version"] as string | undefined,
+      ...(this.isPersonal(req)
+        ? { by: "personal" as const }
+        : this.isClassic(req)
+          ? { by: "classic" as const }
+          : {}),
     };
     this.asked.push(asked);
     this.onAsked?.(asked);
@@ -948,7 +987,11 @@ export class GitHubStub {
     let match: RegExpExecArray | null;
     if (!asApp && req.headers.authorization !== undefined) {
       const grant = this.grantOf(req);
-      if (grant === undefined && !this.isPersonal(req)) {
+      if (
+        grant === undefined &&
+        !this.isPersonal(req) &&
+        !this.isClassic(req)
+      ) {
         send(401, { message: "Bad credentials" });
         return;
       }
@@ -1034,6 +1077,46 @@ export class GitHubStub {
     ) {
       this.listingsFailing -= 1;
       send(404, { message: "Not Found" });
+      return;
+    }
+    if (method === "GET" && path === "/user/starred") {
+      if (!this.isPersonal(req) && !this.isClassic(req)) {
+        send(401, { message: "Bad credentials" });
+        return;
+      }
+      const failing = this.starsFailAt;
+      if (failing?.page === Number(url.searchParams.get("page") ?? "1")) {
+        send(failing.status, { message: "Resource not accessible" });
+        return;
+      }
+      const stamped = (req.headers.accept ?? "").includes(
+        "application/vnd.github.star+json",
+      );
+      page(
+        [...this.stars]
+          .flatMap(([node, starredAt]) => {
+            const repository = this.repositories.find(
+              (one) => one.node === node,
+            );
+            return repository !== undefined &&
+              repository.hidden !== true &&
+              (this.isClassic(req)
+                ? this.classicSees(repository)
+                : !this.personalRefused.has(repository.node) &&
+                  (!repository.private || this.reaches(req, repository)))
+              ? [{ repository, starredAt }]
+              : [];
+          })
+          .sort((a, b) => b.starredAt.localeCompare(a.starredAt))
+          .map(({ repository, starredAt }) =>
+            stamped
+              ? {
+                  starred_at: starredAt,
+                  repo: this.restRepository(repository),
+                }
+              : this.restRepository(repository),
+          ),
+      );
       return;
     }
     if (method === "GET" && path === "/user/repos") {
@@ -1139,7 +1222,30 @@ export class GitHubStub {
       (match = /^\/repos\/([^/]+)\/([^/]+)$/.exec(path)) &&
       method === "GET"
     ) {
-      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      const [owner, name] = [match[1] ?? "", match[2] ?? ""];
+      const named = this.repositories.find(
+        (one) => one.owner === owner && one.name === name,
+      );
+      const refusal =
+        named !== undefined && this.isPersonal(req)
+          ? this.personalRefused.get(named.node)
+          : undefined;
+      if (refusal !== undefined) {
+        send(refusal, {
+          message:
+            "The organization forbids access via a fine-grained personal access token with a lifetime over 366 days",
+        });
+        return;
+      }
+      // Any token reads a public repository.
+      const repository =
+        named !== undefined &&
+        named.hidden !== true &&
+        (this.readable(req, owner, name) !== undefined ||
+          (this.isPersonal(req) && !named.private) ||
+          (this.isClassic(req) && this.classicSees(named)))
+          ? named
+          : undefined;
       if (repository === undefined) send(404, { message: "Not Found" });
       else send(200, this.restRepository(repository));
       return;

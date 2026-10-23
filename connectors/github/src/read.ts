@@ -71,7 +71,9 @@ import { fileNotes, preserveFiles, markFilesPrivate } from "./files.js";
 import {
   conditionKeys as notificationConditions,
   readNotifications,
+  tokenName,
 } from "./notifications.js";
+import { Stars, starsKept, type Reader } from "./stars.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
@@ -172,6 +174,8 @@ class Coverage {
     "rate-limit-reserve",
     "clock-skew",
     ...notificationConditions,
+    "stars-unreadable",
+    starsKept,
   ]);
   readonly prefixes = new Set(readPrefixes);
 
@@ -197,6 +201,35 @@ class Coverage {
   }
 }
 
+/** The personal token lists the stars; failing that the notifications token,
+ *  a classic token without `repo`, which lists public stars only. */
+function starReader(
+  app: App | Personal,
+  personal: Client | undefined,
+  notificationsToken: string | undefined,
+  secret: RootContext["secret"],
+  signal: AbortSignal,
+): Reader | undefined {
+  if (personal !== undefined)
+    return {
+      octokit: personal,
+      name: "GITHUB_PERSONAL_TOKEN",
+      publicOnly: false,
+    };
+  if (notificationsToken === undefined) return undefined;
+  return {
+    octokit: asPersonalToken(
+      notificationsToken,
+      app.base,
+      secret,
+      signal,
+      tokenName,
+    ),
+    name: tokenName,
+    publicOnly: true,
+  };
+}
+
 export async function read(
   context: RootContext,
   app: App | Personal,
@@ -205,7 +238,7 @@ export async function read(
 ): Promise<void> {
   const coverage = new Coverage();
   try {
-    await readAll(context, app, scope, coverage);
+    await readAll(context, app, scope, coverage, notifications.token);
   } catch (error) {
     if ("token" in app && status(error) === 401)
       throw new Error(
@@ -242,6 +275,7 @@ async function readAll(
   app: App | Personal,
   scope: Scope | undefined,
   coverage: Coverage,
+  notificationsToken: string | undefined,
 ): Promise<void> {
   const { state, log, secret, signal } = context;
   const unsettled = takeUnsettled(state);
@@ -369,6 +403,17 @@ async function readAll(
       );
     }
   }
+  // Only a scheduled run lists the stars; the rest keep each mark as it was.
+  const scheduled = context.hints === undefined;
+  const stars = await Stars.open(
+    context,
+    state,
+    starReader(app, personal, notificationsToken, secret, signal),
+    scheduled,
+  );
+  if (scheduled) coverage.reached("stars-unreadable");
+  for (const [node, at] of listed)
+    listed.set(node, { ...at, repository: stars.mark(at.repository) });
   const synced = new Set(listed.keys());
   const retained = new Set(
     Object.entries(kept).flatMap(([node, old]) =>
@@ -536,7 +581,13 @@ async function readAll(
       continue;
     }
     if (answered.has(repository.installation)) {
-      await takeOut(scoped, node, repository.name, personal !== undefined);
+      await takeOut(
+        scoped,
+        node,
+        repository.name,
+        personal !== undefined,
+        stars.starred(node),
+      );
       await save(scoped, node);
       continue;
     }
@@ -716,6 +767,12 @@ async function readAll(
   }
   if (permissions.length > 0 && permissions.length === listed.size)
     throw new Error(permissions.join("; "));
+  await stars.settle(context, {
+    listed: new Set(listed.keys()),
+    kept: new Set([...Object.keys(next), ...retained]),
+    complete: answered.size === installations.length,
+  });
+  if (stars.listed) coverage.reached(starsKept);
   if (waiting.length > 0) {
     log.condition(
       "rate-limit-reserve",
@@ -736,7 +793,8 @@ async function takeOut(
   context: Context,
   node: string,
   name: string,
-  personal = false,
+  personal: boolean,
+  starred: boolean,
 ) {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
@@ -755,9 +813,10 @@ async function takeOut(
     pullRequestType,
     links(await linked(pullRequestType, inRepository, under)),
   );
-  await archive(repositoryType, [node]);
+  // A starred repository stays as the repository row alone, which a star keeps.
+  if (!starred) await archive(repositoryType, [node]);
   log.info(
-    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived`,
+    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : ""}`,
   );
 }
 

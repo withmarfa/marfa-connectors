@@ -1,7 +1,7 @@
 {
   "id": "github.repository",
   "label": "GitHub Repository",
-  "description": "A repository the GitHub connector syncs through a personal access token or GitHub App. Read only; its issues and their comments are connected to it.",
+  "description": "A repository the GitHub connector syncs through a personal access token or GitHub App, or one the person has starred. Read only; the issues, discussions, comments and pull requests of a synced one are connected to it.",
   "parent": "core.entity",
   "link_field": "github_id",
   "fields": {
@@ -16,6 +16,15 @@
     "archived_on_github": {
       "type": "boolean",
       "description": "Whether the repository is archived on GitHub, where it reads only."
+    },
+    "starred": {
+      "type": "boolean",
+      "description": "Whether the person the personal access token, or without one the notifications token, belongs to has starred the repository, as of the last scheduled run that listed their stars. Empty where no run has listed them."
+    },
+    "starred_at": {
+      "type": "string",
+      "format": "datetime",
+      "description": "When the person starred the repository. Empty where it is not starred."
     }
   },
   "display_hints": {

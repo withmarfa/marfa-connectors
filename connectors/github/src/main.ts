@@ -88,7 +88,11 @@ const connector = defineConnector<typeof env>({
         "description",
         "private",
         "archived_on_github",
+        "starred",
+        "starred_at",
       ],
+      readOnly: ["starred", "starred_at"],
+      derived: ["starred", "starred_at"],
     },
     {
       type: issue as TypeDefinition,
