@@ -787,10 +787,10 @@ export async function readNamedDiscussions(
       );
       continue;
     }
-    // A run for deliveries archives only what a delivery named, and none
-    // names the comments under a discussion. Archiving the discussion alone
-    // would leave them out of the daily check's sight, so a discussion with
-    // any waits for that check, which archives both.
+    // A run for deliveries archives only what a delivery named, and a
+    // discussion's own delivery names none of its comments. Archiving the
+    // discussion alone would leave them out of the daily check's sight, so a
+    // discussion with any waits for that check, which archives both.
     await context.archive(
       discussionType,
       gone.filter((link) => (held.get(link) ?? []).length === 0),
