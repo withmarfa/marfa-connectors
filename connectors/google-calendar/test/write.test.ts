@@ -730,6 +730,81 @@ describe("a trash, restore and purge", () => {
       expect.objectContaining({ method: "DELETE", path: eventPath(me, "e1") }),
     ]);
   });
+
+  /** One listing of the account's calendars leaves out the team calendar,
+   *  which Google still has. */
+  function unlistTeam(): void {
+    const entry = calendar.calendars.find((one) => one["id"] === team);
+    if (entry === undefined) throw new Error("no team calendar");
+    calendar.calendars = calendar.calendars.filter((one) => one !== entry);
+    calendar.unlisted = [entry];
+  }
+
+  function calendarEntryPath(id: string): string {
+    return `/calendar/v3/users/me/calendarList/${encodeURIComponent(id)}`;
+  }
+
+  it.each(["trash", "purge"] as const)(
+    "deletes on a %s the event of a calendar one listing leaves out while Google still has it",
+    async (how) => {
+      calendar.put(
+        team,
+        timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z"),
+      );
+      await landed();
+      const one = row(`${team}/e1`);
+      unlistTeam();
+
+      if (how === "trash") server.trash(one.id);
+      else server.purge(`${sub}:${team}/e1`);
+      await landed();
+
+      expect(writes()).toEqual([
+        expect.objectContaining({
+          method: "DELETE",
+          path: eventPath(team, "e1"),
+        }),
+      ]);
+      expect(calendar.event(team, "e1")?.["status"]).toBe("cancelled");
+    },
+  );
+
+  it.each(["trash", "purge"] as const)(
+    "keeps a %s for a later run while Google can't say whether a calendar one listing leaves out is still there",
+    async (how) => {
+      calendar.put(
+        team,
+        timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z"),
+      );
+      await landed();
+      const one = row(`${team}/e1`);
+      unlistTeam();
+      const asked = (call: Call) =>
+        call.method === "GET" && call.path === calendarEntryPath(team);
+      // Both the read and the delete ask about the calendar.
+      calendar.failNext(asked, 503);
+      calendar.failNext(asked, 503);
+
+      if (how === "trash") server.trash(one.id);
+      else server.purge(`${sub}:${team}/e1`);
+      await landed();
+
+      expect(writes()).toEqual([]);
+      expect(
+        calendar.calls.filter(asked).length,
+        "the delete asked Google about the calendar",
+      ).toBe(2);
+      expect(Object.values(conditions()).join(" ")).toContain(team);
+
+      await landed();
+      expect(writes()).toEqual([
+        expect.objectContaining({
+          method: "DELETE",
+          path: eventPath(team, "e1"),
+        }),
+      ]);
+    },
+  );
 });
 
 describe("a trash or purge before a lost create is settled", () => {
@@ -1700,6 +1775,33 @@ describe("the safety stop", () => {
 
     expect(writes()).toEqual([]);
     expect(conditions()["deletes-held"]).toBeUndefined();
+    expect(calendar.event(team, "e0")?.["status"]).toBe("confirmed");
+  });
+
+  it("counts the events of a calendar one listing leaves out while Google still has it", async () => {
+    await many(12, team);
+    const entry = calendar.calendars.find((one) => one["id"] === team);
+    if (entry === undefined) throw new Error("no team calendar");
+    calendar.calendars = calendar.calendars.filter((one) => one !== entry);
+    calendar.unlisted = [entry];
+    purgeFirst(12, team);
+    calendar.failNext(
+      (call) =>
+        call.method === "GET" &&
+        call.path ===
+          `/calendar/v3/users/me/calendarList/${encodeURIComponent(team)}`,
+      503,
+    );
+
+    expect(await once()).toBe(1);
+    expect(writes()).toEqual([]);
+    expect(conditions()["deletes-held"]).toBeUndefined();
+
+    expect(await once()).toBe(1);
+    expect(writes()).toEqual([]);
+    expect(conditions()["deletes-held"]).toContain(
+      "12 of the 12 events on Team",
+    );
     expect(calendar.event(team, "e0")?.["status"]).toBe("confirmed");
   });
 

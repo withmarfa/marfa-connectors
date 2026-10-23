@@ -65,6 +65,9 @@ interface Session {
   readonly account: string;
   readonly calendars: ReadonlyMap<string, CalendarInfo>;
   readonly primary: CalendarInfo | undefined;
+  /** Google's answer for each calendar the listing left out, asked by id:
+   *  nothing where it is gone. */
+  readonly asked: Map<string, CalendarInfo | undefined>;
 }
 
 export interface Writing {
@@ -109,7 +112,38 @@ async function open(context: WriteContext, writing: Writing): Promise<Session> {
     account: access.account,
     calendars,
     primary: [...calendars.values()].find((one) => one.primary),
+    asked: new Map(),
   };
+}
+
+/**
+ * A calendar of the account. One listing that leaves a calendar out doesn't
+ * prove it removed, so such a calendar is asked about by id, and only
+ * Google's answer that it is gone or deleted makes it gone. Where Google
+ * can't answer, nothing is decided, and the change waits for a later run.
+ */
+async function calendarFor(
+  session: Session,
+  calendarId: string,
+): Promise<CalendarInfo | undefined> {
+  const listed = session.calendars.get(calendarId);
+  if (listed !== undefined) return listed;
+  if (session.asked.has(calendarId)) return session.asked.get(calendarId);
+  let found: Json | "gone";
+  try {
+    found = await session.api.calendar(calendarId);
+  } catch (error) {
+    if (!(error instanceof GoogleError)) throw error;
+    throw new Unreachable(
+      `The calendar ${calendarId} is missing from the account's calendar list, and Google could not say whether it was removed (${error.message}), so nothing is changed on it until a later run`,
+    );
+  }
+  const calendar =
+    found === "gone" || found["deleted"] === true
+      ? undefined
+      : calendarOf(found);
+  session.asked.set(calendarId, calendar);
+  return calendar;
 }
 
 function textOf(item: Item, key: string): string | undefined {
@@ -233,12 +267,12 @@ async function carried(
   return update(change, parts, context, writing);
 }
 
-function calendarIn(
+async function calendarIn(
   session: Session,
   calendarId: string,
   item: Item,
-): CalendarInfo {
-  const calendar = session.calendars.get(calendarId);
+): Promise<CalendarInfo> {
+  const calendar = await calendarFor(session, calendarId);
   if (calendar === undefined) {
     throw new Refused(
       `The account no longer has the calendar ${calendarId}, so ${named(item)} is not changed`,
@@ -473,7 +507,7 @@ async function create(
   }
   const [chosen] = targets;
   const calendar =
-    chosen === undefined ? session.primary : session.calendars.get(chosen);
+    chosen === undefined ? session.primary : await calendarFor(session, chosen);
   if (calendar === undefined) {
     throw new Refused(
       chosen === undefined
@@ -546,7 +580,7 @@ async function replaceOccurrence(
       textOf(parent, "uneditable_reason") ?? "Google does not let it",
     );
   }
-  const calendar = calendarIn(session, parts.calendarId, item);
+  const calendar = await calendarIn(session, parts.calendarId, item);
   const found = await occurrenceFor(
     item,
     original,
@@ -588,7 +622,7 @@ async function replace(
     await context.outbound.prepareRetry(held.change.item.id, held.token);
   }
   const { item } = held.change;
-  const calendar = calendarIn(session, replacing.calendarId, item);
+  const calendar = await calendarIn(session, replacing.calendarId, item);
   // The journal keeps the change as `replaceOccurrence` checked it.
   const { instance, id, zone } =
     first ??
@@ -750,7 +784,7 @@ async function settle(
   }
   const { item } = held.change;
   const session = await sessionFor(context, writing);
-  const calendar = calendarIn(session, making.calendarId, item);
+  const calendar = await calendarIn(session, making.calendarId, item);
   const made = await insertOnce(item, calendar, making, session);
   await context.setLink(item, linkOf(calendar.id, making.eventId));
   const entry = entryOf(session, calendar, made);
@@ -840,7 +874,7 @@ async function update(
     );
   }
   const session = await sessionFor(context, writing);
-  let calendar = calendarIn(session, parts.calendarId, item);
+  let calendar = await calendarIn(session, parts.calendarId, item);
   const found = await session.api.event(parts.calendarId, parts.eventId);
   if (found === "gone" || found["status"] === "cancelled") {
     throw new Refused(
@@ -873,7 +907,7 @@ async function update(
         "Google Calendar moves a whole series to another calendar, not one occurrence",
       );
     }
-    const target = session.calendars.get(destination);
+    const target = await calendarFor(session, destination);
     if (target === undefined || !owned.has(target.role)) {
       throw decline(
         item,
@@ -1082,7 +1116,7 @@ async function deleteEvent(
   parts: { calendarId: string; eventId: string },
   session: Session,
 ): Promise<void> {
-  const calendar = session.calendars.get(parts.calendarId);
+  const calendar = await calendarFor(session, parts.calendarId);
   if (calendar === undefined) return;
   if (!owned.has(calendar.role)) {
     throw decline(item, "the account can only read this calendar");
@@ -1153,7 +1187,7 @@ async function remade(
     );
   }
   const session = await sessionFor(context, writing);
-  const calendar = session.calendars.get(parts.calendarId);
+  const calendar = await calendarFor(session, parts.calendarId);
   if (calendar === undefined || !owned.has(calendar.role)) {
     throw decline(
       item,
@@ -1212,10 +1246,12 @@ interface Deleting {
 /**
  * The events a batch of changes would delete in Google, by calendar, for
  * each calendar where that is more than `deleteLimit`. Only a delete Marfa
- * would send counts: a row Marfa may not change, or one on a calendar the
- * account no longer has or can only read, sends none, and neither does an
- * event Google no longer holds, such as one a create that got no answer
- * never made. An event named by both a trash and a purge is one delete.
+ * would send counts: a row Marfa may not change, or one on a calendar Google
+ * answers the account no longer has, or one it can only read, sends none,
+ * and neither does an event Google no longer holds, such as one a create
+ * that got no answer never made. A calendar one listing left out is counted
+ * while Google still has it, since the delete is sent then. An event named
+ * by both a trash and a purge is one delete.
  */
 async function deleting(
   changes: readonly Change[],
@@ -1238,7 +1274,7 @@ async function deleting(
   const session = await sessionFor(context, writing);
   const found: Deleting[] = [];
   for (const [calendarId, ids] of large) {
-    const calendar = session.calendars.get(calendarId);
+    const calendar = await calendarFor(session, calendarId);
     if (calendar === undefined || !owned.has(calendar.role)) continue;
     const live = await session.api.live(calendarId);
     const doomed = [...ids].filter(([id]) => live.has(id));
