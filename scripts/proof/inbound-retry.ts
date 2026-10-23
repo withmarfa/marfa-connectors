@@ -287,13 +287,13 @@ export async function proveInboundRetry(
       },
     );
   await check(
-    "kit inbound retries: incapable, omitted, systemic and unreachable input preserve conservative progress",
+    "kit inbound retries: incapable, omitted and unreachable input preserve conservative progress, and an all-refused batch is journaled",
     async () => {
       for (const kind of [
         "incapable",
         "undeclared",
         "unlinked",
-        "systemic",
+        "all-refused",
         "unreadable",
         "capability-lost",
         "mode-changed",
@@ -318,7 +318,7 @@ export async function proveInboundRetry(
               fixture.good,
               { source_id: "bad", properties: { title: "Bad" } },
             ];
-          if (kind === "systemic")
+          if (kind === "all-refused")
             fixture.control.config.entries = [
               fixture.bad,
               {
@@ -395,6 +395,14 @@ export async function proveInboundRetry(
             const after = await fixture.snapshot();
             assert.deepEqual(after.state.inbound, saved.state.inbound);
             assert.deepEqual(fixture.control.refetches, ["bad"]);
+          } else if (kind === "all-refused") {
+            assert.equal(first.code, 0, first.output);
+            const saved = await fixture.snapshot();
+            assert.equal(saved.state.state?.page, 1);
+            assert.deepEqual(
+              saved.state.inbound?.map((record) => record.identity.sourceId),
+              ["bad", "bad-two"],
+            );
           } else {
             assert.equal(first.code, 1, first.output);
             const saved = await fixture.snapshot();
@@ -405,7 +413,7 @@ export async function proveInboundRetry(
           await fixture.stop();
         }
       }
-      return "no incapable advancement, no fabricated skipped intent, all-same-code failure unchanged, unreadable refetch retains exact marker";
+      return "no incapable advancement, no fabricated skipped intent, all-refused batch journaled with its position, unreadable refetch retains exact marker";
     },
   );
   await check(

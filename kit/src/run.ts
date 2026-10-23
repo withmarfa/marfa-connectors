@@ -753,7 +753,7 @@ export async function runOnce<E extends EnvDeclaration>(
       error: Refusal,
       singleton: boolean,
       refusedInsert: boolean,
-    ): false | "new" | "retained" => {
+    ): boolean => {
       const scope = activeScope;
       if (
         scope?.retry === undefined ||
@@ -790,19 +790,13 @@ export async function runOnce<E extends EnvDeclaration>(
         scope.journal.set(key, record);
         if (!fitsJournal(journalFor(scope))) {
           scope.blocked = "row-refused";
+          raised.set(
+            `retry-journal-full:${scope.name}`,
+            `the retry journal of scope ${scope.name} has no room for another refusal (it holds at most 128 records and 64 KiB), so the scope keeps its position until its refused rows are written or archived`,
+          );
           return false;
         }
-        const retained = (acknowledged.inbound ?? []).some(
-          (saved) =>
-            identityKey(saved.identity.type, saved.identity.sourceId) === key &&
-            saved.identity.link === identity.link &&
-            saved.scope === scope.name &&
-            saved.mode === scope.retry?.mode &&
-            saved.fingerprint === fingerprint &&
-            saved.context === context &&
-            saved.code === error.code,
-        );
-        return retained ? "retained" : "new";
+        return true;
       } catch {
         return false;
       }

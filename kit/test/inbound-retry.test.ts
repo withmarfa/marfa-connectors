@@ -170,12 +170,12 @@ it.each(["undeclared", "file"])(
   },
 );
 it("keeps systemic same-code failures and excludes A speculation from B's shared map", async () => {
-  refused();
-  harness.server.entryRefusals.set("second", {
-    status: 400,
-    code: "invalid_properties",
-    message: "Bad",
-  });
+  for (const id of ["bad", "second"])
+    harness.server.entryRefusals.set(id, {
+      status: 400,
+      code: "unknown",
+      message: "Bad",
+    });
   const held = vendor();
   held.read = async (context) => {
     const a = context.forScope("A", { retry });
@@ -259,8 +259,6 @@ it("blocks journal capacity without leaking speculative entries to another scope
       code: "invalid_properties",
       message: "Bad",
     });
-  // One successful operation avoids the existing all-same-code systemic stop.
-  entries.push({ source_id: "good", properties: { title: "Good" } });
   const held = vendor();
   held.read = async (context) => {
     const a = context.forScope("A", { retry: { ...retry, mode: "refetch" } });
