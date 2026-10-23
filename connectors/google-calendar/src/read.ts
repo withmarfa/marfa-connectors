@@ -22,6 +22,7 @@ import {
   eventType,
 } from "./config.js";
 import {
+  appointment,
   calendarEntry,
   calendarOf,
   eventEntry,
@@ -528,7 +529,7 @@ async function planEvents(
   };
 
   for (const event of byId.values()) {
-    if (event.kind === "workingLocation") {
+    if (!appointment(event)) {
       plan.archive.add(linkOf(calendar.id, event.id));
       continue;
     }
@@ -572,6 +573,10 @@ async function planEvents(
       const event = found === "gone" ? undefined : eventOf(found);
       if (event === undefined || event.status === "cancelled") {
         dropped.add(id);
+        continue;
+      }
+      if (!appointment(event)) {
+        plan.archive.add(linkOf(calendar.id, id));
         continue;
       }
       if (event.recurrence.length === 0) {

@@ -111,6 +111,12 @@ export function eventOf(raw: Json): GoogleEvent | undefined {
   };
 }
 
+/** Whether an event gets a row: a working-location entry is not an
+ *  appointment. */
+export function appointment(event: GoogleEvent): boolean {
+  return event.kind !== "workingLocation";
+}
+
 /** Why Marfa may not change an event, or nothing where it may. */
 function uneditable(
   event: GoogleEvent,

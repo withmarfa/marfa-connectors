@@ -701,6 +701,51 @@ describe("a series", () => {
     expect(active()).toEqual([]);
   });
 
+  it("leaves out a working-location series and entry that a later cancellation names", async () => {
+    calendar.put(
+      me,
+      timed(
+        "office",
+        "Office",
+        "2026-10-19T08:00:00Z",
+        "2026-10-19T17:00:00Z",
+        london,
+        { eventType: "workingLocation", recurrence: ["RRULE:FREQ=WEEKLY"] },
+      ),
+    );
+    calendar.put(
+      me,
+      timed(
+        "home",
+        "Home",
+        "2026-10-20T08:00:00Z",
+        "2026-10-20T17:00:00Z",
+        london,
+        { eventType: "workingLocation" },
+      ),
+    );
+    expect(await once()).toBe(0);
+    expect(active()).toEqual([]);
+    // Neither cancellation carries an event type, so only the event it names
+    // says what kind it is.
+    calendar.cancel(me, "office_20261026T080000Z", {
+      recurringEventId: "office",
+      originalStartTime: { dateTime: "2026-10-26T08:00:00Z", timeZone: london },
+    });
+    calendar.cancel(me, "home_20261020T080000Z", {
+      recurringEventId: "home",
+      originalStartTime: { dateTime: "2026-10-20T08:00:00Z", timeZone: london },
+    });
+
+    expect(await once()).toBe(0);
+
+    expect(active()).toEqual([]);
+    expect(conditions()).not.toContain(`events-skipped:${me}`);
+    const paths = eventCalls().map((call) => decodeURIComponent(call.path));
+    expect(paths).toContain(`/calendar/v3/calendars/${me}/events/office`);
+    expect(paths).toContain(`/calendar/v3/calendars/${me}/events/home`);
+  });
+
   it("reads an all-day series with its cancelled days as dates", async () => {
     calendar.put(
       me,
