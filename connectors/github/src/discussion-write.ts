@@ -112,8 +112,10 @@ async function seekIn<T>(
         refused = why;
         continue;
       }
-      // A 401 or a token GitHub would not mint passes over that installation.
-      if (refusedApp(error)) continue;
+      if (refusedApp(error)) {
+        refused = "the App's installation refused it";
+        continue;
+      }
       throw error;
     }
   }
@@ -526,7 +528,13 @@ async function createComment(
           discussionAt(context, app, item, discussionNode),
         );
   if (found === undefined) {
-    await goneOrWaits(context, app, change, "discussions");
+    await goneOrWaits(
+      context,
+      app,
+      change,
+      "discussions",
+      thread === undefined ? undefined : text(thread, "repository"),
+    );
     return undefined;
   }
   const { octokit, repository } = found.place;

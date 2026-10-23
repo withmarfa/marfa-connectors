@@ -418,12 +418,16 @@ export async function repositoryAt(
  *  not, the target may be there, and the change waits. No row's text takes
  *  part, so neither an edited row nor a reused name can settle a change.
  *  `kind` is what the target is: an issue is hidden by its repository's
- *  Issues switch, a discussion by its Discussions switch. */
+ *  Issues switch, a discussion by its Discussions switch. A change that
+ *  has no agreed placement, such as a new comment, names the repository of
+ *  the thread it goes into by its full name, `thread`, so that switch is
+ *  judged too. */
 export async function goneOrWaits(
   context: Context,
   app: App,
   change: Change,
   kind: "issues" | "discussions" = "issues",
+  thread?: string,
 ): Promise<void> {
   const { item } = change;
   const kept = allKept(context);
@@ -464,7 +468,14 @@ export async function goneOrWaits(
   // Where the row sits as agreed, never as its text says. GitHub does not
   // say whether it shows what is in a repository that turned its switch off.
   const home = change.placement?.[inRepository]?.[0];
-  const node = home === undefined ? undefined : text(home, "github_id");
+  const node =
+    home === undefined
+      ? thread === undefined
+        ? undefined
+        : Object.entries(kept).find(
+            ([, one]) => one.name.toLowerCase() === thread.toLowerCase(),
+          )?.[0]
+      : text(home, "github_id");
   const off = node === undefined ? undefined : all.get(node);
   if (node !== undefined && off?.[kind] === false) {
     const switched = kind === "issues" ? "issues" : "Discussions";
@@ -1059,7 +1070,13 @@ async function createComment(
           issueAt(context, app, issueNode),
         );
   if (thread === undefined) {
-    await goneOrWaits(context, app, change);
+    await goneOrWaits(
+      context,
+      app,
+      change,
+      "issues",
+      issue === undefined ? undefined : text(issue, "repository"),
+    );
     return undefined;
   }
   const { octokit, owner, repo, repository } = thread.place;

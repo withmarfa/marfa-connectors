@@ -25,6 +25,9 @@ export interface Installation {
   login: string;
   suspended?: boolean;
   lost?: boolean;
+  /** Answers 404 to a token that asks for Discussions, as GitHub does for a
+   *  token it will not mint, while every other token still mints. */
+  discussionsLost?: boolean;
 }
 
 export interface Repository {
@@ -1031,7 +1034,13 @@ export class GitHubStub {
       const installation = this.installations.find(
         (one) => one.id === Number(match?.[1]),
       );
-      if (installation === undefined || installation.lost === true) {
+      if (
+        installation === undefined ||
+        installation.lost === true ||
+        (installation.discussionsLost === true &&
+          (body as { permissions?: Record<string, unknown> } | null)
+            ?.permissions?.["discussions"] !== undefined)
+      ) {
         send(404, { message: "Not Found" });
         return;
       }

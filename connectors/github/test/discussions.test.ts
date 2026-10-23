@@ -424,6 +424,33 @@ describe("a discussion changed in Marfa", () => {
     expect(discussion.title).toBe("Edited in Marfa");
   });
 
+  it("waits, and is not settled as gone, where the token that reads Discussions cannot be minted", async () => {
+    await ok();
+    marfa.edit(row(discussion.node).id, { title: "Edited in Marfa" });
+    const [installation] = github.installations;
+    if (installation !== undefined) installation.discussionsLost = true;
+    const output = await ok();
+    expect(output).toContain("the App's installation refused it");
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(marfa.agreements.get(row(discussion.node).id)?.waiting).toBe(true);
+    expect(written()).toEqual([]);
+    if (installation !== undefined) installation.discussionsLost = false;
+    await ok();
+    expect(discussion.title).toBe("Edited in Marfa");
+  });
+
+  it("is carried to a later installation that shows it though the Discussions token of another cannot be minted", async () => {
+    const far = github.addRepository("gone/away", { installation: 2 });
+    github.installations.unshift({ id: 2, login: "gone" });
+    github.addDiscussion(far);
+    await ok();
+    const [first] = github.installations;
+    if (first !== undefined) first.discussionsLost = true;
+    marfa.edit(row(discussion.node).id, { title: "Edited in Marfa" });
+    await ok();
+    expect(discussion.title).toBe("Edited in Marfa");
+  });
+
   it("is put back through a personal token, which cannot write", async () => {
     github.personalToken = personalToken;
     const env = {
@@ -567,6 +594,30 @@ describe("a comment on a discussion", () => {
     expect(posted).toHaveLength(1);
     expect(marfa.byId(top.id).properties["github_id"]).toBe(posted[0]?.node);
     expect(written()).toEqual(["AddDiscussionComment"]);
+  });
+
+  it("made in Marfa waits, truthfully, where its repository has Discussions turned off, and is posted when they are back", async () => {
+    await ok();
+    const top = marfa.insert(
+      undefined,
+      { body: "While they are off", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    repository.discussionsOff = true;
+    const output = await ok();
+    expect(output).toContain("has its Discussions turned off");
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(marfa.agreements.get(top.id)?.waiting).toBe(true);
+    expect(written()).toEqual([]);
+    repository.discussionsOff = false;
+    await ok();
+    expect(
+      github.discussionComments.some(
+        (one) => unmarked(one.body) === "While they are off",
+      ),
+    ).toBe(true);
   });
 
   it("someone else wrote keeps its text and its place: an edit and a bin are put back, and the run says so", async () => {

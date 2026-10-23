@@ -470,6 +470,31 @@ describe("a row made in Marfa", () => {
     await settled();
     expect(unmarked(comment?.body ?? "")).toBe("From Marfa, edited");
   });
+
+  it("as a new comment waits, rather than settling as gone, where its issue's repository turned issues off", async () => {
+    const issue = github.addIssue(repository);
+    await ok();
+    const made = marfa.insert(
+      undefined,
+      { body: "While issues are off", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(made.id, row(issue.node).id, "in-thread");
+    repository.issuesOff = true;
+    const output = await ok();
+    expect(output).toContain("has its issues turned off");
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(marfa.agreements.get(made.id)?.waiting).toBe(true);
+    expect(github.comments).toEqual([]);
+    repository.issuesOff = false;
+    await ok();
+    expect(
+      github.comments.some(
+        (one) => unmarked(one.body) === "While issues are off",
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("relations drawn in Marfa", () => {
