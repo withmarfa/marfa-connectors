@@ -1493,17 +1493,22 @@ export async function runOnce<E extends EnvDeclaration>(
     outbound.delete(id);
     await saveOutbound();
   };
-  const releaseRefused = async (change: Change): Promise<boolean> => {
+  const refusalStands = (change: Change): boolean => {
     const held = refusedOutbound.get(change.item.id);
-    if (held === undefined) return true;
+    if (held === undefined) return false;
     const refused = held.change;
     const changed = new Set([...refused.changed, ...change.changed]);
     const current = { ...change, kind: refused.kind, changed };
     Reflect.deleteProperty(current, "was");
     if (refused.was !== undefined) Object.assign(current, { was: refused.was });
     // A confirmed create may now be an update; its link alone is no new edit.
-    if (sending(current) === sending({ ...refused, changed })) {
-      refusedOf(change.item.id, refused.kind, held.reason);
+    return sending(current) === sending({ ...refused, changed });
+  };
+  const releaseRefused = async (change: Change): Promise<boolean> => {
+    const held = refusedOutbound.get(change.item.id);
+    if (held === undefined) return true;
+    if (refusalStands(change)) {
+      refusedOf(change.item.id, held.change.kind, held.reason);
       return false;
     }
     await finishOutbound(change.item.id);
@@ -1686,6 +1691,8 @@ export async function runOnce<E extends EnvDeclaration>(
     return off.length === 0 ? undefined : new Set(off);
   };
   let recorded = false;
+  // The trashes preflight saw, when the connector has one.
+  let previewed: ReadonlySet<string> | undefined;
   let unagreed = 0;
 
   const withoutWaiting = (agreement: Agreement): Agreement => {
@@ -1855,50 +1862,40 @@ export async function runOnce<E extends EnvDeclaration>(
     if (Object.keys(waiting).length > 0) next.waiting = waiting;
     store.set(item.id, next);
   };
-  const carry = async (
+  interface Planned {
+    readonly kind: Spec;
+    readonly current: Item;
+    readonly changeKind: ChangeKind;
+    readonly unlinked: boolean;
+    readonly skip?: undefined;
+  }
+  // What `carry` does with a row as it stands, before any side effect.
+  const planOf = (
+    spec: Spec,
     item: Item,
     agreement: Agreement,
-  ): Promise<"unplaced" | undefined> => {
-    if (recovered.has(item.id)) return;
-    if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
-    const { spec, rows } = lane(item.type);
-    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
-      const fresh = await currentItem(item.type, item.id);
-      if (fresh?.type !== item.type) return;
-      rows.adopt(fresh);
-      item = fresh;
-    }
+  ):
+    | { readonly skip: "foreign" }
+    | { readonly skip: "cascade" | "cascaded" | "untold"; readonly kind: Spec }
+    | Planned => {
     const kind = forRow(spec, item);
-    if (kind.owned === false) return;
-    if (connector.onChange === undefined || !kind.twoWay) return;
-    keepAgreedLink(kind, item, agreement);
+    if (kind.owned === false) return { skip: "foreign" };
+    if (connector.onChange === undefined || !kind.twoWay)
+      return { skip: "foreign" };
     // What changed before another row's trash took it waits for its restore.
-    if (agreement.stateBy === "cascade") return;
-    if (item.state === "trashed" && cascaded(item)) {
-      // Taken after the log was read: the log's frame will say the same.
-      store.set(item.id, {
-        ...agreement,
-        state: "trashed",
-        stateBy: "cascade",
-        stateAt: item.updated_at,
-      });
-      return;
-    }
-    const carriable = watchedFields(kind).filter(
-      (field) => !kind.readOnly.has(field),
-    );
+    if (agreement.stateBy === "cascade") return { skip: "cascade", kind };
+    if (item.state === "trashed" && cascaded(item))
+      return { skip: "cascaded", kind };
     const unlinked =
       kind.link !== undefined &&
       agreement.link === undefined &&
-      rows.linkOf(item.properties) === undefined;
+      lane(kind.type).rows.linkOf(item.properties) === undefined;
     if (
       unlinked &&
       item.state === "trashed" &&
       agreement.attempted === undefined
-    ) {
-      store.clear(item.id);
-      return;
-    }
+    )
+      return { skip: "untold", kind };
     const current = byAgreedLink(kind, item, agreement);
     // A trash of a row whose create got no link back may still find it made.
     const changeKind: ChangeKind = unlinked
@@ -1912,6 +1909,130 @@ export async function runOnce<E extends EnvDeclaration>(
             ? "archived"
             : "restored"
         : "updated";
+    return { kind, current, changeKind, unlinked };
+  };
+  const changeOf = async (
+    { kind, current, changeKind, unlinked }: Planned,
+    agreement: Agreement,
+    changed: readonly string[],
+    moved: Carried | undefined,
+  ): Promise<Change> => {
+    const attempted = unlinked ? agreement.attempted : undefined;
+    // A run that died after the link landed on the row, before the agreement
+    // kept it, left the first send's time as `attempted` alone.
+    const made = unlinked
+      ? undefined
+      : (agreement.made ??
+        (agreement.link === undefined ? agreement.attempted : undefined));
+    const change: Change = {
+      kind: changeKind,
+      item: current,
+      changed: new Set(changed),
+      ...(attempted !== undefined && { attempted }),
+      ...(made !== undefined && { made }),
+      ...(changeKind === "restored" &&
+        (agreement.state === "trashed" || agreement.state === "archived") && {
+          was: agreement.state,
+        }),
+      ...(moved !== undefined && { connections: moved.connections }),
+      ...(agreement.refused !== undefined && {
+        refused: agreement.refused.change,
+      }),
+    };
+    const unagreed = unagreedOf(kind, current, agreement);
+    if (unagreed !== undefined) Object.assign(change, { unagreed });
+    const placement = await connections.placementOf(current, kind, agreement);
+    if (placement !== undefined) Object.assign(change, { placement });
+    return change;
+  };
+  // The trash `carry` would send for a row this run, as it would send it;
+  // none for one whose refusal stands, since that is not sent again. Reads
+  // the row as the run's one batched lookup of the rows the log and waiting
+  // agreements name left it: a row only a refusal names is not read, since
+  // that refusal stands until the row changes, and the log then names it.
+  // One trashed since waits for the next run's preflight.
+  const trashOf = async (id: string): Promise<Change | undefined> => {
+    const agreement = store.get(id);
+    if (agreement === undefined) return undefined;
+    if (agreement.waiting === undefined && !refusedOutbound.has(id))
+      return undefined;
+    if (inLane(id)?.item.state !== "trashed") return undefined;
+    const found = await find(id);
+    if (found === undefined) return undefined;
+    const plan = planOf(found.spec, found.item, agreement);
+    if (plan.skip !== undefined || plan.changeKind !== "trashed")
+      return undefined;
+    const change = await changeOf(plan, agreement, [], undefined);
+    if (refusalStands(change) || agreement.refused?.change === sending(change))
+      return undefined;
+    return change;
+  };
+  // Why a journaled write waits without replay, judged before its row is
+  // read again.
+  const replayHeld = (record: OutboundRecord): string | undefined => {
+    const { item } = record.change;
+    const declared = specs.get(item.type);
+    if (declared === undefined || connector.onChange === undefined)
+      return "its kind has no declared write handler";
+    if (
+      !record.acknowledged &&
+      record.operation === "remake" &&
+      connector.remake === undefined
+    )
+      return "its remake handler is no longer declared";
+    const kind = forRow(declared, item);
+    if (!kind.twoWay || kind.owned === false)
+      return "its kind no longer has write authority";
+    return undefined;
+  };
+  // Why a journaled write the vendor has not answered waits, judged on its
+  // row as it is now.
+  const replayUnproven = (
+    record: OutboundRecord,
+    live: Item | undefined,
+  ): string | undefined => {
+    const { item, kind } = record.change;
+    const declared = specs.get(item.type);
+    return (live === undefined && kind !== "purged") ||
+      (live !== undefined &&
+        (live.type !== item.type ||
+          declared === undefined ||
+          !forRow(declared, live).twoWay))
+      ? "the current row does not prove write authority"
+      : undefined;
+  };
+  const carry = async (
+    item: Item,
+    agreement: Agreement,
+  ): Promise<"unplaced" | undefined> => {
+    if (recovered.has(item.id)) return;
+    if (setup.fenced?.() === true || setup.signal.aborted) throw new Stopped();
+    const { spec, rows } = lane(item.type);
+    if (spec.policy !== undefined || refusedOutbound.has(item.id)) {
+      const fresh = await currentItem(item.type, item.id);
+      if (fresh?.type !== item.type) return;
+      rows.adopt(fresh);
+      item = fresh;
+    }
+    const plan = planOf(spec, item, agreement);
+    if (plan.skip === "foreign") return;
+    const { kind } = plan;
+    keepAgreedLink(kind, item, agreement);
+    if (plan.skip === "cascaded") {
+      // Taken after the log was read: the log's frame will say the same.
+      store.set(item.id, {
+        ...agreement,
+        state: "trashed",
+        stateBy: "cascade",
+        stateAt: item.updated_at,
+      });
+    }
+    if (plan.skip === "untold") store.clear(item.id);
+    if (plan.skip !== undefined) return;
+    const { current, changeKind, unlinked } = plan;
+    const carriable = watchedFields(kind).filter(
+      (field) => !kind.readOnly.has(field),
+    );
     const changed =
       changeKind === "trashed"
         ? []
@@ -1971,35 +2092,21 @@ export async function runOnce<E extends EnvDeclaration>(
     ) {
       return;
     }
-    const attempted = unlinked ? agreement.attempted : undefined;
-    // A run that died after the link landed on the row, before the agreement
-    // kept it, left the first send's time as `attempted` alone.
-    const made = unlinked
-      ? undefined
-      : (agreement.made ??
-        (agreement.link === undefined ? agreement.attempted : undefined));
-    const change: Change = {
-      kind: changeKind,
-      item: current,
-      changed: new Set(changed),
-      ...(attempted !== undefined && { attempted }),
-      ...(made !== undefined && { made }),
-      ...(changeKind === "restored" &&
-        (agreement.state === "trashed" || agreement.state === "archived") && {
-          was: agreement.state,
-        }),
-      ...(connected &&
-        moved !== undefined && { connections: moved.connections }),
-      ...(agreement.refused !== undefined && {
-        refused: agreement.refused.change,
-      }),
-    };
-    const unagreed = unagreedOf(kind, current, agreement);
-    if (unagreed !== undefined) Object.assign(change, { unagreed });
-    const placement = await connections.placementOf(current, kind, agreement);
-    if (placement !== undefined) Object.assign(change, { placement });
+    const change = await changeOf(
+      { kind, current, changeKind, unlinked },
+      agreement,
+      changed,
+      connected ? moved : undefined,
+    );
     if (!(await releaseRefused(change))) return;
     if (refusedBefore(current.id, agreement, change)) return;
+    // A trash preflight did not see waits for the next run's.
+    if (
+      changeKind === "trashed" &&
+      previewed !== undefined &&
+      !previewed.has(current.id)
+    )
+      return;
     if (changeKind === "created") {
       // Kept before the vendor is asked, so a run that dies between its
       // answer and the link says so to the next.
@@ -2486,10 +2593,54 @@ export async function runOnce<E extends EnvDeclaration>(
       for (const pending of outbound.values())
         if (pending.change.kind === "purged")
           inventory.set(pending.change.item.id, restoreChange(pending.change));
+      const trashes = new Map<string, Change>();
+      // Journaled trashes the replay would send: not refused, since a refused
+      // change is carried again, nor answered, since only settling remains.
+      const replayed = [...outbound.values()].filter(
+        (record) =>
+          record.change.kind === "trashed" &&
+          record.rejected === undefined &&
+          !record.acknowledged &&
+          !inventory.has(record.change.item.id) &&
+          replayHeld(record) === undefined,
+      );
+      const live = new Map<string, Item>();
+      for (const type of new Set(replayed.map((r) => r.change.item.type))) {
+        const ids = replayed
+          .filter((record) => record.change.item.type === type)
+          .map((record) => record.change.item.id);
+        for (const one of (await setup.marfa.lookup(type, { ids })).data)
+          live.set(one.id, one);
+      }
+      for (const record of replayed) {
+        const { id } = record.change.item;
+        if (replayUnproven(record, live.get(id)) === undefined)
+          trashes.set(id, restoreChange(record.change));
+      }
+      // A journaled change is replayed, not carried, unless it was refused
+      // and its replay is not held.
+      const carried = [
+        ...new Set([...order, ...refusedOutbound.keys()]),
+      ].filter((id) => {
+        if (inventory.has(id)) return false;
+        const record = outbound.get(id);
+        return (
+          record === undefined ||
+          (record.rejected !== undefined && replayHeld(record) === undefined)
+        );
+      });
+      for (const id of carried) {
+        const trash = await trashOf(id);
+        if (trash !== undefined) trashes.set(id, trash);
+      }
+      previewed = new Set(trashes.keys());
       check();
       try {
         await connector.preflight(
-          { purges: structuredClone([...inventory.values()]) },
+          {
+            purges: structuredClone([...inventory.values()]),
+            trashes: structuredClone([...trashes.values()]),
+          },
           watchContext,
         );
       } catch (error) {
@@ -2504,7 +2655,6 @@ export async function runOnce<E extends EnvDeclaration>(
       const change = restoreChange(record.change);
       const id = change.item.id;
       recovered.add(id);
-      const declared = specs.get(change.item.type);
       const suspend = (reason: string): void => {
         suspendedOutbound.add(id);
         raised.set(
@@ -2512,21 +2662,9 @@ export async function runOnce<E extends EnvDeclaration>(
           `the pending write for ${id} is retained without replay because ${reason}`,
         );
       };
-      if (declared === undefined || connector.onChange === undefined) {
-        suspend("its kind has no declared write handler");
-        continue;
-      }
-      if (
-        !record.acknowledged &&
-        record.operation === "remake" &&
-        connector.remake === undefined
-      ) {
-        suspend("its remake handler is no longer declared");
-        continue;
-      }
-      const kind = forRow(declared, change.item);
-      if (!kind.twoWay || kind.owned === false) {
-        suspend("its kind no longer has write authority");
+      const held = replayHeld(record);
+      if (held !== undefined) {
+        suspend(held);
         continue;
       }
       if (refusedOutbound.has(id)) {
@@ -2551,14 +2689,21 @@ export async function runOnce<E extends EnvDeclaration>(
       }
       try {
         if (!record.acknowledged) {
-          const live = await currentItem(change.item.type, id);
+          const unproven = replayUnproven(
+            record,
+            await currentItem(change.item.type, id),
+          );
+          if (unproven !== undefined) {
+            suspend(unproven);
+            continue;
+          }
+          // Its row may have changed since preflight left it out.
           if (
-            (live === undefined && change.kind !== "purged") ||
-            (live !== undefined &&
-              (live.type !== change.item.type ||
-                !forRow(declared, live).twoWay))
+            change.kind === "trashed" &&
+            previewed !== undefined &&
+            !previewed.has(id)
           ) {
-            suspend("the current row does not prove write authority");
+            suspend("preflight has not seen it");
             continue;
           }
           if (record.operation === "remake") {
