@@ -23,7 +23,7 @@ export const needs = { source, scopes, types: [calendarType, eventType] };
 export const env = {
   ...googleEnv,
   GOOGLE_CALENDAR_READ_ONLY_CALENDARS: "optional",
-  GOOGLE_CALENDAR_CONFIRM_PURGES: "optional",
+  GOOGLE_CALENDAR_CONFIRM_DELETES: "optional",
 } as const;
 
 /** The event fields Google holds that Marfa never changes there: they are
@@ -47,12 +47,12 @@ export const eventReadOnly = [
 /** Facts about an event that are not something done to it. */
 export const eventDerived = ["etag", "editable", "uneditable_reason"] as const;
 
-/** The safety stop on deleting: a batch of purges is held when it would
- *  delete more than this many events of one calendar... */
-export const purgeLimit = 10;
+/** The safety stop on deleting: a batch of trashes and purges is held when
+ *  it would delete more than this many events of one calendar... */
+export const deleteLimit = 10;
 /** ...and more than this share of the events the calendar holds, as
  *  Marfa's own folder rule `removal_threshold` holds a mass removal. */
-export const purgeShare = 0.25;
+export const deleteShare = 0.25;
 
 /** Google's calendar of contacts' birthdays, which is not a calendar of
  *  events a person made. Written in parts so that the tree check for personal

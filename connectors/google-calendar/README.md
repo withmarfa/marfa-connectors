@@ -79,7 +79,7 @@ Without the calendar list scope, the connector reads nothing and raises a scope 
 | `GOOGLE_CLIENT_SECRET`                | That client's secret.                                                                                                      |
 | `GOOGLE_REFRESH_TOKEN`                | The value `--setup` writes.                                                                                                |
 | `GOOGLE_CALENDAR_READ_ONLY_CALENDARS` | Optional. Calendar IDs, separated by commas or spaces, of read-only calendars to read, such as a shared holidays calendar. |
-| `GOOGLE_CALENDAR_CONFIRM_PURGES`      | Optional. Lets one held batch of deletions through; see [The safety stop](#the-safety-stop).                               |
+| `GOOGLE_CALENDAR_CONFIRM_DELETES`     | Optional. Lets one held batch of deletions through; see [The safety stop](#the-safety-stop).                               |
 
 Run it:
 
@@ -187,9 +187,9 @@ A rate limit, a server error or no answer from Google leaves the change in Marfa
 
 ### The safety stop
 
-Before it deletes anything for purged rows, the connector counts, for each calendar, the events Google still holds that the purges would delete. It counts only the deletes it would send: it skips a row whose `editable` is `false`, and a calendar that has left the account's list or that the account can only read. A calendar Google no longer has holds nothing to delete. If one calendar would lose more than 10 events and more than a quarter of its events at once, nothing is carried to Google, the run fails, and the connector raises the condition `purges-held` with the numbers.
+Trashing a row deletes its event in Google, and so does purging a row whose trash wasn't carried. Before it deletes anything, the connector counts, for each calendar, the events Google still holds that the run's trashes and purges would delete. An event that both a trash and a purge would delete counts once. It counts only the deletes it would send: it skips a row whose `editable` is `false`, and a calendar that has left the account's list or that the account can only read. A calendar Google no longer has holds nothing to delete. A row that went into the bin with its series, such as a changed occurrence, isn't counted, because its trash isn't carried; the series' own delete removes its occurrences. If one calendar would lose more than 10 events and more than a quarter of its events at once, nothing is carried to Google, the run fails, and the connector raises the condition `deletes-held`, which says how many events would be deleted from which calendar.
 
-To let that batch through, set `GOOGLE_CALENDAR_CONFIRM_PURGES` to the number of events the condition names, run once, and remove the setting. A different number holds the batch again.
+To keep the events, restore the trashed rows in Marfa; the next run counts again. A purged row can't be restored. To let the batch through, set `GOOGLE_CALENDAR_CONFIRM_DELETES` to the number of events the condition names, run once, and remove the setting. A different number holds the batch again.
 
 ## Progress and recovery
 
@@ -207,7 +207,6 @@ For a change to a series, the connector asks Google for the series and its insta
 
 ## Limits
 
-- The safety stop counts purges only. Trashing many rows in Marfa deletes their events without it; restoring the rows brings the events back.
-- When the safety stop holds a batch, the whole run fails, so nothing is read until the batch is confirmed or the purges are no longer pending.
+- When the safety stop holds a batch, the whole run fails, so nothing is read until the batch is confirmed, or until restoring trashed rows brings it under the limit.
 - A Marfa instance supports one Google account for its Google connectors. A grant for another account fails the run.
 - Fixture tests stand in for Google. They don't show how a live account behaves.

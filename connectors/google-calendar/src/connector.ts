@@ -98,6 +98,6 @@ export function createConnector(options?: GoogleOptions) {
     onChange: (change, context) => carry(change, context, writing),
     remake: (change, context) => remake(change, context, writing),
     preflight: (inventory, context) =>
-      preflight(inventory.purges, context, writing),
+      preflight([...inventory.purges, ...inventory.trashes], context, writing),
   });
 }

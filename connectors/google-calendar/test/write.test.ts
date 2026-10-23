@@ -1024,7 +1024,7 @@ describe("the safety stop", () => {
     await landed();
 
     expect(writes()).toEqual([]);
-    expect(conditions()["purges-held"]).toBeUndefined();
+    expect(conditions()["deletes-held"]).toBeUndefined();
     expect(calendar.event(team, "e0")?.["status"]).toBe("confirmed");
   });
 
@@ -1040,7 +1040,7 @@ describe("the safety stop", () => {
     });
 
     expect(writes()).toEqual([]);
-    expect(conditions()["purges-held"]).toBeUndefined();
+    expect(conditions()["deletes-held"]).toBeUndefined();
   });
 
   it("does not count events Marfa may not change", async () => {
@@ -1050,7 +1050,7 @@ describe("the safety stop", () => {
     await landed();
 
     expect(writes()).toEqual([]);
-    expect(conditions()["purges-held"]).toBeUndefined();
+    expect(conditions()["deletes-held"]).toBeUndefined();
   });
 
   it("takes a calendar Google no longer has as holding nothing to delete", async () => {
@@ -1067,7 +1067,7 @@ describe("the safety stop", () => {
 
     await landed();
 
-    expect(conditions()["purges-held"]).toBeUndefined();
+    expect(conditions()["deletes-held"]).toBeUndefined();
   });
 
   it("holds a purge that would delete most of a calendar until a person confirms its size", async () => {
@@ -1076,12 +1076,12 @@ describe("the safety stop", () => {
 
     expect(await once()).toBe(1);
     expect(writes()).toEqual([]);
-    expect(conditions()["purges-held"]).toContain("11 of the 20 events on Me");
+    expect(conditions()["deletes-held"]).toContain("11 of the 20 events on Me");
 
-    expect(await once({ GOOGLE_CALENDAR_CONFIRM_PURGES: "12" })).toBe(1);
+    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: "12" })).toBe(1);
     expect(writes()).toEqual([]);
 
-    await landed({ GOOGLE_CALENDAR_CONFIRM_PURGES: "11" });
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" });
     expect(writes("DELETE")).toHaveLength(11);
   });
 
@@ -1091,5 +1091,82 @@ describe("the safety stop", () => {
 
     await landed();
     expect(writes("DELETE")).toHaveLength(11);
+  });
+
+  function trash(from: number, to: number, on = me): void {
+    for (let n = from; n < to; n += 1) {
+      server.trash(row(`${on}/e${String(n)}`).id);
+    }
+  }
+
+  it("holds a trash that would delete most of a calendar, sending nothing", async () => {
+    await many(20);
+    trash(0, 11);
+
+    expect(await once()).toBe(1);
+
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, "e0")?.["status"]).toBe("confirmed");
+    const held = conditions()["deletes-held"];
+    expect(held).toContain("11 of the 20 events on Me");
+    expect(held).toContain("restore the trashed rows in Marfa");
+    expect(held).toContain("GOOGLE_CALENDAR_CONFIRM_DELETES=11");
+
+    expect(await once()).toBe(1);
+    expect(writes()).toEqual([]);
+  });
+
+  it("lets a few trashes through", async () => {
+    await many(20);
+    trash(0, 3);
+
+    await landed();
+
+    expect(writes("DELETE")).toHaveLength(3);
+    expect(conditions()["deletes-held"]).toBeUndefined();
+  });
+
+  it("does not count trashes of events Marfa may not change", async () => {
+    await many(12, me, { locked: true });
+    trash(0, 12);
+
+    await once();
+
+    expect(writes()).toEqual([]);
+    expect(conditions()["deletes-held"]).toBeUndefined();
+  });
+
+  it("counts trashes and purges together, and a row trashed then purged once", async () => {
+    await many(20);
+    trash(0, 6);
+    for (let n = 6; n < 11; n += 1) server.purge(`${sub}:${me}/e${String(n)}`);
+
+    expect(await once()).toBe(1);
+    expect(writes()).toEqual([]);
+    expect(conditions()["deletes-held"]).toContain("11 of the 20 events on Me");
+
+    for (let n = 0; n < 3; n += 1) server.purge(`${sub}:${me}/e${String(n)}`);
+
+    expect(await once()).toBe(1);
+    expect(writes()).toEqual([]);
+    expect(conditions()["deletes-held"]).toContain("11 of the 20 events on Me");
+  });
+
+  it("lets through exactly the batch a confirmation names", async () => {
+    await many(40);
+    trash(0, 11);
+
+    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: "12" })).toBe(1);
+    expect(writes()).toEqual([]);
+
+    await landed({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" });
+    expect(writes("DELETE")).toHaveLength(11);
+    expect(conditions()["deletes-held"]).toBeUndefined();
+
+    trash(11, 23);
+    calendar.calls.length = 0;
+    expect(await once({ GOOGLE_CALENDAR_CONFIRM_DELETES: "11" })).toBe(1);
+    expect(writes()).toEqual([]);
+    expect(conditions()["deletes-held"]).toContain("12 of the 29 events on Me");
   });
 });
