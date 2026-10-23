@@ -505,7 +505,7 @@ describe("the Google account", () => {
     expect([...own.state.values()]).toEqual([stub.sub]);
   });
 
-  it("does not keep an account in a run started by a delivery", async () => {
+  it("does not keep an account in a run started between scheduled runs", async () => {
     const seen = captured(
       { ...clientEnv, GOOGLE_REFRESH_TOKEN: freshToken() },
       new Map(),

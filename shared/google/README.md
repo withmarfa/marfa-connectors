@@ -111,13 +111,13 @@ If the grant in the environment no longer works (`invalid_grant`), setup warns a
 
 A Marfa instance supports one Google account for its Google connectors. To use another Google account, use another Marfa instance.
 
-Each connector keeps the account's `sub` in its state, under `google_account`, and checks every grant against it before anything reaches Google or Marfa:
+Each connector keeps the account's `sub` in its state, under `google_account`, and checks every grant against it before the connector sends Google a request or writes to Marfa:
 
 - **The first run.** Where the connector keeps no account, `ready` reads the rows of the connector's `types`, in every state. If one holds a `source_id` that begins with another account, as `<sub>:`, the run fails with the account condition. Otherwise `ready` keeps the account at once, with a checkpoint of the connector's state, so it holds even if the run fails after writing rows.
 - **After the state was cleared.** Clearing a connector's state also clears the kept account, but not its rows. The next run reads the rows as the first run does, so a grant for another account is refused while the first account's rows remain.
 - **A later run.** A grant for another account fails the run with the account condition, and nothing is read or written.
-- **`onChange`, `remake` and `preflight`.** These run before the run's own `ready`, so `fetch` and `json` check the grant against the kept account first. A grant for another account raises the account condition and throws a `GoogleError` of kind `account`, which fails the run, and nothing is sent. Where the connector keeps no account yet, they throw `Unreachable` with the scope `google:account`, so the change is sent again on a later run, once a run has kept the account.
-- **A run started by a delivery.** It cannot take a checkpoint, so where no account is kept, it fails, and the next scheduled run keeps the account.
+- **`onChange`, `remake` and `preflight`.** Each makes its own `Google`, and some run before the run's own `ready`, so `fetch` and `json` check the grant against the kept account first. A grant for another account raises the account condition and throws a `GoogleError` of kind `account`, which fails the run, and nothing is sent. Where the connector keeps no account yet, they throw `Unreachable` with the scope `google:account`, so nothing is sent until a run has kept the account.
+- **A run started between scheduled runs.** A run that a delivery or a change waiting in Marfa starts cannot take a checkpoint, so where no account is kept, it fails, and the next scheduled run keeps the account.
 
 ## Scopes are matched exactly
 

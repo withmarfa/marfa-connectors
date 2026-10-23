@@ -249,13 +249,13 @@ export class Google {
     const { forScope, held } = context;
     if (forScope === undefined || held === undefined) {
       throw new Unreachable(
-        "No Google account is kept for this connector yet, so nothing is sent to Google until a run has checked the account and kept it",
+        "no Google account is kept for this connector yet, so nothing is sent to Google until a run has checked the account and kept it",
         { scope: accountScope },
       );
     }
     if (context.hints !== undefined) {
       throw new Error(
-        "no Google account is kept for this connector yet, and a run started by a delivery cannot keep one, so the next scheduled run keeps it",
+        "no Google account is kept for this connector yet, and a run started between scheduled runs cannot keep one, so the next scheduled run keeps it",
       );
     }
     for (const type of this.types) {
