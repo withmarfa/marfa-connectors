@@ -446,6 +446,46 @@ describe("reading the connections of a calendar's rows", () => {
     expect(harness.server.edges).toHaveLength(28);
   });
 
+  it("gives the listing up when other parent-of edges fill its pages, which count edges the key may not read", async () => {
+    harness.server.edgeListCap = 1;
+    const held = calendar(crowded(9, 4));
+    expect(await harness.twoWay(held)).toBe(0);
+    held.entries = [];
+    expect(await harness.twoWay(held)).toBe(0);
+    for (let n = 0; n < 20; n += 1) {
+      const parent = harness.server.insert(
+        undefined,
+        { title: `Parent ${String(n)}` },
+        "core.note",
+        "person",
+      );
+      const child = harness.server.insert(
+        undefined,
+        { title: `Child ${String(n)}` },
+        "core.note",
+        "person",
+      );
+      harness.server.drawEdge(parent.id, child.id, "parent-of");
+    }
+    held.entries = crowded(9, 4).slice(1, 9);
+    const requests = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    const reads = harness.server.requests
+      .slice(requests)
+      .filter(
+        (request) =>
+          request.path === "/edges" || request.path.endsWith("/backrefs"),
+      );
+    // The newest pages hold only the notes' edges, so eight pages find
+    // nothing, and each of the eight rows is read on its own.
+    expect(reads.filter((request) => request.path === "/edges")).toHaveLength(
+      8,
+    );
+    expect(reads).toHaveLength(16);
+    expect(held.changes).toEqual([]);
+    for (let n = 2; n <= 5; n += 1) expect(seriesOf(n)).toEqual(["a:1"]);
+  });
+
   it("reads a few rows one by one", async () => {
     const held = calendar(crowded(4, 2));
     expect(await harness.twoWay(held)).toBe(0);

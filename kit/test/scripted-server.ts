@@ -1538,18 +1538,17 @@ export class ScriptedServer {
         refuse(400, "validation_error", "limit is 1 to 500", {});
         return;
       }
-      // Newest first, and an edge whose source the key may not read is left
-      // out, whatever its target.
+      // Newest first. Pages are cut from every edge of the type, and then an
+      // edge whose source the key may not read is left out, whatever its
+      // target, so a page can be short or empty with a cursor to follow.
       const all = this.edges
-        .filter(
-          (edge) =>
-            (types.length === 0 || types.includes(edge.edge_type)) &&
-            this.readsSourceOf(edge),
-        )
+        .filter((edge) => types.length === 0 || types.includes(edge.edge_type))
         .reverse();
       const size = Math.min(limit, this.edgeListCap);
       send(200, {
-        data: all.slice(from, from + size),
+        data: all
+          .slice(from, from + size)
+          .filter((edge) => this.readsSourceOf(edge)),
         next_cursor: from + size < all.length ? String(from + size) : null,
       });
       return;
