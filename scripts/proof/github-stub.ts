@@ -11,6 +11,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
+import { NotificationsStub } from "./github-notifications-stub.js";
 
 export function appKey(): string {
   return generateKeyPairSync("rsa", {
@@ -239,6 +240,9 @@ export class GitHubStub {
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
+  /** The person's notifications, which only a classic token reads and which
+   *  have a budget of their own, as the person's do. */
+  readonly notifications = new NotificationsStub();
   appPermissions: Record<string, Access> = {
     issues: "write",
     pull_requests: "read",
@@ -837,7 +841,11 @@ export class GitHubStub {
     // The App signs with a JWT and has a budget of its own.
     const budget = this.budget(
       resource,
-      asApp ? 0 : (this.installationOf(req)?.id ?? 0),
+      this.notifications.handles(path)
+        ? -1
+        : asApp
+          ? 0
+          : (this.installationOf(req)?.id ?? 0),
     );
     if (Date.now() / 1000 >= budget.reset) {
       budget.remaining = budget.limit;
@@ -927,6 +935,16 @@ export class GitHubStub {
         }),
       });
     };
+    if (method === "GET" && this.notifications.handles(path)) {
+      this.notifications.serve(req, url, this.url, {
+        budget,
+        send,
+        limit: () => {
+          limit(false);
+        },
+      });
+      return;
+    }
     let match: RegExpExecArray | null;
     if (!asApp && req.headers.authorization !== undefined) {
       const grant = this.grantOf(req);

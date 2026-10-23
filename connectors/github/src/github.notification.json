@@ -1,0 +1,47 @@
+{
+  "id": "github.notification",
+  "label": "GitHub Notification",
+  "description": "A thread in the notifications of the person who owns the GitHub token the connector reads them with. Read only; its body is the title of what it concerns and its sender the repository, and it is connected to the synced issue, pull request or discussion it concerns.",
+  "parent": "core.message",
+  "link_field": "github_id",
+  "fields": {
+    "github_id": {
+      "type": "string",
+      "description": "The notification thread's GitHub id."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why GitHub notified the person, as GitHub names it, such as mention, review_requested or subscribed. It changes when a later notification on the thread has another reason."
+    },
+    "unread": {
+      "type": "boolean",
+      "description": "Whether the thread is unread on GitHub."
+    },
+    "github_updated_at": {
+      "type": "string",
+      "format": "datetime",
+      "description": "When GitHub last changed the thread."
+    },
+    "last_read_at": {
+      "type": "string",
+      "format": "datetime",
+      "description": "When the person last read the thread. Empty until they have."
+    },
+    "subject_type": {
+      "type": "string",
+      "description": "What the thread concerns, as GitHub names it, such as Issue, PullRequest, Discussion, Commit or Release."
+    },
+    "url": {
+      "type": "string",
+      "format": "url",
+      "description": "The address on GitHub of what the thread concerns. Empty for a kind of subject with no page of its own to name."
+    },
+    "private": {
+      "type": "boolean",
+      "description": "Whether the repository the thread is in is private on GitHub, as of the last read: a row marked private holds what is not public, and its contents are not to be copied into a public place."
+    }
+  },
+  "display_hints": {
+    "body_field": "body"
+  }
+}

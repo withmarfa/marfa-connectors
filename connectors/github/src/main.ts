@@ -17,12 +17,14 @@ import {
   inThread,
   issueType,
   pullRequestType,
+  references,
   repositoryType,
   subIssueOf,
 } from "./entries.js";
 import { carryDiscussions, remakeDiscussions } from "./discussion-write.js";
 import { defaultBase, type App } from "./github.js";
 import { hints } from "./hooks.js";
+import { notificationType } from "./notifications.js";
 import { read } from "./read.js";
 import { fileKinds, filesConnection } from "./files.js";
 import { scopeOf } from "./scope.js";
@@ -32,6 +34,7 @@ import comment from "./github.comment.json" with { type: "json" };
 import discussion from "./github.discussion.json" with { type: "json" };
 import issue from "./github.issue.json" with { type: "json" };
 import pullRequest from "./github.pull_request.json" with { type: "json" };
+import notification from "./github.notification.json" with { type: "json" };
 import repository from "./github.repository.json" with { type: "json" };
 
 const env = {
@@ -39,6 +42,7 @@ const env = {
   GITHUB_PRIVATE_KEY: "optional-secret",
   GITHUB_WEBHOOK_SECRET: "optional-secret",
   GITHUB_PERSONAL_TOKEN: "optional-secret",
+  GITHUB_NOTIFICATIONS_TOKEN: "optional-secret",
   GITHUB_READ_ONLY: "optional",
   GITHUB_API_URL: "optional",
   GITHUB_PUBLIC_URL: "optional",
@@ -69,7 +73,7 @@ function appOf(values: {
 const connector = defineConnector<typeof env>({
   name: "github",
   description:
-    "Repositories, issues, discussions, comments and read-only pull requests through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue, discussion and comment edits back.",
+    "Repositories, issues, discussions, comments, read-only pull requests and read-only notifications through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue, discussion and comment edits back.",
   source: "github",
   types: [
     ...fileKinds,
@@ -230,9 +234,46 @@ const connector = defineConnector<typeof env>({
       ],
       derived: ["private"],
     },
+    {
+      type: notification as TypeDefinition,
+      fields: [
+        "body",
+        "from",
+        "github_id",
+        "reason",
+        "unread",
+        "github_updated_at",
+        "last_read_at",
+        "subject_type",
+        "url",
+        "private",
+      ],
+      readOnly: [
+        "body",
+        "from",
+        "github_id",
+        "reason",
+        "unread",
+        "github_updated_at",
+        "last_read_at",
+        "subject_type",
+        "url",
+        "private",
+        references,
+      ],
+    },
   ],
   connections: [
     filesConnection,
+    {
+      id: references,
+      label: "References",
+      description:
+        "A GitHub notification and the synced issue, pull request or discussion it concerns.",
+      cardinality: "many-to-many",
+      source_type_constraints: [notificationType],
+      target_type_constraints: [issueType, pullRequestType, discussionType],
+    },
     {
       id: inRepository,
       label: "In repository",
@@ -350,6 +391,10 @@ const connector = defineConnector<typeof env>({
             base: context.env.GITHUB_API_URL ?? defaultBase,
           },
       scopeOf(context.env.GITHUB_REPOSITORIES),
+      {
+        token: context.env.GITHUB_NOTIFICATIONS_TOKEN,
+        scopeText: context.env.GITHUB_REPOSITORIES,
+      },
     );
   },
   async onChange(change, context) {

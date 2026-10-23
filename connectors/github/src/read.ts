@@ -68,6 +68,10 @@ import {
 } from "./pulls.js";
 import type { Scope } from "./scope.js";
 import { fileNotes, preserveFiles, markFilesPrivate } from "./files.js";
+import {
+  conditionKeys as notificationConditions,
+  readNotifications,
+} from "./notifications.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 
 export const windowDays = 90;
@@ -163,7 +167,12 @@ const readPrefixes = [
 ];
 
 class Coverage {
-  readonly keys = new Set(["unsettled", "rate-limit-reserve", "clock-skew"]);
+  readonly keys = new Set([
+    "unsettled",
+    "rate-limit-reserve",
+    "clock-skew",
+    ...notificationConditions,
+  ]);
   readonly prefixes = new Set(readPrefixes);
 
   readonly exceptKeys = new Set<string>();
@@ -192,6 +201,7 @@ export async function read(
   context: RootContext,
   app: App | Personal,
   scope: Scope | undefined,
+  notifications: { token: string | undefined; scopeText: string | undefined },
 ): Promise<void> {
   const coverage = new Coverage();
   try {
@@ -214,6 +224,15 @@ export async function read(
     context.log.condition("clock-skew", error.message);
     if (context.hints !== undefined) throw error;
   } finally {
+    // Its own token and budget, so it is read whatever became of the rest.
+    if (context.hints === undefined)
+      await readNotifications(
+        context,
+        { ...notifications, base: app.base, scope },
+        (...keys) => {
+          coverage.reached(...keys);
+        },
+      );
     coverage.retain(context);
   }
 }

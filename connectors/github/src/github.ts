@@ -350,6 +350,7 @@ export function asPersonalToken(
   base: string,
   secret: Secret,
   signal: AbortSignal,
+  name = "GITHUB_PERSONAL_TOKEN",
 ): Client {
   secret(token);
   const fingerprint = createHash("sha256").update(token).digest("hex");
@@ -370,9 +371,7 @@ export function asPersonalToken(
         /^(?:\s*query\b|\s*\{)/.test(query)
       )
     )
-      throw new Error(
-        "GITHUB_PERSONAL_TOKEN is read only; GitHub writes require an App",
-      );
+      throw new Error(`${name} is read only; GitHub writes require an App`);
     options.headers.authorization = `Bearer ${token}`;
   });
   octokit.hook.error("request", (error) => {
@@ -384,7 +383,7 @@ export function asPersonalToken(
       const required = error.response?.headers["x-accepted-github-permissions"];
       if (typeof required === "string" && required !== "")
         throw new PermissionRequired(
-          `GITHUB_PERSONAL_TOKEN needs GitHub permissions ${required}`,
+          `${name} needs GitHub permissions ${required}`,
         );
     }
     throw error;

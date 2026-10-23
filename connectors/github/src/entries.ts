@@ -43,6 +43,7 @@ export const duplicateOf = "github.duplicate-of";
 export const githubCloses = "github.closes";
 export const githubClosedBy = "github.closed-by";
 export const inThread = "in-thread";
+export const references = "references";
 
 export interface RestRepository {
   id: number;
