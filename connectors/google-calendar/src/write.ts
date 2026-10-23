@@ -1397,7 +1397,9 @@ interface Deleting {
  * would send counts: a row Marfa may not change, or one on a calendar Google
  * answers the account no longer has, or one it can only read, sends none,
  * and neither does an event Google no longer holds, such as one a create
- * that got no answer never made. A calendar one listing left out is counted
+ * that got no answer never made, nor one `deleteEvent` would decline as
+ * Google holds it now, such as one that gained a guest since Marfa read it.
+ * A calendar one listing left out is counted
  * while Google still has it, since the delete is sent then. An event named
  * by both a trash and a purge is one delete.
  */
@@ -1424,8 +1426,25 @@ async function deleting(
   for (const [calendarId, ids] of large) {
     const calendar = await calendarFor(session, calendarId);
     if (calendar === undefined || !owned.has(calendar.role)) continue;
-    const live = await session.api.live(calendarId);
-    const doomed = [...ids].filter(([id]) => live.has(id));
+    const live = new Map<string, GoogleEvent>();
+    const changed = new Map<string, Json[]>();
+    for (const raw of await session.api.inventory(calendarId)) {
+      const event = eventOf(raw);
+      if (event === undefined) continue;
+      if (event.status !== "cancelled") live.set(event.id, event);
+      if (event.recurringEventId !== undefined) {
+        const of = changed.get(event.recurringEventId) ?? [];
+        of.push(raw);
+        changed.set(event.recurringEventId, of);
+      }
+    }
+    const doomed = [...ids].filter(([id]) => {
+      const event = live.get(id);
+      return (
+        event !== undefined &&
+        deleteRefused(event, calendar, changed.get(id) ?? []) === undefined
+      );
+    });
     if (doomed.length > deleteLimit) {
       found.push({
         title: calendar.title,

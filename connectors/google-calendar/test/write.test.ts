@@ -2159,6 +2159,52 @@ describe("the safety stop", () => {
     expect(conditions()["deletes-held"]).toBeUndefined();
   });
 
+  it("does not count trashes of events that Google now holds as ones Marfa may not change", async () => {
+    await many(20);
+    const kim = {
+      attendees: [
+        { email: me, self: true, organizer: true },
+        { email: "kim@example.com" },
+      ],
+    };
+    // Guests added in Google after the read, so the rows still say editable.
+    for (let n = 0; n < 6; n += 1) {
+      const id = `e${String(n)}`;
+      calendar.put(me, { ...calendar.event(me, id), ...kim });
+    }
+    // Series whose changed occurrence gained a guest in Google.
+    for (let n = 6; n < 11; n += 1) {
+      const id = `e${String(n)}`;
+      calendar.put(me, {
+        ...calendar.event(me, id),
+        recurrence: ["RRULE:FREQ=DAILY"],
+      });
+      calendar.put(me, {
+        id: `${id}_20261103T120000Z`,
+        recurringEventId: id,
+        originalStartTime: { dateTime: "2026-11-03T12:00:00Z" },
+        summary: "Moved",
+        start: { dateTime: "2026-11-03T15:00:00Z", timeZone: london },
+        end: { dateTime: "2026-11-03T16:00:00Z", timeZone: london },
+        organizer: { email: me, self: true },
+        ...kim,
+      });
+    }
+    trash(0, 11);
+
+    await landed();
+
+    expect(conditions()["deletes-held"]).toBeUndefined();
+    expect(writes()).toEqual([]);
+    expect(calendar.event(me, "e0")?.["status"]).toBe("confirmed");
+    expect(calendar.event(me, "e6")?.["status"]).toBe("confirmed");
+    const e0 = row(`${me}/e0`);
+    expect(conditions()[`declined:${e0.id}`]).toContain("guests");
+    expect(conditions()[`declined:${row(`${me}/e6`).id}`]).toContain(
+      "2026-11-03T12:00:00Z",
+    );
+  });
+
   it("counts trashes and purges together, and a row trashed then purged once", async () => {
     await many(20);
     trash(0, 6);

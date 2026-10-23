@@ -268,30 +268,6 @@ export class CalendarApi {
     }
   }
 
-  /** The ids of the events a calendar still holds: none for a calendar
-   *  Google no longer has. */
-  async live(calendarId: string): Promise<Set<string>> {
-    let items: Json[];
-    try {
-      ({ items } = await this.pages(this.eventPath(calendarId), {
-        singleEvents: "false",
-        showDeleted: "true",
-        maxResults: "2500",
-        fields: "items(id,status),nextPageToken,nextSyncToken",
-      }));
-    } catch (error) {
-      if (isGone(error)) return new Set();
-      throw error;
-    }
-    return new Set(
-      items.flatMap((item) =>
-        item["status"] !== "cancelled" && typeof item["id"] === "string"
-          ? [item["id"]]
-          : [],
-      ),
-    );
-  }
-
   /** The cancelled occurrences of a series between two moments. */
   async cancelled(
     calendarId: string,
