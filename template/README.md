@@ -81,7 +81,7 @@ An unresolved record also prevents switching its scope to a different retry mode
 - **`env`**: the values the connector declared. A missing `secret` or `required` value stops the start; `optional` and `optional-secret` values may be absent. Both secret kinds are kept out of log lines and reports, including during setup, and a present secret shorter than eight characters stops the start. A secret that holds a list, such as several addresses, is also kept out part by part, where each part is set apart by whitespace or commas and is at least eight characters long. A value the connector can tell is wrong on sight, such as a malformed address, is refused by throwing from `checkEnv`, which stops the start the same way.
 - **`secret(value)`**, in `run`, `onChange`, `remake` and `setup`: keeps a value made at run time, such as an installation token, out of every log line, condition and report from then on. A value under eight characters is refused, since it could not be found without redacting ordinary words.
 
-A connector writes only its own type at the feed tier. Promoting a row into the library is a person's or an app's act. A connector reads from its vendor; one that is asked to also carries changes made in Marfa back to it, as the next section describes, and never anything else.
+A connector writes only its own type at the feed tier. Moving a row to the library is a person's or an app's act. A connector reads from its vendor; one that is asked to also carries changes made in Marfa back to it, as the next section describes, and never anything else.
 
 ## Carrying changes back
 

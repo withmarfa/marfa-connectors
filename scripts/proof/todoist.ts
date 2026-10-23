@@ -13,7 +13,7 @@ import {
   lastRun,
   mintWithTheReadmeKeyFlags,
   moved,
-  promoteAndFind,
+  deriveAndFind,
   purge,
   registration,
   restore,
@@ -295,10 +295,10 @@ export async function proveTodoist(
     );
 
     await check(
-      "todoist: a promoted core.task sits in the library with a derived-from edge",
+      "todoist: a core.task made in the library from a row carries a derived-from edge",
       async () => {
         const source = await row("a");
-        const { copy } = await promoteAndFind(
+        const { copy } = await deriveAndFind(
           marfa,
           "core.task",
           await asTask(marfa, source),
@@ -321,11 +321,11 @@ export async function proveTodoist(
     );
 
     await check(
-      "todoist: the next run leaves the promoted copy alone",
+      "todoist: the next run leaves the library copy alone",
       async () => {
         const source = await row("a");
         const [copy] = await derivedFrom(marfa, "core.task", source);
-        if (copy === undefined) throw new Error("no promoted copy");
+        if (copy === undefined) throw new Error("no library copy");
         todoist.edit("a", { content: "Buy oat milk, bread and eggs" });
         await runOnce();
         const again = await item(marfa, copy.id);

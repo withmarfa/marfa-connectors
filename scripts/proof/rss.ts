@@ -15,7 +15,7 @@ import {
   lastRun,
   mintWithTheReadmeKeyFlags,
   moved,
-  promoteAndFind,
+  deriveAndFind,
   registration,
   rowsOf,
   runsOf,
@@ -282,7 +282,7 @@ export async function proveRss(
     );
 
     await check(
-      "rss: a promoted core.bookmark sits in the library with a derived-from edge",
+      "rss: a core.bookmark made in the library from an entry carries a derived-from edge",
       async () => {
         const source = await entry("https://example.org/beta");
         const { fields } = await fieldsOf(marfa, "core.bookmark");
@@ -291,7 +291,7 @@ export async function proveRss(
             .filter((field) => field in source.properties)
             .map((field) => [field, source.properties[field]]),
         );
-        const { copy } = await promoteAndFind(
+        const { copy } = await deriveAndFind(
           marfa,
           "core.bookmark",
           properties,
@@ -311,35 +311,29 @@ export async function proveRss(
       },
     );
 
-    await check(
-      "rss: the next run leaves the promoted copy alone",
-      async () => {
-        const source = await entry("https://example.org/beta");
-        const [copy] = await derivedFrom(marfa, "core.bookmark", source);
-        if (copy === undefined) throw new Error("no promoted copy");
-        edit(
-          served.feeds["/rss.xml"],
-          (body) =>
-            body.replace(
-              "<title>Beta, changed</title>",
-              "<title>Beta, changed again</title>",
-            ),
-          '"rss-3"',
+    await check("rss: the next run leaves the library copy alone", async () => {
+      const source = await entry("https://example.org/beta");
+      const [copy] = await derivedFrom(marfa, "core.bookmark", source);
+      if (copy === undefined) throw new Error("no library copy");
+      edit(
+        served.feeds["/rss.xml"],
+        (body) =>
+          body.replace(
+            "<title>Beta, changed</title>",
+            "<title>Beta, changed again</title>",
+          ),
+        '"rss-3"',
+      );
+      await runOnce();
+      const again = await item(marfa, copy.id);
+      const moving = await entry("https://example.org/beta");
+      if (again.version !== copy.version || moving.version === source.version) {
+        throw new Error(
+          `copy ${String(copy.version)}→${String(again.version)}, source ${String(source.version)}→${String(moving.version)}`,
         );
-        await runOnce();
-        const again = await item(marfa, copy.id);
-        const moving = await entry("https://example.org/beta");
-        if (
-          again.version !== copy.version ||
-          moving.version === source.version
-        ) {
-          throw new Error(
-            `copy ${String(copy.version)}→${String(again.version)}, source ${String(source.version)}→${String(moving.version)}`,
-          );
-        }
-        return `the feed row moved ${String(source.version)}→${String(moving.version)}; the copy stays at version ${String(copy.version)}`;
-      },
-    );
+      }
+      return `the feed row moved ${String(source.version)}→${String(moving.version)}; the copy stays at version ${String(copy.version)}`;
+    });
 
     await check(
       "rss: a feed past the size cap is skipped, two feeds declaring one id are kept apart and a redirect to this machine is refused, and the other feed's rows stand",
