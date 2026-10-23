@@ -20,6 +20,12 @@ type Version = components["schemas"]["Version"];
 export type Key = components["schemas"]["ApiKey"];
 export type Tombstone = components["schemas"]["Tombstone"];
 export type Edge = components["schemas"]["Edge"];
+
+/** The tag Marfa gives the copy it writes when two edits to a
+ *  `keep_both_copies` property collide, beside a `derived-from` edge to the
+ *  original. */
+export const conflictedCopyTag = "conflicted-copy";
+export const conflictedCopyEdge = "derived-from";
 export type EdgeType = components["schemas"]["EdgeType"];
 
 /** Edges one bulk request carries, well inside the door's 5000. */
@@ -803,6 +809,16 @@ export class Marfa {
     if (response.status === 404) return undefined;
     if (data === undefined) throw refusal(response, error);
     return data.item;
+  }
+
+  /** A row's tags, or `undefined` once it is purged or in the bin. */
+  async tags(id: string): Promise<string[] | undefined> {
+    const { data, error, response } = await this.client.GET("/items/{id}", {
+      params: { path: { id } },
+    });
+    if (response.status === 404) return undefined;
+    if (data === undefined) throw refusal(response, error);
+    return data.metadata.tags;
   }
 
   async versions(id: string): Promise<Version[]> {

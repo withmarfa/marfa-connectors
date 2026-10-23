@@ -39,6 +39,8 @@ import {
   Refusal,
   causeOf,
   retryAfterOf,
+  conflictedCopyEdge,
+  conflictedCopyTag,
   type Cause,
   type Edge,
   type Marfa,
@@ -2151,6 +2153,31 @@ export async function runOnce<E extends EnvDeclaration>(
     outbound.set(record.change.item.id, back);
     await saveOutbound();
   };
+  // A conflicted copy is Marfa's own record of an edit that lost to another
+  // writer's, not a new item, so it is left in Marfa for a person to resolve,
+  // with a condition naming it and its original. It stays unlinked and
+  // waiting, so every run looks again, and removing its tag carries it.
+  // A row gone since is left too. A row whose create was already sent is
+  // never asked.
+  const leftInMarfa = async (kind: Spec, item: Item): Promise<boolean> => {
+    const tags = await setup.marfa.tags(item.id);
+    if (tags === undefined) return true;
+    if (!tags.includes(conflictedCopyTag)) return false;
+    const original = (
+      await setup.marfa.edgesFrom(
+        kind.type,
+        [item.id],
+        new Set([conflictedCopyEdge]),
+      )
+    )
+      .get(item.id)
+      ?.edges.find((edge) => edge.edge_type === conflictedCopyEdge)?.target_id;
+    raised.set(
+      `conflicted-copy:${item.id}`,
+      `${item.id} is a conflicted copy${original === undefined ? "" : ` of ${original}`}, written by Marfa when two edits collided, so it is not created at the vendor: resolve it in Marfa by moving what you want into ${original ?? "the original"} and deleting the copy, or remove its ${conflictedCopyTag} tag to have it created as a new item`,
+    );
+    return true;
+  };
   const carry = async (
     item: Item,
     agreement: Agreement,
@@ -2180,6 +2207,13 @@ export async function runOnce<E extends EnvDeclaration>(
     if (plan.skip === "untold") store.clear(item.id);
     if (plan.skip !== undefined) return;
     const { current, changeKind, unlinked } = plan;
+    if (
+      changeKind === "created" &&
+      agreement.attempted === undefined &&
+      !outbound.has(current.id) &&
+      (await leftInMarfa(kind, current))
+    )
+      return;
     const carriable = watchedFields(kind).filter(
       (field) => !kind.readOnly.has(field),
     );
