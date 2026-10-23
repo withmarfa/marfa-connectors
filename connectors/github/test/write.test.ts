@@ -641,6 +641,41 @@ describe("what the write review found", () => {
     );
   });
 
+  it("finds what a lost answer made where GitHub's clock is minutes behind this one, and makes no second", async () => {
+    github.runBehind(9 * 60 * 1000);
+    const issue = github.addIssue(repository, { title: "Home" });
+    await ok();
+    const made = marfa.insert(
+      undefined,
+      { title: "Made behind" },
+      "github.issue",
+      "person",
+    );
+    marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
+    github.loseNextCreate = true;
+    await ok();
+    await ok();
+    const said = marfa.insert(
+      undefined,
+      { body: "Said behind", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    github.loseNextCreate = true;
+    await ok();
+    await ok();
+    expect(github.asked.filter((one) => one.status === 502)).toHaveLength(2);
+    const issues = github.issues.filter((one) => one.title === "Made behind");
+    const comments = github.comments.filter(
+      (one) => unmarked(one.body) === "Said behind",
+    );
+    expect(issues).toHaveLength(1);
+    expect(comments).toHaveLength(1);
+    expect(marfa.byId(made.id).properties["github_id"]).toBe(issues[0]?.node);
+    expect(marfa.byId(said.id).properties["github_id"]).toBe(comments[0]?.node);
+  });
+
   it("carries an edit made beside an archive, and does not reopen an issue restored from archive", async () => {
     const issue = github.addIssue(repository, {
       title: "Done",
