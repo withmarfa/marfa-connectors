@@ -822,6 +822,18 @@ export class ScriptedServer {
     this.announceEdge("edge.deleted", edge);
   }
 
+  /** Moves an edge to another target as `PATCH /edges/{id}` does: the edge
+   *  keeps its id, and the log carries one `edge.updated`. */
+  moveEdge(id: string, targetId: string): EdgeRow {
+    const edge = this.edges.find((candidate) => candidate.id === id);
+    if (edge === undefined) throw new Error(`no scripted edge ${id}`);
+    edge.target_id = targetId;
+    edge.version += 1;
+    edge.updated_at = this.now();
+    this.announceEdge("edge.updated", edge);
+    return edge;
+  }
+
   targetsOf(sourceId: string, edgeType: string): string[] {
     return this.edges
       .filter(

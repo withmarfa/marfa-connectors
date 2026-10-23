@@ -273,6 +273,29 @@ describe("connections made in Marfa", () => {
     expect(carried?.removed.map((row) => row.id)).toEqual([two.id]);
   });
 
+  it("are carried when a person moves an edge to another row, after the row has settled", async () => {
+    const held = connected([entry(1, [2]), entry(2), entry(3)]);
+    await harness.twoWay(held);
+    expect(await harness.twoWay(held)).toBe(0);
+    const one = harness.server.row("a:1");
+    const two = harness.server.row("a:2");
+    const three = harness.server.row("a:3");
+    const edge = harness.server.edges.find(
+      (candidate) => candidate.target_id === two.id,
+    );
+    if (edge === undefined) throw new Error("no edge");
+    held.changes.length = 0;
+
+    harness.server.moveEdge(edge.id, three.id);
+    expect(await harness.twoWay(held)).toBe(0);
+
+    expect(targets(1)).toEqual(["a:3"]);
+    expect(held.changes.map((change) => change.item.id)).toEqual([one.id]);
+    const carried = held.changes[0]?.connections?.["test.blocks"];
+    expect(carried?.added.map((row) => row.id)).toEqual([three.id]);
+    expect(carried?.removed.map((row) => row.id)).toEqual([two.id]);
+  });
+
   it("are carried, added and removed, as the rows at the other end", async () => {
     const held = connected([entry(1), entry(2)]);
     await harness.twoWay(held);
