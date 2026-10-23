@@ -24,20 +24,20 @@ export const purgeBytes = 128 * 1024;
 
 /** What carrying a purge needs: the row's own fields and its link, never the
  *  rest of its properties, edges or extensions, unless a row policy needs
- *  its properties to decide ownership when the purge is retried. */
+ *  its properties to decide ownership when the purge is retried. Without a
+ *  link it carries none, not even the row's own. */
 export function purgeOf(
   item: Item,
-  linkField: string,
-  link: string,
+  linkField: string | undefined,
+  link: string | undefined,
   keepProperties = false,
 ): Purge {
-  const kept: Purge = {
-    ...item,
-    properties: {
-      ...(keepProperties ? item.properties : {}),
-      [linkField]: link,
-    },
-  };
+  const properties = { ...(keepProperties ? item.properties : {}) };
+  if (linkField !== undefined) {
+    Reflect.deleteProperty(properties, linkField);
+    if (link !== undefined) properties[linkField] = link;
+  }
+  const kept: Purge = { ...item, properties };
   Reflect.deleteProperty(kept, "edges");
   Reflect.deleteProperty(kept, "extensions");
   return kept;

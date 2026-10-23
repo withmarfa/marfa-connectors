@@ -21,6 +21,9 @@ export interface OutboundRecord {
   requestNotApplied?: true;
   answer?: Entry;
   confirmationAgreement?: Agreement;
+  /** The person's trash or purge of the row that the acknowledgment
+   *  settled in place of an unanswered create or remake. */
+  superseding?: CapturedChange;
 }
 
 export function captureChange(change: Change): CapturedChange {
@@ -63,6 +66,7 @@ export function outboundToken(
     | "confirmationAgreement"
     | "rejected"
     | "requestNotApplied"
+    | "superseding"
   >,
 ): string {
   return digest(record);
@@ -71,6 +75,22 @@ export function outboundToken(
 /** A corrupt journal cannot be treated as no pending vendor work. */
 function isObject(value: unknown): boolean {
   return value !== null && typeof value === "object";
+}
+
+/** A superseding change is the same row's trash or purge. */
+function overtakes(value: unknown, change: CapturedChange): boolean {
+  if (!isObject(value)) return false;
+  const kind: unknown = Reflect.get(value as object, "kind");
+  const item: unknown = Reflect.get(value as object, "item");
+  const changed: unknown = Reflect.get(value as object, "changed");
+  return (
+    (kind === "trashed" || kind === "purged") &&
+    isObject(item) &&
+    Reflect.get(item as object, "id") === change.item.id &&
+    Reflect.get(item as object, "type") === change.item.type &&
+    Array.isArray(changed) &&
+    changed.length === 0
+  );
 }
 
 export function readOutbound(value: unknown): OutboundRecord[] {
@@ -87,6 +107,10 @@ export function readOutbound(value: unknown): OutboundRecord[] {
     const rejected: unknown =
       record !== null && typeof record === "object"
         ? Reflect.get(record, "rejected")
+        : undefined;
+    const superseding: unknown =
+      record !== null && typeof record === "object"
+        ? Reflect.get(record, "superseding")
         : undefined;
     if (
       record === null ||
@@ -116,7 +140,9 @@ export function readOutbound(value: unknown): OutboundRecord[] {
         (!Array.isArray(record.change.unagreed) ||
           record.change.unagreed.some((field) => typeof field !== "string"))) ||
       !Object.hasOwn(record, "request") ||
-      !Object.hasOwn(record, "baseline")
+      !Object.hasOwn(record, "baseline") ||
+      (superseding !== undefined &&
+        (!record.acknowledged || !overtakes(superseding, record.change)))
     )
       throw new Error("invalid outbound journal record");
     const intent = { ...record };
@@ -127,6 +153,7 @@ export function readOutbound(value: unknown): OutboundRecord[] {
       "confirmationAgreement",
       "rejected",
       "requestNotApplied",
+      "superseding",
     ])
       Reflect.deleteProperty(intent, field);
     if (

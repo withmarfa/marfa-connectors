@@ -316,9 +316,10 @@ export interface Change {
    */
   readonly changed: ReadonlySet<string>;
   /**
-   * For a create, the trash of a row whose create got no link, or a remake:
-   * when it was first sent, so the vendor may hold what it made; look for it
-   * there before making another. It can be long ago, for a create abandoned
+   * For a create, the trash of a row whose create got no link, a remake, or
+   * a trash or purge that overtakes a journaled create or remake whose
+   * answer was lost: when it was first sent, so the vendor may hold what it
+   * made; look for it there before making another, or delete it. It can be long ago, for a create abandoned
    * then sent again, so a match may belong to another row, which `setLink`
    * refuses.
    */
@@ -393,6 +394,8 @@ export interface OutboundJournal {
   prepareRetry(itemId: string, token: string): Promise<void>;
   /** Keep confirmed success before returning. Recovery settles the captured
    * change without repeating HTTP; omission of answer uses captured values.
+   * Acknowledged under a trash or purge that overtakes a pending create or
+   * remake, it settles that trash or purge instead.
    * The kit removes the record only after its agreement is acknowledged. */
   acknowledge(itemId: string, token: string, answer?: Entry): Promise<void>;
 }
@@ -604,8 +607,9 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   run(context: RunContext<E>): Promise<void>;
   /** Runs before any outbound callback, with two lists, each change as
    * `onChange` would see it: every pending purge (not-due retries, cascade
-   * observations and every journaled purge included) and every trash the
-   * run would send, carried or replayed. A cascade's trash is not among the
+   * observations, every journaled purge and each purge overtaking a pending
+   * create or remake included) and every trash the run would send, carried,
+   * replayed or overtaking a pending create or remake. A cascade's trash is not among the
    * trashes, since it is never carried, nor is a refused trash that still
    * stands or a journaled trash the vendor answered or whose replay waits.
    * A row trashed and then purged is among the purges alone. Read
