@@ -384,7 +384,7 @@ export class CalendarStub {
   }
 
   /** An occurrence Google makes up from its series, which holds no instance
-   *  of its own until it is changed. */
+   *  of its own until it is changed, and which carries the series' fields. */
   private virtual(store: Map<string, Stored>, id: string): Json | undefined {
     const at = id.lastIndexOf("_");
     if (at <= 0) return undefined;
@@ -398,14 +398,18 @@ export class CalendarStub {
     const start = master["start"] as Json;
     const end = master["end"] as Json;
     const zone = start["timeZone"];
+    const carried: Json = { ...master };
+    for (const key of ["id", "etag", "recurrence", "start", "end"]) {
+      Reflect.deleteProperty(carried, key);
+    }
     if (day !== null) {
       const date = `${day[1] ?? ""}-${day[2] ?? ""}-${day[3] ?? ""}`;
       const next = new Date(Date.parse(date) + 86_400_000)
         .toISOString()
         .slice(0, 10);
       return {
+        ...carried,
         id,
-        summary: master["summary"],
         status: "confirmed",
         recurringEventId: master["id"],
         originalStartTime: { date, timeZone: zone },
@@ -429,8 +433,8 @@ export class CalendarStub {
     const instant = (value: number) =>
       new Date(value).toISOString().replace(/\.\d{3}Z$/, "Z");
     return {
+      ...carried,
       id,
-      summary: master["summary"],
       status: "confirmed",
       recurringEventId: master["id"],
       originalStartTime: { dateTime: instant(ms), timeZone: zone },

@@ -173,11 +173,12 @@ A change to a series' `recurrence` sends the rules it holds, and keeps Google's 
 
 A changed occurrence's row changes that occurrence alone. A series can't stop repeating from Marfa: a `recurrence` with no rules left is refused. An occurrence can't move to another calendar on its own, because Google moves a whole series.
 
-To change one occurrence from Marfa, make a row beneath the series, through `parent-of`, with `original_starts_at` set to the start of the occurrence it replaces. For an all-day series, that's midnight of the occurrence's date in the series' time zone. Google already holds every occurrence of a series, so the connector changes that occurrence rather than making an event, and links the row to it. An occurrence cancelled in Google comes back with the row's values. The connector refuses the row, and raises a condition that names it, when:
+To change one occurrence from Marfa, make a row beneath the series, through `parent-of`, with `original_starts_at` set to the start of the occurrence it replaces. For an all-day series, that's midnight of the occurrence's date in the series' time zone. Google already holds every occurrence of a series, so the connector changes that occurrence rather than making an event, and links the row to it. It sends the row's times, and each of `title`, `description`, `place` and `status` that the row holds and that differs from the occurrence. A field the row doesn't hold keeps the occurrence's value, such as the agenda and meeting link the occurrence has from its series. An occurrence cancelled in Google comes back. The connector refuses the row, and raises a condition that names it, when:
 
 - The series has no Google ID, or Google no longer has it.
 - Marfa may not change the series or the occurrence. See [Events Marfa may not change](#events-marfa-may-not-change).
 - The series has no occurrence that starts at `original_starts_at`.
+- The series is all day and `original_starts_at` isn't midnight of a date in the series' time zone.
 - Another row already holds that occurrence, such as a changed occurrence read from Google. Change that row instead.
 - The row is beneath more than one series, or connects to a calendar other than its series' calendar.
 

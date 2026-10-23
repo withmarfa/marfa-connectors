@@ -50,7 +50,7 @@ import {
   withCancellations,
   type Cancellation,
 } from "./recurrence.js";
-import { iso, localDate, nextDay, validZone } from "./time.js";
+import { dayStart, iso, localDate, nextDay, validZone } from "./time.js";
 
 export type WriteContext = WatchContext<typeof env>;
 
@@ -363,18 +363,61 @@ function patchOf(
     if (status !== (text(raw, "status") ?? "confirmed")) out["status"] = status;
   }
   if (timeFields.some((field) => changed.has(field))) {
-    const times = timesOf(item, calendar);
-    const wasAllDay = text(object(raw, "start"), "date") !== undefined;
-    // A switch between all day and timed clears the key Google held.
-    const other = times.allDay ? "dateTime" : "date";
-    out["start"] =
-      wasAllDay === times.allDay
-        ? times.start
-        : { ...times.start, [other]: null };
-    out["end"] =
-      wasAllDay === times.allDay ? times.end : { ...times.end, [other]: null };
+    Object.assign(out, timesPatch(item, raw, calendar));
   }
   return out;
+}
+
+/** The row's times as a patch to the event Google holds: a switch between
+ *  all day and timed clears the key Google held. */
+function timesPatch(
+  item: Item,
+  raw: Json,
+  calendar: CalendarInfo,
+): { start: Fields; end: Fields } {
+  const times = timesOf(item, calendar);
+  const wasAllDay = text(object(raw, "start"), "date") !== undefined;
+  if (wasAllDay === times.allDay) return { start: times.start, end: times.end };
+  const other = times.allDay ? "dateTime" : "date";
+  return {
+    start: { ...times.start, [other]: null },
+    end: { ...times.end, [other]: null },
+  };
+}
+
+/**
+ * What a changed occurrence made in Marfa sends to the occurrence it
+ * replaces: its times, and each other field the row holds where it differs.
+ * A field the row does not hold keeps what the occurrence has from its
+ * series, and an occurrence cancelled in Google comes back.
+ */
+function occurrencePatch(
+  item: Item,
+  raw: Json,
+  calendar: CalendarInfo,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const title = textOf(item, "title");
+  if (title !== undefined && title !== (text(raw, "summary") ?? "")) {
+    out["summary"] = title;
+  }
+  const description = textOf(item, "description");
+  if (description !== undefined && description !== text(raw, "description")) {
+    out["description"] = description;
+  }
+  const place = textOf(item, "place");
+  if (place !== undefined && place !== text(raw, "location")) {
+    out["location"] = place;
+  }
+  const held = text(raw, "status") ?? "confirmed";
+  const status =
+    textOf(item, "status") !== undefined
+      ? statusOf(item)
+      : held === "cancelled"
+        ? "confirmed"
+        : held;
+  if (status !== held) out["status"] = status;
+  return { ...out, ...timesPatch(item, raw, calendar) };
 }
 
 // --- Answers ----------------------------------------------------------------
@@ -521,10 +564,16 @@ async function replaceOccurrence(
   if (reason !== undefined) throw refuse(reason);
   const start = object(found, "start");
   const zone = zoneOf(text(start, "timeZone"), calendar.zone);
-  const wanted: Cancellation =
-    text(start, "date") !== undefined
-      ? { kind: "day", day: localDate(zone, original) }
-      : { kind: "instant", ms: original };
+  const allDay = text(start, "date") !== undefined;
+  const day = localDate(zone, original);
+  if (allDay && dayStart(zone, day) !== original) {
+    throw new Refused(
+      `${named(item)} names ${iso(original)} in original_starts_at, which is not the start of a day in ${zone}, the zone of the all-day series ${named(parent)}, so it names no occurrence`,
+    );
+  }
+  const wanted: Cancellation = allDay
+    ? { kind: "day", day }
+    : { kind: "instant", ms: original };
   const instance = await occurrenceOf(session, parts, wanted);
   const instanceId = instance === undefined ? undefined : text(instance, "id");
   if (instance === undefined || instanceId === undefined) {
@@ -536,6 +585,8 @@ async function replaceOccurrence(
   const own =
     occurrence === undefined ? undefined : uneditable(occurrence, calendar);
   if (own !== undefined) throw refuse(own);
+  // Decided before the link, so a row the patch refuses stays unlinked.
+  const fields = occurrencePatch(item, instance, calendar);
   const target = linkOf(calendar.id, instanceId);
   try {
     await context.setLink(item, target);
@@ -548,7 +599,7 @@ async function replaceOccurrence(
   const changed = await session.api.patch(
     calendar.id,
     instanceId,
-    whole(item, calendar),
+    fields,
     text(instance, "etag"),
   );
   return entryOf(session, calendar, changed);

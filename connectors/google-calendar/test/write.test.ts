@@ -1130,6 +1130,137 @@ describe("a series", () => {
     expect(writes("POST")).toEqual([]);
   });
 
+  const agenda = {
+    description: "Agenda: the roadmap",
+    location: "https://meet.example.com/planning",
+  };
+
+  it("keeps the occurrence's fields that a changed occurrence made in Marfa does not hold", async () => {
+    calendar.put(me, { ...series, ...agenda });
+    await landed();
+    madeUnder(row(`${me}/weekly`), moved);
+
+    await landed();
+
+    const instance = "weekly_20261026T100000Z";
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(me, instance),
+        body: {
+          summary: "Planning, later",
+          start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+          end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+        },
+      }),
+    ]);
+    expect(calendar.event(me, instance)).toMatchObject({
+      ...agenda,
+      summary: "Planning, later",
+    });
+  });
+
+  it("keeps the occurrence's title when a changed occurrence made in Marfa has none", async () => {
+    calendar.put(me, { ...series, ...agenda });
+    await landed();
+    const untitled: Record<string, unknown> = { ...moved };
+    delete untitled["title"];
+    madeUnder(row(`${me}/weekly`), untitled);
+
+    await landed();
+
+    const instance = "weekly_20261026T100000Z";
+    expect(writes()[0]?.body).toEqual({
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+    });
+    expect(calendar.event(me, instance)).toMatchObject({
+      ...agenda,
+      summary: "Planning",
+    });
+  });
+
+  it("sends the fields a changed occurrence made in Marfa sets that differ from the occurrence", async () => {
+    calendar.put(me, { ...series, ...agenda });
+    await landed();
+    madeUnder(row(`${me}/weekly`), {
+      ...moved,
+      title: "Planning",
+      description: "Agenda: hiring",
+      place: agenda.location,
+    });
+
+    await landed();
+
+    const instance = "weekly_20261026T100000Z";
+    expect(writes()[0]?.body).toEqual({
+      description: "Agenda: hiring",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+    });
+    expect(calendar.event(me, instance)).toMatchObject({
+      summary: "Planning",
+      description: "Agenda: hiring",
+      location: agenda.location,
+    });
+  });
+
+  const daily = {
+    ...series,
+    id: "daily",
+    start: { date: "2026-10-26", timeZone: la },
+    end: { date: "2026-10-27", timeZone: la },
+    recurrence: ["RRULE:FREQ=DAILY;COUNT=30"],
+  };
+
+  it("refuses a changed occurrence of an all-day series whose original start is not midnight in the series' zone", async () => {
+    calendar.put(team, daily);
+    await landed();
+    // Midnight in UTC is 4 or 5 p.m. the day before in Los Angeles.
+    const one = madeUnder(row(`${team}/daily`), {
+      title: "Offsite",
+      starts_at: "2026-11-02T08:00:00Z",
+      ends_at: "2026-11-03T08:00:00Z",
+      all_day: true,
+      timezone: la,
+      original_starts_at: "2026-11-02T00:00:00Z",
+    });
+
+    await landed();
+
+    expect(writes()).toEqual([]);
+    expect(server.byId(one.id).properties["google_id"]).toBeUndefined();
+    const said = Object.values(conditions()).join(" ");
+    expect(said).toContain('"Offsite"');
+    expect(said).toContain("2026-11-02T00:00:00Z");
+    expect(said).toContain(la);
+  });
+
+  it("changes the occurrence of an all-day series whose original start is midnight in the series' zone", async () => {
+    calendar.put(team, daily);
+    await landed();
+    const one = madeUnder(row(`${team}/daily`), {
+      title: "Offsite",
+      starts_at: "2026-11-02T08:00:00Z",
+      ends_at: "2026-11-03T08:00:00Z",
+      all_day: true,
+      timezone: la,
+      original_starts_at: "2026-11-02T08:00:00Z",
+    });
+
+    await landed();
+
+    expect(writes()).toEqual([
+      expect.objectContaining({
+        method: "PATCH",
+        path: eventPath(team, "daily_20261102"),
+      }),
+    ]);
+    expect(server.byId(one.id).properties["google_id"]).toBe(
+      `${team}/daily_20261102`,
+    );
+  });
+
   it("refuses a changed occurrence of a series Marfa may not change", async () => {
     calendar.put(me, { ...series, locked: true });
     await landed();
