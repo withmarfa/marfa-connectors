@@ -1593,9 +1593,14 @@ async function checkComments(
       ? []
       : [link];
   });
-  const still = new Set(
-    (await commentsByNode(octokit, absent)).map((comment) => comment.node),
-  );
+  // A comment GitHub refuses the token, or shows as another kind of node, is
+  // not proven gone.
+  const asked = await commentsByNode(octokit, absent);
+  const still = new Set([
+    ...asked.found.map((comment) => comment.node),
+    ...asked.refused,
+    ...asked.elsewhere,
+  ]);
   // A comment of an issue that moved, whose row is still active, is not
   // proven gone: its issue's row was kept apart from the issue it became, and
   // its copy is a row of its own.
@@ -1763,6 +1768,8 @@ async function readNamed(
   const prs = new Map<string, PullRequest>();
   // What GitHub shows anywhere is not gone, though outside the sync.
   const shown = new Set<string>();
+  // Named comments the issue read was refused or found to be a discussion's.
+  const notIssueComments = new Set<string>();
   const notApplied = new Set<string>();
   const namedComments = [...(hints?.get(commentType) ?? [])];
   const namedIssues = new Set(hints?.get(issueType) ?? []);
@@ -1819,9 +1826,15 @@ async function readNamed(
 
   for (const [installation, octokit] of clients) {
     const wanted = namedComments.filter((id) => !comments.has(id));
-    for (const comment of (await attempt(installation, () =>
+    const asked = await attempt(installation, () =>
       commentsByNode(octokit, wanted),
-    )) ?? []) {
+    );
+    // A discussion comment is not an issue's, and the token that reads issues
+    // may not show it: it is not gone, but only the read of its discussion
+    // counts it as read.
+    for (const id of [...(asked?.refused ?? []), ...(asked?.elsewhere ?? [])])
+      notIssueComments.add(id);
+    for (const comment of asked?.found ?? []) {
       shown.add(comment.node);
       if (!synced.has(comment.repository.node)) {
         if (!excluded.has(comment.repository.node))
@@ -2112,7 +2125,9 @@ async function readNamed(
     return;
   }
   const unseenIssues = new Set([...namedIssues].filter((id) => !shown.has(id)));
-  const unseenComments = new Set(namedComments.filter((id) => !shown.has(id)));
+  const unseenComments = new Set(
+    namedComments.filter((id) => !shown.has(id) && !notIssueComments.has(id)),
+  );
   for (const [node, { repository, installation }] of listed) {
     if (unseenIssues.size === 0 && unseenComments.size === 0) break;
     if (deferred.size > 0) break;

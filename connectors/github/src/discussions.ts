@@ -651,9 +651,9 @@ async function missingComments(
  *  them. Down to the saved time it lists only what changed; a first read and
  *  the daily check list them all, which also archives what GitHub no longer
  *  returns, a discussion or a comment, once a lookup by its own node agrees.
- *  A new comment may not move its discussion's time, so only that full read
- *  and a delivery find a comment on a discussion otherwise quiet. Returns
- *  the time the next read lists down to. */
+ *  An edit to a comment does not move its discussion's time, so only that
+ *  full read and a delivery find the edit on a discussion otherwise quiet.
+ *  Returns the time the next read lists down to. */
 export async function syncDiscussions(
   context: Reading,
   octokit: Client,

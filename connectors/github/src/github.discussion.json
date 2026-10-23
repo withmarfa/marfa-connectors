@@ -58,7 +58,7 @@
     "github_updated_at": {
       "type": "string",
       "format": "datetime",
-      "description": "When GitHub last changed the discussion. A new comment may not move it."
+      "description": "When GitHub last changed the discussion. An edit to one of its comments does not move it."
     }
   },
   "display_hints": {
