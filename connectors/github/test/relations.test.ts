@@ -19,6 +19,7 @@ beforeEach(async () => {
       "github.file.image",
       "github.pull_request",
       "github.discussion",
+      "github.notification",
     ],
     edges: [
       "github.in-repository",
@@ -29,6 +30,7 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "parent-of",
+      "references",
       "in-thread",
       "attached-to",
     ],
@@ -312,6 +314,7 @@ it("maps symmetric links and duplicates onto declared issue connections", () => 
       labels: [],
       assignees: [],
       repository: { node: "R_1", name: "someone/tracker" },
+      transfer: null,
     },
     {
       parent: null,

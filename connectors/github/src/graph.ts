@@ -1,8 +1,21 @@
-import type { Comment, Issue, Related, Relations } from "./entries.js";
+import type {
+  Comment,
+  Issue,
+  Related,
+  Relations,
+  Transfer,
+} from "./entries.js";
 import { GraphqlResponseError } from "@octokit/graphql";
 import { batches, query, reads, type Client } from "./github.js";
 
 const related = "id url repository { id }";
+
+const transfer = `timelineItems(last: 1, itemTypes: [TRANSFERRED_EVENT]) {
+    nodes {
+      __typename
+      ... on TransferredEvent { fromRepository { id nameWithOwner } }
+    }
+  }`;
 
 const issueFields = `
   id number title body state stateReason url closedAt createdAt updatedAt
@@ -14,6 +27,7 @@ const issueFields = `
   blockedBy(first: 50) { nodes { ${related} } }
   relatesTo(first: 100) { nodes { ${related} } pageInfo { hasNextPage endCursor } }
   duplicateOf { ${related} }
+  ${transfer}
 `;
 
 const issuesQuery = `query Issues($ids: [ID!]!) {
@@ -31,6 +45,7 @@ const relationsQuery = `query Relations($ids: [ID!]!) {
   duplicateOf { ${related} }
       blocking(first: 50) { nodes { id } }
       subIssues(first: 100) { nodes { id } }
+      ${transfer}
     }
   }
 }`;
@@ -111,6 +126,22 @@ async function allRelated(
   }
 }
 
+interface TransferPage {
+  nodes: ({
+    __typename: string;
+    fromRepository?: { id: string; nameWithOwner: string } | null;
+  } | null)[];
+}
+
+function transferOf(page: TransferPage): Transfer | null {
+  const event = page.nodes[0];
+  if (event?.__typename !== "TransferredEvent") return null;
+  const from = event.fromRepository;
+  return {
+    from: from ? { id: from.id, name: from.nameWithOwner } : null,
+  };
+}
+
 interface GraphIssue {
   __typename: string;
   id: string;
@@ -131,6 +162,7 @@ interface GraphIssue {
   blockedBy: { nodes: (Related | null)[] };
   relatesTo: RelatedPage;
   duplicateOf: Related | null;
+  timelineItems: TransferPage;
 }
 
 interface GraphRelations {
@@ -142,6 +174,7 @@ interface GraphRelations {
   duplicateOf: Related | null;
   blocking: { nodes: ({ id: string } | null)[] };
   subIssues: { nodes: ({ id: string } | null)[] };
+  timelineItems: TransferPage;
 }
 
 interface GraphComment {
@@ -202,6 +235,7 @@ export async function issuesByNode(
             node: node.repository.id,
             name: node.repository.nameWithOwner,
           },
+          transfer: transferOf(node.timelineItems),
         },
         relations: {
           parent: node.parent,
@@ -217,16 +251,19 @@ export async function issuesByNode(
   return found;
 }
 
+/** What else the relations query reads of an issue: the issues it blocks and
+ *  those under it, and its transfer. */
+export interface Linked {
+  blocking: string[];
+  children: string[];
+  transfer: Transfer | null;
+}
+
 export async function relationsOf(
   octokit: Client,
   ids: readonly string[],
-): Promise<
-  Map<string, Relations & { blocking: string[]; children: string[] }>
-> {
-  const found = new Map<
-    string,
-    Relations & { blocking: string[]; children: string[] }
-  >();
+): Promise<Map<string, Relations & Linked>> {
+  const found = new Map<string, Relations & Linked>();
   for (const batch of batches([...new Set(ids)])) {
     const answer = (await query(octokit, relationsQuery, {
       ids: batch,
@@ -245,6 +282,7 @@ export async function relationsOf(
         children: node.subIssues.nodes.flatMap((one) =>
           one === null ? [] : [one.id],
         ),
+        transfer: transferOf(node.timelineItems),
       });
     }
   }

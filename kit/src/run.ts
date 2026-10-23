@@ -39,6 +39,7 @@ import {
   Refusal,
   causeOf,
   retryAfterOf,
+  conflictedCopyTag,
   type Cause,
   type Edge,
   type Marfa,
@@ -2151,6 +2152,22 @@ export async function runOnce<E extends EnvDeclaration>(
     outbound.set(record.change.item.id, back);
     await saveOutbound();
   };
+  // A conflicted copy is Marfa's own record of an edit that lost to another
+  // writer's, not a new item, so it is left in Marfa for a person to resolve.
+  // It stays unlinked and waiting, so every run looks again, and removing its
+  // tag carries it. Its original is not named: a connector's key cannot read
+  // the derived-from edge that joins them. A row gone since is left too. A row
+  // whose create was already sent is never asked.
+  const leftInMarfa = async (item: Item): Promise<boolean> => {
+    const tags = await setup.marfa.tags(item.id);
+    if (tags === undefined) return true;
+    if (!tags.includes(conflictedCopyTag)) return false;
+    raised.set(
+      `conflicted-copy:${item.id}`,
+      `${item.id} is tagged ${conflictedCopyTag}, which Marfa gives the copy it writes when two edits collide, so it is not created at the vendor: keep what you want from it in the original and put it in the bin, or remove the tag to have it created as a new item`,
+    );
+    return true;
+  };
   const carry = async (
     item: Item,
     agreement: Agreement,
@@ -2180,6 +2197,13 @@ export async function runOnce<E extends EnvDeclaration>(
     if (plan.skip === "untold") store.clear(item.id);
     if (plan.skip !== undefined) return;
     const { current, changeKind, unlinked } = plan;
+    if (
+      changeKind === "created" &&
+      agreement.attempted === undefined &&
+      !outbound.has(current.id) &&
+      (await leftInMarfa(current))
+    )
+      return;
     const carriable = watchedFields(kind).filter(
       (field) => !kind.readOnly.has(field),
     );

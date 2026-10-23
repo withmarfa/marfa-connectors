@@ -11,6 +11,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
+import { NotificationsStub } from "./github-notifications-stub.js";
 
 export function appKey(): string {
   return generateKeyPairSync("rsa", {
@@ -71,7 +72,13 @@ export interface Issue {
   closed_by?: string | null;
   pull?: boolean;
   deleted?: boolean;
-  moved?: boolean;
+  // Set on the issue a transfer left behind: the node of the issue it
+  // became. The old node no longer resolves and its address answers 301.
+  movedTo?: string;
+  // Set on the issue a transfer made: the repository it came from. While
+  // `late`, its timeline does not yet show the TransferredEvent, which GitHub
+  // records about when it sends `issues.opened` for the new issue.
+  transferred?: { from: string; at: string; late?: boolean };
   app?: boolean;
   unlisted?: number;
 }
@@ -176,6 +183,8 @@ export interface Asked {
   remaining?: number;
   /** Whether the answer refused the request for a rate limit. */
   limited?: boolean;
+  /** Which of the person's tokens signed the request, if one did. */
+  by?: "personal" | "classic";
 }
 
 // GitHub's clock keeps to real time, as the connector compares it with the
@@ -185,6 +194,16 @@ export class GitHubStub {
   personalToken: string | undefined;
   personalRepositories: ReadonlySet<string> | undefined;
   personalDenied = new Map<string, string>();
+  /** The person's stars by repository node, with when each was made; the
+   *  personal token lists them. Only a private one the token reaches shows. */
+  stars = new Map<string, string>();
+  /** Answers the star listing's page this number with the status, as a
+   *  listing GitHub fails partway does. */
+  starsFailAt: { page: number; status: number } | undefined;
+  /** Repositories whose owner refuses the personal token, by node, with the
+   *  status a read of one answers: GitHub leaves their stars out of the
+   *  listing and says nothing. */
+  personalRefused = new Map<string, number>();
   relationsRefused = false;
   relatedPageSize = 100;
   installations: Installation[] = [{ id: 1, login: "someone" }];
@@ -239,6 +258,9 @@ export class GitHubStub {
   // GitHub answers NOT_FOUND to a delete it will not do, as for one gone.
   deletesRefused = false;
   hook: Record<string, unknown> | undefined;
+  /** The person's notifications, which only a classic token reads and which
+   *  have a budget of their own, as the person's do. */
+  readonly notifications = new NotificationsStub();
   appPermissions: Record<string, Access> = {
     issues: "write",
     pull_requests: "read",
@@ -259,6 +281,7 @@ export class GitHubStub {
   private behind = 0;
   private ids = 1000;
   private tokens = 0;
+  private unsettled: { from: Issue; to: Issue; comments: Comment[] }[] = [];
 
   async start(): Promise<this> {
     const server = createServer((req, res) => {
@@ -358,6 +381,15 @@ export class GitHubStub {
     };
     this.repositories.push(made);
     return made;
+  }
+
+  /** Stars the repository for the person, at the stub's next second. */
+  star(repository: Repository, at = this.now()): void {
+    this.stars.set(repository.node, at);
+  }
+
+  unstar(repository: Repository): void {
+    this.stars.delete(repository.node);
   }
 
   addIssue(repository: Repository, fields: Partial<Issue> = {}): Issue {
@@ -540,7 +572,136 @@ export class GitHubStub {
   }
 
   issue(node: string): Issue | undefined {
-    return this.issues.find((one) => one.node === node);
+    return this.issues.find(
+      (one) => one.node === node && one.movedTo === undefined,
+    );
+  }
+
+  /** Transfers an issue as GitHub does: the new issue has a new id, node and
+   *  number, keeps the old one's times, author and text, and gets copies of
+   *  its comments with new ids and the old times. The old node stops
+   *  resolving, its comments answer 404 and its address answers 301, with an
+   *  empty Location where the asker cannot read the target. With `lagging`,
+   *  the new issue's timeline lacks the TransferredEvent until
+   *  `settleTransfers`. With `late`, the old issue also stays as it was, as
+   *  GitHub's does for a moment: the transfer has not settled. With `late`
+   *  and `showing`, the TransferredEvent is already there while the old
+   *  issue still answers 200: the other order GitHub can show them in. */
+  transfer(
+    issue: Issue,
+    target: Repository,
+    options: { late?: boolean; lagging?: boolean; showing?: boolean } = {},
+  ): Issue {
+    const id = this.ids++;
+    const at = this.now();
+    const hidden =
+      (options.late === true || options.lagging === true) &&
+      options.showing !== true;
+    const number =
+      Math.max(
+        0,
+        ...this.issues
+          .filter((one) => one.repository === target.node)
+          .map((one) => one.number),
+      ) + 1;
+    const made: Issue = {
+      ...issue,
+      id,
+      node: `I_${String(id)}`,
+      number,
+      repository: target.node,
+      updated_at: at,
+      transferred: {
+        from: issue.repository,
+        at,
+        ...(hidden && { late: true }),
+      },
+    };
+    delete made.movedTo;
+    this.issues.push(made);
+    const copied = this.comments.filter(
+      (one) => one.issue === issue.node && one.deleted !== true,
+    );
+    for (const comment of copied) {
+      const copy = this.ids++;
+      this.comments.push({
+        ...comment,
+        id: copy,
+        node: `IC_${String(copy)}`,
+        issue: made.node,
+      });
+    }
+    // What pointed at the old issue points at the new one.
+    for (const other of this.issues) {
+      if (other.parent === issue.node) other.parent = made.node;
+      other.blocked_by = other.blocked_by.map((one) =>
+        one === issue.node ? made.node : one,
+      );
+      if (other.relates_to !== undefined) {
+        other.relates_to = other.relates_to.map((one) =>
+          one === issue.node ? made.node : one,
+        );
+      }
+      if (other.duplicate_of === issue.node) other.duplicate_of = made.node;
+    }
+    if (options.late === true) {
+      this.unsettled.push({ from: issue, to: made, comments: copied });
+    } else {
+      this.leave(issue, made, copied);
+    }
+    return made;
+  }
+
+  /** The old issue stops resolving and its comments are gone. */
+  private leave(from: Issue, to: Issue, comments: Comment[]): void {
+    from.movedTo = to.node;
+    for (const comment of comments) comment.deleted = true;
+  }
+
+  /** Settles every transfer made `late` and shows the TransferredEvent of
+   *  every transfer made `late` or `lagging`. */
+  settleTransfers(): void {
+    for (const one of this.unsettled.splice(0)) {
+      this.leave(one.from, one.to, one.comments);
+    }
+    for (const one of this.issues) {
+      if (one.transferred !== undefined) delete one.transferred.late;
+    }
+  }
+
+  /** The two deliveries GitHub sends for a transfer, in the order it sends
+   *  them: `issues.opened` in the target, then `issues.transferred` in the
+   *  source. The installation gets only the first where the source lies
+   *  outside it, and only the second where the target does. */
+  transferDeliveries(
+    from: Issue,
+    to: Issue,
+  ): {
+    opened: Record<string, unknown>;
+    transferred: Record<string, unknown>;
+  } {
+    const source = this.repositoryOf(from);
+    const target = this.repositoryOf(to);
+    const ref = (one: Issue): Record<string, unknown> => ({
+      node_id: one.node,
+      number: one.number,
+    });
+    const repo = (one: Repository): Record<string, unknown> => ({
+      node_id: one.node,
+      full_name: `${one.owner}/${one.name}`,
+    });
+    return {
+      opened: { action: "opened", issue: ref(to), repository: repo(target) },
+      transferred: {
+        action: "transferred",
+        issue: ref(from),
+        changes: {
+          new_issue: ref(to),
+          new_repository: repo(target),
+        },
+        repository: repo(source),
+      },
+    };
   }
 
   /** Counts a listing against what is still to be left out of them. */
@@ -677,6 +838,19 @@ export class GitHubStub {
     if (scope === "discussions" && this.discussionsForbidden) return false;
     const held = this.grantOf(req)?.permissions[scope];
     return held === "write" || held === wanted;
+  }
+
+  /** The classic token the notifications use, which reads public repositories
+   *  and the person's stars of them, and private ones only with `repo`. */
+  private isClassic(req: IncomingMessage): boolean {
+    return (
+      this.notifications.token !== undefined &&
+      req.headers.authorization === `Bearer ${this.notifications.token}`
+    );
+  }
+
+  private classicSees(repository: Repository): boolean {
+    return !repository.private || this.notifications.scopes.includes("repo");
   }
 
   private isPersonal(req: IncomingMessage): boolean {
@@ -827,6 +1001,11 @@ export class GitHubStub {
       body,
       status: 200,
       version: req.headers["x-github-api-version"] as string | undefined,
+      ...(this.isPersonal(req)
+        ? { by: "personal" as const }
+        : this.isClassic(req)
+          ? { by: "classic" as const }
+          : {}),
     };
     this.asked.push(asked);
     this.onAsked?.(asked);
@@ -837,7 +1016,11 @@ export class GitHubStub {
     // The App signs with a JWT and has a budget of its own.
     const budget = this.budget(
       resource,
-      asApp ? 0 : (this.installationOf(req)?.id ?? 0),
+      this.notifications.handles(path)
+        ? -1
+        : asApp
+          ? 0
+          : (this.installationOf(req)?.id ?? 0),
     );
     if (Date.now() / 1000 >= budget.reset) {
       budget.remaining = budget.limit;
@@ -927,10 +1110,24 @@ export class GitHubStub {
         }),
       });
     };
+    if (method === "GET" && this.notifications.handles(path)) {
+      this.notifications.serve(req, url, this.url, {
+        budget,
+        send,
+        limit: () => {
+          limit(false);
+        },
+      });
+      return;
+    }
     let match: RegExpExecArray | null;
     if (!asApp && req.headers.authorization !== undefined) {
       const grant = this.grantOf(req);
-      if (grant === undefined && !this.isPersonal(req)) {
+      if (
+        grant === undefined &&
+        !this.isPersonal(req) &&
+        !this.isClassic(req)
+      ) {
         send(401, { message: "Bad credentials" });
         return;
       }
@@ -1016,6 +1213,46 @@ export class GitHubStub {
     ) {
       this.listingsFailing -= 1;
       send(404, { message: "Not Found" });
+      return;
+    }
+    if (method === "GET" && path === "/user/starred") {
+      if (!this.isPersonal(req) && !this.isClassic(req)) {
+        send(401, { message: "Bad credentials" });
+        return;
+      }
+      const failing = this.starsFailAt;
+      if (failing?.page === Number(url.searchParams.get("page") ?? "1")) {
+        send(failing.status, { message: "Resource not accessible" });
+        return;
+      }
+      const stamped = (req.headers.accept ?? "").includes(
+        "application/vnd.github.star+json",
+      );
+      page(
+        [...this.stars]
+          .flatMap(([node, starredAt]) => {
+            const repository = this.repositories.find(
+              (one) => one.node === node,
+            );
+            return repository !== undefined &&
+              repository.hidden !== true &&
+              (this.isClassic(req)
+                ? this.classicSees(repository)
+                : !this.personalRefused.has(repository.node) &&
+                  (!repository.private || this.reaches(req, repository)))
+              ? [{ repository, starredAt }]
+              : [];
+          })
+          .sort((a, b) => b.starredAt.localeCompare(a.starredAt))
+          .map(({ repository, starredAt }) =>
+            stamped
+              ? {
+                  starred_at: starredAt,
+                  repo: this.restRepository(repository),
+                }
+              : this.restRepository(repository),
+          ),
+      );
       return;
     }
     if (method === "GET" && path === "/user/repos") {
@@ -1121,7 +1358,30 @@ export class GitHubStub {
       (match = /^\/repos\/([^/]+)\/([^/]+)$/.exec(path)) &&
       method === "GET"
     ) {
-      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      const [owner, name] = [match[1] ?? "", match[2] ?? ""];
+      const named = this.repositories.find(
+        (one) => one.owner === owner && one.name === name,
+      );
+      const refusal =
+        named !== undefined && this.isPersonal(req)
+          ? this.personalRefused.get(named.node)
+          : undefined;
+      if (refusal !== undefined) {
+        send(refusal, {
+          message:
+            "The organization forbids access via a fine-grained personal access token with a lifetime over 366 days",
+        });
+        return;
+      }
+      // Any token reads a public repository.
+      const repository =
+        named !== undefined &&
+        named.hidden !== true &&
+        (this.readable(req, owner, name) !== undefined ||
+          (this.isPersonal(req) && !named.private) ||
+          (this.isClassic(req) && this.classicSees(named)))
+          ? named
+          : undefined;
       if (repository === undefined) send(404, { message: "Not Found" });
       else send(200, this.restRepository(repository));
       return;
@@ -1223,12 +1483,18 @@ export class GitHubStub {
         send(410, { message: "Issues are disabled for this repo" });
       } else if (issue.deleted === true) {
         send(410, { message: "This issue was deleted" });
-      } else if (issue.moved === true) {
+      } else if (issue.movedTo !== undefined) {
+        const next = this.issues.find((one) => one.node === issue.movedTo);
+        const home = next === undefined ? undefined : this.repositoryOf(next);
+        // The address of a repository the asker cannot read is left out.
+        const open = home !== undefined && this.visible(req, home.node);
         send(
           301,
           { message: "Moved Permanently" },
           {
-            location: `${this.url}/repositories/0/issues/1`,
+            location: open
+              ? `${this.url}/repos/${home.owner}/${home.name}/issues/${String(next?.number ?? 0)}`
+              : "",
           },
         );
       } else {
@@ -1264,7 +1530,7 @@ export class GitHubStub {
             (one) =>
               one.repository === repository.node &&
               !one.deleted &&
-              !one.moved &&
+              one.movedTo === undefined &&
               (state === "all" || one.state === state) &&
               (since === null || one.updated_at >= since) &&
               this.listed(one),
@@ -2049,7 +2315,35 @@ export class GitHubStub {
           .filter((one) => !one.deleted && one.blocked_by.includes(issue.node))
           .map((one) => ({ id: one.node })),
       },
+      timelineItems: { nodes: this.transferEvents(issue, sees) },
     };
+  }
+
+  /** The issue's TransferredEvent, once GitHub has recorded it; its origin is
+   *  null where the token cannot see that repository. */
+  private transferEvents(
+    issue: Issue,
+    sees: (repository: Repository) => boolean,
+  ): Record<string, unknown>[] {
+    if (issue.transferred === undefined || issue.transferred.late === true) {
+      return [];
+    }
+    const from = this.repositories.find(
+      (one) => one.node === issue.transferred?.from,
+    );
+    return [
+      {
+        __typename: "TransferredEvent",
+        createdAt: issue.transferred.at,
+        fromRepository:
+          from === undefined || !sees(from)
+            ? null
+            : {
+                id: from.node,
+                nameWithOwner: `${from.owner}/${from.name}`,
+              },
+      },
+    ];
   }
 
   private graphPull(
@@ -2391,7 +2685,10 @@ export class GitHubStub {
       for (const [key, value] of Object.entries(body.variables)) {
         if (!key.startsWith("n")) continue;
         const issue = this.issues.find(
-          (one) => one.repository === repository?.node && one.number === value,
+          (one) =>
+            one.repository === repository?.node &&
+            one.number === value &&
+            one.movedTo === undefined,
         );
         found[`i${key.slice(1)}`] =
           issue === undefined ? null : { id: issue.node };

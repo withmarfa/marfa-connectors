@@ -35,6 +35,7 @@ beforeEach(async () => {
       "github.file.image",
       "github.pull_request",
       "github.discussion",
+      "github.notification",
     ],
     edges: [
       "github.in-repository",
@@ -46,6 +47,7 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "parent-of",
+      "references",
       "in-thread",
     ],
   }).start();
@@ -431,6 +433,31 @@ describe("a row made in Marfa", () => {
     expect(marfa.byId(made.id).properties["body"]).toBe("From an agent");
     expect(marfa.byId(made.id).properties["number"]).toBe(issue?.number);
   });
+
+  it(
+    "as a conflicted copy of an issue is not sent, and stays in Marfa with a condition",
+    async () => {
+      const issue = github.addIssue(repository, {
+        title: "Before",
+        body: "Mine",
+      });
+      await ok();
+      const original = row(issue.node);
+      // Marfa copies the original's repository edge to the copy it writes.
+      const copy = marfa.conflictedCopy(original.id, { body: "Theirs" });
+      marfa.drawEdge(copy.id, row(repository.node).id, "github.in-repository");
+
+      const output = await ok();
+      await ok();
+      expect(github.writes()).toEqual([]);
+      expect(github.issues).toHaveLength(1);
+      expect(output).toContain(`${copy.id} is tagged conflicted-copy`);
+      expect(marfa.byId(copy.id).state).toBe("active");
+      expect(marfa.byId(copy.id).properties["body"]).toBe("Theirs");
+      expect(marfa.byId(copy.id).properties["github_id"]).toBeUndefined();
+    },
+    multiRunTimeout,
+  );
 
   it("naming no repository is not sent, and the run says why; drawing one sends it", async () => {
     await ok();
@@ -995,28 +1022,32 @@ describe("what the fix review found", () => {
     ]);
   });
 
-  it("does not ask GitHub again for a comment's remake it refused, and makes it once the row changes", async () => {
-    const issue = github.addIssue(repository);
-    const comment = ours(issue, "Keep this");
-    await ok();
-    const id = row(comment.node).id;
-    marfa.trash(id);
-    await ok();
-    repository.archived = true;
-    marfa.restore(id);
-    expect(await ok()).toContain("Repository was archived");
-    repository.archived = false;
-    const before = github.writes().length;
-    await ok();
-    expect(github.writes().slice(before)).toEqual([]);
-    marfa.edit(id, { body: "Keep this, again" });
-    await ok();
-    expect(
-      github.comments.filter(
-        (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
-      ),
-    ).toHaveLength(1);
-  });
+  it(
+    "does not ask GitHub again for a comment's remake it refused, and makes it once the row changes",
+    async () => {
+      const issue = github.addIssue(repository);
+      const comment = ours(issue, "Keep this");
+      await ok();
+      const id = row(comment.node).id;
+      marfa.trash(id);
+      await ok();
+      repository.archived = true;
+      marfa.restore(id);
+      expect(await ok()).toContain("Repository was archived");
+      repository.archived = false;
+      const before = github.writes().length;
+      await ok();
+      expect(github.writes().slice(before)).toEqual([]);
+      marfa.edit(id, { body: "Keep this, again" });
+      await ok();
+      expect(
+        github.comments.filter(
+          (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
+        ),
+      ).toHaveLength(1);
+    },
+    multiRunTimeout,
+  );
 });
 
 describe("a repository GITHUB_REPOSITORIES leaves out", () => {
@@ -1210,18 +1241,23 @@ describe("where a write lands", () => {
     expect(decoy.title).toBe("Decoy");
   });
 
-  it("follows an issue transferred to another repository the App reads", async () => {
+  it("follows an issue transferred to another repository the App reads, and its comments", async () => {
     const other = github.addRepository("someone/other");
     const issue = github.addIssue(repository, { title: "Original" });
     const comment = ours(issue, "Said");
     await ok();
-    quiet(issue);
-    Object.assign(issue, { repository: other.node, number: 7 });
+    const moved = github.transfer(issue, other);
+    const copy = github.comments.find((one) => one.issue === moved.node);
     marfa.edit(row(issue.node).id, { title: "Edited in Marfa" });
     marfa.edit(row(comment.node).id, { body: "Said, edited" });
     await ok();
-    expect(issue.title).toBe("Edited in Marfa");
-    expect(comment.body).toBe("Said, edited");
+    expect(moved.title).toBe("Edited in Marfa");
+    expect(copy?.body).toBe("Said, edited");
+    expect(issue.title).toBe("Original");
+    expect(written()).not.toHaveLength(0);
+    expect(
+      github.writes().every((one) => !one.path.includes("/someone/tracker/")),
+    ).toBe(true);
   });
 
   it("holds a change waiting, and says so, where GitHub shows the App nothing the row is linked to", async () => {

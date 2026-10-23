@@ -43,6 +43,7 @@ export const duplicateOf = "github.duplicate-of";
 export const githubCloses = "github.closes";
 export const githubClosedBy = "github.closed-by";
 export const inThread = "in-thread";
+export const references = "references";
 
 export interface RestRepository {
   id: number;
@@ -54,6 +55,10 @@ export interface RestRepository {
   archived: boolean;
   has_issues?: boolean;
   updated_at: string;
+  /** From the person's stars, which only a scheduled run with a token lists:
+   *  absent where the stars were never listed. */
+  starred?: boolean;
+  starred_at?: string | null;
 }
 
 export interface RestIssue {
@@ -123,6 +128,12 @@ export interface Related {
   repository: { id: string };
 }
 
+/** The newest transfer on an issue's timeline, and the repository the issue
+ *  came from, or null where the token cannot see that repository. */
+export interface Transfer {
+  from: { id: string; name: string } | null;
+}
+
 export interface Issue {
   node: string;
   number: number;
@@ -138,6 +149,8 @@ export interface Issue {
   labels: string[];
   assignees: string[];
   repository: { node: string; name: string };
+  /** The newest transfer on the timeline, or null where it shows none. */
+  transfer: Transfer | null;
 }
 
 export interface Relations {
@@ -163,6 +176,7 @@ export interface Comment {
 export function issueOfRest(
   issue: RestIssue,
   repository: { node: string; name: string },
+  transfer: Transfer | null,
 ): Issue {
   return {
     node: issue.node_id,
@@ -187,6 +201,7 @@ export function issueOfRest(
       .sort(),
     assignees: (issue.assignees ?? []).map((one) => one.login).sort(),
     repository,
+    transfer,
   };
 }
 
@@ -207,6 +222,8 @@ export function repositoryEntry(repository: RestRepository): Entry {
       description: repository.description,
       private: repository.private,
       archived_on_github: repository.archived,
+      starred: repository.starred,
+      starred_at: repository.starred_at,
     },
     changed_at: repository.updated_at,
   };
