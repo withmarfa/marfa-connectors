@@ -1334,6 +1334,36 @@ describe("a calendar missing from one listing", () => {
     expect(conditions()).not.toContain(`calendar-unconfirmed:${team}`);
   });
 
+  it("keeps a refused calendar's condition while a run cannot read the calendar", async () => {
+    calendar.failNext(
+      (call) =>
+        call.path.includes(encodeURIComponent(team)) &&
+        call.path.endsWith("/events"),
+      403,
+      {
+        error: {
+          code: 403,
+          message: "Forbidden",
+          errors: [{ reason: "forbidden" }],
+        },
+      },
+    );
+    calendar.expire(team);
+    expect(await once()).toBe(0);
+    expect(conditions()).toContain(`calendar-refused:${team}`);
+
+    calendar.calendars = [primary()];
+    calendar.failNext((call) => call.path === `/calendar/v3${entry}`, 503);
+    expect(await once()).toBe(0);
+    expect(conditions()).toContain(`calendar-unconfirmed:${team}`);
+    expect(conditions()).toContain(`calendar-refused:${team}`);
+
+    calendar.unlisted = [writable()];
+    expect(await once()).toBe(0);
+    expect(asked(entry)).toBe(true);
+    expect(conditions()).toContain(`calendar-refused:${team}`);
+  });
+
   it("is archived without asking when it is still listed but the account can only read it", async () => {
     calendar.calendars = [primary(), { ...writable(), accessRole: "reader" }];
 

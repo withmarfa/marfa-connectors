@@ -119,6 +119,7 @@ export const calendarChecks = [
 function unreachedCalendar(context: Pick<Context, "log">, id: string): void {
   context.log.unreached({
     keys: [
+      `calendar-refused:${id}`,
       `events-skipped:${id}`,
       `calendar-progress:${id}`,
       `row-refused:${id}`,
