@@ -742,7 +742,10 @@ async function archiveGone(
  *  Returns the discussions not shown yet because a limit deferred the look,
  *  and the comments the delivery named that this read dealt with: read in
  *  full, confirmed gone, or left on purpose to the daily check. A caller
- *  must not judge those as issue comments. */
+ *  must not ask for those as issue comments. A named comment this read could
+ *  not place, because every lookup was refused or its discussion is not in a
+ *  synced repository, is not among them: the issues token is refused it and
+ *  the caller leaves it as it is. */
 export async function readNamedDiscussions(
   context: Reading,
   ids: ReadonlySet<string>,
@@ -754,7 +757,13 @@ export async function readNamedDiscussions(
     synced: ReadonlySet<string>;
     clients: ReadonlyMap<number, Client>;
     hidden: (node: string) => boolean;
-    deferred: boolean;
+    /** Runs a read for an installation, which a rate limit defers rather than
+     *  fails. */
+    attempt: (
+      installation: number,
+      act: () => Promise<void>,
+    ) => Promise<unknown>;
+    deferred: () => boolean;
   },
 ): Promise<{ unseen: Set<string>; handled: Set<string> }> {
   const unseen = new Set(ids);
@@ -778,81 +787,80 @@ export async function readNamedDiscussions(
     }
     return on;
   };
-  let refused = false;
-  for (const [, octokit] of where.clients) {
+  const refused = new Set<number>();
+  for (const [installation, octokit] of where.clients) {
     if (unseen.size === 0) break;
-    let read: Read;
-    try {
-      read = await readNodes(octokit, [...unseen], true);
-    } catch (error) {
-      if (discussionsRefusal(error) === undefined) throw error;
-      refused = true;
-      continue;
-    }
-    const written: Discussion[] = [];
-    const vanished: string[] = [];
-    const comments = new Map<string, DiscussionComment[]>();
-    for (const one of read.found) {
-      unseen.delete(one.node);
-      if (!where.synced.has(one.repository.node)) continue;
-      const all = await commentsOf(octokit, one, read.first.get(one.node));
-      if (all === undefined) {
-        vanished.push(one.node);
-        continue;
+    await where.attempt(installation, async () => {
+      let read: Read;
+      try {
+        read = await readNodes(octokit, [...unseen], true);
+      } catch (error) {
+        if (discussionsRefusal(error) === undefined) throw error;
+        refused.add(installation);
+        return;
       }
-      written.push(one);
-      comments.set(one.node, all);
-    }
-    const held = new Map<string, string[]>();
-    for (const one of written) {
-      held.set(one.node, await heldComments(context, one.node));
-    }
-    for (const node of vanished) settle(await heldComments(context, node));
-    for (const node of new Set(written.map((one) => one.repository.node))) {
-      await write(
-        context,
-        written.filter((one) => one.repository.node === node),
-        new Map(
-          written
-            .filter((one) => one.repository.node === node)
-            .map((one) => [one.node, comments.get(one.node) ?? []]),
-        ),
-        where.hidden(node),
-      );
-    }
-    for (const all of comments.values()) settle(all.map((one) => one.node));
-    const repositoryOf = new Map(
-      written.map((one) => [one.node, one.repository.name]),
-    );
-    try {
-      const asked: string[] = [];
-      for (const [link, discussion] of absentFrom(
-        new Map(
-          [...held].map(([link, all]) => [
-            link,
-            all.filter((one) => named.has(one)),
-          ]),
-        ),
-        comments,
-      )) {
-        if (await switchedOn(octokit, repositoryOf.get(discussion) ?? "")) {
-          asked.push(link);
-        } else {
-          settle([link]);
+      const written: Discussion[] = [];
+      const vanished: string[] = [];
+      const comments = new Map<string, DiscussionComment[]>();
+      for (const one of read.found) {
+        unseen.delete(one.node);
+        if (!where.synced.has(one.repository.node)) continue;
+        const all = await commentsOf(octokit, one, read.first.get(one.node));
+        if (all === undefined) {
+          vanished.push(one.node);
+          continue;
         }
+        written.push(one);
+        comments.set(one.node, all);
       }
-      await context.archive(commentType, await confirmedGone(octokit, asked));
-      settle(asked);
-    } catch (error) {
-      if (discussionsRefusal(error) === undefined) throw error;
-      refused = true;
-    }
+      const held = new Map<string, string[]>();
+      for (const one of written) {
+        held.set(one.node, await heldComments(context, one.node));
+      }
+      for (const node of vanished) settle(await heldComments(context, node));
+      for (const node of new Set(written.map((one) => one.repository.node))) {
+        await write(
+          context,
+          written.filter((one) => one.repository.node === node),
+          new Map(
+            written
+              .filter((one) => one.repository.node === node)
+              .map((one) => [one.node, comments.get(one.node) ?? []]),
+          ),
+          where.hidden(node),
+        );
+      }
+      for (const all of comments.values()) settle(all.map((one) => one.node));
+      const repositoryOf = new Map(
+        written.map((one) => [one.node, one.repository.name]),
+      );
+      try {
+        const asked: string[] = [];
+        for (const [link, discussion] of absentFrom(
+          new Map(
+            [...held].map(([link, all]) => [
+              link,
+              all.filter((one) => named.has(one)),
+            ]),
+          ),
+          comments,
+        )) {
+          if (await switchedOn(octokit, repositoryOf.get(discussion) ?? "")) {
+            asked.push(link);
+          } else {
+            settle([link]);
+          }
+        }
+        await context.archive(commentType, await confirmedGone(octokit, asked));
+        settle(asked);
+      } catch (error) {
+        if (discussionsRefusal(error) === undefined) throw error;
+        refused.add(installation);
+      }
+    });
   }
-  if (refused) {
-    settle(named);
-    return { unseen: new Set(), handled };
-  }
-  if (unseen.size === 0 || where.deferred) return { unseen, handled };
+  if (refused.size > 0) return { unseen: new Set(), handled };
+  if (unseen.size === 0 || where.deferred()) return { unseen, handled };
   for (const [node, { repository, installation }] of where.listed) {
     if (!where.synced.has(node)) continue;
     const octokit = where.clients.get(installation);

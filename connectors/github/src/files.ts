@@ -8,7 +8,7 @@ import type {
   ConnectionDefinition,
 } from "@withmarfa/connector";
 import { assetsIn, openAsset, type Asset } from "./assets.js";
-import { batches, query, type Client } from "./github.js";
+import { batches, queryNodes, type Client } from "./github.js";
 
 export const fileFields = [
   "github_id",
@@ -347,11 +347,13 @@ export async function preserveFiles(
     const variant = type === "github.issue" ? "Issue" : "IssueComment";
     const operation = type === "github.issue" ? "FileIssues" : "FileComments";
     for (const ids of batches([...byId.keys()])) {
-      const answer = (await query(
-        client,
-        `query ${operation}($ids: [ID!]!) { nodes(ids: $ids) { ... on ${variant} { id bodyHTML } } }`,
-        { ids },
-      )) as { nodes: ({ id: string; bodyHTML: string } | null)[] };
+      const answer = (
+        await queryNodes(
+          client,
+          `query ${operation}($ids: [ID!]!) { nodes(ids: $ids) { ... on ${variant} { id bodyHTML } } }`,
+          ids,
+        )
+      ).data as { nodes: ({ id: string; bodyHTML: string } | null)[] };
       for (const id of ids) {
         const parent = byId.get(id);
         if (parent === undefined) continue;

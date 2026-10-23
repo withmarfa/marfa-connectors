@@ -130,6 +130,16 @@ async function watching(
   }
 }
 
+/** The requests that asked GitHub for a comment as an issue comment. */
+function askedForAsIssueComment(node: string): unknown[] {
+  return github.asked.filter(
+    (one) =>
+      one.path === "/graphql" &&
+      /query\s+(?:File)?Comments\b/.test(JSON.stringify(one.body)) &&
+      JSON.stringify(one.body).includes(node),
+  );
+}
+
 function kept(): unknown {
   return structuredClone(marfa.states.get("github")?.["state"]);
 }
@@ -617,6 +627,92 @@ describe("a run for deliveries", () => {
       ).toEqual([discussion.node]);
       expect(row(other.node).properties["title"]).toBe("Untouched");
       expect(listings()).toEqual([]);
+    });
+  });
+
+  it("succeeds on a discussion comment's delivery, edited or created, without asking the issues token for the comment, and takes the delivery after it", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const discussion = github.addDiscussion(repository);
+    const comment = github.addDiscussionComment(discussion, "Before");
+    await watching(async () => {
+      deliver("ping", {});
+      await until(() => marfa.runs.length > 1, "the first run for deliveries");
+      github.asked.length = 0;
+      github.editDiscussionComment(comment, "After");
+      deliver("discussion_comment", {
+        action: "edited",
+        comment: { node_id: comment.node },
+        discussion: { node_id: discussion.node },
+      });
+      await until(
+        () => row(comment.node).properties["body"] === "After",
+        "the edited comment being written",
+      );
+      await until(
+        () => marfa.deliveries.at(-1)?.outcome === "processed",
+        "the delivery being processed",
+      );
+      expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+      expect(askedForAsIssueComment(comment.node)).toEqual([]);
+      const issueComment = github.addComment(issue, "Seen on GitHub");
+      deliver("issue_comment", {
+        action: "created",
+        comment: { node_id: issueComment.node },
+        issue: { node_id: issue.node },
+      });
+      await until(
+        () =>
+          marfa.rows.some(
+            (one) => one.properties["github_id"] === issueComment.node,
+          ),
+        "the next delivery's comment being written",
+      );
+      expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+    });
+  });
+
+  it("reads an issue comment and a discussion comment named in one run, and leaves the discussion comment as it was where GitHub refuses Discussions", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repository);
+    const issueComment = github.addComment(issue, "Before");
+    const discussion = github.addDiscussion(repository);
+    const comment = github.addDiscussionComment(discussion, "Before");
+    const deleted = github.addDiscussionComment(discussion, "Deleted soon");
+    await watching(async () => {
+      github.discussionsForbidden = true;
+      github.editComment(issueComment, "After");
+      github.editDiscussionComment(comment, "After");
+      github.removeDiscussionComment(deleted);
+      deliver("discussion_comment", {
+        action: "deleted",
+        comment: { node_id: deleted.node },
+        discussion: { node_id: discussion.node },
+      });
+      deliver("discussion_comment", {
+        action: "edited",
+        comment: { node_id: comment.node },
+        discussion: { node_id: discussion.node },
+      });
+      deliver("issue_comment", {
+        action: "edited",
+        comment: { node_id: issueComment.node },
+        issue: { node_id: issue.node },
+      });
+      await until(
+        () => row(issueComment.node).properties["body"] === "After",
+        "the issue comment being written",
+      );
+      await until(
+        () =>
+          marfa.deliveries.filter((one) => one.outcome === "processed")
+            .length === 3,
+        "all three deliveries being processed",
+      );
+      expect(marfa.runs.at(-1)?.outcome).toBe("succeeded");
+      expect(row(deleted.node).state).toBe("active");
+      expect(row(comment.node).state).toBe("active");
+      expect(row(comment.node).properties["body"]).toBe("Before");
     });
   });
 

@@ -2422,14 +2422,31 @@ export class GitHubStub {
       send(401, { message: "Bad credentials" });
       return;
     }
-    const errors: { type: string; message: string }[] = [];
+    const errors: { type: string; message: string; path: unknown[] }[] = [];
+    // GitHub answers a Discussions node asked for by a token without the
+    // Discussions permission with FORBIDDEN for that node alone, whatever the
+    // query names of it, and answers the rest of the batch.
+    const needsDiscussions = (id: string): boolean =>
+      this.discussion(id) !== undefined ||
+      this.discussionComments.some((one) => one.node === id);
     const nodes = (ids: unknown, find: (id: string) => unknown): unknown[] =>
-      (ids as string[]).map((id) => {
+      (ids as string[]).map((id, at) => {
+        if (needsDiscussions(id) && !this.allows(req, "read", "discussions")) {
+          errors.push({
+            type: "FORBIDDEN",
+            message: this.isPersonal(req)
+              ? "Resource not accessible by personal access token"
+              : "Resource not accessible by integration",
+            path: ["nodes", at],
+          });
+          return null;
+        }
         const found = find(id);
         if (found === undefined) {
           errors.push({
             type: "NOT_FOUND",
             message: `Could not resolve to a node with the global id of '${id}'`,
+            path: ["nodes", at],
           });
           return null;
         }

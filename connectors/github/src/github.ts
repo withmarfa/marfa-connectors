@@ -571,6 +571,37 @@ export async function query(
   }
 }
 
+/** GraphQL's answer to a query of `nodes(ids:)`, in the order asked, with null
+ *  for a node that is gone or that the token may not read. A node GitHub
+ *  refuses with FORBIDDEN, as it does a Discussions node asked for by a token
+ *  without the Discussions permission, is named in `refused` and never taken
+ *  for gone: the rest of the batch is answered either way. A refusal that
+ *  names no node, such as one for the whole query, still throws. */
+export async function queryNodes(
+  octokit: Client,
+  text: string,
+  ids: readonly string[],
+): Promise<{ data: unknown; refused: Set<string> }> {
+  try {
+    return { data: await octokit.graphql(text, { ids }), refused: new Set() };
+  } catch (error) {
+    if (!(error instanceof GraphqlResponseError)) throw error;
+    const refused = new Set<string>();
+    for (const one of error.errors ?? []) {
+      if (one.type === "NOT_FOUND") continue;
+      const path: unknown = one.path;
+      const [field, at] = Array.isArray(path) ? (path as unknown[]) : [];
+      const id = typeof at === "number" ? ids[at] : undefined;
+      if (one.type !== "FORBIDDEN" || field !== "nodes" || id === undefined)
+        throw error;
+      refused.add(id);
+    }
+    if ((error.data as { nodes?: unknown } | null)?.nodes === undefined)
+      throw error;
+    return { data: error.data, refused };
+  }
+}
+
 export function batches<T>(values: readonly T[], size = 100): T[][] {
   const out: T[][] = [];
   for (let at = 0; at < values.length; at += size) {

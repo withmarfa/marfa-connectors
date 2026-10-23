@@ -6,7 +6,7 @@ import type {
   Transfer,
 } from "./entries.js";
 import { GraphqlResponseError } from "@octokit/graphql";
-import { batches, query, reads, type Client } from "./github.js";
+import { batches, query, queryNodes, reads, type Client } from "./github.js";
 
 const related = "id url repository { id }";
 
@@ -212,9 +212,8 @@ export async function issuesByNode(
 ): Promise<{ issue: Issue; relations: Relations }[]> {
   const found: { issue: Issue; relations: Relations }[] = [];
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await query(octokit, issuesQuery, {
-      ids: batch,
-    })) as Nodes<GraphIssue>;
+    const answer = (await queryNodes(octokit, issuesQuery, batch))
+      .data as Nodes<GraphIssue>;
     for (const node of known(answer.nodes, "Issue")) {
       found.push({
         issue: {
@@ -265,9 +264,8 @@ export async function relationsOf(
 ): Promise<Map<string, Relations & Linked>> {
   const found = new Map<string, Relations & Linked>();
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await query(octokit, relationsQuery, {
-      ids: batch,
-    })) as Nodes<GraphRelations>;
+    const answer = (await queryNodes(octokit, relationsQuery, batch))
+      .data as Nodes<GraphRelations>;
     for (const node of known(answer.nodes, "Issue")) {
       found.set(node.id, {
         parent: node.parent,
@@ -289,16 +287,22 @@ export async function relationsOf(
   return found;
 }
 
+/** The issue comments among the nodes, and those GitHub refused to show the
+ *  token, which are not known to be gone: a discussion comment is refused to
+ *  a token without the Discussions permission. */
 export async function commentsByNode(
   octokit: Client,
   ids: readonly string[],
-): Promise<Comment[]> {
+): Promise<{ found: Comment[]; refused: Set<string> }> {
   const found: Comment[] = [];
+  const refused = new Set<string>();
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await query(octokit, commentsQuery, {
-      ids: batch,
-    })) as Nodes<GraphComment>;
-    for (const node of known(answer.nodes, "IssueComment")) {
+    const answer = await queryNodes(octokit, commentsQuery, batch);
+    for (const id of answer.refused) refused.add(id);
+    for (const node of known(
+      (answer.data as Nodes<GraphComment>).nodes,
+      "IssueComment",
+    )) {
       found.push({
         node: node.id,
         body: node.body,
@@ -314,7 +318,7 @@ export async function commentsByNode(
       });
     }
   }
-  return found;
+  return { found, refused };
 }
 
 export async function repositoriesByNode(
@@ -328,9 +332,8 @@ export async function repositoriesByNode(
     { name: string; issues: boolean; discussions: boolean }
   >();
   for (const batch of batches([...new Set(ids)])) {
-    const answer = (await query(octokit, repositoriesQuery, {
-      ids: batch,
-    })) as Nodes<{
+    const answer = (await queryNodes(octokit, repositoriesQuery, batch))
+      .data as Nodes<{
       __typename: string;
       id: string;
       nameWithOwner: string;
@@ -465,6 +468,11 @@ export async function updateComment(
   };
 }
 
+async function gone(octokit: Client, id: string): Promise<boolean> {
+  const { found, refused } = await commentsByNode(octokit, [id]);
+  return found.length === 0 && !refused.has(id);
+}
+
 /** GraphQL answers NOT_FOUND alike for a comment gone and for one it will
  *  not let the App touch, so it counts as gone only where the comment no
  *  longer reads in a repository that still does. */
@@ -479,7 +487,7 @@ export async function deleteComment(
     if (
       error instanceof GraphqlResponseError &&
       error.errors?.every((one) => one.type === "NOT_FOUND") === true &&
-      (await commentsByNode(octokit, [id])).length === 0 &&
+      (await gone(octokit, id)) &&
       (await reads(octokit, where.owner, where.repo))
     ) {
       return;
