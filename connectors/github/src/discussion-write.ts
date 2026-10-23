@@ -48,6 +48,7 @@ import {
   margin,
   marked,
   placeIn,
+  refusedApp,
   refusedOrWaits,
   repositoryAt,
   text,
@@ -107,8 +108,13 @@ async function seekIn<T>(
       if (found !== undefined) return found;
     } catch (error) {
       const why = discussionsRefusal(error);
-      if (why === undefined) throw error;
-      refused = why;
+      if (why !== undefined) {
+        refused = why;
+        continue;
+      }
+      // A 401 or a token GitHub would not mint passes over that installation.
+      if (refusedApp(error)) continue;
+      throw error;
     }
   }
   if (refused !== undefined) {
@@ -281,7 +287,7 @@ async function carryDiscussion(
   }
   const found = await discussionAt(context, app, item, node);
   if (found === undefined) {
-    await goneOrWaits(context, app, change);
+    await goneOrWaits(context, app, change, "discussions");
     return undefined;
   }
   const { place } = found;
@@ -456,7 +462,7 @@ async function carryComment(
   if (!binned && !change.changed.has("body")) return undefined;
   const found = await commentAt(context, app, item, node);
   if (found === undefined) {
-    await goneOrWaits(context, app, change);
+    await goneOrWaits(context, app, change, "discussions");
     return undefined;
   }
   const { octokit, owner, repo } = found.place;
@@ -520,7 +526,7 @@ async function createComment(
           discussionAt(context, app, item, discussionNode),
         );
   if (found === undefined) {
-    await goneOrWaits(context, app, change);
+    await goneOrWaits(context, app, change, "discussions");
     return undefined;
   }
   const { octokit, repository } = found.place;

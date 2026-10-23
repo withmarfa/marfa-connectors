@@ -416,11 +416,14 @@ export async function repositoryAt(
  *  that shows under no installation is in none of the synced repositories
  *  once each of them, asked by its own node, still reads; while any does
  *  not, the target may be there, and the change waits. No row's text takes
- *  part, so neither an edited row nor a reused name can settle a change. */
+ *  part, so neither an edited row nor a reused name can settle a change.
+ *  `kind` is what the target is: an issue is hidden by its repository's
+ *  Issues switch, a discussion by its Discussions switch. */
 export async function goneOrWaits(
   context: Context,
   app: App,
   change: Change,
+  kind: "issues" | "discussions" = "issues",
 ): Promise<void> {
   const { item } = change;
   const kept = allKept(context);
@@ -431,9 +434,15 @@ export async function goneOrWaits(
       node,
     ]);
   }
-  const all = new Map<string, { name: string; issues: boolean }>();
+  const all = new Map<
+    string,
+    { name: string; issues: boolean; discussions: boolean }
+  >();
   for (const [installation, nodes] of byInstallation) {
-    let found: Map<string, { name: string; issues: boolean }>;
+    let found: Map<
+      string,
+      { name: string; issues: boolean; discussions: boolean }
+    >;
     try {
       found = await repositoriesByNode(
         looker(context, app, installation),
@@ -453,14 +462,15 @@ export async function goneOrWaits(
     for (const [node, one] of found) all.set(node, one);
   }
   // Where the row sits as agreed, never as its text says. GitHub does not
-  // say whether it shows the issues of a repository that turned them off.
+  // say whether it shows what is in a repository that turned its switch off.
   const home = change.placement?.[inRepository]?.[0];
   const node = home === undefined ? undefined : text(home, "github_id");
   const off = node === undefined ? undefined : all.get(node);
-  if (node !== undefined && off?.issues === false) {
+  if (node !== undefined && off?.[kind] === false) {
+    const switched = kind === "issues" ? "issues" : "Discussions";
     throw new Unreachable(
-      `${off.name} has its issues turned off, and GitHub does not say whether it still shows them, so the changes to what is in it wait`,
-      { scope: `issues-off:${node}` },
+      `${off.name} has its ${switched} turned off, and GitHub does not say whether it still shows them, so the changes to what is in it wait`,
+      { scope: `${kind}-off:${node}` },
     );
   }
   // Settled, unlike a refusal: the App can no longer find the target, which
