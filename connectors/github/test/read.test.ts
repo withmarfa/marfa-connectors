@@ -794,13 +794,19 @@ describe("what GitHub no longer lists", () => {
     const repository = github.addRepository("someone/tracker");
     const moved = github.addIssue(repository, { title: "Moved" });
     const hidden = github.addIssue(repository, { title: "Hidden" });
+    const away = github.addRepository("stranger/private", {
+      installation: 99,
+      private: true,
+    });
     await ok();
-    moved.moved = true;
+    github.transfer(moved, away);
     hidden.repository = "R_nowhere";
     checkDue();
     const output = await ok();
     expect(row(moved.node).state).toBe("archived");
-    expect(output).toContain("was moved to another repository");
+    expect(output).toContain(
+      "was moved to a repository the App cannot read, so its row here is archived",
+    );
     expect(row(hidden.node).state).toBe("active");
     expect(output).toContain("answered 404 though its repository reads");
   });

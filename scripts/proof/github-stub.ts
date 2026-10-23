@@ -72,7 +72,13 @@ export interface Issue {
   closed_by?: string | null;
   pull?: boolean;
   deleted?: boolean;
-  moved?: boolean;
+  // Set on the issue a transfer left behind: the node of the issue it
+  // became. The old node no longer resolves and its address answers 301.
+  movedTo?: string;
+  // Set on the issue a transfer made: the repository it came from. While
+  // `late`, its timeline does not yet show the TransferredEvent, which GitHub
+  // records about when it sends `issues.opened` for the new issue.
+  transferred?: { from: string; at: string; late?: boolean };
   app?: boolean;
   unlisted?: number;
 }
@@ -275,6 +281,7 @@ export class GitHubStub {
   private behind = 0;
   private ids = 1000;
   private tokens = 0;
+  private unsettled: { from: Issue; to: Issue; comments: Comment[] }[] = [];
 
   async start(): Promise<this> {
     const server = createServer((req, res) => {
@@ -565,7 +572,136 @@ export class GitHubStub {
   }
 
   issue(node: string): Issue | undefined {
-    return this.issues.find((one) => one.node === node);
+    return this.issues.find(
+      (one) => one.node === node && one.movedTo === undefined,
+    );
+  }
+
+  /** Transfers an issue as GitHub does: the new issue has a new id, node and
+   *  number, keeps the old one's times, author and text, and gets copies of
+   *  its comments with new ids and the old times. The old node stops
+   *  resolving, its comments answer 404 and its address answers 301, with an
+   *  empty Location where the asker cannot read the target. With `lagging`,
+   *  the new issue's timeline lacks the TransferredEvent until
+   *  `settleTransfers`. With `late`, the old issue also stays as it was, as
+   *  GitHub's does for a moment: the transfer has not settled. With `late`
+   *  and `showing`, the TransferredEvent is already there while the old
+   *  issue still answers 200: the other order GitHub can show them in. */
+  transfer(
+    issue: Issue,
+    target: Repository,
+    options: { late?: boolean; lagging?: boolean; showing?: boolean } = {},
+  ): Issue {
+    const id = this.ids++;
+    const at = this.now();
+    const hidden =
+      (options.late === true || options.lagging === true) &&
+      options.showing !== true;
+    const number =
+      Math.max(
+        0,
+        ...this.issues
+          .filter((one) => one.repository === target.node)
+          .map((one) => one.number),
+      ) + 1;
+    const made: Issue = {
+      ...issue,
+      id,
+      node: `I_${String(id)}`,
+      number,
+      repository: target.node,
+      updated_at: at,
+      transferred: {
+        from: issue.repository,
+        at,
+        ...(hidden && { late: true }),
+      },
+    };
+    delete made.movedTo;
+    this.issues.push(made);
+    const copied = this.comments.filter(
+      (one) => one.issue === issue.node && one.deleted !== true,
+    );
+    for (const comment of copied) {
+      const copy = this.ids++;
+      this.comments.push({
+        ...comment,
+        id: copy,
+        node: `IC_${String(copy)}`,
+        issue: made.node,
+      });
+    }
+    // What pointed at the old issue points at the new one.
+    for (const other of this.issues) {
+      if (other.parent === issue.node) other.parent = made.node;
+      other.blocked_by = other.blocked_by.map((one) =>
+        one === issue.node ? made.node : one,
+      );
+      if (other.relates_to !== undefined) {
+        other.relates_to = other.relates_to.map((one) =>
+          one === issue.node ? made.node : one,
+        );
+      }
+      if (other.duplicate_of === issue.node) other.duplicate_of = made.node;
+    }
+    if (options.late === true) {
+      this.unsettled.push({ from: issue, to: made, comments: copied });
+    } else {
+      this.leave(issue, made, copied);
+    }
+    return made;
+  }
+
+  /** The old issue stops resolving and its comments are gone. */
+  private leave(from: Issue, to: Issue, comments: Comment[]): void {
+    from.movedTo = to.node;
+    for (const comment of comments) comment.deleted = true;
+  }
+
+  /** Settles every transfer made `late` and shows the TransferredEvent of
+   *  every transfer made `late` or `lagging`. */
+  settleTransfers(): void {
+    for (const one of this.unsettled.splice(0)) {
+      this.leave(one.from, one.to, one.comments);
+    }
+    for (const one of this.issues) {
+      if (one.transferred !== undefined) delete one.transferred.late;
+    }
+  }
+
+  /** The two deliveries GitHub sends for a transfer, in the order it sends
+   *  them: `issues.opened` in the target, then `issues.transferred` in the
+   *  source. The installation gets only the first where the source lies
+   *  outside it, and only the second where the target does. */
+  transferDeliveries(
+    from: Issue,
+    to: Issue,
+  ): {
+    opened: Record<string, unknown>;
+    transferred: Record<string, unknown>;
+  } {
+    const source = this.repositoryOf(from);
+    const target = this.repositoryOf(to);
+    const ref = (one: Issue): Record<string, unknown> => ({
+      node_id: one.node,
+      number: one.number,
+    });
+    const repo = (one: Repository): Record<string, unknown> => ({
+      node_id: one.node,
+      full_name: `${one.owner}/${one.name}`,
+    });
+    return {
+      opened: { action: "opened", issue: ref(to), repository: repo(target) },
+      transferred: {
+        action: "transferred",
+        issue: ref(from),
+        changes: {
+          new_issue: ref(to),
+          new_repository: repo(target),
+        },
+        repository: repo(source),
+      },
+    };
   }
 
   /** Counts a listing against what is still to be left out of them. */
@@ -1347,12 +1483,18 @@ export class GitHubStub {
         send(410, { message: "Issues are disabled for this repo" });
       } else if (issue.deleted === true) {
         send(410, { message: "This issue was deleted" });
-      } else if (issue.moved === true) {
+      } else if (issue.movedTo !== undefined) {
+        const next = this.issues.find((one) => one.node === issue.movedTo);
+        const home = next === undefined ? undefined : this.repositoryOf(next);
+        // The address of a repository the asker cannot read is left out.
+        const open = home !== undefined && this.visible(req, home.node);
         send(
           301,
           { message: "Moved Permanently" },
           {
-            location: `${this.url}/repositories/0/issues/1`,
+            location: open
+              ? `${this.url}/repos/${home.owner}/${home.name}/issues/${String(next?.number ?? 0)}`
+              : "",
           },
         );
       } else {
@@ -1388,7 +1530,7 @@ export class GitHubStub {
             (one) =>
               one.repository === repository.node &&
               !one.deleted &&
-              !one.moved &&
+              one.movedTo === undefined &&
               (state === "all" || one.state === state) &&
               (since === null || one.updated_at >= since) &&
               this.listed(one),
@@ -2173,7 +2315,35 @@ export class GitHubStub {
           .filter((one) => !one.deleted && one.blocked_by.includes(issue.node))
           .map((one) => ({ id: one.node })),
       },
+      timelineItems: { nodes: this.transferEvents(issue, sees) },
     };
+  }
+
+  /** The issue's TransferredEvent, once GitHub has recorded it; its origin is
+   *  null where the token cannot see that repository. */
+  private transferEvents(
+    issue: Issue,
+    sees: (repository: Repository) => boolean,
+  ): Record<string, unknown>[] {
+    if (issue.transferred === undefined || issue.transferred.late === true) {
+      return [];
+    }
+    const from = this.repositories.find(
+      (one) => one.node === issue.transferred?.from,
+    );
+    return [
+      {
+        __typename: "TransferredEvent",
+        createdAt: issue.transferred.at,
+        fromRepository:
+          from === undefined || !sees(from)
+            ? null
+            : {
+                id: from.node,
+                nameWithOwner: `${from.owner}/${from.name}`,
+              },
+      },
+    ];
   }
 
   private graphPull(
@@ -2515,7 +2685,10 @@ export class GitHubStub {
       for (const [key, value] of Object.entries(body.variables)) {
         if (!key.startsWith("n")) continue;
         const issue = this.issues.find(
-          (one) => one.repository === repository?.node && one.number === value,
+          (one) =>
+            one.repository === repository?.node &&
+            one.number === value &&
+            one.movedTo === undefined,
         );
         found[`i${key.slice(1)}`] =
           issue === undefined ? null : { id: issue.node };

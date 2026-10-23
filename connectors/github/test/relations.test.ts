@@ -314,6 +314,7 @@ it("maps symmetric links and duplicates onto declared issue connections", () => 
       labels: [],
       assignees: [],
       repository: { node: "R_1", name: "someone/tracker" },
+      transfer: null,
     },
     {
       parent: null,
