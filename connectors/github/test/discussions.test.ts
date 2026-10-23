@@ -231,6 +231,7 @@ describe("reading discussions", () => {
   it("follows a renamed category, and archives a discussion GitHub no longer returns at the daily check", async () => {
     const kept = github.addDiscussion(repository, { category: "Ideas" });
     const gone = github.addDiscussion(repository);
+    const under = github.addDiscussionComment(gone, "Under it");
     await ok();
     github.editDiscussion(kept, { category: "General" });
     await ok();
@@ -241,6 +242,7 @@ describe("reading discussions", () => {
     checkDue();
     await ok();
     expect(row(gone.node).state).toBe("archived");
+    expect(row(under.node).state).toBe("archived");
     expect(row(kept.node).state).toBe("active");
   });
 
@@ -386,6 +388,42 @@ describe("a discussion changed in Marfa", () => {
     expect(comment.body).toBe("Mine");
   });
 
+  it("waits, truthfully, where its repository has Discussions turned off, and is carried when they are back", async () => {
+    await ok();
+    marfa.edit(row(discussion.node).id, { title: "Edited in Marfa" });
+    repository.discussionsOff = true;
+    const output = await ok();
+    expect(output).toContain("has its Discussions turned off");
+    expect(output).not.toContain("GitHub no longer shows");
+    expect(written()).toEqual([]);
+    repository.discussionsOff = false;
+    await ok();
+    expect(discussion.title).toBe("Edited in Marfa");
+  });
+
+  it("is settled as gone, though its repository has Issues turned off, where GitHub shows it nowhere", async () => {
+    await ok();
+    marfa.edit(row(discussion.node).id, { title: "Edited in Marfa" });
+    repository.issuesOff = true;
+    discussion.deleted = true;
+    const output = await ok();
+    expect(output).toContain("GitHub no longer shows");
+    expect(output).not.toContain("so the changes to what is in it wait");
+    expect(written()).toEqual([]);
+  });
+
+  it("is carried to the installation that shows it though another refuses the App", async () => {
+    const far = github.addRepository("gone/away", { installation: 2 });
+    github.installations.unshift({ id: 2, login: "gone" });
+    github.addDiscussion(far);
+    await ok();
+    const [first] = github.installations;
+    if (first !== undefined) first.lost = true;
+    marfa.edit(row(discussion.node).id, { title: "Edited in Marfa" });
+    await ok();
+    expect(discussion.title).toBe("Edited in Marfa");
+  });
+
   it("is put back through a personal token, which cannot write", async () => {
     github.personalToken = personalToken;
     const env = {
@@ -466,6 +504,7 @@ describe("a comment on a discussion", () => {
     discussion = github.addDiscussion(repository);
   });
 
+  // The client's throttle holds each write a second apart across several runs: about 29 seconds, against a 30 second default.
   it("made in Marfa is posted in its discussion, and a reply under the comment it answers, and edits and deletes follow", async () => {
     await ok();
     const top = marfa.insert(
@@ -507,7 +546,28 @@ describe("a comment on a discussion", () => {
       "UpdateDiscussionComment",
       "DeleteDiscussionComment",
     ]);
-  }, 90_000);
+  }, 60_000);
+
+  it("made in Marfa is posted once where a lost answer hides it from the next listing", async () => {
+    await ok();
+    const top = marfa.insert(
+      undefined,
+      { body: "Once", from: "me" },
+      "github.comment",
+      "person",
+    );
+    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    github.loseNextCreate = true;
+    github.listLate = true;
+    expect(await ok()).toContain("waits");
+    await ok();
+    const posted = github.discussionComments.filter(
+      (one) => unmarked(one.body) === "Once",
+    );
+    expect(posted).toHaveLength(1);
+    expect(marfa.byId(top.id).properties["github_id"]).toBe(posted[0]?.node);
+    expect(written()).toEqual(["AddDiscussionComment"]);
+  });
 
   it("someone else wrote keeps its text and its place: an edit and a bin are put back, and the run says so", async () => {
     const theirs = github.addDiscussionComment(discussion, "Said");

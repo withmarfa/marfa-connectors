@@ -772,9 +772,6 @@ export async function proveGitHub(
           from: "me",
         });
         await connect(marfa, said, await row(parent.node), "in-thread");
-        // A run this long has left the stub's clock, which moves only as it
-        // makes things, further behind than the look for a lost create allows.
-        github.runBehind(0);
         github.loseNextCreate = true;
         await runOnce();
         const posted = github.comments.filter((one) =>

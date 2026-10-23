@@ -137,6 +137,7 @@ export interface DiscussionComment {
   /** Deleted but kept as an empty shell for its replies, as GitHub does. */
   blanked?: boolean;
   app?: boolean;
+  unlisted?: number;
 }
 
 type Access = "read" | "write";
@@ -196,6 +197,9 @@ export class GitHubStub {
   discussionPageSize = 50;
   /** Answers every Discussions query of the personal token as refused. */
   personalNoDiscussions = false;
+  /** Answers every Discussions query of the App as FORBIDDEN, though its
+   *  token mints: the installation holds the permission, GitHub still says no. */
+  discussionsForbidden = false;
   asked: Asked[] = [];
   manifestCode: string | undefined = "manifest-code";
   /** The App's private key. GitHub holds its public half to check the App's
@@ -244,6 +248,8 @@ export class GitHubStub {
   private budgets = new Map<string, Budget>();
   private server: Server | undefined;
   private clock = Math.floor(Date.now() / 1000) * 1000;
+  /** How far behind the machine's clock GitHub's own runs, in milliseconds. */
+  private behind = 0;
   private ids = 1000;
   private tokens = 0;
 
@@ -268,14 +274,20 @@ export class GitHubStub {
     });
   }
 
+  /** A second on from the last, and never behind the machine's own time less
+   *  `behind`, so a long run does not leave what is made far in the past. */
   now(): string {
-    this.clock += 1000;
+    this.clock = Math.max(
+      this.clock + 1000,
+      Math.floor((Date.now() - this.behind) / 1000) * 1000,
+    );
     return new Date(this.clock).toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
   /** GitHub's own clock, which every answer's Date header tells, run this
    *  far behind the machine's. */
   runBehind(milliseconds: number): void {
+    this.behind = milliseconds;
     this.clock = Math.floor((Date.now() - milliseconds) / 1000) * 1000;
   }
 
@@ -643,6 +655,7 @@ export class GitHubStub {
       return (
         wanted === "read" && (scope === "issues" || !this.personalNoDiscussions)
       );
+    if (scope === "discussions" && this.discussionsForbidden) return false;
     const held = this.grantOf(req)?.permissions[scope];
     return held === "write" || held === wanted;
   }
@@ -1594,7 +1607,8 @@ export class GitHubStub {
 
   private repliesOf(comment: DiscussionComment): DiscussionComment[] {
     return this.discussionComments.filter(
-      (one) => one.parent === comment.node && one.deleted !== true,
+      (one) =>
+        one.parent === comment.node && one.deleted !== true && this.listed(one),
     );
   }
 
@@ -1604,8 +1618,13 @@ export class GitHubStub {
     variables: Record<string, unknown>,
     send: (status: number, data?: unknown) => void,
     nodes: (ids: unknown, find: (id: string) => unknown) => unknown[],
+    withComments: boolean,
   ): boolean {
     if (!operation?.includes("Discussion")) return false;
+    const shown = (one: Discussion): Record<string, unknown> => ({
+      ...this.graphDiscussion(one),
+      ...(withComments && { comments: this.commentsPage(one, 0) }),
+    });
     if (
       operation === "DiscussionList" ||
       operation === "DiscussionCategories"
@@ -1654,9 +1673,7 @@ export class GitHubStub {
             hasDiscussionsEnabled: repository.discussionsOff !== true,
             discussions: {
               ...page,
-              nodes: (page["nodes"] as Discussion[]).map((one) =>
-                this.graphDiscussion(one),
-              ),
+              nodes: (page["nodes"] as Discussion[]).map(shown),
             },
           },
         },
@@ -1670,7 +1687,7 @@ export class GitHubStub {
             const found = this.discussion(id);
             return found === undefined || !this.seesDiscussion(req, found)
               ? undefined
-              : this.graphDiscussion(found);
+              : shown(found);
           }),
         },
       });
@@ -1704,24 +1721,9 @@ export class GitHubStub {
         send(200, { data: { node: null } });
         return true;
       }
-      const top = this.discussionComments.filter(
-        (one) =>
-          one.discussion === discussion.node &&
-          one.parent === null &&
-          one.deleted !== true,
-      );
-      const page = this.cut(top, variables["after"]);
       send(200, {
         data: {
-          node: {
-            comments: {
-              ...page,
-              nodes: (page["nodes"] as DiscussionComment[]).map((one) => ({
-                ...this.graphDiscussionComment(one),
-                replies: this.repliesPage(one, 0),
-              })),
-            },
-          },
+          node: { comments: this.commentsPage(discussion, variables["after"]) },
         },
       });
       return true;
@@ -1748,6 +1750,27 @@ export class GitHubStub {
       return true;
     }
     return false;
+  }
+
+  private commentsPage(
+    discussion: Discussion,
+    after: unknown,
+  ): Record<string, unknown> {
+    const top = this.discussionComments.filter(
+      (one) =>
+        one.discussion === discussion.node &&
+        one.parent === null &&
+        one.deleted !== true &&
+        this.listed(one),
+    );
+    const page = this.cut(top, after);
+    return {
+      ...page,
+      nodes: (page["nodes"] as DiscussionComment[]).map((one) => ({
+        ...this.graphDiscussionComment(one),
+        replies: this.repliesPage(one, 0),
+      })),
+    };
   }
 
   private repliesPage(
@@ -1877,7 +1900,7 @@ export class GitHubStub {
         parent,
       );
       made.app = true;
-      if (lose({})) return true;
+      if (lose(made)) return true;
       send(200, {
         data: {
           addDiscussionComment: { comment: this.graphDiscussionComment(made) },
@@ -2308,6 +2331,7 @@ export class GitHubStub {
                 id,
                 nameWithOwner: `${repository.owner}/${repository.name}`,
                 hasIssuesEnabled: repository.issuesOff !== true,
+                hasDiscussionsEnabled: repository.discussionsOff !== true,
               };
         }),
       };
@@ -2335,7 +2359,16 @@ export class GitHubStub {
       });
       return;
     }
-    if (this.discussionQuery(req, operation, body.variables, send, nodes)) {
+    if (
+      this.discussionQuery(
+        req,
+        operation,
+        body.variables,
+        send,
+        nodes,
+        body.query.includes("comments("),
+      )
+    ) {
       return;
     }
     if (this.mutate(req, operation, body.variables, send, limit)) return;

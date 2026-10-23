@@ -1678,7 +1678,16 @@ async function readNamed(
             await context.linked(commentType, inRepository, under),
             unseenComments,
           );
-    if (issueRows.length === 0 && commentRows.length === 0) continue;
+    // A comment under a discussion is no issue comment, so GitHub not showing
+    // it as one says nothing; its discussion's read finds a deletion.
+    const inDiscussions =
+      commentRows.length === 0
+        ? new Set<string>()
+        : new Set([...(await heldIn(context, node)).values()].flat());
+    const issueComments = commentRows.filter(
+      (row) => !inDiscussions.has(linkOf(row) ?? ""),
+    );
+    if (issueRows.length === 0 && issueComments.length === 0) continue;
     const [owner = "", name = ""] = repository.full_name.split("/");
     await attempt(installation, async () => {
       if (!(await reads(octokit, owner, name))) {
@@ -1691,7 +1700,7 @@ async function readNamed(
       await archiveGone(context, octokit, { owner, name }, issueRows);
       await context.archive(
         commentType,
-        commentRows.flatMap((row) => linkOf(row) ?? []),
+        issueComments.flatMap((row) => linkOf(row) ?? []),
       );
     });
   }

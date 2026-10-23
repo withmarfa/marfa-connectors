@@ -221,7 +221,10 @@ describe("a delivery's hints", () => {
           discussion: { node_id: "D_1" },
         }),
       ),
-    ).toEqual([{ type: "github.discussion", id: "D_1" }]);
+    ).toEqual([
+      { type: "github.comment", id: "DC_1" },
+      { type: "github.discussion", id: "D_1" },
+    ]);
   });
 
   it("names both ends of an issue_relates_to event", () => {
@@ -612,6 +615,76 @@ describe("a run for deliveries", () => {
       ).toEqual([discussion.node]);
       expect(row(other.node).properties["title"]).toBe("Untouched");
       expect(listings()).toEqual([]);
+    });
+  });
+
+  it("archives a discussion comment GitHub deleted when its delivery arrives, once a lookup by its node agrees, and keeps one still there", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const discussion = github.addDiscussion(repository);
+    const kept = github.addDiscussionComment(discussion, "Stays");
+    const lone = github.addDiscussionComment(discussion, "Deleted soon");
+    const parent = github.addDiscussionComment(discussion, "Has a reply");
+    github.addDiscussionComment(discussion, "Reply", "bo", parent);
+    await watching(async () => {
+      github.removeDiscussionComment(lone);
+      github.removeDiscussionComment(parent);
+      deliver("discussion_comment", {
+        action: "deleted",
+        comment: { node_id: lone.node },
+        discussion: { node_id: discussion.node },
+      });
+      await until(
+        () => row(lone.node).state === "archived",
+        "the deleted comment being archived",
+      );
+      expect(row(kept.node).state).toBe("active");
+      expect(row(parent.node).state).toBe("active");
+      expect(row(parent.node).properties["body"]).toBe("");
+      expect(row(discussion.node).state).toBe("active");
+    });
+  });
+
+  it("archives a discussion with no comment that GitHub deleted when its delivery arrives, leaves one with comments to the daily check, and leaves everything where GitHub refuses the lookup", async () => {
+    const repository = github.addRepository("someone/tracker");
+    const empty = github.addDiscussion(repository);
+    const talked = github.addDiscussion(repository);
+    const comment = github.addDiscussionComment(talked, "Under it");
+    const refused = github.addDiscussion(repository);
+    const refusedComment = github.addDiscussionComment(refused, "Under it too");
+    await watching(async () => {
+      refused.deleted = true;
+      github.discussionsForbidden = true;
+      deliver("discussion", {
+        action: "deleted",
+        discussion: { node_id: refused.node },
+      });
+      await until(
+        () => marfa.deliveries[0]?.outcome === "processed",
+        "the delivery while GitHub refuses Discussions",
+      );
+      expect(row(refused.node).state).toBe("active");
+      expect(row(refusedComment.node).state).toBe("active");
+      github.discussionsForbidden = false;
+      empty.deleted = true;
+      talked.deleted = true;
+      deliver("discussion", {
+        action: "deleted",
+        discussion: { node_id: empty.node },
+      });
+      deliver("discussion", {
+        action: "deleted",
+        discussion: { node_id: talked.node },
+      });
+      await until(
+        () => row(empty.node).state === "archived",
+        "the deleted discussion being archived",
+      );
+      await until(
+        () => marfa.deliveries[2]?.outcome === "processed",
+        "the second deletion being processed",
+      );
+      expect(row(talked.node).state).toBe("active");
+      expect(row(comment.node).state).toBe("active");
     });
   });
 

@@ -36,7 +36,17 @@ const commentFields = `
 
 const whereFields = "discussion { id repository { id nameWithOwner } }";
 
-interface Page<T> {
+/** The first page of a discussion's comments, and of each comment's replies,
+ *  asked with the discussion itself so a read is one request where they fit.
+ *  Less than GitHub allows keeps the query's cost down; the rest is paged. */
+const commentsFirst = 20;
+const repliesFirst = 10;
+const inlineComments = `comments(first: ${String(commentsFirst)}) {
+  nodes { ${commentFields} replies(first: ${String(repliesFirst)}) { nodes { ${commentFields} } pageInfo { hasNextPage endCursor } } }
+  pageInfo { hasNextPage endCursor }
+}`;
+
+export interface Page<T> {
   nodes: (T | null)[];
   pageInfo: { hasNextPage: boolean; endCursor: string | null };
 }
@@ -46,7 +56,7 @@ interface Author {
   __typename: string;
 }
 
-interface GraphDiscussion {
+export interface GraphDiscussion {
   __typename?: string;
   id: string;
   number: number;
@@ -62,9 +72,10 @@ interface GraphDiscussion {
   author: Author | null;
   category: { name: string };
   repository: { id: string; nameWithOwner: string };
+  comments?: Page<GraphComment>;
 }
 
-interface GraphComment {
+export interface GraphComment {
   __typename?: string;
   id: string;
   body: string;
@@ -163,23 +174,40 @@ export function discussionsRefusal(error: unknown): string | undefined {
   return undefined;
 }
 
-export async function discussionsByNode(
+interface Read {
+  found: Discussion[];
+  /** The first page of each one's comments, where they were asked for. */
+  first: Map<string, Page<GraphComment>>;
+}
+
+async function readNodes(
   octokit: Client,
   ids: readonly string[],
-): Promise<Discussion[]> {
-  const found: Discussion[] = [];
+  withComments: boolean,
+): Promise<Read> {
+  const read: Read = { found: [], first: new Map() };
   for (const batch of batches([...new Set(ids)])) {
     const answer = (await query(
       octokit,
       `query DiscussionNodes($ids: [ID!]!) {
-        nodes(ids: $ids) { __typename ... on Discussion { ${discussionFields} } }
+        nodes(ids: $ids) { __typename ... on Discussion { ${discussionFields} ${withComments ? inlineComments : ""} } }
       }`,
       { ids: batch },
     )) as { nodes: (GraphDiscussion | null)[] };
-    for (const node of answer.nodes)
-      if (node?.__typename === "Discussion") found.push(discussionOf(node));
+    for (const node of answer.nodes) {
+      if (node?.__typename !== "Discussion") continue;
+      read.found.push(discussionOf(node));
+      if (node.comments !== undefined) read.first.set(node.id, node.comments);
+    }
   }
-  return found;
+  return read;
+}
+
+export async function discussionsByNode(
+  octokit: Client,
+  ids: readonly string[],
+): Promise<Discussion[]> {
+  return (await readNodes(octokit, ids, false)).found;
 }
 
 export async function discussionCommentsByNode(
@@ -213,30 +241,19 @@ export async function discussionCommentsByNode(
 }
 
 /** Every top-level comment and reply of a discussion, parents before their
- *  replies; none where GitHub no longer shows the discussion. */
+ *  replies; none where GitHub no longer shows the discussion. Where the first
+ *  page of comments came with the discussion, it is read from there and only
+ *  what lies beyond it is asked for. */
 export async function commentsOf(
   octokit: Client,
   discussion: { node: string; repository: Repository },
+  first?: Page<GraphComment>,
 ): Promise<DiscussionComment[] | undefined> {
   const found: DiscussionComment[] = [];
   const add = (node: GraphComment): void => {
     found.push(commentOf(node, discussion.node, discussion.repository));
   };
-  let after: string | null = null;
-  const seen = new Set<string>();
-  for (;;) {
-    const answer = (await query(
-      octokit,
-      `query DiscussionComments($id: ID!, $after: String) {
-        node(id: $id) { ... on Discussion { comments(first: 50, after: $after) {
-          nodes { ${commentFields} replies(first: 50) { nodes { ${commentFields} } pageInfo { hasNextPage endCursor } } }
-          pageInfo { hasNextPage endCursor }
-        } } }
-      }`,
-      { id: discussion.node, after },
-    )) as { node: { comments?: Page<GraphComment> } | null };
-    const page = answer.node?.comments;
-    if (page === undefined) return undefined;
+  const take = async (page: Page<GraphComment>): Promise<void> => {
     for (const top of page.nodes) {
       if (top === null) continue;
       add(top);
@@ -258,20 +275,43 @@ export async function commentsOf(
         replies = more.node?.replies;
       }
     }
+  };
+  let after: string | null = null;
+  let page = first;
+  const seen = new Set<string>();
+  for (;;) {
+    if (page === undefined) {
+      const answer = (await query(
+        octokit,
+        `query DiscussionComments($id: ID!, $after: String) {
+          node(id: $id) { ... on Discussion { comments(first: 50, after: $after) {
+            nodes { ${commentFields} replies(first: 50) { nodes { ${commentFields} } pageInfo { hasNextPage endCursor } } }
+            pageInfo { hasNextPage endCursor }
+          } } }
+        }`,
+        { id: discussion.node, after },
+      )) as { node: { comments?: Page<GraphComment> } | null };
+      page = answer.node?.comments;
+      if (page === undefined) return undefined;
+    }
+    await take(page);
     after = advance(page, seen, "discussion comment") ?? null;
     if (after === null) return found;
+    page = undefined;
   }
 }
 
 /** A repository's discussions, newest change first, down to `since` where
- *  one is given. A repository with Discussions turned off lists none. */
+ *  one is given, each with the first page of its comments. A repository
+ *  with Discussions turned off lists none. */
 export async function listDiscussions(
   octokit: Client,
   owner: string,
   name: string,
   since?: string,
-): Promise<{ enabled: boolean; found: Discussion[] }> {
-  const found: Discussion[] = [];
+): Promise<{ enabled: boolean } & Read> {
+  const read: Read = { found: [], first: new Map() };
+  const found = read.found;
   let after: string | null = null;
   const seen = new Set<string>();
   for (;;) {
@@ -281,7 +321,7 @@ export async function listDiscussions(
         repository(owner: $owner, name: $name) {
           hasDiscussionsEnabled
           discussions(first: 50, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
-            nodes { ${discussionFields} } pageInfo { hasNextPage endCursor }
+            nodes { ${discussionFields} ${inlineComments} } pageInfo { hasNextPage endCursor }
           }
         }
       }`,
@@ -297,7 +337,7 @@ export async function listDiscussions(
         `GitHub does not show ${owner}/${name} to the token that reads Discussions`,
       );
     if (!answer.repository.hasDiscussionsEnabled)
-      return { enabled: false, found: [] };
+      return { enabled: false, found: [], first: new Map() };
     const page = answer.repository.discussions;
     let older = false;
     for (const node of page.nodes) {
@@ -307,10 +347,11 @@ export async function listDiscussions(
         break;
       }
       found.push(discussionOf(node));
+      if (node.comments !== undefined) read.first.set(node.id, node.comments);
     }
-    if (older) return { enabled: true, found };
+    if (older) return { enabled: true, ...read };
     after = advance(page, seen, "discussion") ?? null;
-    if (after === null) return { enabled: true, found };
+    if (after === null) return { enabled: true, ...read };
   }
 }
 
@@ -495,6 +536,18 @@ type Reading = Pick<
   "upsert" | "linked" | "archive" | "log"
 >;
 
+/** The links of the comments and replies Marfa holds under a discussion. */
+async function heldComments(
+  context: Pick<Reading, "linked">,
+  discussion: string,
+): Promise<string[]> {
+  const comments = await context.linked(commentType, inThread, {
+    type: discussionType,
+    id: discussion,
+  });
+  return comments.flatMap((one) => linkOf(one) ?? []);
+}
+
 /** The discussions Marfa holds in a repository, each with the links of the
  *  comments and replies it holds under it. Rows written by this run have no
  *  connection yet, so this is read before anything is written. */
@@ -510,14 +563,7 @@ export async function heldIn(
   for (const row of rows) {
     const link = linkOf(row);
     if (link === undefined) continue;
-    const comments = await context.linked(commentType, inThread, {
-      type: discussionType,
-      id: link,
-    });
-    held.set(
-      link,
-      comments.flatMap((one) => linkOf(one) ?? []),
-    );
+    held.set(link, await heldComments(context, link));
   }
   return held;
 }
@@ -546,6 +592,27 @@ async function write(
       discussionCommentEntry(one, hidden),
     ),
   );
+}
+
+/** The comments held under discussions that were read in full, which that
+ *  read did not return and a lookup by their own node does not find either.
+ *  A comment that was deleted but has replies is returned, blank, and is not
+ *  among them. */
+async function missingComments(
+  octokit: Client,
+  held: ReadonlyMap<string, readonly string[]>,
+  comments: ReadonlyMap<string, readonly DiscussionComment[]>,
+): Promise<string[]> {
+  const absent: string[] = [];
+  for (const [link, read] of comments) {
+    const shown = new Set(read.map((one) => one.node));
+    for (const comment of held.get(link) ?? [])
+      if (!shown.has(comment)) absent.push(comment);
+  }
+  const alive = new Set(
+    (await discussionCommentsByNode(octokit, absent)).map((one) => one.node),
+  );
+  return absent.filter((link) => !alive.has(link));
 }
 
 /** Reads a repository's discussions with every comment and reply, and writes
@@ -580,10 +647,11 @@ export async function syncDiscussions(
   };
   const comments = new Map<string, DiscussionComment[]>();
   for (const one of listing.found) {
-    const read = await commentsOf(octokit, {
-      node: one.node,
-      repository,
-    });
+    const read = await commentsOf(
+      octokit,
+      { node: one.node, repository },
+      listing.first.get(one.node),
+    );
     if (read !== undefined) comments.set(one.node, read);
   }
   await write(
@@ -617,19 +685,9 @@ async function archiveGone(
   );
   const goneDiscussions = absent.filter((link) => !still.has(link));
   const goneComments = goneDiscussions.flatMap((link) => held.get(link) ?? []);
-  // Only a discussion whose comments were all read has any to be missing.
-  const missing: string[] = [];
-  for (const [link, read] of comments) {
-    const shown = new Set(read.map((one) => one.node));
-    for (const comment of held.get(link) ?? [])
-      if (!shown.has(comment)) missing.push(comment);
-  }
-  const alive = new Set(
-    (await discussionCommentsByNode(octokit, missing)).map((one) => one.node),
-  );
   await context.archive(commentType, [
     ...goneComments,
-    ...missing.filter((link) => !alive.has(link)),
+    ...(await missingComments(octokit, held, comments)),
   ]);
   await context.archive(discussionType, goneDiscussions);
   if (goneDiscussions.length > 0) {
@@ -639,12 +697,16 @@ async function archiveGone(
   }
 }
 
-/** The discussions a delivery named, read with their comments where GitHub
- *  shows them in a synced repository, and archived, with their comments,
- *  where GitHub shows them nowhere, nothing deferred and their repository
- *  still reads. A refusal is left to the scheduled read, which says it
- *  for the repository. Returns those not shown yet because a limit
- *  deferred the look. */
+/** The discussions a delivery named, read in full where GitHub shows them in
+ *  a synced repository. Each one read in full also has archived the comments
+ *  Marfa holds that it no longer returns, if the delivery named the comment
+ *  and a lookup by its own node agrees. A discussion GitHub shows nowhere,
+ *  with nothing deferred and its repository still reading, is archived if
+ *  Marfa holds no comment under it; one that does is left to the daily
+ *  check. Nothing is archived once any lookup was refused: the discussion
+ *  may be there, and the scheduled read says the refusal for the
+ *  repository. Returns those not shown yet because a limit deferred the
+ *  look. */
 export async function readNamedDiscussions(
   context: Reading,
   ids: ReadonlySet<string>,
@@ -660,24 +722,30 @@ export async function readNamedDiscussions(
   },
 ): Promise<Set<string>> {
   const unseen = new Set(ids);
+  let refused = false;
   for (const [, octokit] of where.clients) {
     if (unseen.size === 0) return unseen;
-    let found: Discussion[];
+    let read: Read;
     try {
-      found = await discussionsByNode(octokit, [...unseen]);
+      read = await readNodes(octokit, [...unseen], true);
     } catch (error) {
-      if (discussionsRefusal(error) !== undefined) continue;
-      throw error;
+      if (discussionsRefusal(error) === undefined) throw error;
+      refused = true;
+      continue;
     }
     const written: Discussion[] = [];
     const comments = new Map<string, DiscussionComment[]>();
-    for (const one of found) {
+    for (const one of read.found) {
       unseen.delete(one.node);
       if (!where.synced.has(one.repository.node)) continue;
-      const read = await commentsOf(octokit, one);
-      if (read === undefined) continue;
+      const all = await commentsOf(octokit, one, read.first.get(one.node));
+      if (all === undefined) continue;
       written.push(one);
-      comments.set(one.node, read);
+      comments.set(one.node, all);
+    }
+    const held = new Map<string, string[]>();
+    for (const one of written) {
+      held.set(one.node, await heldComments(context, one.node));
     }
     for (const node of new Set(written.map((one) => one.repository.node))) {
       await write(
@@ -691,9 +759,19 @@ export async function readNamedDiscussions(
         where.hidden(node),
       );
     }
+    try {
+      await context.archive(
+        commentType,
+        await missingComments(octokit, held, comments),
+      );
+    } catch (error) {
+      if (discussionsRefusal(error) === undefined) throw error;
+      refused = true;
+    }
   }
   if (unseen.size === 0) return unseen;
   if (where.deferred) return unseen;
+  if (refused) return new Set();
   for (const [node, { repository, installation }] of where.listed) {
     if (!where.synced.has(node)) continue;
     const octokit = where.clients.get(installation);
@@ -709,11 +787,14 @@ export async function readNamedDiscussions(
       );
       continue;
     }
+    // A run for deliveries archives only what a delivery named, and none
+    // names the comments under a discussion. Archiving the discussion alone
+    // would leave them out of the daily check's sight, so a discussion with
+    // any waits for that check, which archives both.
     await context.archive(
-      commentType,
-      gone.flatMap((link) => held.get(link) ?? []),
+      discussionType,
+      gone.filter((link) => (held.get(link) ?? []).length === 0),
     );
-    await context.archive(discussionType, gone);
     for (const link of gone) unseen.delete(link);
   }
   return new Set();

@@ -70,11 +70,15 @@ export function hints(delivery: Delivery): readonly Hint[] | "everything" {
         ...named(issueType, issue),
       ];
     }
-    // A comment names its discussion, so the run reads the discussion with
-    // every comment and reply, which also finds a deletion.
     case "discussion":
-    case "discussion_comment":
       return named(discussionType, payload["discussion"]);
+    // The run reads the named discussion with every comment and reply. The
+    // comment is named too, since a run archives only what it was told of.
+    case "discussion_comment":
+      return [
+        ...named(commentType, payload["comment"]),
+        ...named(discussionType, payload["discussion"]),
+      ];
     case "sub_issues":
       return named(issueType, payload["sub_issue"], payload["parent_issue"]);
     case "issue_relates_to":
