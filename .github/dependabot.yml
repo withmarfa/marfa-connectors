@@ -23,6 +23,18 @@ updates:
           - "*"
         update-types:
           - "major"
+    # `@types/node` follows the oldest Node major `engines` names, so newer
+    # types never allow an API the runtime lacks. TypeScript 7 has no
+    # compiler API before 7.1, which typescript-eslint needs
+    # (typescript-eslint/typescript-eslint#10940); take its major once that
+    # supports it.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
