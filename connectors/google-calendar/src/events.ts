@@ -1,4 +1,5 @@
 import type { Entry, JsonValue } from "@withmarfa/connector";
+import { htmlToMarkdown, NotConvertible } from "@withmarfa/connector/markdown";
 import { flag, isJson, list, object, text, type Json } from "./api.js";
 import { calendarType, childOf, eventType, inCalendar } from "./config.js";
 import { dayStart, iso, nextDay, validZone } from "./time.js";
@@ -12,6 +13,22 @@ export interface CalendarInfo {
   readonly description: string | undefined;
   readonly primary: boolean;
   readonly color: string | undefined;
+}
+
+/**
+ * Google lets a description hold HTML, and a description is the row's body,
+ * which is Markdown: HTML is converted, and text is kept as it is. A
+ * description Google holds that cannot be converted is left out.
+ */
+export function descriptionOf(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const markdown = htmlToMarkdown(value);
+    return markdown === "" ? undefined : markdown;
+  } catch (error) {
+    if (error instanceof NotConvertible) return undefined;
+    throw error;
+  }
 }
 
 /** The access roles that may change the events of a calendar. */
@@ -34,7 +51,7 @@ export function calendarOf(item: Json): CalendarInfo | undefined {
     title,
     zone: zoneOf(text(item, "timeZone")),
     role: text(item, "accessRole") ?? "reader",
-    description: text(item, "description"),
+    description: descriptionOf(text(item, "description")),
     primary: flag(item, "primary") === true,
     color: text(item, "backgroundColor"),
   };
@@ -332,7 +349,7 @@ export function eventEntry(
       source_id: `${account}:${link}`,
       properties: {
         title: text(raw, "summary") ?? "(No title)",
-        description: text(raw, "description"),
+        description: descriptionOf(text(raw, "description")),
         starts_at: iso(times.first),
         ends_at: iso(times.last),
         all_day: times.allDay ? true : undefined,
