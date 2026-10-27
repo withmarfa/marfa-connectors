@@ -1157,14 +1157,14 @@ describe("a repository", () => {
     }
 
     it(
-      "leaves the rows the other process wrote and the repository row they sit under, and archives the rows it wrote",
+      "leaves the rows it did not write and the repository row they sit under, and archives the rows it wrote",
       { timeout: 60_000 },
       async () => {
         const { repository, own, mine, theirs, reply } = await shared();
         repository.installation = 2;
         const output = await ok();
         expect(output).toContain("was taken out of the App's installation");
-        expect(output).toContain("another process wrote or changed");
+        expect(output).toContain("that this process did not archive");
         expect(row(own.node).state).toBe("archived");
         expect(row(mine.node).state).toBe("archived");
         expect(row(theirs.node).state).toBe("active");
@@ -1191,29 +1191,6 @@ describe("a repository", () => {
     );
 
     it(
-      "leaves a row the other process has changed since this one agreed it",
-      { timeout: 60_000 },
-      async () => {
-        const repository = github.addRepository("someone/tracker");
-        const own = github.addIssue(repository);
-        const changed = github.addIssue(repository);
-        const mine = github.addComment(own, "Mine");
-        await ok();
-        github.edit(changed, { title: "Retitled by the other process" });
-        await asPeer();
-        repository.installation = 2;
-        await ok();
-        expect(row(changed.node).state).toBe("active");
-        expect(row(changed.node).properties["title"]).toBe(
-          "Retitled by the other process",
-        );
-        expect(row(own.node).state).toBe("archived");
-        expect(row(mine.node).state).toBe("archived");
-        expect(row(repository.node).state).toBe("active");
-      },
-    );
-
-    it(
       "leaves a row it wrote but holds no agreement for",
       { timeout: 60_000 },
       async () => {
@@ -1227,6 +1204,63 @@ describe("a repository", () => {
         expect(row(lost.node).state).toBe("active");
         expect(row(kept.node).state).toBe("archived");
         expect(row(repository.node).state).toBe("active");
+      },
+    );
+
+    it(
+      "leaves a row a person linked to the repository by hand",
+      { timeout: 60_000 },
+      async () => {
+        const repository = github.addRepository("someone/tracker");
+        const own = github.addIssue(repository);
+        await ok();
+        const made = marfa.insert(
+          undefined,
+          { title: "By hand" },
+          "github.issue",
+          "person",
+        );
+        marfa.drawEdge(
+          made.id,
+          row(repository.node).id,
+          "github.in-repository",
+        );
+        repository.installation = 2;
+        await ok();
+        expect(row(own.node).state).toBe("archived");
+        expect(marfa.rows.find((one) => one.id === made.id)?.state).toBe(
+          "active",
+        );
+        expect(row(repository.node).state).toBe("active");
+      },
+    );
+
+    it(
+      "keeps the repository's progress while a row under it is active, and archives its row on a later run once none is",
+      { timeout: 90_000 },
+      async () => {
+        const { repository, theirs, reply } = await shared();
+        repository.installation = 2;
+        await ok();
+        expect(row(repository.node).state).toBe("active");
+        expect(kept()[repository.node]).toBeDefined();
+        await ok();
+        expect(row(repository.node).state).toBe("active");
+        expect(kept()[repository.node]).toBeDefined();
+
+        marfa.transition(row(reply.node).id, "archived");
+        marfa.transition(row(theirs.node).id, "archived");
+        const output = await ok();
+        expect(output).toContain("was taken out of the App's installation");
+        expect(row(repository.node).state).toBe("archived");
+        expect(kept()[repository.node]).toBeUndefined();
+
+        const before = marfa.log.length;
+        await ok();
+        expect(marfa.log.slice(before).map((one) => one.event)).not.toContain(
+          "item.state_changed",
+        );
+        expect(row(repository.node).state).toBe("archived");
       },
     );
 

@@ -257,23 +257,21 @@ export interface RunContext<E extends EnvDeclaration> {
     values: Readonly<Record<string, unknown>>,
   ) => Promise<void>;
   /**
-   * Only rows the vendor has been told about, unless `rows` says otherwise;
+   * Only rows the vendor has been told about, unless `rows` is `"all"`;
    * empty where Marfa lacks the target. Connections a run names are written
    * once it ends, so a row this run's entries connect shows from the next,
-   * and one they or an answer move elsewhere is left out now. A target in the
-   * bin still answers its rows.
+   * and one they or an answer move elsewhere is left out now. A target in
+   * the bin still answers its rows.
    *
-   * `rows: "unchanged"` keeps only the rows that still hold every field's
-   * value as this process last agreed it, so a row another process has
-   * written since is left out. `rows: "all"` answers every row connected to
-   * the target, whoever wrote it, whether or not this process holds an
-   * agreement for it, to see what others still hold.
+   * `rows: "all"` answers every active row connected to the target, whoever
+   * wrote it, whether or not this process holds an agreement for it, to see
+   * what else is held under it.
    */
   readonly linked: (
     type: string,
     connection: string,
     target: Target,
-    options?: { rows?: "told" | "unchanged" | "all" },
+    options?: { rows?: "told" | "all" },
   ) => Promise<Item[]>;
   /**
    * Requested natural keys, or vendor IDs for a linked type, whose rows have

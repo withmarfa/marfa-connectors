@@ -1138,11 +1138,10 @@ export async function runOnce<E extends EnvDeclaration>(
       held.id,
       wireOf(connection).inbound,
     );
-    const mode = options?.rows ?? "told";
     const told =
-      mode === "all"
+      options?.rows === "all"
         ? new Set(found.map((row) => row.id))
-        : await rows.told(found, mode === "unchanged");
+        : await rows.told(found);
     return found
       .filter((row) => {
         if (!told.has(row.id) || row.type !== type) return false;

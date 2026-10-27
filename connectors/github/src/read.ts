@@ -637,7 +637,7 @@ async function readAll(
       continue;
     }
     if (answered.has(repository.installation)) {
-      await takeOut(
+      const retained = await takeOut(
         scoped,
         node,
         repository.name,
@@ -645,7 +645,9 @@ async function readAll(
         stars.starred(node),
       );
       forgetFiles(state, node);
-      await save(scoped, node);
+      // Kept while a row under it is active, so the next run takes it out
+      // again and archives its row once nothing under it is.
+      await save(scoped, node, retained ? repository : undefined);
       continue;
     }
     // Its visibility is no longer known, so its rows say what is safe.
@@ -902,29 +904,39 @@ async function readAll(
   }
 }
 
-/** Takes a repository out of this process: archives the rows it holds under
- *  the repository only as this process last left them, since a row another
- *  process wrote or changed since is one that process still syncs. The
- *  repository's own row then stays while any row under it is still active. */
+/** Takes a repository out of this process: archives the rows this process
+ *  holds an agreement for under it. Its own row stays while any row under it
+ *  is still active, whoever wrote it, since another process may still sync
+ *  it, and while the repository is starred. Answers whether it stayed for a
+ *  row, so the caller keeps the repository's progress and takes it out again
+ *  once nothing under it is active. */
 async function takeOut(
   context: Context,
   node: string,
   name: string,
   personal: boolean,
   starred: boolean,
-) {
+): Promise<boolean> {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
   const links = (rows: Item[]): string[] =>
     rows.flatMap((row) => linkOf(row) ?? []);
-  const unchanged = { rows: "unchanged" } as const;
-  for (const type of [commentType, issueType, discussionType, pullRequestType])
-    await archive(
-      type,
-      links(await linked(type, inRepository, under, unchanged)),
-    );
+  await archive(
+    commentType,
+    links(await linked(commentType, inRepository, under)),
+  );
+  await archive(issueType, links(await linked(issueType, inRepository, under)));
+  await archive(
+    discussionType,
+    links(await linked(discussionType, inRepository, under)),
+  );
+  await archive(
+    pullRequestType,
+    links(await linked(pullRequestType, inRepository, under)),
+  );
   await takeOutFiles(context, node);
-  let shared = false;
+  // Read after the archives above, so it is what they left active.
+  let remaining = 0;
   for (const type of [
     commentType,
     issueType,
@@ -934,14 +946,27 @@ async function takeOut(
     directoryType,
   ]) {
     const rows = await linked(type, inRepository, under, { rows: "all" });
-    shared = shared || rows.some((row) => row.state === "active");
+    remaining += rows.filter((row) => row.state === "active").length;
   }
   // A starred repository keeps its row and its `synced`, since another
   // process may still sync it: a lost star then only unmarks it.
-  if (!starred && !shared) await archive(repositoryType, [node]);
+  if (!starred && remaining === 0) await archive(repositoryType, [node]);
+  const bar = [
+    ...(remaining > 0
+      ? [
+          `${String(remaining)} active ${remaining === 1 ? "row" : "rows"} under it that this process did not archive, which another process may still sync`,
+        ]
+      : []),
+    ...(starred
+      ? ["its repository row, which its star keeps"]
+      : remaining > 0
+        ? ["its repository row, which stays while they are active"]
+        : []),
+  ];
   log.info(
-    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : shared ? ", bar its repository row and the rows that another process wrote or changed since, which that process may still sync" : ""}`,
+    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${bar.length > 0 ? `, bar ${bar.join(", and ")}` : ""}`,
   );
+  return remaining > 0;
 }
 
 async function syncRepository(

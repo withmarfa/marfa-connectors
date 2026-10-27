@@ -794,10 +794,9 @@ describe("what a run finds linked", () => {
     expect(held.answers).toEqual([[]]);
   });
 
-  it("answers only the rows still as the connector agreed them where asked for unchanged ones, and every row where asked for all", async () => {
-    const held = connected([entry(1, [2]), entry(2), entry(3, [2]), entry(4)]);
+  it("answers every active row connected to the target where asked for all, whoever wrote it", async () => {
+    const held = connected([entry(1, [2]), entry(2)]);
     await harness.twoWay(held);
-    harness.server.edit(harness.server.row("a:3").id, { title: "By another" });
     const untold = harness.server.insert(
       undefined,
       { title: "Untold" },
@@ -811,18 +810,13 @@ describe("what a run finds linked", () => {
     );
     held.entries = [];
     const target = { type: "test.entry", id: "v2" };
-    // The run carries the edit to the vendor once it has answered, so the
-    // row is as agreed again from the next.
-    held.ask = { connection: "test.blocks", target, rows: "unchanged" };
-    await harness.twoWay(held);
     held.ask = { connection: "test.blocks", target };
     await harness.twoWay(held);
     held.ask = { connection: "test.blocks", target, rows: "all" };
     await harness.twoWay(held);
     expect(held.answers?.map((rows) => rows.sort())).toEqual([
       ["v1"],
-      ["v1", "v3"],
-      ["undefined", "v1", "v3"],
+      ["undefined", "v1"],
     ]);
   });
 

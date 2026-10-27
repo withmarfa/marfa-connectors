@@ -151,12 +151,7 @@ export interface Vendor {
   derived?: string[];
   derive?: { keys: string[]; values: Record<string, unknown> };
   ask?:
-    | {
-        connection: string;
-        target: Target;
-        rows?: "told" | "unchanged" | "all";
-      }
-    | undefined;
+    { connection: string; target: Target; rows?: "told" | "all" } | undefined;
   answers?: string[][];
   askHeld?: boolean;
   heldAnswers?: string[][];
