@@ -1243,10 +1243,10 @@ describe("a repository", () => {
         repository.installation = 2;
         await ok();
         expect(row(repository.node).state).toBe("active");
-        expect(kept()[repository.node]).toBeDefined();
+        expect(kept()[repository.node]?.["leaving"]).toBe(true);
         await ok();
         expect(row(repository.node).state).toBe("active");
-        expect(kept()[repository.node]).toBeDefined();
+        expect(kept()[repository.node]?.["leaving"]).toBe(true);
 
         marfa.transition(row(reply.node).id, "archived");
         marfa.transition(row(theirs.node).id, "archived");
@@ -1261,6 +1261,51 @@ describe("a repository", () => {
           "item.state_changed",
         );
         expect(row(repository.node).state).toBe("archived");
+      },
+    );
+
+    it(
+      "does not hold back a purge in a repository the App still reads while it keeps the one taken out",
+      { timeout: 90_000 },
+      async () => {
+        const other = github.addRepository("someone/other");
+        const issue = github.addIssue(other);
+        const comment = github.addComment(
+          issue,
+          "Said",
+          "marfa-connectors[bot]",
+        );
+        comment.app = true;
+        const { repository } = await shared();
+        repository.installation = 2;
+        await ok();
+        expect(kept()[repository.node]).toBeDefined();
+
+        const id = row(comment.node).id;
+        comment.deleted = true;
+        marfa.purgeById(id);
+        const output = await ok();
+        expect(output).toContain("GitHub no longer shows what");
+        expect(output).not.toContain("is out of the App's reach");
+        expect(row(repository.node).state).toBe("active");
+        expect(kept()[repository.node]).toBeDefined();
+        expect(await ok()).not.toContain("is out of the App's reach");
+      },
+    );
+
+    it(
+      "reads the repository again, and no longer as leaving, when it is added back",
+      { timeout: 90_000 },
+      async () => {
+        const { repository } = await shared();
+        repository.installation = 2;
+        await ok();
+        expect(kept()[repository.node]?.["leaving"]).toBe(true);
+        repository.installation = 1;
+        await ok();
+        expect(kept()[repository.node]).toBeDefined();
+        expect(kept()[repository.node]?.["leaving"]).toBeUndefined();
+        expect(row(repository.node).state).toBe("active");
       },
     );
 

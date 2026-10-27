@@ -121,6 +121,10 @@ export interface Kept {
   /** The time Discussions were last read down to; absent until they are. */
   discussions?: { since: string };
   paused?: boolean;
+  /** Set once the repository left the installation while a row under it was
+   *  still active: only `takeOut` revisits it, and the writes, which reach
+   *  only repositories the App reads, leave it out. */
+  leaving?: boolean;
   /** The repository's visibility as its rows last said it. */
   private?: boolean;
   /** Issues Marfa has no row for that may be mid-transfer, each with when
@@ -615,6 +619,7 @@ async function readAll(
       id: repository.id,
     };
     Reflect.deleteProperty(next[node], "paused");
+    Reflect.deleteProperty(next[node], "leaving");
   }
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node) || deferred.has(repository.installation)) continue;
@@ -627,12 +632,9 @@ async function readAll(
         );
       }
       // Under the name its rows hold, which a rename meanwhile does not change.
-      next[node] = await marked(
-        scoped,
-        node,
-        { ...repository, paused: true, id: left.id },
-        left.private,
-      );
+      const named: Kept = { ...repository, paused: true, id: left.id };
+      Reflect.deleteProperty(named, "leaving");
+      next[node] = await marked(scoped, node, named, left.private);
       await save(scoped, node, next[node]);
       continue;
     }
@@ -647,7 +649,11 @@ async function readAll(
       forgetFiles(state, node);
       // Kept while a row under it is active, so the next run takes it out
       // again and archives its row once nothing under it is.
-      await save(scoped, node, retained ? repository : undefined);
+      await save(
+        scoped,
+        node,
+        retained ? { ...repository, leaving: true } : undefined,
+      );
       continue;
     }
     // Its visibility is no longer known, so its rows say what is safe.
