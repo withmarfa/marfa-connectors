@@ -25,6 +25,10 @@
       "type": "string",
       "format": "datetime",
       "description": "When the person starred the repository. Empty where it is not starred."
+    },
+    "synced": {
+      "type": "boolean",
+      "description": "Whether a process of the connector syncs the repository, rather than keeping it for a star alone. A row that loses its star is archived only where this is false; empty where no run has said, which keeps the row."
     }
   },
   "display_hints": {

@@ -212,7 +212,13 @@ export function statusOf(open: boolean, reason: string | null): string {
     : "completed";
 }
 
-export function repositoryEntry(repository: RestRepository): Entry {
+/** `synced` says whether the repository is read for its issues and the rest,
+ *  or kept only for a star, which is what lets a run that reads stars tell a
+ *  row another process syncs from one it may archive. */
+export function repositoryEntry(
+  repository: RestRepository,
+  synced: boolean,
+): Entry {
   return {
     source_id: repository.node_id,
     properties: {
@@ -224,6 +230,7 @@ export function repositoryEntry(repository: RestRepository): Entry {
       archived_on_github: repository.archived,
       starred: repository.starred,
       starred_at: repository.starred_at,
+      synced,
     },
     changed_at: repository.updated_at,
   };
@@ -333,7 +340,9 @@ export interface PullRequest {
   baseBranch: string;
   headBranch: string;
   author: string | null;
-  checks: CheckCounts | null;
+  /** Null when the commit has no checks, and undefined when GitHub refused
+   *  them to the token, so nothing is known. */
+  checks: CheckCounts | null | undefined;
   createdAt: string;
   updatedAt: string;
   repository: { node: string; name: string };
@@ -346,8 +355,12 @@ export function prStatusOf(prState: "open" | "closed" | "merged"): string {
   return "canceled";
 }
 
+/** A pull request whose check summary is known, as `withStoredChecks` makes
+ *  it, so a write never clears a summary GitHub refused this run. */
+export type CheckedPullRequest = PullRequest & { checks: CheckCounts | null };
+
 export function pullRequestEntry(
-  pr: PullRequest,
+  pr: CheckedPullRequest,
   syncedRepositories: ReadonlySet<string>,
   hidden: boolean,
 ): Entry {

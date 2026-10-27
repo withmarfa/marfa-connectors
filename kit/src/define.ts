@@ -12,6 +12,13 @@ export type Tombstone = components["schemas"]["Tombstone"];
 
 export type FieldPolicy = "mirror" | "sync" | "observe";
 
+/** What a policy is told when it is asked just before a row is archived. */
+export interface Archiving {
+  /** Whether the row holds the value of the field this process last agreed
+   *  with the vendor; false where it holds no agreement for the row. */
+  readonly agrees: (field: string) => boolean;
+}
+
 export interface RowPolicy {
   /** False leaves the row and its agreement alone. */
   readonly owned?: boolean;
@@ -530,10 +537,16 @@ export interface Inbound<E extends EnvDeclaration> {
 export interface Kind {
   /** Synchronous row ownership and field rules, evaluated again on each fresh
    * concurrency retry. entry is present for inbound writes, including creates;
-   * item is absent for a new row. Unspecified rules keep the type defaults.
-   * The link always remains mirrored. */
+   * item is absent for a new row. archiving is present only when the row is
+   * about to be archived, its retry after a conflict included. Unspecified
+   * rules keep the type defaults. The link always remains mirrored. */
   readonly policy?:
-    ((item: Item | undefined, entry?: Entry) => RowPolicy) | undefined;
+    | ((
+        item: Item | undefined,
+        entry?: Entry,
+        archiving?: Archiving,
+      ) => RowPolicy)
+    | undefined;
   /**
    * Its `link_field`, where it names one, holds the vendor's own id for a
    * row: every row of the type is then the connector's, whoever created it,

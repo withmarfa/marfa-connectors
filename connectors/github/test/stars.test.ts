@@ -87,8 +87,8 @@ async function exec(
   }
 }
 
-async function sync(): Promise<string> {
-  const result = await exec({ GITHUB_PERSONAL_TOKEN: token });
+async function sync(extra: Record<string, string> = {}): Promise<string> {
+  const result = await exec({ GITHUB_PERSONAL_TOKEN: token, ...extra });
   expect(result.code, result.output).toBe(0);
   return result.output;
 }
@@ -157,6 +157,155 @@ function changes(since: number): string[] {
 }
 
 describe("starred repositories", { timeout: 60_000 }, () => {
+  it("leaves every mark and row alone, and asks for no star, where GITHUB_STARS is false", async () => {
+    const starred = starOnly("someone/starred");
+    const tracker = listed("someone/tracker");
+    github.star(tracker);
+    await sync();
+    expect(starRequests()).toBe(1);
+    const at = repositoryRow(tracker).properties["starred_at"];
+    expect(repositoryRow(starred).properties["starred"]).toBe(true);
+
+    // Another process owns these stars now: this one's token lists none of them.
+    github.unstar(starred);
+    github.unstar(tracker);
+    const before = marfa.log.length;
+    for (let run = 0; run < 3; run += 1) await sync({ GITHUB_STARS: "false" });
+    expect(starRequests()).toBe(1);
+    expect(checks("someone/starred")).toBe(0);
+    expect(repositoryRow(starred).state).toBe("active");
+    expect(repositoryRow(starred).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).properties["starred_at"]).toBe(at);
+    expect(conditions()).not.toHaveProperty("stars-unreadable");
+    expect(changes(before)).not.toContain("item.state_changed");
+
+    // The witness: the same world, read with stars on, does unmark and archive.
+    await sync();
+    await sync();
+    expect(repositoryRow(starred).state).toBe("archived");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(false);
+  });
+
+  it("only unmarks a repository another process syncs, and archives only a row nothing syncs", async () => {
+    // Process B syncs the organization with its own token and reads no stars;
+    // process A reads the person's stars with a key that claims the source.
+    const other = "github_pat_withmarfa_12345678";
+    const synced = github.addRepository("org/x", { private: false });
+    const issue = github.addIssue(synced);
+    const own = github.addRepository("someone/own");
+    const only = starOnly("someone/only");
+    // Star-only under A first, then taken up by B.
+    const later = starOnly("org/later");
+    github.star(synced);
+    const bSyncs = [synced];
+    const asB = async (): Promise<void> => {
+      marfa.keySource = "github";
+      marfa.grants = {
+        metadata_permissions: { types: "write", edge_types: "write" },
+      };
+      github.personalToken = other;
+      github.personalRepositories = new Set(bSyncs.map((one) => one.node));
+      const result = await exec({
+        GITHUB_PERSONAL_TOKEN: other,
+        GITHUB_REPOSITORIES: bSyncs
+          .map((one) => `${one.owner}/${one.name}`)
+          .join(","),
+        GITHUB_STARS: "false",
+      });
+      expect(result.code, result.output).toBe(0);
+    };
+    const asA = async (): Promise<void> => {
+      marfa.keySource = "github-someone";
+      marfa.grants = {
+        sources: ["github"],
+        metadata_permissions: { types: "write", edge_types: "write" },
+      };
+      github.personalToken = token;
+      github.personalRepositories = new Set([own.node]);
+      const result = await exec({
+        GITHUB_PERSONAL_TOKEN: token,
+        GITHUB_REPOSITORIES: "someone/own",
+      });
+      expect(result.code, result.output).toBe(0);
+    };
+    await asB();
+    await asA();
+    expect(repositoryRow(synced).properties["starred"]).toBe(true);
+    expect(repositoryRow(only).properties["starred"]).toBe(true);
+    expect(repositoryRow(later).properties["synced"]).toBe(false);
+    bSyncs.push(later);
+    await asB();
+    await asA();
+    expect(repositoryRow(synced).properties["starred"]).toBe(true);
+    expect(repositoryRow(later).properties["starred"]).toBe(true);
+    expect(repositoryRow(later).properties["synced"]).toBe(true);
+    const issueRow = marfa.rows.find(
+      (one) => one.properties["github_id"] === issue.node,
+    );
+    if (issueRow === undefined) throw new Error("no issue row");
+
+    github.unstar(synced);
+    github.unstar(only);
+    github.unstar(later);
+    await asA();
+    await asB();
+    await asA();
+    await asA();
+    await asB();
+    const row = repositoryRow(synced);
+    expect(row.state).toBe("active");
+    expect(row.properties["starred"]).toBe(false);
+    expect(row.properties["synced"]).toBe(true);
+    expect(marfa.byId(issueRow.id).state).toBe("active");
+    expect(marfa.targetsOf(issueRow.id, "github.in-repository")).toEqual([
+      row.id,
+    ]);
+    expect(repositoryRow(later).state).toBe("active");
+    expect(repositoryRow(later).properties["starred"]).toBe(false);
+    expect(repositoryRow(later).properties["synced"]).toBe(true);
+    // The witness: a star-only row in the same world is archived.
+    expect(repositoryRow(only).state).toBe("archived");
+    expect(repositoryRow(only).properties["synced"]).toBe(false);
+  });
+
+  it("starts the count of misses again after a scheduled run that lists no stars", async () => {
+    for (const between of [
+      { GITHUB_STARS: "false" },
+      { failing: "true" },
+    ] as const) {
+      const repository = starOnly(
+        `someone/starred-${String(marfa.rows.length)}`,
+      );
+      await sync();
+      github.unstar(repository);
+      await sync();
+      if ("failing" in between) {
+        github.starsFailAt = { page: 1, status: 403 };
+        await sync();
+        github.starsFailAt = undefined;
+      } else {
+        await sync(between);
+      }
+      await sync();
+      expect(repositoryRow(repository).state).toBe("active");
+      expect(repositoryRow(repository).properties["starred"]).toBe(true);
+      // The witness: one more listing that lacks it is the second miss.
+      await sync();
+      expect(repositoryRow(repository).state).toBe("archived");
+    }
+  });
+
+  it("refuses a GITHUB_STARS that is not true or false", async () => {
+    const result = await exec({
+      GITHUB_PERSONAL_TOKEN: token,
+      GITHUB_STARS: "no",
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("GITHUB_STARS must be true or false");
+  });
+
   it("reads every page of stars, as repository rows marked starred and stamped", async () => {
     const stars = Array.from({ length: 205 }, (_, at) =>
       starOnly(`someone/starred-${String(at)}`),
@@ -241,6 +390,37 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(row.properties["starred_at"] ?? null).toBeNull();
   });
 
+  it("refuses an archive retried after a conflict, once another process has marked the row synced", async () => {
+    const taken = starOnly("org/taken");
+    const witness = starOnly("someone/witness");
+    await sync();
+    const id = repositoryRow(taken).id;
+
+    github.unstar(taken);
+    github.unstar(witness);
+    await sync();
+    // Another process takes the repository up between this run's last read
+    // of the row and its archive, so the archive meets a version conflict.
+    let raced = false;
+    marfa.beforeAnswer = (request) => {
+      if (
+        !raced &&
+        request.method === "POST" &&
+        request.path.endsWith(`/${id}/transition`)
+      ) {
+        raced = true;
+        marfa.edit(id, { synced: true });
+      }
+    };
+    await sync();
+    marfa.beforeAnswer = undefined;
+    expect(raced).toBe(true);
+    expect(repositoryRow(taken).state).toBe("active");
+    expect(repositoryRow(taken).properties["synced"]).toBe(true);
+    // The witness: a star-only row in the same run is archived.
+    expect(repositoryRow(witness).state).toBe("archived");
+  });
+
   it("archives a star-only repository when it is unstarred, and the same row returns when it is starred again", async () => {
     const repository = starOnly("someone/starred");
     const other = starOnly("someone/kept");
@@ -292,7 +472,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     ).toBe("active");
   });
 
-  it("counts only complete listings: a failed page neither archives nor counts as a miss", async () => {
+  it("counts only complete listings in a row: a failed page neither archives nor counts as a miss", async () => {
     const stars = Array.from({ length: 105 }, (_, at) =>
       starOnly(`someone/starred-${String(at)}`),
     );
@@ -319,7 +499,11 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     await sync();
     expect(repositoryRow(gone).state).toBe("active");
 
+    // The failed listing broke the run of complete ones, so this is the
+    // first miss again, and the next is the second.
     github.starsFailAt = undefined;
+    await sync();
+    expect(repositoryRow(gone).state).toBe("active");
     await sync();
     expect(repositoryRow(gone).state).toBe("archived");
     expect(
@@ -443,7 +627,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(repositoryRow(starred).properties["starred"]).toBe(true);
   });
 
-  it("keeps the row of a starred repository that leaves the listing, as a star-only row", async () => {
+  it("keeps the row of a starred repository that leaves the listing, which a lost star then only unmarks", async () => {
     const tracker = listed("someone/tracker", { private: false });
     const issue = github.addIssue(tracker);
     github.star(tracker);
@@ -470,12 +654,15 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(repositoryRow(tracker).id).toBe(id);
     expect(repositoryRow(tracker).state).toBe("active");
     expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    // Another process may still sync it, so the row keeps saying it is synced.
+    expect(repositoryRow(tracker).properties["synced"]).toBe(true);
 
     github.unstar(tracker);
     await sync();
-    expect(repositoryRow(tracker).state).toBe("active");
     await sync();
-    expect(repositoryRow(tracker).state).toBe("archived");
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(false);
+    expect(repositoryRow(tracker).properties["synced"]).toBe(true);
   });
 
   it("keeps the star mark of a paused repository, and unmarks it only once two listings lack the star", async () => {

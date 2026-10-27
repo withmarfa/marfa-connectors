@@ -12,7 +12,7 @@ import {
 } from "./agreement.js";
 import { retryDeadline } from "./outbound.js";
 import type { UpsertAttempt } from "./inbound-retry.js";
-import type { Entry, Item, Target } from "./define.js";
+import type { Archiving, Entry, Item, Target } from "./define.js";
 import {
   causeOf,
   KeyNarrowed,
@@ -143,10 +143,11 @@ export function forRow(
   kind: Spec,
   item: Item | undefined,
   entry?: Entry,
+  archiving?: Archiving,
 ): Spec {
   if (suspended(kind, item, entry))
     return { ...kind, owned: false, twoWay: false };
-  const policy = kind.policy?.(item, entry);
+  const policy = kind.policy?.(item, entry, archiving);
   if (policy === undefined) return kind;
   const readOnly = new Set(kind.readOnly);
   const observed = new Set<string>();
@@ -1057,7 +1058,9 @@ export class Rows {
         this.hooks.omitted?.();
         continue;
       }
-      if (forRow(this.kind, row).owned === false) {
+      if (
+        forRow(this.kind, row, undefined, this.archiving(row)).owned === false
+      ) {
         this.hooks.omitted?.();
         continue;
       }
@@ -1106,6 +1109,18 @@ export class Rows {
     this.judge();
   }
 
+  private archiving(row: Item): Archiving {
+    return {
+      agrees: (field) => {
+        const agreement = this.store.get(row.id);
+        return (
+          agreement !== undefined &&
+          (agreement.marfa[field] ?? "") === mark(held(row.properties, field))
+        );
+      },
+    };
+  }
+
   private async transition(
     given: Item,
     state: "active" | "archived",
@@ -1117,7 +1132,12 @@ export class Rows {
     for (let attempt = 0; ; attempt += 1) {
       if (
         row.type !== this.kind.type ||
-        forRow(this.kind, row, entry).owned === false
+        forRow(
+          this.kind,
+          row,
+          entry,
+          state === "archived" ? this.archiving(row) : undefined,
+        ).owned === false
       ) {
         this.hooks.omitted?.();
         return undefined;

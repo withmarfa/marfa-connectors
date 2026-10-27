@@ -220,6 +220,20 @@ export class GitHubStub {
   discussionPageSize = 50;
   /** Answers every Discussions query of the personal token as refused. */
   personalNoDiscussions = false;
+  /** Refuses the personal token the check rollup of each pull request a
+   *  query asks it for, with this GraphQL error type: FORBIDDEN is what GitHub
+   *  answers a token that has no Checks permission. As GitHub does, the rest
+   *  of the answer stands, with each rollup null and one error at its path. */
+  personalChecksError: string | undefined;
+  /** Installations whose tokens GitHub refuses the check rollup with
+   *  FORBIDDEN, as for `personalChecksError`. */
+  checksRefused = new Set<number>();
+  /** Pull requests GitHub refuses whole, by node, with FORBIDDEN at the
+   *  node's own path in a query of `nodes(ids:)`. */
+  pullsForbidden = new Set<string>();
+  /** Repositories, by node, whose pull request listing GitHub answers with
+   *  FORBIDDEN at `repository` and no repository. */
+  pullRepositoriesForbidden = new Set<string>();
   /** Answers every Discussions query of the App as FORBIDDEN, though its
    *  token mints: the installation holds the permission, GitHub still says no. */
   discussionsForbidden = false;
@@ -2350,6 +2364,7 @@ export class GitHubStub {
     pr: PullRequest,
     sees: (repository: Repository) => boolean,
     after = 0,
+    withCommits = true,
   ): Record<string, unknown> {
     const repository = this.repositoryOf(pr);
     const closing = pr.closing_issues.flatMap((id) => {
@@ -2407,7 +2422,10 @@ export class GitHubStub {
           endCursor: String(after + this.closingPageSize),
         },
       },
-      commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+      // GraphQL answers only the fields asked for.
+      ...(withCommits && {
+        commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+      }),
     };
   }
 
@@ -2422,7 +2440,47 @@ export class GitHubStub {
       send(401, { message: "Bad credentials" });
       return;
     }
+    const withCommits = body.query.includes("statusCheckRollup");
     const errors: { type: string; message: string; path: unknown[] }[] = [];
+    const checksRefusal = !withCommits
+      ? undefined
+      : this.isPersonal(req)
+        ? this.personalChecksError
+        : this.checksRefused.has(this.installationOf(req)?.id ?? -1)
+          ? "FORBIDDEN"
+          : undefined;
+    /** Nulls each pull request's rollup the token is refused, naming it. */
+    const refuseChecks = (pulls: unknown[], at: unknown[]): void => {
+      if (checksRefusal === undefined) return;
+      pulls.forEach((one, index) => {
+        const commits = (
+          one as {
+            commits?: { nodes: { commit: Record<string, unknown> }[] };
+          } | null
+        )?.commits;
+        const commit = commits?.nodes[0]?.commit;
+        if (commit === undefined) return;
+        commit["statusCheckRollup"] = null;
+        errors.push({
+          type: checksRefusal,
+          message: this.isPersonal(req)
+            ? "Resource not accessible by personal access token"
+            : "Resource not accessible by integration",
+          path: [
+            ...at,
+            index,
+            "commits",
+            "nodes",
+            0,
+            "commit",
+            "statusCheckRollup",
+          ],
+        });
+      });
+    };
+    const answer = (data: unknown): void => {
+      send(200, errors.length === 0 ? { data } : { data, errors });
+    };
     // A token without the Discussions permission is refused a private
     // repository's Discussions node with FORBIDDEN for that node alone,
     // whatever the query names of it, and the rest of the batch is answered.
@@ -2498,18 +2556,25 @@ export class GitHubStub {
     const seesPull = (where: Repository): boolean =>
       !where.private || this.visible(req, where.node);
     if (operation === "PullRequests") {
-      send(200, {
-        data: {
-          nodes: nodes(body.variables["ids"], (id) => {
-            const pr = this.pulls.find(
-              (one) => one.node === id && one.deleted !== true,
-            );
-            return pr === undefined || !seesPull(this.repositoryOf(pr))
-              ? undefined
-              : this.graphPull(pr, seesPull);
-          }),
-        },
+      const found = nodes(body.variables["ids"], (id) => {
+        const pr = this.pulls.find(
+          (one) => one.node === id && one.deleted !== true,
+        );
+        return pr === undefined || !seesPull(this.repositoryOf(pr))
+          ? undefined
+          : this.graphPull(pr, seesPull, 0, withCommits);
       });
+      (body.variables["ids"] as string[]).forEach((id, at) => {
+        if (!this.pullsForbidden.has(id) || found[at] === null) return;
+        found[at] = null;
+        errors.push({
+          type: "FORBIDDEN",
+          message: "Resource not accessible by integration",
+          path: ["nodes", at],
+        });
+      });
+      refuseChecks(found, ["nodes"]);
+      answer({ nodes: found });
       return;
     }
     if (operation === "ClosingIssues") {
@@ -2535,6 +2600,22 @@ export class GitHubStub {
       );
       if (repository === undefined || this.missingPullRepository) {
         send(200, { data: { repository: null } });
+        return;
+      }
+      if (
+        operation === "PullRequestList" &&
+        this.pullRepositoriesForbidden.has(repository.node)
+      ) {
+        send(200, {
+          data: { repository: null },
+          errors: [
+            {
+              type: "FORBIDDEN",
+              message: "Resource not accessible by integration",
+              path: ["repository"],
+            },
+          ],
+        });
         return;
       }
       if (
@@ -2570,17 +2651,17 @@ export class GitHubStub {
         )
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       const after = Number(body.variables["after"] ?? 0);
-      send(200, {
-        data: {
-          repository: {
-            pullRequests: {
-              nodes: all
-                .slice(after, after + this.pullPageSize)
-                .map((pr) => this.graphPull(pr, seesPull)),
-              pageInfo: {
-                hasNextPage: all.length > after + this.pullPageSize,
-                endCursor: String(after + this.pullPageSize),
-              },
+      const page = all
+        .slice(after, after + this.pullPageSize)
+        .map((pr) => this.graphPull(pr, seesPull, 0, withCommits));
+      refuseChecks(page, ["repository", "pullRequests", "nodes"]);
+      answer({
+        repository: {
+          pullRequests: {
+            nodes: page,
+            pageInfo: {
+              hasNextPage: all.length > after + this.pullPageSize,
+              endCursor: String(after + this.pullPageSize),
             },
           },
         },

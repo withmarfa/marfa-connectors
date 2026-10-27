@@ -365,6 +365,39 @@ describe("a run for deliveries", () => {
     expect(marfa.deliveries[0]?.outcome).toBe("processed");
     expect(row(pr.node).properties["title"]).toBe("After");
   });
+  it("reads pull request deliveries GitHub answers in part, and keeps the checks it refused", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const checks = {
+      state: "SUCCESS",
+      check_runs: { SUCCESS: 1 },
+      statuses: {},
+    };
+    const pr = github.addPullRequest(repo, { checks });
+    const gone = github.addPullRequest(repo);
+    await watching(async () => {
+      github.checksRefused.add(1);
+      github.edit(pr, { title: "After" });
+      gone.deleted = true;
+      deliver("pull_request", { pull_request: { node_id: pr.node } });
+      deliver("pull_request", { pull_request: { node_id: gone.node } });
+      await until(
+        () =>
+          marfa.deliveries.length === 2 &&
+          marfa.deliveries.every((one) => one.outcome === "processed"),
+        "the pull request deliveries",
+      );
+      expect(row(pr.node).properties["title"]).toBe("After");
+      expect(row(pr.node).properties["checks"]).toEqual(checks);
+      expect(
+        github.asked.some(
+          (one) =>
+            one.path === "/graphql" &&
+            JSON.stringify(one.body).includes(gone.node) &&
+            JSON.stringify(one.body).includes(pr.node),
+        ),
+      ).toBe(true);
+    });
+  });
   it("refreshes pull requests on nested check events and commit statuses without reading listings", async () => {
     const repo = github.addRepository("someone/tracker");
     const pr = github.addPullRequest(repo, {
