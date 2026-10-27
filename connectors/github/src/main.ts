@@ -71,6 +71,12 @@ function appOf(values: {
   };
 }
 
+// A process that reads no stars holds no star field, so it never writes or
+// puts back the marks another process sets on the rows it syncs. A value
+// checkEnv refuses holds them here; the start stops before any row is read.
+const starFields =
+  process.env["GITHUB_STARS"] === "false" ? [] : ["starred", "starred_at"];
+
 const connector = defineConnector<typeof env>({
   name: "github",
   description:
@@ -89,11 +95,19 @@ const connector = defineConnector<typeof env>({
         "description",
         "private",
         "archived_on_github",
-        "starred",
-        "starred_at",
+        ...starFields,
+        "synced",
       ],
-      readOnly: ["starred", "starred_at"],
-      derived: ["starred", "starred_at"],
+      readOnly: [...starFields, "synced"],
+      derived: [...starFields, "synced"],
+      // Only the process that stops syncing a repository clears `synced`,
+      // through `derive`: a star-only write, or one process putting back what
+      // it last wrote, never turns a synced row into a star-only one.
+      policy: (item, entry) =>
+        item?.properties["synced"] === true &&
+        entry?.properties["synced"] !== true
+          ? { fields: { synced: "observe" } }
+          : {},
     },
     {
       type: issue as TypeDefinition,

@@ -1,5 +1,6 @@
 import type {
   EnvDeclaration,
+  Entry,
   Item,
   RunContext,
   State,
@@ -19,13 +20,15 @@ import {
 
 type Context = Pick<
   RunContext<EnvDeclaration>,
-  "held" | "upsert" | "archive" | "derive" | "log" | "signal"
+  "held" | "inspect" | "upsert" | "archive" | "derive" | "log" | "signal"
 >;
 
 /** The saved state: the repositories the last complete listing lacked, which
  *  GitHub's offset paging can do to a star that is still there when a star
  *  removed meanwhile shifts the pages, with the setting of the token that
- *  listed them, since two tokens do not list the same stars. */
+ *  listed them, since two tokens do not list the same stars. A scheduled run
+ *  that lists no stars clears it, so the two listings that settle a lost star
+ *  are always consecutive. */
 const missedKey = "stars-missed";
 
 /** The condition for rows kept because GitHub would not say the repository is
@@ -79,6 +82,13 @@ function whyNot(error: unknown, reading: string): string {
     : `GitHub answered ${String(code)}`;
 }
 
+/** Whether a row is kept for its star alone, which a lost star may archive.
+ *  A row another process syncs, and one no run has said of, is only ever
+ *  unmarked. */
+function starOnly(row: Item | undefined): boolean {
+  return row?.properties["synced"] === false;
+}
+
 function marked(row: Item | undefined): boolean {
   return (
     row?.properties["starred"] === true ||
@@ -129,6 +139,9 @@ export class Stars {
     private readonly missed: ReadonlySet<string>,
     private readonly reader: Reader | undefined,
     private readonly state: State,
+    /** Whether this process holds the star fields, which GITHUB_STARS
+     *  turns off. */
+    private readonly holds: boolean,
   ) {}
 
   /** The repositories a run saw private, which a token that lists public
@@ -139,16 +152,17 @@ export class Stars {
    * The held rows are read only to carry marks no listing gave: where a token
    * is set and the listing failed or was not asked for, and where it
    * succeeded, since the rows tell a star missed once from one never made. A
-   * run without a token carries no marks.
+   * run without a token carries no marks. `listing` is whether the run would
+   * list the stars: a scheduled run with GITHUB_STARS on.
    */
   static async open(
     context: Context,
     state: State,
     reader: Reader | undefined,
-    scheduled: boolean,
+    run: { scheduled: boolean; listing: boolean },
   ): Promise<Stars> {
     let read: Map<string, Star> | undefined;
-    if (scheduled && reader !== undefined) {
+    if (run.scheduled && run.listing && reader !== undefined) {
       try {
         read = await listStars(reader.octokit);
       } catch (error) {
@@ -165,6 +179,9 @@ export class Stars {
         );
       }
     }
+    // A miss counts only towards the next listing, so one that does not happen
+    // breaks the count, whether stars are off or the listing failed.
+    if (run.scheduled && read === undefined) state.set(missedKey, null);
     const rows = reader === undefined ? new Map() : await rowsOf(context);
     return new Stars(
       read,
@@ -174,6 +191,7 @@ export class Stars {
         : missedOf(state.get(missedKey), reader.name),
       reader,
       state,
+      run.listing,
     );
   }
 
@@ -192,8 +210,10 @@ export class Stars {
   }
 
   /** The repository as its row should say it: marked from the listing, or
-   *  as the row last said, until a second listing lacks it. */
+   *  as the row last said, until a second listing lacks it. A process that
+   *  holds no star field sends none. */
   mark(repository: RestRepository): RestRepository {
+    if (!this.holds) return repository;
     const node = repository.node_id;
     const star = this.read?.get(node);
     if (star !== undefined)
@@ -228,10 +248,16 @@ export class Stars {
    * and settles the rows a lost star leaves, once two listings in a row have
    * lacked the star. `listed` repositories were written by their own read. A
    * row kept for a repository that is read some other way, such as one
-   * paused, only loses its mark; one nothing keeps is archived, only when
+   * paused, only loses its mark, as does one whose row does not say it is
+   * kept for its star alone, since another process may sync it under the
+   * same source. A star-only row nothing keeps is archived, only when
    * `complete` says every listing of the run answered, since one that did not
-   * may be why a repository is missing, and only after GitHub's own read of
-   * the repository shows it is not hidden by an owner that refuses the token.
+   * may be why a repository is missing, only after GitHub's own read of the
+   * repository shows it is not hidden by an owner that refuses the token, and
+   * only if its row, read again just before, still says it is star-only.
+   *
+   * A starred row that does not say it is star-only takes only its marks
+   * from this run, so the fields its own process writes are left to it.
    */
   async settle(
     context: Context,
@@ -243,15 +269,23 @@ export class Stars {
   ): Promise<void> {
     const read = this.read;
     if (read === undefined) return;
-    const entries = [...read]
-      .filter(([node]) => !where.listed.has(node))
-      .map(([, star]) =>
-        repositoryEntry({
-          ...star.repository,
+    const entries: Entry[] = [];
+    for (const [node, star] of read) {
+      if (where.listed.has(node)) continue;
+      const row = this.rows.get(node);
+      if (row === undefined || starOnly(row))
+        entries.push(
+          repositoryEntry(
+            { ...star.repository, starred: true, starred_at: star.at },
+            false,
+          ),
+        );
+      else
+        await context.derive(repositoryType, [node], {
           starred: true,
           starred_at: star.at,
-        }),
-      );
+        });
+    }
     if (entries.length > 0) await context.upsert(repositoryType, entries);
     const lacking = this.lacking();
     const gone: string[] = [];
@@ -265,6 +299,7 @@ export class Stars {
       return typeof name === "string" ? name : node;
     };
     for (const node of lacking) {
+      const kept = where.kept.has(node) || !starOnly(this.rows.get(node));
       if (
         this.shielded.has(node) ||
         (publicOnly && this.rows.get(node)?.properties["private"] === true)
@@ -274,14 +309,10 @@ export class Stars {
         unresolved.add(node);
       } else if (where.listed.has(node)) {
         // Unmarked by its own read, which carried the second miss.
-      } else if (where.kept.has(node) && !publicOnly) {
+      } else if (kept && !publicOnly) {
         unmarked.push(node);
-      } else if (where.kept.has(node) || where.complete) {
-        doubtful.push({
-          node,
-          name: nameOf(node),
-          kept: where.kept.has(node),
-        });
+      } else if (kept || where.complete) {
+        doubtful.push({ node, name: nameOf(node), kept });
       } else {
         unresolved.add(node);
       }
@@ -299,7 +330,19 @@ export class Stars {
         spent = spent || why === limitSpent;
       }
     }
-    if (gone.length > 0) await context.archive(repositoryType, gone);
+    if (gone.length > 0) {
+      // Another process may have taken the repository up since the rows were
+      // read; its row then says so, and it only loses its mark.
+      const still = new Set<string>();
+      for (const row of (await context.inspect(repositoryType, { links: gone }))
+        .items)
+        if (row.state === "active" && starOnly(row)) {
+          const node = linkOf(row);
+          if (node !== undefined) still.add(node);
+        }
+      for (const node of gone) if (!still.has(node)) unmarked.push(node);
+      if (still.size > 0) await context.archive(repositoryType, [...still]);
+    }
     if (unmarked.length > 0)
       await context.derive(repositoryType, unmarked, {
         starred: false,

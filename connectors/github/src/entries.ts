@@ -212,7 +212,13 @@ export function statusOf(open: boolean, reason: string | null): string {
     : "completed";
 }
 
-export function repositoryEntry(repository: RestRepository): Entry {
+/** `synced` says whether the repository is read for its issues and the rest,
+ *  or kept only for a star, which is what lets a run that reads stars tell a
+ *  row another process syncs from one it may archive. */
+export function repositoryEntry(
+  repository: RestRepository,
+  synced: boolean,
+): Entry {
   return {
     source_id: repository.node_id,
     properties: {
@@ -224,6 +230,7 @@ export function repositoryEntry(repository: RestRepository): Entry {
       archived_on_github: repository.archived,
       starred: repository.starred,
       starred_at: repository.starred_at,
+      synced,
     },
     changed_at: repository.updated_at,
   };

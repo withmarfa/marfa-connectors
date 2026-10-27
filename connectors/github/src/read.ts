@@ -440,7 +440,7 @@ async function readAll(
     context,
     state,
     starReader(app, personal, notificationsToken, secret, signal),
-    scheduled && starsOn,
+    { scheduled, listing: starsOn },
   );
   if (scheduled) coverage.reached("stars-unreadable");
   if (scheduled && !starsOn) coverage.reached(starsKept);
@@ -676,7 +676,7 @@ async function readAll(
       return;
     const scoped = context.forScope(`repository:${node}`);
     const unreadable = `${at.repository.has_issues === false ? "pull-requests-unreadable" : "repository-unreadable"}:${node}`;
-    await scoped.upsert(repositoryType, [repositoryEntry(at.repository)]);
+    await scoped.upsert(repositoryType, [repositoryEntry(at.repository, true)]);
     try {
       // GitHub answers each issue of such a repository 410, as if deleted.
       if (at.repository.has_issues === false) {
@@ -852,8 +852,10 @@ async function takeOut(
     pullRequestType,
     links(await linked(pullRequestType, inRepository, under)),
   );
-  // A starred repository stays as the repository row alone, which a star keeps.
-  if (!starred) await archive(repositoryType, [node]);
+  // A starred repository stays as the repository row alone, which a star
+  // keeps, and which a lost star may then archive.
+  if (starred) await context.derive(repositoryType, [node], { synced: false });
+  else await archive(repositoryType, [node]);
   log.info(
     `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : ""}`,
   );
@@ -2054,7 +2056,7 @@ async function readNamed(
     repositoryType,
     [...touched].flatMap((node) => {
       const at = listed.get(node);
-      return at === undefined ? [] : [repositoryEntry(at.repository)];
+      return at === undefined ? [] : [repositoryEntry(at.repository, true)];
     }),
   );
   await upsert(
