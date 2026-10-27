@@ -489,7 +489,7 @@ const connector = defineConnector({
         privateHosts: allowed,
       });
       log.info(
-        `pictures: ${String(done.saved)} saved, ${String(done.notKept)} not kept, ${String(done.left)} left for the next run, ${String(done.swept)} archived with their entries`,
+        `pictures: ${String(done.saved)} saved, ${String(done.notKept)} not kept, ${String(done.left)} left for the next run, ${String(done.swept)} archived with their entries, ${String(done.revived)} brought back with theirs`,
       );
     } catch (error) {
       if (signal.aborted) throw error;

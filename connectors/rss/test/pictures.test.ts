@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer as createHttp, type Server } from "node:http";
@@ -17,11 +17,16 @@ import {
   it,
 } from "vitest";
 import { ScriptedServer } from "../../../kit/test/scripted-server.js";
+import type { Item as Row } from "@withmarfa/connector";
+import type { Picture } from "@withmarfa/connector/pictures";
 import {
   addressesOf,
   maxBytesPerRun,
+  maxPassMs,
   maxPicturesPerEntry,
   maxPicturesPerRun,
+  privateHostsFor,
+  savePictures,
   titleOf,
 } from "../src/pictures.js";
 
@@ -84,7 +89,10 @@ const tls: ServerOptions = {
 const certificate = join(directory, "cert.pem");
 
 type Answer =
-  { body: Buffer; type?: string } | { status: number } | { drop: true };
+  | { body: Buffer; type?: string }
+  | { status: number }
+  | { drop: true }
+  | { hang: true };
 
 let pictures: Record<string, Answer> = {};
 let asked: string[] = [];
@@ -95,6 +103,7 @@ const pictureServer = createHttps(tls, (req, res) => {
   const answer = Object.hasOwn(pictures, path) ? pictures[path] : undefined;
   if (answer === undefined) res.writeHead(404).end();
   else if ("drop" in answer) req.socket.destroy();
+  else if ("hang" in answer) return;
   else if ("status" in answer) res.writeHead(answer.status).end();
   else {
     res
@@ -128,6 +137,7 @@ describe("the pictures an entry points to", () => {
   let marfa: ScriptedServer;
   let feeds: Server;
   let base: string;
+  let port = 0;
   let documents: Record<string, Item[]>;
 
   const img = (address: string): string => `<img src="${address}" alt="a">`;
@@ -155,8 +165,9 @@ describe("the pictures an entry points to", () => {
         }),
       );
     });
-    await new Promise<void>((done) => feeds.listen(0, "127.0.0.1", done));
-    base = `http://127.0.0.1:${String((feeds.address() as AddressInfo).port)}`;
+    await new Promise<void>((done) => feeds.listen(0, done));
+    port = (feeds.address() as AddressInfo).port;
+    base = `http://localhost:${String(port)}`;
   });
 
   afterEach(async () => {
@@ -165,21 +176,30 @@ describe("the pictures an entry points to", () => {
     await new Promise((done) => feeds.close(done));
   });
 
+  function environment(
+    setting: string | null,
+    paths: string[],
+  ): Record<string, string | undefined> {
+    return {
+      PATH: process.env["PATH"],
+      MARFA_API_URL: marfa.url,
+      MARFA_API_KEY: marfa.key,
+      RSS_FEEDS: paths
+        .map((path) => (path.startsWith("http") ? path : `${base}${path}`))
+        .join("\n"),
+      RSS_PRIVATE_HOSTS: "localhost",
+      NODE_EXTRA_CA_CERTS: certificate,
+      ...(setting !== null && { RSS_PICTURES: setting }),
+    };
+  }
+
   async function once(
     setting: string | null = "save",
     paths = ["/one.json"],
   ): Promise<{ code: number | null; output: string }> {
     try {
       const { stderr } = await run("node", [built, "--once"], {
-        env: {
-          PATH: process.env["PATH"],
-          MARFA_API_URL: marfa.url,
-          MARFA_API_KEY: marfa.key,
-          RSS_FEEDS: paths.map((path) => `${base}${path}`).join("\n"),
-          RSS_PRIVATE_HOSTS: "localhost",
-          NODE_EXTRA_CA_CERTS: certificate,
-          ...(setting !== null && { RSS_PICTURES: setting }),
-        },
+        env: environment(setting, paths),
         timeout: 60_000,
         maxBuffer: 16 * 1024 * 1024,
       });
@@ -583,7 +603,7 @@ describe("the pictures an entry points to", () => {
     });
   });
 
-  it("archives the pictures of an entry that is archived or trashed, and does not bring them back", async () => {
+  it("archives the pictures of an entry that is archived or trashed, and brings them back with the entry", async () => {
     pictures["/a.png"] = { body: png(1) };
     pictures["/b.png"] = { body: png(2) };
     documents["/one.json"] = [
@@ -598,15 +618,164 @@ describe("the pictures an entry points to", () => {
       if (file.state !== "trashed") marfa.transition(file.id, "active");
     }
 
-    expect((await once()).code).toBe(0);
+    const archiving = await once();
+    expect(archiving.code).toBe(0);
+    expect(archiving.output).toContain("2 archived with their entries");
     expect(filesOf("e1").map((row) => row.state)).toEqual(["archived"]);
     expect(filesOf("e2").map((row) => row.state)).not.toContain("active");
 
     marfa.transition(entry("e1").id, "active");
     asked = [];
-    expect((await once()).code).toBe(0);
-    expect(filesOf("e1").map((row) => row.state)).toEqual(["archived"]);
+    const uploads = marfa.uploads;
+    const restoring = await once();
+    expect(restoring.code).toBe(0);
+    expect(restoring.output).toContain("1 brought back with theirs");
+    expect(filesOf("e1").map((row) => row.state)).toEqual(["active"]);
+    expect(filesOf("e1")).toHaveLength(1);
     expect(asked).toEqual([]);
+    expect(marfa.uploads).toBe(uploads);
+    expect(marfa.rows.filter((row) => row.type === "rss.picture")).toHaveLength(
+      2,
+    );
+
+    // Settled: another run changes nothing.
+    const version = filesOf("e1")[0]?.version;
+    expect((await once()).code).toBe(0);
+    expect(filesOf("e1")[0]?.version).toBe(version);
+  });
+
+  it("leaves a picture that a person archived, trashed or restored where they put it", async () => {
+    pictures["/a.png"] = { body: png(1) };
+    pictures["/b.png"] = { body: png(2) };
+    pictures["/c.png"] = { body: png(3) };
+    documents["/one.json"] = [
+      {
+        id: "e1",
+        title: "One",
+        content_html: img(at("/a.png")) + img(at("/b.png")) + img(at("/c.png")),
+      },
+    ];
+    expect((await once()).code).toBe(0);
+    const [first, second, third] = filesOf("e1");
+    marfa.transition(first?.id ?? "", "archived");
+    marfa.trash(second?.id ?? "");
+
+    // The entry goes out and comes back, so the sweep archives the third.
+    marfa.transition(entry("e1").id, "archived");
+    expect((await once()).code).toBe(0);
+    marfa.transition(entry("e1").id, "active");
+    expect((await once()).code).toBe(0);
+
+    const states = new Map(
+      filesOf("e1").map((row) => [row.id, row.state] as const),
+    );
+    expect(states.get(first?.id ?? "")).toBe("archived");
+    expect(states.get(second?.id ?? "")).toBe("trashed");
+    expect(states.get(third?.id ?? "")).toBe("active");
+  });
+
+  it("counts the pictures it archived, not the ones the kit left because a person restored them", async () => {
+    pictures["/a.png"] = { body: png(1) };
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/a.png")) },
+    ];
+    expect((await once()).code).toBe(0);
+    marfa.transition(entry("e1").id, "archived");
+    expect((await once()).output).toContain("1 archived with their entries");
+
+    // A person restores the picture while its entry is still archived.
+    marfa.transition(filesOf("e1")[0]?.id ?? "", "active");
+    const again = await once();
+    expect(again.code).toBe(0);
+    expect(again.output).toContain("0 archived with their entries");
+    expect(filesOf("e1").map((row) => row.state)).toEqual(["active"]);
+  });
+
+  it("repairs the connection of a picture saved by a run that was stopped before it ended", async () => {
+    pictures["/a.png"] = { body: png(1) };
+    pictures["/b.png"] = { hang: true };
+    documents["/one.json"] = [
+      {
+        id: "e1",
+        title: "One",
+        content_html: img(at("/a.png")) + img(at("/b.png")),
+      },
+    ];
+    const child = spawn("node", [built, "--once"], {
+      env: environment("save", ["/one.json"]),
+      stdio: "ignore",
+    });
+    const exited = new Promise<void>((done) =>
+      child.once("exit", () => {
+        done();
+      }),
+    );
+    // The first picture is saved before the second is asked for.
+    for (let waited = 0; !asked.includes("/b.png"); waited += 1) {
+      if (waited > 600) throw new Error("the second picture was not asked for");
+      await new Promise((done) => setTimeout(done, 50));
+    }
+    child.kill("SIGTERM");
+    await exited;
+
+    // The witness: the picture is there, and nothing attaches it.
+    const rows = () => marfa.rows.filter((row) => row.type === "rss.picture");
+    expect(rows()).toHaveLength(1);
+    expect(filesOf("e1")).toEqual([]);
+
+    pictures["/b.png"] = { body: png(2) };
+    asked = [];
+    expect((await once()).code).toBe(0);
+    expect(asked).toEqual(["/b.png"]);
+    expect(rows()).toHaveLength(2);
+    expect(filesOf("e1")).toHaveLength(2);
+    expect(manifest("e1").saved).toHaveLength(2);
+
+    // A settled entry is left alone.
+    const versions = rows().map((row) => row.version);
+    expect((await once()).code).toBe(0);
+    expect(rows().map((row) => row.version)).toEqual(versions);
+    expect(rows()).toHaveLength(2);
+  }, 60_000);
+
+  it("saves the pictures of an entry in the library, at the library tier, and of one in the feed at the feed tier", async () => {
+    pictures["/a.png"] = { body: png(1) };
+    pictures["/b.png"] = { body: png(2) };
+    documents["/one.json"] = [
+      { id: "e1", title: "One" },
+      { id: "e2", title: "Two" },
+    ];
+    expect((await once()).code).toBe(0);
+    entry("e1").tier = "library";
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/a.png")) },
+      { id: "e2", title: "Two", content_html: img(at("/b.png")) },
+    ];
+    expect((await once()).code).toBe(0);
+    expect(filesOf("e1").map((row) => row.tier)).toEqual(["library"]);
+    expect(filesOf("e2").map((row) => row.tier)).toEqual(["feed"]);
+  });
+
+  it("fetches a picture from a private host only when the host is its own feed's", async () => {
+    pictures["/a.png"] = { body: png(1) };
+    pictures["/b.png"] = { body: png(2) };
+    // The first feed is at the listed host, and the second at its address.
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/a.png")) },
+    ];
+    documents["/two.json"] = [
+      { id: "e2", title: "Two", content_html: img(at("/b.png")) },
+    ];
+    const other = `http://127.0.0.1:${String(port)}/two.json`;
+    expect((await once("save", ["/one.json", other])).code).toBe(0);
+
+    expect(filesOf("e1")).toHaveLength(1);
+    expect(manifest("e1").saved).toEqual([at("/a.png")]);
+    expect(filesOf("e2")).toEqual([]);
+    expect(manifest("e2").not_kept).toEqual({
+      [at("/b.png")]: "private_address",
+    });
+    expect(asked).toEqual(["/a.png"]);
   });
 
   describe("save-in-library", () => {
@@ -710,5 +879,159 @@ describe("the addresses an entry points to", () => {
   it("leaves out an address that is too long to be one", () => {
     const long = `https://example.org/${"a".repeat(2100)}.png`;
     expect(addressesOf(`![x](${long})`, undefined).addresses).toEqual([]);
+  });
+});
+
+describe("the hosts a picture may be fetched from", () => {
+  const listed = new Set(["feeds.internal.example"]);
+
+  it("allows a listed host for a picture on the host of the entry's own feed", () => {
+    expect(
+      privateHostsFor(
+        listed,
+        "https://feeds.internal.example:8443",
+        "https://feeds.internal.example/a.png",
+      ),
+    ).toEqual(new Set(["feeds.internal.example"]));
+  });
+
+  it("allows nothing for a picture on another host, a feed that names none, or an address that is not one", () => {
+    const own = "https://feeds.internal.example";
+    const none = new Set<string>();
+    expect(
+      privateHostsFor(
+        listed,
+        "https://other.example",
+        "https://feeds.internal.example/a.png",
+      ),
+    ).toEqual(none);
+    expect(privateHostsFor(listed, own, "https://other.example/a.png")).toEqual(
+      none,
+    );
+    expect(
+      privateHostsFor(
+        listed,
+        undefined,
+        "https://feeds.internal.example/a.png",
+      ),
+    ).toEqual(none);
+    expect(privateHostsFor(listed, own, "not an address")).toEqual(none);
+    expect(
+      privateHostsFor(new Set(), own, "https://feeds.internal.example/a.png"),
+    ).toEqual(none);
+  });
+});
+
+describe("the time a pass over pictures may take", () => {
+  const entry = (n: number, pictures: number): Row =>
+    ({
+      id: `entry-${String(n)}`,
+      type: "rss.entry",
+      source: "rss",
+      source_id: `feed:e${String(n)}`,
+      state: "active",
+      tier: "feed",
+      properties: {
+        body: Array.from(
+          { length: pictures },
+          (_, p) => `![](https://pics.example/${String(n)}-${String(p)}.png)`,
+        ).join("\n"),
+        feed_origin: "https://pics.example",
+      },
+    }) as unknown as Row;
+
+  async function pass(minutes: number) {
+    const entries = [entry(1, 3), entry(2, 2)];
+    const saved: Row[] = [];
+    const conditions: string[] = [];
+    const manifests: unknown[] = [];
+    let clock = 0;
+    let n = 0;
+    const context = {
+      held: (type: string) =>
+        Promise.resolve(type === "rss.entry" ? entries : saved),
+      archive: () => Promise.resolve(),
+      derive: (_: string, keys: readonly string[], values: unknown) => {
+        manifests.push([keys, values]);
+        return Promise.resolve();
+      },
+      upsert: (
+        _: string,
+        rows: readonly {
+          source_id: string;
+          properties: Record<string, unknown>;
+        }[],
+      ) => {
+        for (const row of rows) {
+          saved.push({
+            id: `picture-${String((n += 1))}`,
+            type: "rss.picture",
+            source_id: row.source_id,
+            state: "active",
+            tier: "feed",
+            properties: { ...row.properties, blob_ref: "blob" },
+          } as unknown as Row);
+        }
+        return Promise.resolve();
+      },
+      inspect: (_: string, by: { source_ids: readonly string[] }) =>
+        Promise.resolve({
+          items: saved.filter((row) =>
+            by.source_ids.includes(row.source_id ?? ""),
+          ),
+          tombstones: [],
+        }),
+      linked: () => Promise.resolve(saved),
+      signal: new AbortController().signal,
+      log: {
+        condition: (_: string, text: string) => void conditions.push(text),
+      },
+    };
+    const done = await savePictures(context as never, {
+      setting: "save",
+      privateHosts: new Set(),
+      now: () => clock,
+      fetch: () => {
+        clock += minutes * 60_000;
+        return Promise.resolve({
+          ok: true,
+          bytes: Uint8Array.of(1, 2, 3, n),
+          mime_type: "image/png",
+          width: 8,
+          height: 8,
+          url: "https://pics.example/x.png",
+        } satisfies Picture);
+      },
+    });
+    return { done, conditions, manifests, saved };
+  }
+
+  it("is ten minutes", () => {
+    expect(maxPassMs).toBe(10 * 60 * 1000);
+  });
+
+  it("starts no fetch after that, leaves the rest pending for the next run, and says so", async () => {
+    // Each fetch takes four minutes: three start before the tenth minute.
+    const slow = await pass(4);
+    expect(slow.done.fetched).toBe(3);
+    expect(slow.done.saved).toBe(3);
+    expect(slow.done.left).toBe(2);
+    expect(slow.conditions).toHaveLength(1);
+    expect(slow.conditions[0]).toContain("10 minutes");
+    const pending = slow.manifests.flatMap((one) => {
+      const [, values] = one as [
+        unknown,
+        { rss_pictures: { pending: string[] } },
+      ];
+      return values.rss_pictures.pending;
+    });
+    expect(pending).toHaveLength(2);
+  });
+
+  it("raises nothing when every picture was fetched in time", async () => {
+    const quick = await pass(0);
+    expect(quick.done.saved).toBe(5);
+    expect(quick.done.left).toBe(0);
+    expect(quick.conditions).toEqual([]);
   });
 });

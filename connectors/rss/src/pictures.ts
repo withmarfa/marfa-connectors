@@ -8,6 +8,7 @@ import type {
   RunContext,
   TypeDefinition,
 } from "@withmarfa/connector";
+import { hostOf } from "@withmarfa/connector/network";
 import { fetchPicture, type PictureType } from "@withmarfa/connector/pictures";
 import rssEntry from "./rss.entry.json" with { type: "json" };
 import rssPicture from "./rss.picture.json" with { type: "json" };
@@ -16,7 +17,8 @@ import rssPicture from "./rss.picture.json" with { type: "json" };
  * What the connector does with the pictures an entry points to:
  *
  * - `addresses`: nothing. The entry keeps the addresses in its text.
- * - `save`: saves the pictures of each entry in the feed as files.
+ * - `save`: saves the pictures of each entry as files, in the tier the entry
+ *   is in.
  * - `save-in-library`: saves the pictures of each entry that is in the
  *   library, and of none that is in the feed.
  */
@@ -68,6 +70,10 @@ export const maxPicturesPerRun = 100;
 /** A picture that would take the bytes saved in one run past this is left
  *  for the next run. */
 export const maxBytesPerRun = 200 * 1024 * 1024;
+/** No picture is fetched after the pass has run this long. The pictures it
+ *  did not reach stay pending for the next run. A fetch that has begun may
+ *  take up to 30 seconds more. */
+export const maxPassMs = 10 * 60 * 1000;
 /** A picture whose fetch fails in a way that may pass is asked for this many
  *  times, a run at a time, before it is not kept. */
 export const maxAttempts = 3;
@@ -204,8 +210,36 @@ export function titleOf(address: string, type: PictureType): string {
 
 type Context = Pick<
   RunContext<EnvDeclaration>,
-  "held" | "archive" | "derive" | "upsert" | "inspect" | "signal" | "log"
+  | "held"
+  | "archive"
+  | "derive"
+  | "upsert"
+  | "inspect"
+  | "linked"
+  | "signal"
+  | "log"
 >;
+
+/**
+ * The hosts a picture of an entry may be fetched from although they resolve to
+ * this machine or a private network: the host the owner listed, and only when
+ * it is also the host of the entry's own feed. The owner's leave is for the
+ * feed it was given for, so a feed's text cannot send the connector to an
+ * internal host that is listed for another.
+ */
+export function privateHostsFor(
+  listed: ReadonlySet<string>,
+  feedOrigin: unknown,
+  address: string,
+): ReadonlySet<string> {
+  const feed = typeof feedOrigin === "string" ? URL.parse(feedOrigin) : null;
+  const picture = URL.parse(address);
+  if (feed === null || picture === null) return new Set();
+  const host = hostOf(picture);
+  return host === hostOf(feed) && listed.has(host)
+    ? new Set([host])
+    : new Set();
+}
 
 /** The manifests the entries hold, by `source_id`, for a read to carry. */
 export async function manifestsHeld(
@@ -247,32 +281,50 @@ export interface Saved {
   notKept: number;
   left: number;
   swept: number;
+  revived: number;
 }
 
 /**
- * One pass over the entries that are in the tier the setting names: archives
- * the pictures of entries that are no longer active, and for each entry whose
- * pictures are not all accounted for, saves what it can and records the rest.
+ * One pass over the entries the setting names: archives the pictures of
+ * entries that are no longer active, brings back those of entries that are
+ * active again, and for each entry whose pictures are not all accounted for,
+ * saves what it can and records the rest.
  */
 export async function savePictures(
   context: Context,
   options: {
     setting: Exclude<PicturesSetting, "addresses">;
     privateHosts: ReadonlySet<string>;
+    /** The clock the pass is timed by, in milliseconds; for tests. */
+    now?: () => number;
+    /** The picture fetch; for tests. */
+    fetch?: typeof fetchPicture;
   },
 ): Promise<Saved> {
-  const tier = options.setting === "save" ? "feed" : "library";
-  const result: Saved = { fetched: 0, saved: 0, notKept: 0, left: 0, swept: 0 };
+  const now = options.now ?? Date.now;
+  const fetch = options.fetch ?? fetchPicture;
+  const started = now();
+  const result: Saved = {
+    fetched: 0,
+    saved: 0,
+    notKept: 0,
+    left: 0,
+    swept: 0,
+    revived: 0,
+  };
   const entries = await context.held(rssEntry.id, { state: "any" });
   const states = new Map(entries.map((row) => [row.id, row]));
   const pictures = new Map<string, Item>();
-  for (const row of await context.held(pictureTypeId, { state: "any" })) {
-    if (row.source_id !== undefined) pictures.set(row.source_id, row);
-  }
+  const readPictures = async (): Promise<void> => {
+    for (const row of await context.held(pictureTypeId, { state: "any" })) {
+      if (row.source_id !== undefined) pictures.set(row.source_id, row);
+    }
+  };
+  await readPictures();
 
   // A picture follows its entry out of use: one whose entry is archived,
-  // trashed or gone is archived with it. It is not brought back if the entry
-  // is, since a person may have archived it for their own reasons.
+  // trashed or gone is archived with it. The kit leaves a row a person has
+  // restored since, so what was archived is read back rather than assumed.
   const gone = [...pictures]
     .filter(
       ([id, row]) =>
@@ -281,17 +333,25 @@ export async function savePictures(
     .map(([id]) => id);
   if (gone.length > 0) {
     await context.archive(pictureTypeId, gone);
-    result.swept = gone.length;
+    await readPictures();
+    result.swept = gone.filter(
+      (id) => pictures.get(id)?.state === "archived",
+    ).length;
   }
 
+  // Pictures of an active entry that are archived: the kit brings back the
+  // ones this connector archived when the entry is written again, and leaves
+  // the ones a person or anything else archived.
+  const revival: string[] = [];
+  let limit: string | undefined;
   let bytes = 0;
-  let full = false;
   for (const entry of entries) {
     const entryId = entry.source_id;
+    const tier = entry.tier ?? "feed";
     if (
       entryId === undefined ||
       entry.state !== "active" ||
-      (entry.tier ?? "feed") !== tier
+      (options.setting === "save-in-library" && tier !== "library")
     ) {
       continue;
     }
@@ -306,17 +366,41 @@ export async function savePictures(
     const prior = manifestOf(entry.properties[manifestField]);
     if (prior === undefined && addresses.length === 0) continue;
     const same = prior?.text === text ? prior : undefined;
+
+    // The pictures of this entry that Marfa shows attached to it. A run that
+    // stopped after a picture was saved leaves the picture without its
+    // connection, since connections are written when a run ends.
+    let attached: Set<string> | undefined;
+    const attachedIds = async (): Promise<Set<string>> => {
+      attached ??= new Set(
+        (
+          await context.linked(
+            pictureTypeId,
+            "attached-to",
+            { type: rssEntry.id, id: entryId },
+            { rows: "all" },
+          )
+        ).map((row) => row.id),
+      );
+      return attached;
+    };
+
     // An entry is left alone while its manifest still tells the truth: the
     // text is the one it was read from, nothing waits, and each picture it
-    // lists is still held.
-    if (
-      same?.pending.length === 0 &&
-      same.saved.every((address) => {
-        const state = pictures.get(pictureId(entry.id, address))?.state;
-        return state === "active" || state === "archived";
-      })
-    ) {
-      continue;
+    // lists is held, active and attached to it.
+    if (same?.pending.length === 0) {
+      const listed = same.saved.map((address) =>
+        pictures.get(pictureId(entry.id, address)),
+      );
+      if (listed.every((row) => row?.state === "active")) {
+        const attachedTo =
+          listed.length === 0 ? new Set<string>() : await attachedIds();
+        if (
+          listed.every((row) => row !== undefined && attachedTo.has(row.id))
+        ) {
+          continue;
+        }
+      }
     }
 
     const next: Manifest = { text, saved: [], pending: [], not_kept: {} };
@@ -341,6 +425,10 @@ export async function savePictures(
             await context.inspect(pictureTypeId, { source_ids: missing })
           ).tombstones.map((one) => one.key),
     );
+    const repairs: Entry[] = [];
+    const connection = {
+      "attached-to": [{ type: rssEntry.id, id: entryId }],
+    };
     for (const address of open) {
       context.signal.throwIfAborted();
       const id = ids.get(address) ?? "";
@@ -348,28 +436,56 @@ export async function savePictures(
       if (held !== undefined) {
         if (held.state === "trashed" || held.state === "revoked") {
           next.not_kept[address] = "removed";
-        } else next.saved.push(address);
+          continue;
+        }
+        next.saved.push(address);
+        const archived = held.state === "archived";
+        if (archived || !(await attachedIds()).has(held.id)) {
+          // The row as it is, written again with its connection.
+          repairs.push({
+            source_id: id,
+            properties: Object.fromEntries(
+              pictureKind.fields
+                .filter((field) => held.properties[field] !== undefined)
+                .map((field) => [field, held.properties[field]]),
+            ),
+            tier: held.tier,
+            connections: connection,
+          });
+          if (archived) revival.push(id);
+        }
         continue;
       }
       if (purged.has(id)) {
         next.not_kept[address] = "removed";
         continue;
       }
-      if (full || result.fetched >= maxPicturesPerRun) {
+      if (limit === undefined) {
+        if (result.fetched >= maxPicturesPerRun) {
+          limit = `${String(maxPicturesPerRun)} pictures`;
+        } else if (now() - started >= maxPassMs) {
+          limit = `${String(maxPassMs / 60_000)} minutes`;
+        }
+      }
+      if (limit !== undefined) {
         next.pending.push(address);
         const tried = same?.attempts?.[address];
         if (tried !== undefined) attempts[address] = tried;
         continue;
       }
       result.fetched += 1;
-      const got = await fetchPicture(address, {
-        privateHosts: options.privateHosts,
+      const got = await fetch(address, {
+        privateHosts: privateHostsFor(
+          options.privateHosts,
+          entry.properties["feed_origin"],
+          address,
+        ),
         signal: context.signal,
       });
       let failure: string;
       if (!got.ok) failure = got.reason;
       else if (bytes + got.bytes.length > maxBytesPerRun) {
-        full = true;
+        limit = `${String(maxBytesPerRun / 1024 / 1024)} MiB`;
         next.pending.push(address);
         const tried = same?.attempts?.[address];
         if (tried !== undefined) attempts[address] = tried;
@@ -382,7 +498,7 @@ export async function savePictures(
             source_url: address,
           },
           tier,
-          connections: { "attached-to": [{ type: rssEntry.id, id: entryId }] },
+          connections: connection,
           file: {
             key: sha256(got.bytes),
             load: () =>
@@ -413,6 +529,7 @@ export async function savePictures(
       }
       next.not_kept[address] = failure;
     }
+    if (repairs.length > 0) await context.upsert(pictureTypeId, repairs);
     if (Object.keys(attempts).length > 0) next.attempts = attempts;
     if (over > 0) next.over = over;
     result.notKept += Object.keys(next.not_kept).length;
@@ -421,10 +538,16 @@ export async function savePictures(
       await context.derive(rssEntry.id, [entryId], { [manifestField]: next });
     }
   }
-  if (result.left > 0 && (full || result.fetched >= maxPicturesPerRun)) {
+  if (revival.length > 0) {
+    await readPictures();
+    result.revived = revival.filter(
+      (id) => pictures.get(id)?.state === "active",
+    ).length;
+  }
+  if (result.left > 0 && limit !== undefined) {
     context.log.condition(
       "pictures:limit",
-      `this run reached its limit of ${String(maxPicturesPerRun)} pictures or ${String(maxBytesPerRun / 1024 / 1024)} MiB, so ${String(result.left)} are left for the next run`,
+      `this run reached its limit of ${limit}, so ${String(result.left)} pictures are left for the next run`,
     );
   }
   return result;
