@@ -238,6 +238,7 @@ async function fixture(content = png, mime = "image/png") {
                 { token: "review-token", base: github.url },
                 undefined,
                 { token: undefined, scopeText: undefined },
+                true,
                 [],
               ),
           }),
