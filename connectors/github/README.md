@@ -138,7 +138,7 @@ A repository the setting names is read only when the run syncs it. One the run d
 
 Files are read on scheduled runs. Each run asks GitHub for the default branch's whole tree in one request, with the answer's ETag from the last complete read, so a run on an unchanged branch costs one request and writes nothing. A changed branch costs one request more for each file that is new or changed. A renamed default branch is followed.
 
-Each row's identity is the repository's GitHub node id and the path. A file moved or renamed with the same content keeps its row, and so does a directory whose files moved with it. A file removed from GitHub or from the named paths is archived, and so is a directory left with no synced file.
+Each row's identity is the repository's GitHub node id and the path. A file moved or renamed with the same content keeps its row, and so does a directory whose files moved with it. A file removed from GitHub, or moved there out of the named paths, is archived, and so is a directory left with no synced file. Taking a path or a repository out of `GITHUB_FILES` archives nothing: its rows are left as they are.
 
 ### When a read falls short
 
@@ -153,7 +153,7 @@ Nothing is archived in a run that does not read the whole tree, and each case is
 
 A fine-grained personal access token needs Contents read access on the repositories `GITHUB_FILES` names. The App's manifest asks for the Contents read permission; an App registered before needs its owner to add Contents read in the App's settings on GitHub, and each installation's owner to accept it. Until then, the run names `files-unlisted` for each such repository.
 
-The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up.
+The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up. The connector declares these types whether or not `GITHUB_FILES` is set, so a key minted before them is refused at the start: mint a new one as Setting it up says. Its first start also needs `--metadata-permission edge_types=write`, since `github.in-repository` widens to the new types.
 
 ## Setting it up
 
