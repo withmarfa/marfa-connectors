@@ -167,7 +167,7 @@ What the process that reads stars does to the rows the other process syncs:
 
 These hold only with some limits:
 
-- Every process must run a version of the connector that writes `synced`, and every key needs `types=write` once to add the field. A process on an earlier version still holds the star fields and puts back the marks the other process sets.
+- Every process must run a version of the connector that writes `synced`, and the field is added only by a process whose key holds `types=write`. A process on an earlier version reads stars whatever `GITHUB_STARS` says, puts back the marks the other process sets, and can archive a row the other process syncs when that repository loses its star.
 - A process removed for good leaves its rows with `synced` set to `true`, so a lost star only unmarks them. Archive those rows in Marfa if they are no longer wanted.
 - A repository that moves from the process that reads stars to the other one can have its other read-only fields, such as `description`, put back by the first process, which still holds what it last wrote. The second process writes them again on its next run, so nothing is lost, but such a field can go back and forth between the two processes' runs. Give a repository to one process for good rather than moving it.
 
