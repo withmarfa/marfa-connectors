@@ -86,6 +86,21 @@ export type Reason = "removed" | "not_https";
 /** Failures that may pass, which are asked for again in a later run. */
 const transient = new Set(["timed_out", "fetch_failed", "upload_failed"]);
 
+/**
+ * Whether a refused picture may be fetched later. A failure of the transfer
+ * may pass. So may an answer that asks a client to wait or try again: 408,
+ * 425, 429 and any 5xx. Any other status, such as a 404 or a 403, is a
+ * host's answer about this picture and stays refused.
+ */
+export function mayPass(reason: string, status?: number): boolean {
+  if (transient.has(reason)) return true;
+  return (
+    reason === "bad_status" &&
+    status !== undefined &&
+    (status === 408 || status === 425 || status === 429 || status >= 500)
+  );
+}
+
 export interface Manifest {
   /** A hash of the text the addresses were read from. */
   text: string;
@@ -210,14 +225,7 @@ export function titleOf(address: string, type: PictureType): string {
 
 type Context = Pick<
   RunContext<EnvDeclaration>,
-  | "held"
-  | "archive"
-  | "derive"
-  | "upsert"
-  | "inspect"
-  | "linked"
-  | "signal"
-  | "log"
+  "held" | "archive" | "derive" | "upsert" | "inspect" | "signal" | "log"
 >;
 
 /**
@@ -239,6 +247,16 @@ export function privateHostsFor(
   return host === hostOf(feed) && listed.has(host)
     ? new Set([host])
     : new Set();
+}
+
+/** Whether a picture row, read with its edges, holds an `attached-to`
+ *  connection to the entry row. */
+function isAttached(picture: Item, entryRow: string): boolean {
+  return (
+    picture.edges?.[attachedTo.id]?.data.some(
+      (edge) => edge.target_id === entryRow,
+    ) ?? false
+  );
 }
 
 /** The manifests the entries hold, by `source_id`, for a read to carry. */
@@ -314,9 +332,16 @@ export async function savePictures(
   };
   const entries = await context.held(rssEntry.id, { state: "any" });
   const states = new Map(entries.map((row) => [row.id, row]));
+  // The connector's pictures are read in pages of up to 200, each row with
+  // the connections it holds, so that whether a picture is attached to its
+  // entry is known without asking about each entry. A read that fails ends
+  // the pass before it has written anything; the next run reads again.
   const pictures = new Map<string, Item>();
   const readPictures = async (): Promise<void> => {
-    for (const row of await context.held(pictureTypeId, { state: "any" })) {
+    for (const row of await context.held(pictureTypeId, {
+      state: "any",
+      edges: true,
+    })) {
       if (row.source_id !== undefined) pictures.set(row.source_id, row);
     }
   };
@@ -367,40 +392,19 @@ export async function savePictures(
     if (prior === undefined && addresses.length === 0) continue;
     const same = prior?.text === text ? prior : undefined;
 
-    // The pictures of this entry that Marfa shows attached to it. A run that
-    // stopped after a picture was saved leaves the picture without its
-    // connection, since connections are written when a run ends.
-    let attached: Set<string> | undefined;
-    const attachedIds = async (): Promise<Set<string>> => {
-      attached ??= new Set(
-        (
-          await context.linked(
-            pictureTypeId,
-            "attached-to",
-            { type: rssEntry.id, id: entryId },
-            { rows: "all" },
-          )
-        ).map((row) => row.id),
-      );
-      return attached;
-    };
-
     // An entry is left alone while its manifest still tells the truth: the
     // text is the one it was read from, nothing waits, and each picture it
-    // lists is held, active and attached to it.
-    if (same?.pending.length === 0) {
-      const listed = same.saved.map((address) =>
-        pictures.get(pictureId(entry.id, address)),
-      );
-      if (listed.every((row) => row?.state === "active")) {
-        const attachedTo =
-          listed.length === 0 ? new Set<string>() : await attachedIds();
-        if (
-          listed.every((row) => row !== undefined && attachedTo.has(row.id))
-        ) {
-          continue;
-        }
-      }
+    // lists is held, active and attached to it. A run that stopped after a
+    // picture was saved leaves the picture without its connection, since
+    // connections are written when a run ends.
+    if (
+      same?.pending.length === 0 &&
+      same.saved.every((address) => {
+        const row = pictures.get(pictureId(entry.id, address));
+        return row?.state === "active" && isAttached(row, entry.id);
+      })
+    ) {
+      continue;
     }
 
     const next: Manifest = { text, saved: [], pending: [], not_kept: {} };
@@ -440,7 +444,7 @@ export async function savePictures(
         }
         next.saved.push(address);
         const archived = held.state === "archived";
-        if (archived || !(await attachedIds()).has(held.id)) {
+        if (archived || !isAttached(held, entry.id)) {
           // The row as it is, written again with its connection.
           repairs.push({
             source_id: id,
@@ -483,8 +487,11 @@ export async function savePictures(
         signal: context.signal,
       });
       let failure: string;
-      if (!got.ok) failure = got.reason;
-      else if (bytes + got.bytes.length > maxBytesPerRun) {
+      let status: number | undefined;
+      if (!got.ok) {
+        failure = got.reason;
+        status = got.status;
+      } else if (bytes + got.bytes.length > maxBytesPerRun) {
         limit = `${String(maxBytesPerRun / 1024 / 1024)} MiB`;
         next.pending.push(address);
         const tried = same?.attempts?.[address];
@@ -519,7 +526,7 @@ export async function savePictures(
         }
         failure = "upload_failed";
       }
-      if (transient.has(failure)) {
+      if (mayPass(failure, status)) {
         const tries = (same?.attempts?.[address] ?? 0) + 1;
         if (tries < maxAttempts) {
           next.pending.push(address);

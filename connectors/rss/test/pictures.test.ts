@@ -25,6 +25,7 @@ import {
   maxPassMs,
   maxPicturesPerEntry,
   maxPicturesPerRun,
+  mayPass,
   privateHostsFor,
   savePictures,
   titleOf,
@@ -738,6 +739,161 @@ describe("the pictures an entry points to", () => {
     expect(rows()).toHaveLength(2);
   }, 60_000);
 
+  it("asks again for a picture whose host said it was busy, and saves it in a later run", async () => {
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/busy.png")) },
+    ];
+    pictures["/busy.png"] = { status: 503 };
+    expect((await once()).code).toBe(0);
+    expect(manifest("e1").pending).toEqual([at("/busy.png")]);
+    expect(manifest("e1").not_kept).toEqual({});
+    expect(filesOf("e1")).toEqual([]);
+
+    pictures["/busy.png"] = { body: png(1) };
+    expect((await once()).code).toBe(0);
+    expect(manifest("e1").saved).toEqual([at("/busy.png")]);
+    expect(manifest("e1").pending).toEqual([]);
+    expect(filesOf("e1")).toHaveLength(1);
+  });
+
+  it("asks again, a run at a time, for a picture whose host said to slow down, then stops", async () => {
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/slow.png")) },
+    ];
+    pictures["/slow.png"] = { status: 429 };
+    expect((await once()).code).toBe(0);
+    expect(manifest("e1").pending).toEqual([at("/slow.png")]);
+    expect((await once()).code).toBe(0);
+    expect(manifest("e1").pending).toEqual([at("/slow.png")]);
+    expect((await once()).code).toBe(0);
+    expect(manifest("e1").pending).toEqual([]);
+    expect(manifest("e1").not_kept).toEqual({
+      [at("/slow.png")]: "bad_status",
+    });
+
+    asked = [];
+    expect((await once()).code).toBe(0);
+    expect(asked).toEqual([]);
+  });
+
+  it("never asks again for a picture the host said was missing", async () => {
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/gone.png")) },
+    ];
+    pictures["/gone.png"] = { status: 404 };
+    expect((await once()).code).toBe(0);
+    expect(manifest("e1").pending).toEqual([]);
+    expect(manifest("e1").not_kept).toEqual({
+      [at("/gone.png")]: "bad_status",
+    });
+
+    // It is there now, and the connector does not look until the text changes.
+    pictures["/gone.png"] = { body: png(1) };
+    asked = [];
+    expect((await once()).code).toBe(0);
+    expect(asked).toEqual([]);
+    expect(filesOf("e1")).toEqual([]);
+  });
+
+  it("reads the pictures it holds in pages, not once for each entry, however often it runs", async () => {
+    // Eleven entries of twenty pictures each: 220 pictures, which one read
+    // of 200 does not hold. A run over each entry's attachments would ask
+    // eleven times.
+    pictures = {};
+    documents["/one.json"] = Array.from({ length: 11 }, (_, e) => ({
+      id: `e${String(e)}`,
+      title: `Entry ${String(e)}`,
+      content_html: Array.from({ length: maxPicturesPerEntry }, (_, p) => {
+        const path = `/${String(e)}-${String(p)}.png`;
+        pictures[path] = { body: png(1) };
+        return img(at(path));
+      }).join(""),
+    }));
+    // A run saves at most 100 pictures: three runs save all 220.
+    for (let runs = 0; runs < 3; runs += 1) {
+      expect((await once()).code).toBe(0);
+    }
+    // The witness for the absence below: saving does write these ways.
+    expect(marfa.requestsTo("POST", "/items/bulk")).not.toEqual([]);
+    expect(marfa.requestsTo("POST", "/edges/bulk")).not.toEqual([]);
+    expect(marfa.rows.filter((row) => row.type === "rss.picture")).toHaveLength(
+      220,
+    );
+    expect(manifest("e0").pending).toEqual([]);
+
+    marfa.requests = [];
+    asked = [];
+    const idle = await once();
+    expect(idle.code).toBe(0);
+    expect(asked).toEqual([]);
+    const listings = marfa.requestsTo("GET", "/items");
+    const pictureReads = listings.filter(
+      (one) => one.query.get("type") === "rss.picture",
+    );
+    expect(pictureReads).toHaveLength(2);
+    for (const one of pictureReads) {
+      expect(one.query.get("include")).toBe("edges");
+      expect(one.query.get("limit")).toBe("200");
+    }
+    // No read asks which pictures are attached to one entry.
+    expect(listings.filter((one) => one.query.get("filter") !== null)).toEqual(
+      [],
+    );
+    // Nor does any write: an idle run changes nothing.
+    expect(marfa.requestsTo("POST", "/items/bulk")).toEqual([]);
+    expect(marfa.requestsTo("POST", "/edges/bulk")).toEqual([]);
+    expect(idle.output).toContain("0 saved");
+  }, 180_000);
+
+  it("keeps what it saved and tries again next run when the read of its pictures fails", async () => {
+    pictures["/a.png"] = { body: png(1) };
+    pictures["/b.png"] = { body: png(2) };
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/a.png")) },
+    ];
+    expect((await once()).code).toBe(0);
+    const held = marfa.rows.filter((row) => row.type === "rss.picture");
+    expect(held).toHaveLength(1);
+    const versions = held.map((row) => row.version);
+
+    // The server says to slow down when the connector reads its pictures,
+    // and a second entry comes into the feed.
+    documents["/one.json"] = [
+      { id: "e1", title: "One", content_html: img(at("/a.png")) },
+      { id: "e2", title: "Two", content_html: img(at("/b.png")) },
+    ];
+    marfa.refuseWhere(
+      "GET /items",
+      (request) => request.query.get("type") === "rss.picture",
+      429,
+      "rate_limited",
+    );
+    asked = [];
+    const refused = await once();
+    // The feeds are not failed, the new entry is written, and nothing is
+    // fetched or changed for the pictures.
+    expect(refused.code).toBe(0);
+    expect(refused.output).toContain(
+      "the pictures could not be saved this run",
+    );
+    expect(refused.output).toContain("rate_limited");
+    expect(entry("e2")).toBeDefined();
+    expect(asked).toEqual([]);
+    expect(filesOf("e1")).toHaveLength(1);
+    expect(
+      marfa.rows
+        .filter((row) => row.type === "rss.picture")
+        .map((row) => row.version),
+    ).toEqual(versions);
+
+    marfa.stopRefusing();
+    expect((await once()).code).toBe(0);
+    expect(asked).toEqual(["/b.png"]);
+    expect(filesOf("e1")).toHaveLength(1);
+    expect(filesOf("e2")).toHaveLength(1);
+    expect(manifest("e2").saved).toEqual([at("/b.png")]);
+  });
+
   it("saves the pictures of an entry in the library, at the library tier, and of one in the feed at the feed tier", async () => {
     pictures["/a.png"] = { body: png(1) };
     pictures["/b.png"] = { body: png(2) };
@@ -922,6 +1078,44 @@ describe("the hosts a picture may be fetched from", () => {
   });
 });
 
+describe("a refusal that may pass", () => {
+  it.each([
+    ["timed_out", undefined],
+    ["fetch_failed", undefined],
+    ["upload_failed", undefined],
+    ["bad_status", 408],
+    ["bad_status", 425],
+    ["bad_status", 429],
+    ["bad_status", 500],
+    ["bad_status", 502],
+    ["bad_status", 503],
+    ["bad_status", 504],
+    ["bad_status", 599],
+  ])("%s %s may pass", (reason, status) => {
+    expect(mayPass(reason, status)).toBe(true);
+  });
+
+  it.each([
+    ["bad_status", 400],
+    ["bad_status", 401],
+    ["bad_status", 403],
+    ["bad_status", 404],
+    ["bad_status", 410],
+    ["bad_status", 451],
+    ["bad_status", 302],
+    ["bad_status", 201],
+    ["bad_status", undefined],
+    ["private_address", undefined],
+    ["tracker", undefined],
+    ["too_large", undefined],
+    ["not_a_picture", undefined],
+    ["svg", undefined],
+    ["one_pixel", undefined],
+  ])("%s %s does not", (reason, status) => {
+    expect(mayPass(reason, status)).toBe(false);
+  });
+});
+
 describe("the time a pass over pictures may take", () => {
   const entry = (n: number, pictures: number): Row =>
     ({
@@ -981,7 +1175,6 @@ describe("the time a pass over pictures may take", () => {
           ),
           tombstones: [],
         }),
-      linked: () => Promise.resolve(saved),
       signal: new AbortController().signal,
       log: {
         condition: (_: string, text: string) => void conditions.push(text),

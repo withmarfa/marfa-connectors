@@ -191,7 +191,7 @@ With `RSS_PICTURES` set to `save` or `save-in-library`, the connector fetches th
 
 - A picture a person trashed or purged is never saved again for that entry, even when the entry's text changes.
 - `save` covers entries in the library as well as in the feed.
-- A fetch that fails in a way that may pass is tried up to three times, one run at a time, before it is recorded as not kept.
+- A fetch that fails in a way that may pass (see [When a picture is tried again](#when-a-picture-is-tried-again)) is tried up to three times, one run at a time, before it is recorded as not kept.
 - A picture the entry's text no longer mentions is kept.
 - The time spent fetching pictures in a run is capped at 10 minutes.
 - A private host is allowed for a picture only on the host of its own entry's feed.
@@ -228,7 +228,11 @@ The reason for an address that was not kept is `removed` (a person trashed or pu
 
 - An address in `saved` or `not_kept` is not fetched again while the entry's text is the one in `text`.
 - When the text changes, the connector reads the addresses again. An address that was not kept is tried again; one already saved is kept without a new fetch.
-- A fetch that fails in a way that may pass (`timed_out`, `fetch_failed`, or a file Marfa did not take) stays in `pending` and is tried in the next run, up to three runs in all, and is then recorded as not kept.
+- A fetch that fails in a way that may pass stays in `pending` and is tried in the next run, up to three runs in all, and is then recorded as not kept. These failures may pass:
+  - `timed_out` and `fetch_failed`;
+  - `upload_failed`, a file Marfa did not take;
+  - `bad_status` when the picture's host answered 408, 425, 429 or any status from 500 up, such as a 503 from a host that is busy.
+- Any other `bad_status`, such as a 404 or a 403, is the host's answer about that picture. It is recorded as not kept at once and is not asked for again until the text changes. The connector does not wait for the time a host names in `Retry-After`; it asks again in its next run.
 - A picture a person trashed or purged is not saved again for that entry, even when the text changes.
 - A picture the text no longer mentions stays where it is. The connector never removes a file it saved because the text stopped pointing at it.
 
@@ -245,7 +249,7 @@ The limits are for each run, not for the connector's lifetime. A feed with a lar
 
 An address in `pending` is one the connector has not finished with: it was not reached because a limit came first, or its fetch failed in a way that may pass and it is being tried again. It is not an error, and a person has no step to take. Each run takes up pending addresses again, and an address leaves `pending` when it is saved or recorded as not kept.
 
-A run that has pictures to save does them after every feed has been read, and a failure there is raised as `pictures:failed` and does not fail the feeds.
+A run that has pictures to save does them after every feed has been read. To know which pictures it holds and which are attached to their entries, it reads the connector's `rss.picture` rows with their connections in pages of up to 200, so reading them costs about one request for every 200 pictures, and not one for every entry. A failure in the pictures, including a read that Marfa refuses, such as with `rate_limited`, is raised as `pictures:failed` and does not fail the feeds. The read comes before any picture is fetched or written, so a refused read changes nothing, and the next run reads again.
 
 ### `save` and `save-in-library`
 
