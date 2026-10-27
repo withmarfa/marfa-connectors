@@ -5,10 +5,10 @@ import {
   isHtml,
   NotConvertible,
 } from "@withmarfa/connector/markdown";
+import { privateHostSet } from "@withmarfa/connector/network";
 import { parseFeed, parseJsonFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
-import { isIP } from "node:net";
-import { getFeed, hostOf } from "./fetch.js";
+import { getFeed } from "./fetch.js";
 
 /** Past it a feed is skipped: its entries would be a run's worth of writes. */
 export const maxFeedEntries = 5000;
@@ -221,33 +221,9 @@ export function decodeFeed(
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-/**
- * Hosts the owner allows to resolve to this machine or a private network,
- * separated by whitespace, each read as a URL reads its host: lowercased,
- * an international name in its ASCII form, an IPv6 address in brackets or
- * bare.
- */
+/** Hosts the owner allows to resolve to this machine or a private network, from `RSS_PRIVATE_HOSTS`. */
 export function privateHosts(value: string | undefined): Set<string> {
-  const hosts = new Set<string>();
-  for (const entry of (value ?? "")
-    .split(/\s+/)
-    .filter((part) => part !== "")) {
-    const url = URL.parse(`http://${isIP(entry) === 6 ? `[${entry}]` : entry}`);
-    if (
-      url?.username !== "" ||
-      url.password !== "" ||
-      url.port !== "" ||
-      url.pathname !== "/" ||
-      url.search !== "" ||
-      url.hash !== ""
-    ) {
-      throw new Error(
-        "RSS_PRIVATE_HOSTS holds an entry that is not a host name",
-      );
-    }
-    hosts.add(hostOf(url));
-  }
-  return hosts;
+  return privateHostSet(value, "RSS_PRIVATE_HOSTS");
 }
 
 export async function fetchFeed(

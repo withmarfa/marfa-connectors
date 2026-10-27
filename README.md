@@ -1,6 +1,6 @@
 # marfa-connectors
 
-Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a small process that holds a key to a Marfa instance. It registers itself, heartbeats, pulls from a vendor, receives what the vendor posts to its inbound endpoints, writes what it finds into the instance's feed under its own type, carries changes made in Marfa back to the vendor where it is meant to, and reports each run. A connector never writes into library types; moving a row to the library is a person's or an app's act.
+Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a small process that holds a key to a Marfa instance. It registers itself, heartbeats, pulls from a vendor, receives what the vendor posts to its inbound endpoints, writes what it finds, by default into the instance's feed, under its own type, carries changes made in Marfa back to the vendor where it is meant to, and reports each run. A connector never puts what it reads from a vendor into the library on its own. It may name the library tier only for a row that belongs to something already in the library, such as the picture files of an entry the owner has kept; moving a vendor's row to the library is a person's or an app's act.
 
 ## What is here
 
