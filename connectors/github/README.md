@@ -116,6 +116,45 @@ A rate limit does not let an issue through unchecked. A run for deliveries write
 - **Kept as two items.** GitHub took longer than the wait to show the transfer, so the new issue was written as a row of its own. When the check then follows the old address to an issue that another row holds, the connector archives nothing and does not merge the rows. Both stay active, and a `duplicate:` condition, keyed by the older row, names both rows and says the issue was transferred. A comment copy that has a row of its own, while the row of the comment it copies is still there, is kept the same way, with a `duplicate:` condition keyed by the older comment row, and the daily check does not archive the comment rows of an issue whose row is still active and whose address answers 301. A person decides which to keep, and archiving the older row settles it: the next scheduled run clears the condition, and that of each comment pair, since a row a person archived is not raised again. Archiving the newer row does not: the older row cannot take the issue's node id while the newer row, archived or not, holds it, so the condition stays and names the newer row as archived.
 - **Archived.** The issue moved to a repository the connector cannot read or does not sync, or the address no longer leads to the same issue. The row is archived, and an `issue-moved:` condition says which of these it was. Nothing is archived on a 404: an issue the old address does not know, in a repository that reads, is left as it is under `issue-missing:`. Both conditions clear at the daily check of the repository once the address no longer gives that answer.
 
+## Repository files
+
+With `GITHUB_FILES` set, the connector mirrors the Markdown files under chosen paths of synced repositories into Marfa, read only. Git stays the source: a file changed, moved, or removed on GitHub follows into Marfa, and an edit made in Marfa is put back on the next run, whatever `GITHUB_READ_ONLY` says.
+
+### What syncs
+
+- **Files:** each file ending in `.md` or `.markdown` under a named path, on the repository's default branch, is a `github.repository_file` on `core.note`. Its body is the file's text. Its title is the file name without its extension; a file with a generic name (`README`, `index`, `SKILL`, `AGENTS`, or `CLAUDE`, in any case) takes the name of the directory that holds it, so `skills/review/SKILL.md` is titled `review`. It also holds `repository`, `path`, `blob_sha`, `url` (its address on the default branch), and `private`. Other files are not read.
+- **Directories:** each directory between a named path and a synced file is a `github.directory` on `core.collection`, with `repository`, `path`, `url`, and `private`. A file joins the directory that holds it through Marfa's own `in-collection`. A directory joins its parent through Marfa's own `parent-of`, written from the parent to the child, which the connector declares from the child's side as `child-of`. A directory that holds no synced file, directly or below, is not a row.
+- **Repository:** every file and directory row is joined to its `github.repository` through `github.in-repository`.
+
+Trashing a directory in Marfa trashes the directories below it, since `parent-of` cascades, but not the files in them, since `in-collection` leaves its members in place. The next run puts the rows back.
+
+### The setting
+
+`GITHUB_FILES` holds entries set apart by spaces or semicolons. Each entry is `owner/repo:path`, with several paths set apart by commas, such as `someone/agents:runbooks,skills someone/site:docs/guide.md`. A path is a directory or a file, from the repository's root, without `.` or `..`. A malformed entry stops the start and names the entry.
+
+A repository the setting names is read only when the run syncs it. One the run does not sync is named in a `files-unsynced` condition, and nothing is written for it. One paused because `GITHUB_REPOSITORIES` leaves it out is not read, and its file and directory rows are left as they are.
+
+### How it reads
+
+Files are read on scheduled runs. Each run asks GitHub for the default branch's whole tree in one request, with the answer's ETag from the last complete read, so a run on an unchanged branch costs one request and writes nothing. A changed branch costs one request more for each file that is new or changed. A renamed default branch is followed.
+
+Each row's identity is the repository's GitHub node id and the path. A file moved or renamed with the same content keeps its row, and so does a directory whose files moved with it. A file removed from GitHub or from the named paths is archived, and so is a directory left with no synced file.
+
+### When a read falls short
+
+Nothing is archived in a run that does not read the whole tree, and each case is named in a condition that clears when a later run reads it:
+
+- **A cut tree:** GitHub cuts a very large tree short. Files are added and updated, but none is archived, and the run names `files-unlisted`.
+- **A refused tree:** a 403 or 404 from GitHub for the tree, such as a token without Contents read access, names `files-unlisted`, and the repository's files are left as they are. The other kinds keep syncing.
+- **A missing path:** a named path that is not on the default branch is named in `files-missing`, and nothing under it is archived.
+- **A file that cannot be read:** a file over 512 KiB, one that is not valid UTF-8 text, or one GitHub would not give is skipped and named in `files-skipped`, and any row it had is left as it is. The other files sync.
+
+### Permissions and the key
+
+A fine-grained personal access token needs Contents read access on the repositories `GITHUB_FILES` names. The App's manifest asks for the Contents read permission; an App registered before needs its owner to add Contents read in the App's settings on GitHub, and each installation's owner to accept it. Until then, the run names `files-unlisted` for each such repository.
+
+The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up.
+
 ## Setting it up
 
 ### Personal access token
@@ -132,7 +171,7 @@ GitHub cannot narrow a personal token for one request as it can an installation 
 
 A GitHub App, registered from the manifest the connector serves:
 
-1. Mint the connector's key, as `template/README.md` says, with `--type-permission` for the eight types (`github.repository`, `github.issue`, `github.discussion`, `github.comment`, `github.pull_request`, `github.notification`, `github.file`, and `github.file.image`), `--edge-permission` for `github.in-repository`, `github.sub-issue-of`, `github.blocked-by`, `github.relates-to`, `github.duplicate-of`, `github.closes`, `github.closed-by`, `in-thread`, `references`, `attached-to`, and `parent-of` (the edge type the connector's `child-of` writes), `--metadata-permission types=write --metadata-permission edge_types=write`, and no `--permission`: `types=write` registers the types and keeps them current, and `edge_types=write` is needed to register connection types on first start and again when an upgrade widens their endpoint constraints. After registration or widening, the kit says how to narrow the key.
+1. Mint the connector's key, as `template/README.md` says, with `--type-permission` for the ten types (`github.repository`, `github.issue`, `github.discussion`, `github.comment`, `github.pull_request`, `github.notification`, `github.file`, `github.file.image`, `github.repository_file`, and `github.directory`), `--edge-permission` for `github.in-repository`, `github.sub-issue-of`, `github.blocked-by`, `github.relates-to`, `github.duplicate-of`, `github.closes`, `github.closed-by`, `in-thread`, `references`, `attached-to`, `in-collection`, and `parent-of` (the edge type the connector's `child-of` writes), `--metadata-permission types=write --metadata-permission edge_types=write`, and no `--permission`: `types=write` registers the types and keeps them current, and `edge_types=write` is needed to register connection types on first start and again when an upgrade widens their endpoint constraints. After registration or widening, the kit says how to narrow the key.
 2. With `MARFA_API_URL`, `MARFA_API_KEY` and, where the instance has one, its public address as `GITHUB_PUBLIC_URL`, run `node dist/main.js --setup <file>`, naming a file outside the checkout and every other git working tree, such as one in the home directory: setup refuses a file in a folder that holds a `.git` or under one. Open the address it logs, continue to GitHub, create the App, named Marfa Connectors unless `GITHUB_APP_NAME` names another (GitHub holds each name once, so a second person's App needs its own), and install it on the repositories to sync from the address the setup logs next. For an organization's App, set `GITHUB_ORGANIZATION`.
 3. Move the three secrets the file holds into the secret store and delete the file.
 
@@ -150,6 +189,7 @@ Without a public address the App's webhook is off, and the connector notices cha
 - `GITHUB_READ_ONLY`: `true` for every kind, or a comma-separated list of `repository`, `issue`, `comment`, `discussion`, `pull_request`, `notification`, `file`, and `image`. With an App, a listed kind is read only and its imported rows' local edits are put back; other kinds can still carry changes. The `issue` setting also covers writable issue relations, including related issues; comments, on issues and on discussions, remain writable unless `comment` is listed too, and discussions unless `discussion` is. Duplicate connections are always read only. Repositories, pull requests, notifications and retained files are always read only. `false` or unset keeps App issues, discussions and comments two-way. Unknown kinds and empty list members refuse startup. Personal token runs stay read only with any valid setting.
 - `GITHUB_STARS`: `true` (the default) or `false`, optional; anything else refuses startup. `false` turns off reading stars for this process: it lists none, asks GitHub for none, holds no `starred` or `starred_at` field, so it never writes or puts back a mark, and archives no repository row for a star, with no `stars-unreadable` condition. Set it to `false` on every process but one when several processes use one Marfa instance, since a star is a fact about the person and each process's token would otherwise list the same stars from its own view and unmark the rows the other process marked.
 - `GITHUB_REPOSITORIES`: the repositories to sync, as `owner/repo` or `owner/*`, set apart by commas or spaces, in any case; optional, every repository the selected authentication method sees otherwise. A malformed entry stops the start.
+- `GITHUB_FILES`: the repositories and paths whose Markdown files to mirror, as `owner/repo:path`, with paths set apart by commas and entries by spaces or semicolons; optional, no files otherwise. A malformed entry stops the start. See Repository files.
 - `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_APP_NAME`: for the setup, optional. The public address's own path, where the instance sits behind a prefix, is kept before the webhook's.
 - `GITHUB_API_URL`: optional, for a stub of the API; GitHub's otherwise. GitHub Enterprise Server is not tested.
 
@@ -183,6 +223,7 @@ Each installation token the connector asks GitHub for reaches no more than its u
 - A classic token, `GITHUB_NOTIFICATIONS_TOKEN`, is a separate matter: it is sent to the notifications listing and, where `GITHUB_PERSONAL_TOKEN` is not set, to the star listing and the read of one repository that backs it, and never used for a write.
 - One reads the Discussions of those repositories, with its own permission, so an installation that has not accepted the Discussions permission fails only this token, and only Discussions are left unread.
 - One finds where an issue, comment or discussion named by a change sits, reading only, with the Discussions read permission for a discussion or one of its comments, across the repositories the connector holds under the installation. Where GitHub will not name one of them, as for a repository taken from the installation since the last scheduled run, or one whose id is not yet recorded, it reaches the whole installation instead; a change is still carried only into a synced repository.
+- One reads the trees and files of the repositories `GITHUB_FILES` names that the run syncs, with the Contents read permission, so an installation that has not accepted that permission fails only this token, and only repository files are left unread.
 - One for each change made in Marfa writes issues and comments only in the synced repositories that change touches: its own, and that of the issue at the other end of a relation it draws or removes. A paused repository is never among them. Where GitHub will not mint one, as for a repository gone from the installation since the last scheduled run, only the changes touching that repository wait. A change in a repository whose id is not yet recorded waits for the next scheduled run, which records it, and the run says so. A change to a discussion or to a comment on one asks for a write token that carries the Discussions write permission and no more. With `GITHUB_READ_ONLY=true`, or `issue`, `comment` and `discussion` all listed, no write token is requested.
 
 GitHub names at most 500 repositories to a token, so past that many synced or paused under one installation, the token that reads reaches every repository of it, and the run says so; a token for a change names far fewer.
