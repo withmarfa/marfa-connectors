@@ -1007,7 +1007,7 @@ describe("an entry's content and image", () => {
       ]);
     });
 
-    it("converts a JSON Feed's content_html and keeps its content_text, which wins when both exist", () => {
+    it("converts a JSON Feed's content_html, which wins when both exist, and keeps its content_text", () => {
       const bodies = readFeed(
         at("https://example.org/feed.json"),
         JSON.stringify({
