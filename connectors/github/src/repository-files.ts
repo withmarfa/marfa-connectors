@@ -431,7 +431,8 @@ async function syncRepositoryFiles(
       row?.state === "trashed" ||
       (row?.state === "active" &&
         row.properties["blob_sha"] === blob.sha &&
-        row.properties["url"] === url)
+        row.properties["url"] === url &&
+        row.properties["private"] === repository.private)
     )
       continue;
     let body: string | undefined;

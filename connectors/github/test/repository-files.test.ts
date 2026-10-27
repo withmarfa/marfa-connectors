@@ -400,6 +400,21 @@ describe("repository files", { timeout: 60_000 }, () => {
     );
   });
 
+  it("marks a file restored from the bin private once its repository has turned private", async () => {
+    repository.private = false;
+    await sync();
+    const access = file("runbooks/access.md");
+    if (access === undefined) throw new Error("no row");
+    marfa.trash(access.id);
+    repository.private = true;
+    await sync();
+    marfa.restore(access.id);
+    expect(file("runbooks/access.md")?.properties["private"]).toBe(false);
+    files().set("runbooks/new.md", "# New\n");
+    await sync();
+    expect(file("runbooks/access.md")?.properties["private"]).toBe(true);
+  });
+
   it("marks the files and directories of a paused repository private when it turns private", async () => {
     repository.private = false;
     github.addRepository("someone/other");
