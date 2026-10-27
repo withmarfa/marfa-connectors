@@ -1,5 +1,5 @@
 import { Parser } from "htmlparser2";
-import { Marked } from "marked";
+import { Marked, type Tokens } from "marked";
 import TurndownService from "turndown";
 import {
   highlightedCodeBlock,
@@ -31,9 +31,26 @@ export const maxHtmlElements = 25_000;
  *  nothing, do not count. */
 export const maxHtmlDepth = 200;
 
+/** Why a conversion was refused. */
+export type Reason =
+  "length" | "elements" | "depth" | "complexity" | "unreadable";
+
 export class NotConvertible extends Error {
   override name = "NotConvertible";
+  readonly reason: Reason;
+  constructor(reason: Reason) {
+    super(`not convertible: ${reason}`);
+    this.reason = reason;
+  }
 }
+
+/** The longest Markdown `markdownToHtml` takes: what a body holds. */
+export const maxMarkdownLength = 100_000;
+/** What one paragraph of Markdown may cost to convert, as its length times
+ *  the emphasis marks in it. The converter pairs each mark with a later one
+ *  by looking ahead, so a paragraph of many marks costs about this many
+ *  steps, at most 13 ns each; a real paragraph is far inside it. */
+export const maxEmphasisWork = 10_000_000;
 
 /** Elements whose tag alone makes text HTML. An unclosed inline element,
  *  such as the `<b` in `a<b and c>d`, is no evidence: only a close tag, a
@@ -385,8 +402,11 @@ function serviceFor(resolve: (reference: string) => string | undefined) {
         const start = Number(parent.getAttribute("start") ?? "1");
         prefix = `${String((Number.isFinite(start) ? start : 1) + position(parent, node))}. `;
       }
+      // Markdown writes a task's box as text, which the escaping would
+      // otherwise turn into `\[ \]`.
       const body = content
         .replace(/^\n+/, "")
+        .replace(/^\\\[([ xX])\\\] /, "[$1] ")
         .replace(/\n+$/, "\n")
         .replace(/\n/g, `\n${" ".repeat(prefix.length)}`);
       return `${prefix}${body}${node.nextSibling && !body.endsWith("\n") ? "\n" : ""}`;
@@ -464,21 +484,21 @@ function tidy(markdown: string): string {
  *
  * Throws `NotConvertible` for HTML past `maxHtmlLength`, `maxHtmlElements`
  * or `maxHtmlDepth`, before any of it is converted, or that the converter
- * cannot read; the caller leaves the value out.
+ * cannot read; the caller leaves the value out. Its `reason` says which.
  */
 export function htmlToMarkdown(
   text: string,
   { resolve = absolute }: MarkdownOptions = {},
 ): string {
   const found = scan(text);
-  if (found.refused !== undefined) throw new NotConvertible();
+  if (found.refused !== undefined) throw new NotConvertible(found.refused);
   if (!found.html) return text;
   try {
     return tidy(serviceFor(resolve).turndown(text.replace(marks, "")))
       .replace(marks, "")
       .trim();
   } catch {
-    throw new NotConvertible();
+    throw new NotConvertible("unreadable");
   }
 }
 
@@ -546,6 +566,11 @@ const writer = new Marked({
     blockquote({ tokens }) {
       return `<blockquote>${this.parser.parse(tokens)}</blockquote>`;
     },
+    table({ header, rows }) {
+      const line = (cells: Tokens.TableCell[]): string =>
+        cells.map((cell) => this.parser.parseInline(cell.tokens)).join(" | ");
+      return `${[header, ...rows].map(line).join("<br>")}<br><br>`;
+    },
     list({ ordered, start, items }) {
       const body = items.map((item) => this.listitem(item)).join("");
       return ordered
@@ -572,19 +597,39 @@ const writer = new Marked({
   },
 });
 
+/** The most work one paragraph costs the converter: its length times its
+ *  emphasis marks, not counting a list's bullet. A list item starts a
+ *  paragraph of its own, even where a paragraph is above it. */
+function emphasisWork(markdown: string): number {
+  let most = 0;
+  for (const paragraph of markdown.split(
+    /\n[ \t]*\n|\n(?=[ \t]*(?:[*+-]|1[.)])[ \t]+\S)/,
+  )) {
+    const marks = paragraph.replace(/^[ \t]*[*_+-][ \t]/gm, "").match(/[*_]/g);
+    most = Math.max(most, (marks?.length ?? 0) * paragraph.length);
+  }
+  return most;
+}
+
 /**
  * Converts a body's Markdown to the HTML a vendor that takes a little of it
  * shows: bold, italic, links, lists and line breaks, with a line break kept
  * as one. HTML typed into the Markdown is text, a link keeps only an
- * `http`, `https` or `mailto` address, and a picture is its link. Text with
- * nothing to show is returned as plain text, so that a vendor that treats
- * HTML and plain text differently gets the text it was given; a plain text
- * that would itself read as HTML is wrapped to say it is not.
+ * `http`, `https` or `mailto` address, a picture is its link and a table is
+ * a line of text for each row. Text that is the same as plain text, with
+ * nothing to show, is returned as it is, so that a vendor that treats HTML
+ * and plain text differently gets the text it was given. Any other text
+ * that shows as plain text, such as one whose escapes the plain form would
+ * lose, or one that would itself read as HTML, is wrapped to say it is not.
  *
- * Throws `NotConvertible` for text past `maxHtmlLength`.
+ * Throws `NotConvertible` for text past `maxMarkdownLength`, one that nests
+ * deeper than the converter reads, or a paragraph past `maxEmphasisWork`.
  */
 export function markdownToHtml(markdown: string): string {
-  if (markdown.length > maxHtmlLength) throw new NotConvertible();
+  if (markdown.length > maxMarkdownLength) throw new NotConvertible("length");
+  if (emphasisWork(markdown) > maxEmphasisWork) {
+    throw new NotConvertible("complexity");
+  }
   let html: string;
   try {
     html = (writer.parse(markdown) as string)
@@ -595,13 +640,17 @@ export function markdownToHtml(markdown: string): string {
       )
       .replace(/\n+$/, "")
       .replace(/^(<br>)+|(<br>)+$/g, "");
-  } catch {
-    throw new NotConvertible();
+  } catch (error) {
+    throw new NotConvertible(
+      error instanceof RangeError ? "depth" : "unreadable",
+    );
   }
   if (isHtml(html)) return html;
   const plain = html.replace(
     /&(?:amp|lt|gt|quot|#39);/g,
     (one) => entities[one] ?? one,
   );
-  return isHtml(plain) ? `<span>${html}</span>` : plain;
+  return plain === markdown && !/<[a-z/!]/i.test(plain)
+    ? plain
+    : `<span>${html}</span>`;
 }

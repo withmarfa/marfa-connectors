@@ -1044,6 +1044,31 @@ describe("an entry's content and image", () => {
       expect(read.entries[0]?.properties["body"]).toBeUndefined();
     });
 
+    it("counts a JSON Feed entry that falls back to content_text apart from one whose body is left out", () => {
+      const read = (items: unknown[]) =>
+        readFeed(
+          at("https://example.org/feed.json"),
+          JSON.stringify({
+            version: "https://jsonfeed.org/version/1.1",
+            title: "T",
+            items,
+          }),
+        );
+      const deep = "<div>".repeat(500);
+      const counted = read([
+        { id: "a", content_html: deep, content_text: "Text form" },
+        { id: "b", content_html: deep },
+        { id: "c", content_html: "<p>Fine</p>" },
+      ]);
+      expect(counted.entries.map((e) => e.properties["body"])).toEqual([
+        "Text form",
+        undefined,
+        "Fine",
+      ]);
+      expect(counted.substituted).toBe(1);
+      expect(counted.unconverted).toBe(1);
+    });
+
     it("reads a JSON Feed entry's content_text when its content_html is refused or converts to nothing", () => {
       const jsonOf = (html: string): unknown[] =>
         readFeed(
@@ -1063,21 +1088,34 @@ describe("an entry's content and image", () => {
       ).toEqual(["The *text* form.", "Fine"]);
     });
 
-    it("leaves the body out of an entry past the conversion budget, as it does one past a limit, and still reads the rest", () => {
+    it("holds back an entry whose markup comes after the conversion budget is spent, counts it apart from a refusal, and still reads the rest", () => {
       const read = readFeed(
         at("https://example.org/rss.xml"),
         rss(
           `<item><guid>a</guid><content:encoded><![CDATA[<p>one</p>]]></content:encoded></item>` +
-            `<item><guid>b</guid><content:encoded><![CDATA[plain *text*]]></content:encoded></item>`,
+            `<item><guid>b</guid><content:encoded><![CDATA[plain *text*]]></content:encoded></item>` +
+            `<item><guid>c</guid><content:encoded><![CDATA[<p>three</p>]]></content:encoded></item>`,
         ),
         undefined,
         { budgetMs: 0 },
       );
-      expect(read.entries.map((entry) => entry.properties["body"])).toEqual([
-        undefined,
-        "plain *text*",
-      ]);
-      expect(read.unconverted).toBe(1);
+      expect(read.entries.map((entry) => entry.properties["entry_id"])).toEqual(
+        ["b"],
+      );
+      expect(read.entries[0]?.properties["body"]).toBe("plain *text*");
+      expect(read.late).toBe(2);
+      expect(read.unconverted).toBe(0);
+    });
+
+    it("converts every entry while the budget lasts", () => {
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          `<item><guid>a</guid><content:encoded><![CDATA[<p>one</p>]]></content:encoded></item>`,
+        ),
+      );
+      expect(read.late).toBe(0);
+      expect(read.entries).toHaveLength(1);
     });
   });
 
@@ -2102,6 +2140,48 @@ describe("the connector, run as a process", () => {
       "created 0, updated 0, archived 0, unchanged 0, skipped 0",
     );
     expect(marfa.rows.every((candidate) => candidate.version === 1)).toBe(true);
+  });
+
+  it("writes no entry past the conversion budget and keeps no validators, so the next run reads the feed again and fills the bodies in", async () => {
+    const items = ["one", "two", "three"]
+      .map(
+        (name) =>
+          `<item><guid>${name}</guid><title>${name}</title><content:encoded><![CDATA[<p>The <b>${name}</b> body.</p>]]></content:encoded></item>`,
+      )
+      .join("");
+    served["/slow.xml"] = {
+      body: `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>T</title><link>https://example.org/</link>${items}</channel></rss>`,
+      etag: '"slow-1"',
+    };
+    const slow = resolve(import.meta.dirname, "fixtures/slow-clock.js");
+
+    const first = await once(["/slow.xml"], ["--once"], undefined, {
+      NODE_OPTIONS: `--import=${slow}`,
+    });
+    expect(first.code, first.output).toBe(0);
+    expect(marfa.rows.map((r) => r.properties["entry_id"])).toEqual(["one"]);
+    expect(marfa.rows[0]?.properties["body"]).toBe("The **one** body.");
+    expect(marfa.runs.at(-1)?.summary).toContain("ran out of time");
+    expect(marfa.runs.at(-1)?.summary).not.toContain("too large");
+    const kept = Object.values(
+      (marfa.connectorState?.["state"] as { feeds: Record<string, object> })
+        .feeds,
+    );
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).not.toHaveProperty("validators");
+
+    expect((await once(["/slow.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([200, 200]);
+    expect(asked[1]?.headers["if-none-match"]).toBeUndefined();
+    expect(
+      marfa.rows.map((r) => [r.properties["entry_id"], r.properties["body"]]),
+    ).toEqual([
+      ["one", "The **one** body."],
+      ["two", "The **two** body."],
+      ["three", "The **three** body."],
+    ]);
+    expect((await once(["/slow.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([200, 200, 304]);
   });
 
   it("reads whole, once, a feed stored before the body was Markdown, though its server says it has not changed, and rewrites its entry", async () => {

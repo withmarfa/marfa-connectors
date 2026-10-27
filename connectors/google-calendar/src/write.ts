@@ -349,8 +349,15 @@ function descriptionOf(item: Item): string | undefined {
     return descriptionToGoogle(markdown);
   } catch (error) {
     if (error instanceof NotConvertible) {
+      const why = {
+        length: "is too long",
+        elements: "has too many parts",
+        depth: "is nested too deeply",
+        complexity: "has too many emphasis marks in one paragraph",
+        unreadable: "cannot be read",
+      }[error.reason];
       throw new Refused(
-        `${named(item)}'s description is too long to send to Google Calendar`,
+        `${named(item)}'s description ${why} to send to Google Calendar`,
       );
     }
     throw error;
@@ -400,13 +407,10 @@ function patchOf(
     if (!same(title, text(raw, "summary") ?? "")) out["summary"] = title;
   }
   if (changed.has("description")) {
-    const value = textOf(item, "description");
-    if (
-      value === undefined
-        ? text(raw, "description") !== undefined
-        : !sameDescription(value, text(raw, "description"))
-    )
-      out["description"] = descriptionOf(item) ?? null;
+    const sent = descriptionOf(item);
+    const held = text(raw, "description");
+    if (sent === undefined ? held !== undefined : !sameDescription(sent, held))
+      out["description"] = sent ?? null;
   }
   if (changed.has("place")) {
     const value = textOf(item, "place");
@@ -460,12 +464,12 @@ function occurrencePatch(
   if (title !== undefined && title !== (text(raw, "summary") ?? "")) {
     out["summary"] = title;
   }
-  const description = textOf(item, "description");
+  const description = descriptionOf(item);
   if (
     description !== undefined &&
     !sameDescription(description, text(raw, "description"))
   ) {
-    out["description"] = descriptionOf(item);
+    out["description"] = description;
   }
   const place = textOf(item, "place");
   if (place !== undefined && place !== text(raw, "location")) {

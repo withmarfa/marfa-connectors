@@ -567,44 +567,52 @@ export const renderVersion = 1;
 
 /** What a feed's conversions may take, added up. One conversion is bounded by
  *  the kit's limits on length, elements and depth, so this holds a feed of
- *  many large entries to a share of the time its parse may take: once it is
- *  spent, an entry with markup has no body, and the rest of the feed is read. */
+ *  many large entries to a share of the time its parse may take. Once it is
+ *  spent, an entry with markup is not written this run, so the next run reads
+ *  the feed again, and the rest of the feed is read. */
 export const conversionBudgetMs = 12_000;
 
 interface Converting {
   spent: number;
   readonly budget: number;
-  readonly refused: () => void;
+}
+
+/** What converting one piece of markup came to: its Markdown, or why there is
+ *  none. */
+interface Converted {
+  readonly markdown: string | undefined;
+  readonly failure: "refused" | "late" | undefined;
 }
 
 /**
  * Converts markup to the Markdown a body holds. Links and pictures resolve
  * against the entry's base, so one relative to the fetch path, where a
  * private feed may carry its token, is left out as the entry's other links
- * are. Markup the converter refuses, or that comes after the feed's budget
- * is spent, is left out and counted, and no other entry is touched.
+ * are. Markup the converter refuses has no Markdown, and markup that comes
+ * after the feed's budget is spent is not converted at all.
  */
 function markdownOf(
   markup: string | undefined,
   base: Base,
   converting: Converting,
-): string | undefined {
-  if (markup === undefined) return undefined;
+): Converted {
+  if (markup === undefined) return { markdown: undefined, failure: undefined };
   if (converting.spent >= converting.budget && isHtml(markup)) {
-    converting.refused();
-    return undefined;
+    return { markdown: undefined, failure: "late" };
   }
   const started = performance.now();
   try {
-    return textOf(
-      htmlToMarkdown(markup, {
-        resolve: (reference) => linkOf(reference, base),
-      }),
-    );
+    return {
+      markdown: textOf(
+        htmlToMarkdown(markup, {
+          resolve: (reference) => linkOf(reference, base),
+        }),
+      ),
+      failure: undefined,
+    };
   } catch (error) {
     if (!(error instanceof NotConvertible)) throw error;
-    converting.refused();
-    return undefined;
+    return { markdown: undefined, failure: "refused" };
   } finally {
     converting.spent += performance.now() - started;
   }
@@ -615,7 +623,8 @@ function markdownOf(
  * summary where that holds markup. Both are written as Markdown where they
  * are HTML, and as they are where they are text. The description is the
  * summary as plain text, or for a summary that is only a picture, that
- * picture's caption.
+ * picture's caption. Returns `"late"` for an entry whose markup came after
+ * the feed's budget was spent.
  */
 function contentOf(
   summary: Summary,
@@ -623,9 +632,10 @@ function contentOf(
   images: Images,
   base: Base,
   converting: Converting,
+  counts: Counts,
   contentIsHtml = true,
   plain?: string,
-): Written {
+): Written | "late" {
   const reading = summary.html ? readingOf(summary.value) : undefined;
   const picture = countedPicture(reading, base);
   const text = textOf(content);
@@ -635,18 +645,39 @@ function contentOf(
       ? ((contentIsHtml ? countedPicture(readingOf(text), base) : undefined) ??
         picture)
       : undefined;
+  const main: Converted = contentIsHtml
+    ? markdownOf(text, base, converting)
+    : { markdown: text, failure: undefined };
+  const fallback = main.markdown === undefined ? textOf(plain) : undefined;
+  const summed =
+    main.markdown === undefined && fallback === undefined
+      ? reading?.marked === true && !reading.empty
+        ? markdownOf(summary.value, base, converting)
+        : { markdown: undefined, failure: undefined }
+      : { markdown: undefined, failure: undefined };
+  if (main.failure === "late" || summed.failure === "late") return "late";
+  const body = main.markdown ?? fallback ?? summed.markdown;
+  if (main.failure === "refused" && fallback !== undefined) {
+    counts.substituted += 1;
+  } else if (
+    body === undefined &&
+    (main.failure ?? summed.failure) !== undefined
+  ) {
+    counts.unconverted += 1;
+  }
   return {
     description: summary.html
       ? (reading?.plain ?? picture?.caption)
       : textOf(summary.value),
-    body:
-      (contentIsHtml ? markdownOf(text, base, converting) : text) ??
-      textOf(plain) ??
-      (reading?.marked === true && !reading.empty
-        ? markdownOf(summary.value, base, converting)
-        : undefined),
+    body,
     image_url: enclosed ?? found?.url ?? images.thumbnail,
   };
+}
+
+interface Counts {
+  unconverted: number;
+  substituted: number;
+  late: number;
 }
 
 /** Marfa's default cap on a string property: a longer one is refused, and
@@ -660,6 +691,12 @@ export interface Read {
   dropped: number;
   /** Entries whose markup could not be converted, so they have no body. */
   unconverted: number;
+  /** Entries whose markup could not be converted, so they have the plain text
+   *  of their content for a body instead. */
+  substituted: number;
+  /** Entries not written because the feed's conversion budget was spent
+   *  before their markup was reached. */
+  late: number;
   /** A hash of the id an Atom feed declares for itself, which identifies
    *  nothing here and is compared only to say two feeds claim one id. */
   declared: string | undefined;
@@ -715,14 +752,8 @@ export function readFeed(
   const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
   let dropped = 0;
-  let unconverted = 0;
-  const converting: Converting = {
-    spent: 0,
-    budget: budgetMs,
-    refused: () => {
-      unconverted += 1;
-    },
-  };
+  const counts: Counts = { unconverted: 0, substituted: 0, late: 0 };
+  const converting: Converting = { spent: 0, budget: budgetMs };
   const entries: Entry[] = [];
   const keep = (
     entryId: string | undefined,
@@ -778,8 +809,13 @@ export function readFeed(
         { enclosure: image, thumbnail: thumbnailOf(entry.media, entryBase) },
         entryBase,
         converting,
+        counts,
         entry.content?.type === "html" || entry.content?.type === "xhtml",
       );
+      if (written === "late") {
+        counts.late += 1;
+        continue;
+      }
       keep(
         entry.id ?? url,
         {
@@ -799,7 +835,7 @@ export function readFeed(
       entries,
       unkeyed,
       dropped,
-      unconverted,
+      ...counts,
       declared:
         declared === undefined || declared === ""
           ? undefined
@@ -829,7 +865,12 @@ export function readFeed(
         { enclosure: image, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
         converting,
+        counts,
       );
+      if (written === "late") {
+        counts.late += 1;
+        continue;
+      }
       keep(
         item.guid?.value ?? url,
         {
@@ -845,7 +886,7 @@ export function readFeed(
         published ?? isoOf(item.dc?.dates?.[0]),
       );
     }
-    return { entries, unkeyed, dropped, unconverted, declared: undefined };
+    return { entries, unkeyed, dropped, ...counts, declared: undefined };
   }
   if (parsed.format === "rdf") {
     const rdf = parsed.feed;
@@ -864,7 +905,12 @@ export function readFeed(
         { enclosure: undefined, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
         converting,
+        counts,
       );
+      if (written === "late") {
+        counts.late += 1;
+        continue;
+      }
       keep(
         item.rdf?.about ?? url,
         {
@@ -880,7 +926,7 @@ export function readFeed(
         published,
       );
     }
-    return { entries, unkeyed, dropped, unconverted, declared: undefined };
+    return { entries, unkeyed, dropped, ...counts, declared: undefined };
   }
   const json = parsed.feed;
   if ((json.items?.length ?? 0) > maxFeedEntries) throw new TooManyEntries();
@@ -899,9 +945,14 @@ export function readFeed(
       },
       documentBase,
       converting,
+      counts,
       html !== undefined,
       item.content_text,
     );
+    if (written === "late") {
+      counts.late += 1;
+      continue;
+    }
     keep(
       item.id ?? url,
       {
@@ -917,5 +968,5 @@ export function readFeed(
       published ?? isoOf(item.date_modified),
     );
   }
-  return { entries, unkeyed, dropped, unconverted, declared: undefined };
+  return { entries, unkeyed, dropped, ...counts, declared: undefined };
 }

@@ -17,6 +17,7 @@ import {
   inCalendar,
 } from "../src/config.js";
 import { createConnector } from "../src/connector.js";
+import { descriptionToGoogle, sameDescription } from "../src/events.js";
 import { eventIdFor } from "../src/write.js";
 import { CalendarStub, type Call } from "./calendar-stub.js";
 
@@ -422,6 +423,62 @@ describe("an edit made in Marfa", () => {
     await landed();
     expect(writes()).toHaveLength(count);
   });
+
+  it("sends an edit to a description too large to convert back, whether Google holds none or another large one", async () => {
+    const one = await read();
+    const first = "a\n".repeat(26_000);
+
+    server.edit(one.id, { description: first });
+    await landed();
+    expect(writes("PATCH")).toHaveLength(1);
+    expect(String(writes("PATCH")[0]?.body?.["description"])).toMatch(
+      /^a<br>a<br>/,
+    );
+
+    server.edit(one.id, { description: "b\n".repeat(26_000) });
+    await landed();
+    expect(writes("PATCH")).toHaveLength(2);
+    expect(String(writes("PATCH")[1]?.body?.["description"])).toMatch(
+      /^b<br>b<br>/,
+    );
+    expect(String(calendar.event(me, "e1")?.["description"])).toMatch(
+      /^b<br>b<br>/,
+    );
+  });
+
+  it("compares a description too large to convert as the text it is", () => {
+    const sent = descriptionToGoogle("a\n".repeat(26_000));
+    expect(sameDescription(sent, undefined)).toBe(false);
+    expect(
+      sameDescription(sent, descriptionToGoogle("b\n".repeat(26_000))),
+    ).toBe(false);
+    expect(sameDescription(sent, sent)).toBe(true);
+    expect(sameDescription("Plain", "Plain")).toBe(true);
+    expect(sameDescription("Plain", undefined)).toBe(false);
+  });
+
+  it.each([
+    ["nested too deeply", "> ".repeat(3000) + "x", "is nested too deeply"],
+    ["too long", "a".repeat(100_001), "is too long"],
+    [
+      "full of emphasis marks",
+      "*a **b ".repeat(10_000),
+      "has too many emphasis marks in one paragraph",
+    ],
+  ])(
+    "refuses a description that is %s, keeps running, and sends nothing for it",
+    async (_name, description, said) => {
+      const one = await read();
+
+      server.edit(one.id, { description });
+      await landed();
+      await landed();
+
+      expect(writes("PATCH")).toEqual([]);
+      expect(Object.values(conditions()).join(" ")).toContain(said);
+      expect(server.byId(one.id).properties["description"]).toBe(description);
+    },
+  );
 
   it("sends nothing for a description that only differs from Google's in how Google holds it", async () => {
     const one = await read(

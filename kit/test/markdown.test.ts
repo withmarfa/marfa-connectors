@@ -6,6 +6,7 @@ import {
   maxHtmlDepth,
   maxHtmlElements,
   maxHtmlLength,
+  maxMarkdownLength,
   NotConvertible,
 } from "../src/markdown.js";
 
@@ -294,7 +295,82 @@ describe("markdownToHtml", () => {
 
   it("sends text with no formatting as it is, entities and all", () => {
     expect(markdownToHtml("Tom & Jerry < 3")).toBe("Tom & Jerry < 3");
-    expect(markdownToHtml("5 \\* 3")).toBe("5 * 3");
+  });
+
+  it("wraps text whose escapes would be lost if it were sent as it is, so Google keeps the characters and the read gives the escapes back", () => {
+    expect(markdownToHtml("5 \\* 3")).toBe("<span>5 * 3</span>");
+    for (const text of [
+      "\\*not\\*",
+      "1\\. Item",
+      "\\# Not heading",
+      "\\_x\\_",
+      "5 \\* 3 and a\\_b\\_c",
+    ]) {
+      expect(markdownToHtml(text)).toMatch(/^<span>.*<\/span>$/);
+      let held = text;
+      for (let round = 0; round < 3; round += 1) {
+        held = htmlToMarkdown(markdownToHtml(held));
+        expect([text, held]).toEqual([text, text]);
+      }
+    }
+  });
+
+  it("keeps the characters of an escape that was never needed, and settles after one round trip", () => {
+    for (const [text, kept] of [
+      ["\\$5", "$5"],
+      ["C\\+\\+", "C++"],
+    ] as const) {
+      expect(markdownToHtml(text)).toBe(`<span>${kept}</span>`);
+      let held = htmlToMarkdown(markdownToHtml(text));
+      expect(held).toBe(kept);
+      for (let round = 0; round < 3; round += 1) {
+        held = htmlToMarkdown(markdownToHtml(held));
+        expect(held).toBe(kept);
+      }
+    }
+  });
+
+  it("gives a task list back as a task list, over several round trips", () => {
+    for (const text of [
+      "- [ ] buy milk",
+      "- [x] done\n- [ ] todo",
+      "Shopping:\n\n- [ ] milk\n- [x] eggs\n- plain\n  - [ ] nested",
+    ]) {
+      let held = text;
+      for (let round = 0; round < 3; round += 1) {
+        held = htmlToMarkdown(markdownToHtml(held));
+        expect([text, held]).toEqual([text, text]);
+      }
+    }
+  });
+
+  it("wraps text with a tag-like `<` in it, so Google never reads it as markup", () => {
+    for (const text of [
+      "Text with <em>emphasis",
+      "an unclosed <b",
+      "a stray </i> close",
+      "a comment <!-- here",
+    ]) {
+      const html = markdownToHtml(text);
+      expect(html).toMatch(/^<span>.*<\/span>$/);
+      expect(html.replace(/^<span>|<\/span>$/g, "")).not.toMatch(/<[a-z/!]/i);
+      let held = text;
+      for (let round = 0; round < 3; round += 1) {
+        held = htmlToMarkdown(markdownToHtml(held));
+        expect([text, held]).toEqual([text, text]);
+      }
+    }
+    expect(markdownToHtml("a < b and 5<6")).toBe("a < b and 5<6");
+  });
+
+  it("writes a table as lines of text, never as a table", () => {
+    const html = markdownToHtml(
+      "| Name | Role |\n| --- | --- |\n| Alex | **Chair** |\n| Sam | Notes |\n\nafter",
+    );
+    expect(html).not.toContain("<table");
+    expect(html).toBe(
+      "Name | Role<br>Alex | <b>Chair</b><br>Sam | Notes<br><br>after",
+    );
   });
 
   it("escapes HTML a person typed, so it stays text", () => {
@@ -375,9 +451,64 @@ describe("markdownToHtml", () => {
     }
   });
 
-  it("refuses Markdown over the length limit", () => {
-    expect(() => markdownToHtml("a".repeat(maxHtmlLength + 1))).toThrow(
-      NotConvertible,
+  it("refuses Markdown over the length a body holds, and says why", () => {
+    expect(() => markdownToHtml("a".repeat(maxMarkdownLength + 1))).toThrow(
+      expect.objectContaining({ reason: "length" }),
     );
+    expect(markdownToHtml("a".repeat(maxMarkdownLength))).toHaveLength(
+      maxMarkdownLength,
+    );
+  });
+
+  it("refuses nesting deeper than it can read, and says why", () => {
+    expect(() => markdownToHtml("> ".repeat(3000) + "x")).toThrow(
+      expect.objectContaining({ reason: "depth" }),
+    );
+  });
+
+  it("converts the worst runs of emphasis marks at the length limit in well under a second, or refuses them", () => {
+    for (const text of [
+      "_a".repeat(maxMarkdownLength / 2),
+      "__a".repeat(maxMarkdownLength / 3),
+      "*a **b "
+        .repeat(Math.ceil(maxMarkdownLength / 7))
+        .slice(0, maxMarkdownLength),
+      "*a **b _c __d "
+        .repeat(Math.ceil(maxMarkdownLength / 14))
+        .slice(0, maxMarkdownLength),
+      "_a *b "
+        .repeat(Math.ceil(maxMarkdownLength / 6))
+        .slice(0, maxMarkdownLength),
+    ]) {
+      within(500, () => {
+        try {
+          markdownToHtml(text);
+        } catch (error) {
+          expect(error).toBeInstanceOf(NotConvertible);
+          expect(error).toMatchObject({ reason: "complexity" });
+        }
+      });
+    }
+  });
+
+  it("converts a long, ordinary document with many marks, a long list and many paragraphs", () => {
+    const paragraph = "A *line* with **bold**, _under_ and a_b, 5 * 3.\n";
+    expect(() =>
+      within(500, () => markdownToHtml(paragraph.repeat(100))),
+    ).not.toThrow();
+    expect(() =>
+      within(500, () =>
+        markdownToHtml(
+          Array.from({ length: 5000 }, () => "* item *a*").join("\n"),
+        ),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      within(500, () =>
+        markdownToHtml(
+          Array.from({ length: 4000 }, () => "para *a* _b_").join("\n\n"),
+        ),
+      ),
+    ).not.toThrow();
   });
 });

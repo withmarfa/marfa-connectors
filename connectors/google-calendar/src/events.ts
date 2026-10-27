@@ -19,16 +19,11 @@ export interface CalendarInfo {
   readonly color: string | undefined;
 }
 
-/**
- * Google lets a description hold HTML, and a description is the row's body,
- * which is Markdown: HTML is converted, and text is kept as it is. A
- * description Google holds that cannot be converted is left out.
- */
-export function descriptionOf(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
+/** A description Google holds as Markdown: `""` where it holds nothing, and
+ *  `undefined` where it cannot be converted. */
+function markdownOf(value: string): string | undefined {
   try {
-    const markdown = htmlToMarkdown(value);
-    return markdown === "" ? undefined : markdown;
+    return htmlToMarkdown(value);
   } catch (error) {
     if (error instanceof NotConvertible) return undefined;
     throw error;
@@ -36,25 +31,41 @@ export function descriptionOf(value: string | undefined): string | undefined {
 }
 
 /**
+ * Google lets a description hold HTML, and a description is the row's body,
+ * which is Markdown: HTML is converted, and text is kept as it is. A
+ * description Google holds that cannot be converted is left out.
+ */
+export function descriptionOf(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const markdown = markdownOf(value);
+  return markdown === undefined || markdown === "" ? undefined : markdown;
+}
+
+/**
  * What Google is sent for a description: the row's Markdown as the HTML
  * Google shows, or as plain text where it holds no formatting. Throws
- * `NotConvertible` for a description too long to convert.
+ * `NotConvertible`, with its reason, for a description it cannot convert.
  */
 export function descriptionToGoogle(markdown: string): string {
   return markdownToHtml(markdown);
 }
 
 /**
- * Whether the row's description says what Google already holds. Both sides
- * are put through Google's form and back, so that formatting Google keeps
- * differently, such as a line break, is not a change and an unchanged
- * description never rewrites the formatted one Google holds.
+ * Whether what Google would be sent says what Google already holds. Both are
+ * read back as Markdown, so that formatting Google keeps differently, such as
+ * a line break, is not a change and an unchanged description never rewrites
+ * the formatted one Google holds. Where either cannot be read back, as with
+ * a description of too many elements, only the same text is the same.
  */
 export function sameDescription(
-  markdown: string,
+  sent: string,
   held: string | undefined,
 ): boolean {
-  return descriptionOf(descriptionToGoogle(markdown)) === descriptionOf(held);
+  const there = markdownOf(held ?? "");
+  const here = markdownOf(sent);
+  return there === undefined || here === undefined
+    ? sent === (held ?? "")
+    : here === there;
 }
 
 /** The access roles that may change the events of a calendar. */
