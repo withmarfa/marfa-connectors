@@ -55,6 +55,7 @@ export interface RestRepository {
   archived: boolean;
   has_issues?: boolean;
   updated_at: string;
+  default_branch?: string;
   /** From the person's stars, which only a scheduled run with a token lists:
    *  absent where the stars were never listed. */
   starred?: boolean;

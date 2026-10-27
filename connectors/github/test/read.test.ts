@@ -17,6 +17,8 @@ const types = [
   "github.pull_request",
   "github.discussion",
   "github.notification",
+  "github.repository_file",
+  "github.directory",
 ];
 const connections = [
   "github.in-repository",
@@ -30,6 +32,7 @@ const connections = [
   "parent-of",
   "references",
   "in-thread",
+  "in-collection",
 ];
 
 let key: string;

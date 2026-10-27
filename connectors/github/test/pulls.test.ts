@@ -15,6 +15,8 @@ const types = [
   "github.pull_request",
   "github.discussion",
   "github.notification",
+  "github.repository_file",
+  "github.directory",
   "github.file",
   "github.file.image",
 ];
@@ -29,6 +31,7 @@ const edges = [
   "parent-of",
   "references",
   "in-thread",
+  "in-collection",
   "attached-to",
 ];
 beforeEach(async () => {

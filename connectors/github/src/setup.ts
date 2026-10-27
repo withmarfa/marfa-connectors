@@ -110,6 +110,7 @@ export function manifest(options: {
       pull_requests: "read",
       checks: "read",
       statuses: "read",
+      contents: "read",
     },
     default_events: events,
   };
