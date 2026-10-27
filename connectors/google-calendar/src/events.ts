@@ -1,5 +1,9 @@
 import type { Entry, JsonValue } from "@withmarfa/connector";
-import { htmlToMarkdown, NotConvertible } from "@withmarfa/connector/markdown";
+import {
+  htmlToMarkdown,
+  markdownToHtml,
+  NotConvertible,
+} from "@withmarfa/connector/markdown";
 import { flag, isJson, list, object, text, type Json } from "./api.js";
 import { calendarType, childOf, eventType, inCalendar } from "./config.js";
 import { dayStart, iso, nextDay, validZone } from "./time.js";
@@ -29,6 +33,28 @@ export function descriptionOf(value: string | undefined): string | undefined {
     if (error instanceof NotConvertible) return undefined;
     throw error;
   }
+}
+
+/**
+ * What Google is sent for a description: the row's Markdown as the HTML
+ * Google shows, or as plain text where it holds no formatting. Throws
+ * `NotConvertible` for a description too long to convert.
+ */
+export function descriptionToGoogle(markdown: string): string {
+  return markdownToHtml(markdown);
+}
+
+/**
+ * Whether the row's description says what Google already holds. Both sides
+ * are put through Google's form and back, so that formatting Google keeps
+ * differently, such as a line break, is not a change and an unchanged
+ * description never rewrites the formatted one Google holds.
+ */
+export function sameDescription(
+  markdown: string,
+  held: string | undefined,
+): boolean {
+  return descriptionOf(descriptionToGoogle(markdown)) === descriptionOf(held);
 }
 
 /** The access roles that may change the events of a calendar. */

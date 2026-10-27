@@ -329,7 +329,7 @@ describe("a first read", () => {
     expect(await once()).toBe(0);
 
     expect(row(`${me}/html`).properties["description"]).toBe(
-      "Agenda:  \n\n- Roadmap\n- **Hiring**\n\n[The doc](https://example.org/doc?a=1&b=2)",
+      "Agenda:\n\n- Roadmap\n- **Hiring**\n\n[The doc](https://example.org/doc?a=1&b=2)",
     );
     expect(row(`${me}/text`).properties["description"]).toBe(
       "Plain * text with _marks_ and a < b\nsecond line",

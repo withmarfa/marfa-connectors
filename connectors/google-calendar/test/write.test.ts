@@ -374,6 +374,69 @@ describe("an edit made in Marfa", () => {
     );
   });
 
+  it("sends a description written in Markdown as the HTML Google shows, and settles on what Google holds", async () => {
+    const one = await read();
+    const markdown = [
+      "Agenda",
+      "",
+      "1. Welcome and **apologies**",
+      "2. The [budget](https://example.org/budget?a=1&b=2)",
+      "   - revenue",
+      "",
+      "Notes by *Alex* & Sam, 5 < 6.",
+    ].join("\n");
+
+    server.edit(one.id, { description: markdown });
+    await landed();
+
+    const sent = String(writes("PATCH")[0]?.body?.["description"]);
+    expect(sent).toBe(
+      'Agenda<ol><li>Welcome and <b>apologies</b></li><li>The <a href="https://example.org/budget?a=1&amp;b=2">budget</a><ul><li>revenue</li></ul></li></ol>Notes by <i>Alex</i> &amp; Sam, 5 &lt; 6.',
+    );
+    expect(calendar.event(me, "e1")?.["description"]).toBe(sent);
+
+    const count = writes().length;
+    await landed();
+    server.edit(one.id, { title: "Long lunch" });
+    await landed();
+    expect(writes().slice(count)).toEqual([
+      expect.objectContaining({ body: { summary: "Long lunch" } }),
+    ]);
+    expect(server.byId(one.id).properties["description"]).toBe(markdown);
+  });
+
+  it("keeps HTML typed into a description as text, on the way out and on the way back", async () => {
+    const one = await read();
+
+    server.edit(one.id, { description: "Use the <br> tag\n**bold**" });
+    await landed();
+    await landed();
+
+    expect(writes("PATCH")[0]?.body).toEqual({
+      description: "Use the &lt;br&gt; tag<br><b>bold</b>",
+    });
+    expect(server.byId(one.id).properties["description"]).toBe(
+      "Use the <br> tag\n**bold**",
+    );
+    const count = writes().length;
+    await landed();
+    expect(writes()).toHaveLength(count);
+  });
+
+  it("sends nothing for a description that only differs from Google's in how Google holds it", async () => {
+    const one = await read(
+      timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z", {
+        description: "Agenda<br><b>Items</b><br><ul><li>one</li></ul>",
+      }),
+    );
+    const markdown = String(one.properties["description"]);
+
+    server.edit(one.id, { description: markdown.replace("  \n", "\n") });
+    await landed();
+
+    expect(writes()).toEqual([]);
+  });
+
   it("clears a field cleared in Marfa", async () => {
     const one = await read();
 
@@ -738,6 +801,27 @@ describe("a trash, restore and purge", () => {
     server.purgeById(one.id);
     await landed();
     expect(writes()).toHaveLength(sent);
+  });
+
+  it("brings back a restored event with its description as the HTML Google shows", async () => {
+    calendar.put(
+      me,
+      timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z", {
+        description: "Menu<br><b>Soup</b>",
+      }),
+    );
+    await landed();
+    const one = row(`${me}/e1`);
+
+    server.trash(one.id);
+    await landed();
+    server.restore(one.id);
+    await landed();
+
+    expect(writes().at(-1)?.body?.["description"]).toBe("Menu<br><b>Soup</b>");
+    expect(calendar.event(me, "e1")?.["description"]).toBe(
+      "Menu<br><b>Soup</b>",
+    );
   });
 
   it.each([
@@ -2121,6 +2205,30 @@ describe("a series", () => {
       ...agenda,
       summary: "Planning",
     });
+  });
+
+  it("keeps an occurrence's formatted agenda when a changed occurrence made in Marfa holds the same text", async () => {
+    calendar.put(me, {
+      ...series,
+      description: "Agenda<br><b>Hiring</b><ul><li>roles</li></ul>",
+    });
+    await landed();
+    const parent = row(`${me}/weekly`);
+    madeUnder(parent, {
+      ...moved,
+      description: String(parent.properties["description"]),
+    });
+
+    await landed();
+
+    expect(writes()[0]?.body).toEqual({
+      summary: "Planning, later",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+    });
+    expect(calendar.event(me, "weekly_20261026T100000Z")?.["description"]).toBe(
+      "Agenda<br><b>Hiring</b><ul><li>roles</li></ul>",
+    );
   });
 
   it("sends the fields a changed occurrence made in Marfa sets that differ from the occurrence", async () => {
