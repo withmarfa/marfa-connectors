@@ -219,7 +219,8 @@ Marfa does not show an entry's pictures from its text alone, so the entry carrie
 - `text`: a hash of the text (`body` and `image_url`) the addresses were read from;
 - `saved`: the addresses whose pictures are held;
 - `pending`: the addresses the connector will try again, or has not reached yet;
-- `not_kept`: each address it gave up on, with a reason; and
+- `not_kept`: each address it gave up on, with a reason;
+- `attempts`, where an address is pending: how many runs it has failed in; and
 - `over`, where the entry had more than 20 addresses: how many past the first 20 were not read.
 
 The reason for an address that was not kept is `removed` (a person trashed or purged the picture), `not_https`, or the reason the picture fetch gave: `invalid_address`, `private_address`, `tracker`, `too_many_redirects`, `bad_status`, `too_large`, `timed_out`, `fetch_failed`, `not_a_picture`, `svg`, `one_pixel`, `too_large_dimensions` or `upload_failed`. The addresses are not secrets, so signed ones should not be in a feed. An entry without `rss_pictures` has had no picture work done.
