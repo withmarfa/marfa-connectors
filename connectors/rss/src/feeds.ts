@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
-import { htmlToMarkdown, NotConvertible } from "@withmarfa/connector/markdown";
+import {
+  htmlToMarkdown,
+  isHtml,
+  NotConvertible,
+} from "@withmarfa/connector/markdown";
 import { parseFeed, parseJsonFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 import { isIP } from "node:net";
@@ -561,18 +565,36 @@ function thumbnailOf(media: Media | undefined, base: Base): string | undefined {
  */
 export const renderVersion = 1;
 
+/** What a feed's conversions may take, added up. One conversion is bounded by
+ *  the kit's limits on length, elements and depth, so this holds a feed of
+ *  many large entries to a share of the time its parse may take: once it is
+ *  spent, an entry with markup has no body, and the rest of the feed is read. */
+export const conversionBudgetMs = 12_000;
+
+interface Converting {
+  spent: number;
+  readonly budget: number;
+  readonly refused: () => void;
+}
+
 /**
  * Converts markup to the Markdown a body holds. Links and pictures resolve
  * against the entry's base, so one relative to the fetch path, where a
  * private feed may carry its token, is left out as the entry's other links
- * are. Markup the converter refuses is left out, and counted.
+ * are. Markup the converter refuses, or that comes after the feed's budget
+ * is spent, is left out and counted, and no other entry is touched.
  */
 function markdownOf(
   markup: string | undefined,
   base: Base,
-  refused: () => void,
+  converting: Converting,
 ): string | undefined {
   if (markup === undefined) return undefined;
+  if (converting.spent >= converting.budget && isHtml(markup)) {
+    converting.refused();
+    return undefined;
+  }
+  const started = performance.now();
   try {
     return textOf(
       htmlToMarkdown(markup, {
@@ -581,8 +603,10 @@ function markdownOf(
     );
   } catch (error) {
     if (!(error instanceof NotConvertible)) throw error;
-    refused();
+    converting.refused();
     return undefined;
+  } finally {
+    converting.spent += performance.now() - started;
   }
 }
 
@@ -598,8 +622,9 @@ function contentOf(
   content: string | undefined,
   images: Images,
   base: Base,
-  refused: () => void,
+  converting: Converting,
   contentIsHtml = true,
+  plain?: string,
 ): Written {
   const reading = summary.html ? readingOf(summary.value) : undefined;
   const picture = countedPicture(reading, base);
@@ -615,9 +640,10 @@ function contentOf(
       ? (reading?.plain ?? picture?.caption)
       : textOf(summary.value),
     body:
-      (contentIsHtml ? markdownOf(text, base, refused) : text) ??
+      (contentIsHtml ? markdownOf(text, base, converting) : text) ??
+      textOf(plain) ??
       (reading?.marked === true && !reading.empty
-        ? markdownOf(summary.value, base, refused)
+        ? markdownOf(summary.value, base, converting)
         : undefined),
     image_url: enclosed ?? found?.url ?? images.thumbnail,
   };
@@ -671,6 +697,7 @@ export function readFeed(
   feed: Pick<Feed, "url" | "key">,
   text: string,
   documentUrl: string = feed.url,
+  { budgetMs = conversionBudgetMs }: { budgetMs?: number } = {},
 ): Read {
   // A JSON Feed holds its markup in strings, not elements, and its entries
   // are counted once it is parsed. It is parsed as JSON alone: the parser's
@@ -689,8 +716,12 @@ export function readFeed(
   let unkeyed = 0;
   let dropped = 0;
   let unconverted = 0;
-  const refused = (): void => {
-    unconverted += 1;
+  const converting: Converting = {
+    spent: 0,
+    budget: budgetMs,
+    refused: () => {
+      unconverted += 1;
+    },
   };
   const entries: Entry[] = [];
   const keep = (
@@ -746,7 +777,7 @@ export function readFeed(
         entry.content?.value,
         { enclosure: image, thumbnail: thumbnailOf(entry.media, entryBase) },
         entryBase,
-        refused,
+        converting,
         entry.content?.type === "html" || entry.content?.type === "xhtml",
       );
       keep(
@@ -797,7 +828,7 @@ export function readFeed(
         item.content?.encoded,
         { enclosure: image, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
-        refused,
+        converting,
       );
       keep(
         item.guid?.value ?? url,
@@ -832,7 +863,7 @@ export function readFeed(
         item.content?.encoded,
         { enclosure: undefined, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
-        refused,
+        converting,
       );
       keep(
         item.rdf?.about ?? url,
@@ -867,8 +898,9 @@ export function readFeed(
         thumbnail: undefined,
       },
       documentBase,
-      refused,
+      converting,
       html !== undefined,
+      item.content_text,
     );
     keep(
       item.id ?? url,

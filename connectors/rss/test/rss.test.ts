@@ -1043,6 +1043,112 @@ describe("an entry's content and image", () => {
       expect(read.entries[0]?.properties).toMatchObject({ title: "A" });
       expect(read.entries[0]?.properties["body"]).toBeUndefined();
     });
+
+    it("reads a JSON Feed entry's content_text when its content_html is refused or converts to nothing", () => {
+      const jsonOf = (html: string): unknown[] =>
+        readFeed(
+          at("https://example.org/feed.json"),
+          JSON.stringify({
+            version: "https://jsonfeed.org/version/1.1",
+            title: "T",
+            items: [
+              { id: "a", content_html: html, content_text: "The *text* form." },
+              { id: "b", content_html: "<p>Fine</p>", content_text: "Other" },
+            ],
+          }),
+        ).entries.map((entry) => entry.properties["body"]);
+      expect(jsonOf("<div>".repeat(500))).toEqual(["The *text* form.", "Fine"]);
+      expect(
+        jsonOf('<img src="https://x.test/p.gif" width="1" height="1">'),
+      ).toEqual(["The *text* form.", "Fine"]);
+    });
+
+    it("leaves the body out of an entry past the conversion budget, as it does one past a limit, and still reads the rest", () => {
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          `<item><guid>a</guid><content:encoded><![CDATA[<p>one</p>]]></content:encoded></item>` +
+            `<item><guid>b</guid><content:encoded><![CDATA[plain *text*]]></content:encoded></item>`,
+        ),
+        undefined,
+        { budgetMs: 0 },
+      );
+      expect(read.entries.map((entry) => entry.properties["body"])).toEqual([
+        undefined,
+        "plain *text*",
+      ]);
+      expect(read.unconverted).toBe(1);
+    });
+  });
+
+  describe("hostile bodies", () => {
+    /** An item whose content is built to cost the converter the most. */
+    const item = (id: string, content: string): string =>
+      `<item><guid>${id}</guid><title>${id}</title><content:encoded><![CDATA[${content}]]></content:encoded></item>`;
+    const good = "<p>A <b>good</b> body.</p>";
+    const hostile = {
+      "a 12,000-row table": `<table>${"<tr><td>a</td><td>b</td></tr>".repeat(12_000)}</table>`,
+      "a 3.6 MB article":
+        "<p>Some <b>bold</b> and <i>words</i> to read.</p>\n".repeat(75_000),
+      "unmatched closes": "<div></b>".repeat(1200),
+    };
+
+    for (const [name, content] of Object.entries(hostile)) {
+      it(`reads a feed whose entries carry ${name}, and keeps the other bodies`, () => {
+        const entries = Array.from({ length: 100 }, (_, at) =>
+          item(
+            `h${String(at)}`,
+            name === "a 3.6 MB article" && at > 2 ? "<p>x</p>" : content,
+          ),
+        ).join("");
+        const started = performance.now();
+        const read = readFeed(
+          at("https://example.org/rss.xml"),
+          rss(item("before", good) + entries + item("after", good)),
+        );
+        expect(performance.now() - started).toBeLessThan(10_000);
+        const bodies = read.entries.map((entry) => entry.properties["body"]);
+        expect(bodies).toHaveLength(102);
+        expect(bodies[0]).toBe("A **good** body.");
+        expect(bodies[101]).toBe("A **good** body.");
+        expect(
+          bodies.slice(1, 101).filter((body) => body === undefined).length,
+        ).toBe(name === "a 3.6 MB article" ? 3 : 100);
+        expect(read.unconverted).toBe(name === "a 3.6 MB article" ? 3 : 100);
+      });
+    }
+
+    it("reads the same feeds in the worker that bounds a read, within its time and memory", async () => {
+      const { readBounded } = (await import(
+        resolve(import.meta.dirname, "../dist/parse.js")
+      )) as typeof import("../src/parse.js");
+      const document = rss(
+        item("before", good) +
+          [
+            ...Array.from({ length: 30 }, () => hostile["a 12,000-row table"]),
+            ...Array.from({ length: 3 }, () => hostile["a 3.6 MB article"]),
+            ...Array.from({ length: 60 }, () => hostile["unmatched closes"]),
+          ]
+            .map((content, at) => item(`h${String(at)}`, content))
+            .join("") +
+          item("after", good),
+      );
+      const started = performance.now();
+      const read = await readBounded(
+        {
+          feed: at("https://example.org/rss.xml"),
+          bytes: new TextEncoder().encode(document),
+          contentType: null,
+          documentUrl: "https://example.org/rss.xml",
+        },
+        AbortSignal.timeout(60_000),
+      );
+      expect(performance.now() - started).toBeLessThan(20_000);
+      const bodies = read.entries.map((entry) => entry.properties["body"]);
+      expect(bodies[0]).toBe("A **good** body.");
+      expect(bodies.at(-1)).toBe("A **good** body.");
+      expect(read.entries).toHaveLength(95);
+    }, 60_000);
   });
 });
 

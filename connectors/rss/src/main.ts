@@ -217,8 +217,8 @@ const connector = defineConnector({
         log.condition(
           `unconverted:${feed.key}`,
           unconverted === 1
-            ? `an entry in ${name} has markup nested too deeply to convert, and its body is left out`
-            : `${String(unconverted)} entries in ${name} have markup nested too deeply to convert, and their bodies are left out`,
+            ? `an entry in ${name} has markup too large, too complex or too deeply nested to convert, and its body is left out`
+            : `${String(unconverted)} entries in ${name} have markup too large, too complex or too deeply nested to convert, and their bodies are left out`,
         );
       }
       const count = held.unkeyed ?? 0;
