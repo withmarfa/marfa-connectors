@@ -24,6 +24,7 @@ export {
   type Inbound,
   type Item,
   type Kind,
+  type Archiving,
   type RowPolicy,
   type FieldPolicy,
   type Tombstone,

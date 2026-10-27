@@ -100,14 +100,18 @@ const connector = defineConnector<typeof env>({
       ],
       readOnly: [...starFields, "synced"],
       derived: [...starFields, "synced"],
-      // Only the process that stops syncing a repository clears `synced`,
-      // through `derive`: a star-only write, or one process putting back what
-      // it last wrote, never turns a synced row into a star-only one.
-      policy: (item, entry) =>
-        item?.properties["synced"] === true &&
-        entry?.properties["synced"] !== true
-          ? { fields: { synced: "observe" } }
-          : {},
+      // Nothing turns a synced row into a star-only one: a star-only write,
+      // or one process putting back what it last wrote, leaves `synced`
+      // alone, and a row another process has marked synced since this one
+      // agreed on it is not this one's to archive.
+      policy: (item, entry, archiving) =>
+        item?.properties["synced"] !== true
+          ? {}
+          : archiving !== undefined && !archiving.agrees("synced")
+            ? { owned: false }
+            : entry?.properties["synced"] !== true
+              ? { fields: { synced: "observe" } }
+              : {},
     },
     {
       type: issue as TypeDefinition,

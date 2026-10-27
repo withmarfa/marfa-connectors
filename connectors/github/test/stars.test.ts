@@ -390,6 +390,37 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(row.properties["starred_at"] ?? null).toBeNull();
   });
 
+  it("refuses an archive retried after a conflict, once another process has marked the row synced", async () => {
+    const taken = starOnly("org/taken");
+    const witness = starOnly("someone/witness");
+    await sync();
+    const id = repositoryRow(taken).id;
+
+    github.unstar(taken);
+    github.unstar(witness);
+    await sync();
+    // Another process takes the repository up between this run's last read
+    // of the row and its archive, so the archive meets a version conflict.
+    let raced = false;
+    marfa.beforeAnswer = (request) => {
+      if (
+        !raced &&
+        request.method === "POST" &&
+        request.path.endsWith(`/${id}/transition`)
+      ) {
+        raced = true;
+        marfa.edit(id, { synced: true });
+      }
+    };
+    await sync();
+    marfa.beforeAnswer = undefined;
+    expect(raced).toBe(true);
+    expect(repositoryRow(taken).state).toBe("active");
+    expect(repositoryRow(taken).properties["synced"]).toBe(true);
+    // The witness: a star-only row in the same run is archived.
+    expect(repositoryRow(witness).state).toBe("archived");
+  });
+
   it("archives a star-only repository when it is unstarred, and the same row returns when it is starred again", async () => {
     const repository = starOnly("someone/starred");
     const other = starOnly("someone/kept");
@@ -596,7 +627,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(repositoryRow(starred).properties["starred"]).toBe(true);
   });
 
-  it("keeps the row of a starred repository that leaves the listing, as a star-only row", async () => {
+  it("keeps the row of a starred repository that leaves the listing, which a lost star then only unmarks", async () => {
     const tracker = listed("someone/tracker", { private: false });
     const issue = github.addIssue(tracker);
     github.star(tracker);
@@ -623,12 +654,15 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(repositoryRow(tracker).id).toBe(id);
     expect(repositoryRow(tracker).state).toBe("active");
     expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    // Another process may still sync it, so the row keeps saying it is synced.
+    expect(repositoryRow(tracker).properties["synced"]).toBe(true);
 
     github.unstar(tracker);
     await sync();
-    expect(repositoryRow(tracker).state).toBe("active");
     await sync();
-    expect(repositoryRow(tracker).state).toBe("archived");
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(false);
+    expect(repositoryRow(tracker).properties["synced"]).toBe(true);
   });
 
   it("keeps the star mark of a paused repository, and unmarks it only once two listings lack the star", async () => {
