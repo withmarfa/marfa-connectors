@@ -65,6 +65,8 @@ import {
   pullRequestsByNode,
   closedByOf,
   pullNodeOfNumber,
+  checksUnreadable,
+  Rollup,
 } from "./pulls.js";
 import type { Scope } from "./scope.js";
 import { fileNotes, preserveFiles, markFilesPrivate } from "./files.js";
@@ -194,6 +196,7 @@ class Coverage {
     ...notificationConditions,
     "stars-unreadable",
     starsKept,
+    checksUnreadable,
   ]);
   readonly prefixes = new Set(readPrefixes);
 
@@ -253,10 +256,11 @@ export async function read(
   app: App | Personal,
   scope: Scope | undefined,
   notifications: { token: string | undefined; scopeText: string | undefined },
+  starsOn = true,
 ): Promise<void> {
   const coverage = new Coverage();
   try {
-    await readAll(context, app, scope, coverage, notifications.token);
+    await readAll(context, app, scope, coverage, notifications.token, starsOn);
   } catch (error) {
     if ("token" in app && status(error) === 401)
       throw new Error(
@@ -294,6 +298,7 @@ async function readAll(
   scope: Scope | undefined,
   coverage: Coverage,
   notificationsToken: string | undefined,
+  starsOn: boolean,
 ): Promise<void> {
   const { state, log, secret, signal } = context;
   const unsettled = takeUnsettled(state);
@@ -305,6 +310,7 @@ async function readAll(
     return;
   }
   coverage.reached("unsettled");
+  const rollup = new Rollup(log);
   const kept = keptOf(state.get("repositories"));
   const personal =
     "token" in app
@@ -426,15 +432,17 @@ async function readAll(
       );
     }
   }
-  // Only a scheduled run lists the stars; the rest keep each mark as it was.
+  // Only a scheduled run lists the stars, and not where GITHUB_STARS turned
+  // them off; the rest keep each mark as it was.
   const scheduled = context.hints === undefined;
   const stars = await Stars.open(
     context,
     state,
     starReader(app, personal, notificationsToken, secret, signal),
-    scheduled,
+    scheduled && starsOn,
   );
   if (scheduled) coverage.reached("stars-unreadable");
+  if (scheduled && !starsOn) coverage.reached(starsKept);
   for (const [node, at] of listed)
     listed.set(node, { ...at, repository: stars.mark(at.repository) });
   const synced = new Set(listed.keys());
@@ -531,6 +539,7 @@ async function readAll(
       new Set(outside.keys()),
       retained,
       discussionClients,
+      rollup,
     );
     for (const [node, at] of listed) {
       const client = clients.get(at.installation);
@@ -676,6 +685,7 @@ async function readAll(
           owner,
           name,
           day(new Date(Date.now() - windowDays * 86_400_000)),
+          rollup,
         );
         await scoped.upsert(
           pullRequestType,
@@ -709,6 +719,7 @@ async function readAll(
           synced,
           inside: new Set([...synced, ...paused]),
           retainedRepositories: retained,
+          rollup,
           privacy,
           check,
           reached: (keys) => {
@@ -799,6 +810,7 @@ async function readAll(
     complete: answered.size === installations.length,
   });
   if (stars.listed) coverage.reached(starsKept);
+  if (scheduled && rollup.answered) coverage.reached(checksUnreadable);
   if (waiting.length > 0) {
     log.condition(
       "rate-limit-reserve",
@@ -855,6 +867,7 @@ async function syncRepository(
     synced: ReadonlySet<string>;
     inside: ReadonlySet<string>;
     retainedRepositories: ReadonlySet<string>;
+    rollup: Rollup;
     privacy: Privacy;
     check: boolean;
     /** Marks conditions the check ran in full for, so any it did not raise
@@ -902,6 +915,7 @@ async function syncRepository(
     owner,
     name,
     `${windowStart}T00:00:00Z`,
+    options.rollup,
   );
 
   // Neutral links need not alter REST data or its ETag. Poll the issues on
@@ -1004,6 +1018,7 @@ async function syncRepository(
   for (const pr of await pullRequestsByNode(
     octokit,
     closingPRs.map((pr) => pr.id),
+    options.rollup,
   )) {
     if (options.synced.has(pr.repository.node)) allPRs.set(pr.node, pr);
   }
@@ -1737,6 +1752,7 @@ async function readNamed(
   excluded: ReadonlySet<string>,
   retainedRepositories: ReadonlySet<string>,
   discussionClients: ReadonlyMap<number, Client>,
+  rollup: Rollup,
 ): Promise<void> {
   const { hints, upsert, log } = context;
   const clients = new Map(every);
@@ -1814,7 +1830,7 @@ async function readNamed(
     for (const [installation, octokit] of clients) {
       const wanted = ids.filter((id) => !prs.has(id));
       for (const pr of (await attempt(installation, () =>
-        pullRequestsByNode(octokit, wanted),
+        pullRequestsByNode(octokit, wanted, rollup),
       )) ?? []) {
         shown.add(pr.node);
         if (synced.has(pr.repository.node)) prs.set(pr.node, pr);

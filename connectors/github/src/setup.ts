@@ -78,6 +78,14 @@ export function readOnly(value: string | undefined, kind?: string): boolean {
     : kinds.includes(kind);
 }
 
+/** Whether this process lists the person's stars: on unless GITHUB_STARS is
+ *  `false`. */
+export function starsOn(value: string | undefined): boolean {
+  if (value === undefined || value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("GITHUB_STARS must be true or false");
+}
+
 export function manifest(options: {
   name: string;
   callback: string;

@@ -220,6 +220,10 @@ export class GitHubStub {
   discussionPageSize = 50;
   /** Answers every Discussions query of the personal token as refused. */
   personalNoDiscussions = false;
+  /** Fails the personal token's pull request queries that ask for the check
+   *  rollup with this GraphQL error type: FORBIDDEN is what GitHub answers a
+   *  token that has no Checks permission. */
+  personalChecksError: string | undefined;
   /** Answers every Discussions query of the App as FORBIDDEN, though its
    *  token mints: the installation holds the permission, GitHub still says no. */
   discussionsForbidden = false;
@@ -2350,6 +2354,7 @@ export class GitHubStub {
     pr: PullRequest,
     sees: (repository: Repository) => boolean,
     after = 0,
+    withCommits = true,
   ): Record<string, unknown> {
     const repository = this.repositoryOf(pr);
     const closing = pr.closing_issues.flatMap((id) => {
@@ -2407,7 +2412,10 @@ export class GitHubStub {
           endCursor: String(after + this.closingPageSize),
         },
       },
-      commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+      // GraphQL answers only the fields asked for.
+      ...(withCommits && {
+        commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+      }),
     };
   }
 
@@ -2422,6 +2430,32 @@ export class GitHubStub {
       send(401, { message: "Bad credentials" });
       return;
     }
+    if (
+      this.personalChecksError !== undefined &&
+      this.isPersonal(req) &&
+      body.query.includes("statusCheckRollup")
+    ) {
+      send(200, {
+        data: null,
+        errors: [
+          {
+            type: this.personalChecksError,
+            message: "Resource not accessible by personal access token",
+            path: [
+              "nodes",
+              0,
+              "commits",
+              "nodes",
+              0,
+              "commit",
+              "statusCheckRollup",
+            ],
+          },
+        ],
+      });
+      return;
+    }
+    const withCommits = body.query.includes("statusCheckRollup");
     const errors: { type: string; message: string; path: unknown[] }[] = [];
     // A token without the Discussions permission is refused a private
     // repository's Discussions node with FORBIDDEN for that node alone,
@@ -2506,7 +2540,7 @@ export class GitHubStub {
             );
             return pr === undefined || !seesPull(this.repositoryOf(pr))
               ? undefined
-              : this.graphPull(pr, seesPull);
+              : this.graphPull(pr, seesPull, 0, withCommits);
           }),
         },
       });
@@ -2576,7 +2610,7 @@ export class GitHubStub {
             pullRequests: {
               nodes: all
                 .slice(after, after + this.pullPageSize)
-                .map((pr) => this.graphPull(pr, seesPull)),
+                .map((pr) => this.graphPull(pr, seesPull, 0, withCommits)),
               pageInfo: {
                 hasNextPage: all.length > after + this.pullPageSize,
                 endCursor: String(after + this.pullPageSize),

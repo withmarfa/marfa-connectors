@@ -87,8 +87,8 @@ async function exec(
   }
 }
 
-async function sync(): Promise<string> {
-  const result = await exec({ GITHUB_PERSONAL_TOKEN: token });
+async function sync(extra: Record<string, string> = {}): Promise<string> {
+  const result = await exec({ GITHUB_PERSONAL_TOKEN: token, ...extra });
   expect(result.code, result.output).toBe(0);
   return result.output;
 }
@@ -157,6 +157,46 @@ function changes(since: number): string[] {
 }
 
 describe("starred repositories", { timeout: 60_000 }, () => {
+  it("leaves every mark and row alone, and asks for no star, where GITHUB_STARS is false", async () => {
+    const starred = starOnly("someone/starred");
+    const tracker = listed("someone/tracker");
+    github.star(tracker);
+    await sync();
+    expect(starRequests()).toBe(1);
+    const at = repositoryRow(tracker).properties["starred_at"];
+    expect(repositoryRow(starred).properties["starred"]).toBe(true);
+
+    // Another process owns these stars now: this one's token lists none of them.
+    github.unstar(starred);
+    github.unstar(tracker);
+    const before = marfa.log.length;
+    for (let run = 0; run < 3; run += 1) await sync({ GITHUB_STARS: "false" });
+    expect(starRequests()).toBe(1);
+    expect(checks("someone/starred")).toBe(0);
+    expect(repositoryRow(starred).state).toBe("active");
+    expect(repositoryRow(starred).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).state).toBe("active");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(true);
+    expect(repositoryRow(tracker).properties["starred_at"]).toBe(at);
+    expect(conditions()).not.toHaveProperty("stars-unreadable");
+    expect(changes(before)).not.toContain("item.state_changed");
+
+    // The witness: the same world, read with stars on, does unmark and archive.
+    await sync();
+    await sync();
+    expect(repositoryRow(starred).state).toBe("archived");
+    expect(repositoryRow(tracker).properties["starred"]).toBe(false);
+  });
+
+  it("refuses a GITHUB_STARS that is not true or false", async () => {
+    const result = await exec({
+      GITHUB_PERSONAL_TOKEN: token,
+      GITHUB_STARS: "no",
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("GITHUB_STARS must be true or false");
+  });
+
   it("reads every page of stars, as repository rows marked starred and stamped", async () => {
     const stars = Array.from({ length: 205 }, (_, at) =>
       starOnly(`someone/starred-${String(at)}`),

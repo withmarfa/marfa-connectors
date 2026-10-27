@@ -1,14 +1,11 @@
+import { GraphqlResponseError } from "@octokit/graphql";
 import { batches, query, type Client } from "./github.js";
 import { loginOf } from "./graph.js";
 import type { CheckCounts, PullRequest, Related } from "./entries.js";
 
 const issueFields = "id url repository { id }";
 const closingFields = `nodes { ${issueFields} } pageInfo { hasNextPage endCursor }`;
-const fields = `
-  id number title body url isDraft mergedAt closedAt baseRefName headRefName
-  state updatedAt createdAt author { login __typename }
-  repository { id nameWithOwner }
-  closingIssuesReferences(first: 100) { ${closingFields} }
+const rollupFields = `
   commits(last: 1) { nodes { commit { statusCheckRollup {
     state contexts(first: 0) {
       checkRunCountsByState { state count }
@@ -16,6 +13,72 @@ const fields = `
     }
   } } } }
 `;
+function fields(rollup: boolean): string {
+  return `
+  id number title body url isDraft mergedAt closedAt baseRefName headRefName
+  state updatedAt createdAt author { login __typename }
+  repository { id nameWithOwner }
+  closingIssuesReferences(first: 100) { ${closingFields} }
+  ${rollup ? rollupFields : ""}
+`;
+}
+
+/** The condition for a token that cannot read check results. */
+export const checksUnreadable = "checks-unreadable";
+
+/**
+ * Whether a run's pull request reads may ask for check results. A fine-grained
+ * personal token has no Checks permission, and GitHub then fails the whole
+ * query with FORBIDDEN, so the first refusal turns the rollup off for the rest
+ * of the run, names the condition, and the pull requests are read without it:
+ * their `checks` stay empty, which says nothing is known of them. Any other
+ * error still fails the read.
+ */
+export class Rollup {
+  private refused = false;
+  private asked = false;
+
+  constructor(
+    private readonly log: { condition(key: string, message: string): void },
+  ) {}
+
+  /** Whether a read asked for the rollup and was answered it, which clears
+   *  the condition. */
+  get answered(): boolean {
+    return this.asked && !this.refused;
+  }
+
+  async query(
+    octokit: Client,
+    text: (rollup: boolean) => string,
+    variables: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (!this.refused) {
+      try {
+        const answer = await query(octokit, text(true), variables);
+        this.asked = true;
+        return answer;
+      } catch (error) {
+        if (!forbidden(error)) throw error;
+        this.refused = true;
+        this.log.condition(
+          checksUnreadable,
+          "GitHub refuses the token the results of checks (a fine-grained personal token has no Checks permission), so pull requests are synced with no check summary",
+        );
+      }
+    }
+    return query(octokit, text(false), variables);
+  }
+}
+
+/** Whether every error GitHub gave is a refusal. A refusal of something else
+ *  fails the read again without the rollup, so it is never taken for this. */
+function forbidden(error: unknown): boolean {
+  return (
+    error instanceof GraphqlResponseError &&
+    error.errors?.every((one) => one.type === "FORBIDDEN") === true
+  );
+}
 interface Page<T> {
   nodes: (T | null)[];
   pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -42,7 +105,7 @@ interface GraphPR {
   author: { login: string; __typename: string } | null;
   repository: { id: string; nameWithOwner: string };
   closingIssuesReferences: Page<Related>;
-  commits: {
+  commits?: {
     nodes: ({
       commit: {
         statusCheckRollup: {
@@ -93,7 +156,7 @@ async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
       );
     page = result.node.closingIssuesReferences;
   }
-  const rollup = node.commits.nodes[0]?.commit.statusCheckRollup ?? null;
+  const rollup = node.commits?.nodes[0]?.commit.statusCheckRollup ?? null;
   const checks: CheckCounts | null =
     rollup === null
       ? null
@@ -133,12 +196,14 @@ async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
 export async function pullRequestsByNode(
   octokit: Client,
   ids: readonly string[],
+  rollup: Rollup,
 ): Promise<PullRequest[]> {
   const found: PullRequest[] = [];
   for (const batch of batches([...new Set(ids)])) {
-    const result = (await query(
+    const result = (await rollup.query(
       octokit,
-      `query PullRequests($ids: [ID!]!) { nodes(ids: $ids) { __typename ... on PullRequest { ${fields} } } }`,
+      (checks) =>
+        `query PullRequests($ids: [ID!]!) { nodes(ids: $ids) { __typename ... on PullRequest { ${fields(checks)} } } }`,
       { ids: batch },
     )) as { nodes: (GraphPR | null)[] };
     for (const one of result.nodes)
@@ -152,16 +217,19 @@ export async function listPullRequests(
   owner: string,
   name: string,
   since: string,
+  rollup: Rollup,
 ): Promise<PullRequest[]> {
   const found = new Map<string, PullRequest>();
   for (const states of [["OPEN"], ["CLOSED", "MERGED"]]) {
     let after: string | undefined;
     const seen = new Set<string>();
     for (;;) {
-      const result = (await query(
+      const result = (await rollup.query(
         octokit,
-        `query PullRequestList($owner: String!, $name: String!, $states: [PullRequestState!]!, $after: String) {
-        repository(owner: $owner, name: $name) { pullRequests(first: 100, after: $after, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { __typename ${fields} } pageInfo { hasNextPage endCursor } } }
+        (
+          checks,
+        ) => `query PullRequestList($owner: String!, $name: String!, $states: [PullRequestState!]!, $after: String) {
+        repository(owner: $owner, name: $name) { pullRequests(first: 100, after: $after, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { __typename ${fields(checks)} } pageInfo { hasNextPage endCursor } } }
       }`,
         { owner, name, states, after: after ?? null },
       )) as { repository: { pullRequests: Page<GraphPR> } | null };

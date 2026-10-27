@@ -28,7 +28,7 @@ import { notificationType } from "./notifications.js";
 import { read } from "./read.js";
 import { fileKinds, filesConnection } from "./files.js";
 import { scopeOf } from "./scope.js";
-import { readOnly, setUp } from "./setup.js";
+import { readOnly, setUp, starsOn } from "./setup.js";
 import { carry, remake } from "./write.js";
 import comment from "./github.comment.json" with { type: "json" };
 import discussion from "./github.discussion.json" with { type: "json" };
@@ -44,6 +44,7 @@ const env = {
   GITHUB_PERSONAL_TOKEN: "optional-secret",
   GITHUB_NOTIFICATIONS_TOKEN: "optional-secret",
   GITHUB_READ_ONLY: "optional",
+  GITHUB_STARS: "optional",
   GITHUB_API_URL: "optional",
   GITHUB_PUBLIC_URL: "optional",
   GITHUB_ORGANIZATION: "optional",
@@ -366,6 +367,7 @@ const connector = defineConnector<typeof env>({
   checkEnv(values) {
     scopeOf(values.GITHUB_REPOSITORIES);
     readOnly(values.GITHUB_READ_ONLY);
+    starsOn(values.GITHUB_STARS);
     const app = [
       values.GITHUB_APP_ID,
       values.GITHUB_PRIVATE_KEY,
@@ -399,6 +401,7 @@ const connector = defineConnector<typeof env>({
         token: context.env.GITHUB_NOTIFICATIONS_TOKEN,
         scopeText: context.env.GITHUB_REPOSITORIES,
       },
+      starsOn(context.env.GITHUB_STARS),
     );
   },
   async onChange(change, context) {

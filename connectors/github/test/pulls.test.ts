@@ -279,6 +279,58 @@ describe("pull request reading", () => {
     expect(github.writes()).toEqual([]);
     expect(github.asked.some((one) => one.path.startsWith("/app"))).toBe(false);
   });
+  describe("a personal token without the Checks permission", () => {
+    const personal = "github_pat_no_checks";
+    const env = {
+      GITHUB_PERSONAL_TOKEN: personal,
+      GITHUB_APP_ID: undefined,
+      GITHUB_PRIVATE_KEY: undefined,
+      GITHUB_WEBHOOK_SECRET: undefined,
+    };
+    const queries = (): number =>
+      github.asked.filter(
+        (one) =>
+          one.path === "/graphql" &&
+          JSON.stringify(one.body).includes("statusCheckRollup"),
+      ).length;
+    function problems(): Record<string, string> {
+      return marfa.problems.get("github") ?? {};
+    }
+
+    it("writes each pull request with no check summary, and names the condition once", async () => {
+      github.personalToken = personal;
+      github.personalChecksError = "FORBIDDEN";
+      const repo = github.addRepository("someone/tracker");
+      const first = github.addPullRequest(repo, {
+        checks: { state: "SUCCESS", check_runs: { SUCCESS: 1 }, statuses: {} },
+      });
+      const second = github.addPullRequest(repo);
+      await ok(env);
+      expect(row(first.node).properties["title"]).toBe(first.title);
+      expect(row(second.node).state).toBe("active");
+      expect(row(first.node).properties["checks"] ?? null).toBeNull();
+      expect(Object.keys(problems())).toContain("checks-unreadable");
+      // Two lists (open, then closed) ask once; the refusal turns it off.
+      expect(queries()).toBe(1);
+
+      github.personalChecksError = undefined;
+      await ok(env);
+      expect(problems()).not.toHaveProperty("checks-unreadable");
+      expect(row(first.node).properties["checks"]).toMatchObject({
+        state: "SUCCESS",
+      });
+    });
+
+    it("still fails the run on any other GraphQL error", async () => {
+      github.personalToken = personal;
+      github.personalChecksError = "SERVICE_UNAVAILABLE";
+      const repo = github.addRepository("someone/tracker");
+      github.addPullRequest(repo);
+      const result = await once(env);
+      expect(result.code).not.toBe(0);
+      expect(Object.keys(problems())).not.toContain("checks-unreadable");
+    });
+  });
   it("polls checks without updated_at changes and preserves exact versions on no-op reruns", async () => {
     const repo = github.addRepository("someone/tracker");
     const a = github.addIssue(repo);
