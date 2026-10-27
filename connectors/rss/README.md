@@ -193,7 +193,7 @@ With `RSS_PICTURES` set to `save` or `save-in-library`, the connector fetches th
 - `save` covers entries in the library as well as in the feed.
 - A fetch that fails in a way that may pass is tried up to three times, one run at a time, before it is recorded as not kept.
 - A picture the entry's text no longer mentions is kept.
-- The time spent on pictures in a run is capped at 10 minutes.
+- The time spent fetching pictures in a run is capped at 10 minutes.
 - A private host is allowed for a picture only on the host of its own entry's feed.
 
 ### What is saved
@@ -239,9 +239,9 @@ The reason for an address that was not kept is `removed` (a person trashed or pu
 | Pictures read from one entry | 20         | The rest are only counted, in `over`.                                                                                                                                  |
 | Pictures fetched in one run  | 100        | The rest stay in `pending`, and the run raises `pictures:limit`.                                                                                                       |
 | Bytes saved in one run       | 200 MiB    | A picture that would pass it stays in `pending`; the run raises `pictures:limit`.                                                                                      |
-| Time spent on pictures       | 10 minutes | No fetch starts after it, and the rest stay in `pending`; the run raises `pictures:limit`. A fetch already begun is allowed to finish, which takes at most 30 seconds. |
+| Time spent fetching pictures | 10 minutes | No fetch starts after it, and the rest stay in `pending`; the run raises `pictures:limit`. A fetch already begun is allowed to finish, which takes at most 30 seconds. |
 
-The limits are for each run, not for the connector's lifetime. A feed with a large backlog of pictures, such as the first run over a long feed, is therefore saved over many runs: each run saves up to its limits and the next carries on from where it stopped. Nothing is lost by this, and an operator has nothing to do but let the runs happen. The run's log line, which ends `340 left for the next run` when 340 pictures remain, says how many do.
+The limits are for each run, not for the connector's lifetime. A feed with a large backlog of pictures, such as the first run over a long feed, is therefore saved over many runs: each run saves up to its limits and the next carries on from where it stopped. Nothing is lost by this, and an operator has nothing to do but let the runs happen. The run's log line, which holds `340 left for the next run` when 340 pictures remain, says how many do.
 
 An address in `pending` is one the connector has not finished with: it was not reached because a limit came first, or its fetch failed in a way that may pass and it is being tried again. It is not an error, and a person has no step to take. Each run takes up pending addresses again, and an address leaves `pending` when it is saved or recorded as not kept.
 
@@ -255,7 +255,7 @@ With `save-in-library`, the connector works from the entries of its own that are
 
 ### When an entry leaves
 
-A picture follows its entry out of use. When an entry is archived or trashed, or is gone, the next run archives the pictures saved for it, so the file is not left on its own. When an entry that had its pictures archived this way is active again, the next run brings those pictures back, without fetching them again. It brings back only a picture this connector archived: a picture that a person archived or trashed, or that was archived by anything else, stays as it is. If the connector's record of having archived a picture is lost, the picture is not brought back, and restoring it in Marfa is a person's step. The connector does not trash or purge a picture. A type's retention in Marfa, where an operator has set one on `rss.picture`, applies to these pictures as to any other file.
+A picture follows its entry out of use. When an entry is archived or trashed, or is gone, the next run archives the pictures saved for it, so the file is not left on its own. When an entry that had its pictures archived this way is active again, the next run brings back those the entry's text still points to, without fetching them again. It brings back only a picture this connector archived: a picture that a person archived or trashed, or that was archived by anything else, stays as it is. If the connector's record of having archived a picture is lost, the picture is not brought back, and restoring it in Marfa is a person's step. The connector does not trash or purge a picture. A type's retention in Marfa, where an operator has set one on `rss.picture`, applies to these pictures as to any other file.
 
 ## What stays
 
