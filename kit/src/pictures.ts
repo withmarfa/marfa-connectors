@@ -47,7 +47,8 @@ export type PictureType =
  * - `fetch_failed`: the connection, the certificate or the transfer failed.
  * - `not_a_picture`: the first bytes are none of the types above, or the
  *   picture's size cannot be read from them.
- * - `svg`: the bytes are an SVG document, which is never fetched.
+ * - `svg`: the first 2,048 bytes hold an `<svg` tag, so the bytes are an SVG
+ *   document or a page with an SVG in it. Neither is fetched.
  * - `one_pixel`: the picture is one pixel wide or high.
  * - `too_large_dimensions`: the picture claims more than 100 million pixels,
  *   whatever its length in bytes.
@@ -394,11 +395,7 @@ function read(
   if (type === undefined) {
     // Linear in the bytes read. Both outcomes are refusals, so an HTML page
     // with an inline `<svg` that is labeled `svg` is harmless.
-    return /<svg[\s>/]/i.test(
-      ascii(bytes, 0, 2048).replace(/^\xef\xbb\xbf/, ""),
-    )
-      ? "svg"
-      : "not_a_picture";
+    return /<svg[\s>/]/i.test(ascii(bytes, 0, 2048)) ? "svg" : "not_a_picture";
   }
   if (size === undefined) return "not_a_picture";
   return { type, ...size };
