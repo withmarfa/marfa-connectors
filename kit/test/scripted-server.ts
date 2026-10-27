@@ -292,6 +292,21 @@ export class ScriptedServer {
       },
     ],
     [
+      "in-collection",
+      {
+        id: "in-collection",
+        cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["role:container"],
+        cascade_on_delete: "orphan",
+        property_schema: {
+          position: { type: "number", description: "Ordering." },
+        },
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
       "in-thread",
       {
         id: "in-thread",
@@ -887,10 +902,7 @@ export class ScriptedServer {
           edge_type: edge.edge_type,
         });
       const allowed = (constraints: unknown, type: string) =>
-        !Array.isArray(constraints) ||
-        constraints.length === 0 ||
-        constraints.includes("*") ||
-        constraints.includes(type);
+        this.admits(constraints, type);
       if (!allowed(kind["source_type_constraints"], source.type))
         throw new ScriptedRefusal(400, "edge_constraint_violation", {
           source_type: source.type,
@@ -1881,6 +1893,33 @@ export class ScriptedServer {
     refuse(404, "not_found", `no scripted door for ${route}`);
   }
 
+  /** As the server reads an edge type's constraint: `*`, a type, or
+   *  `role:<name>`, which a type holds itself or through its parents.
+   *  `core.collection` is the instance's container, which a test's types do
+   *  not register. */
+  private admits(constraints: unknown, type: string): boolean {
+    if (!Array.isArray(constraints) || constraints.length === 0) return true;
+    if (constraints.includes("*") || constraints.includes(type)) return true;
+    const seen = new Set<string>();
+    for (
+      let at: string | undefined = type;
+      at !== undefined && !seen.has(at);
+      at = ((parent: unknown) =>
+        typeof parent === "string" ? parent : undefined)(
+        this.types.get(at)?.["parent"],
+      )
+    ) {
+      seen.add(at);
+      const roles = [
+        ...((this.types.get(at)?.["roles"] ?? []) as string[]),
+        ...(at === "core.collection" ? ["container"] : []),
+      ];
+      if (roles.some((role) => constraints.includes(`role:${role}`)))
+        return true;
+    }
+    return false;
+  }
+
   /** A type filter names the type, every type whose identifier begins with
    *  it and a dot, and every type whose chain of parents reaches it
    *  (`types/listing-subtree`). */
@@ -2071,10 +2110,7 @@ export class ScriptedServer {
       };
     }
     const allowed = (constraints: unknown, type: string) =>
-      !Array.isArray(constraints) ||
-      constraints.length === 0 ||
-      constraints.includes("*") ||
-      constraints.includes(type);
+      this.admits(constraints, type);
     if (
       !allowed(kind["source_type_constraints"], source.type) ||
       !allowed(kind["target_type_constraints"], target.type)

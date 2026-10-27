@@ -17,6 +17,7 @@ export interface Shipped {
 
 const shipped: ReadonlyMap<string, Shipped> = new Map([
   ["attached-to", { edge: "attached-to", inbound: false, cascades: false }],
+  ["in-collection", { edge: "in-collection", inbound: false, cascades: false }],
   ["in-thread", { edge: "in-thread", inbound: false, cascades: false }],
   ["references", { edge: "references", inbound: false, cascades: false }],
   ["parent-of", { edge: "parent-of", inbound: false, cascades: true }],
