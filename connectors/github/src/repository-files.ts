@@ -245,8 +245,8 @@ export async function syncFiles(
   let files: Item[] | undefined;
   let directories: Item[] | undefined;
   const rows = async () => {
-    files ??= await context.held(repositoryFileType, { state: "active" });
-    directories ??= await context.held(directoryType, { state: "active" });
+    files ??= await context.held(repositoryFileType, { state: "any" });
+    directories ??= await context.held(directoryType, { state: "any" });
     return { files, directories };
   };
   for (const entry of entries) {
@@ -275,7 +275,9 @@ export async function syncFiles(
         rows,
         run.reached,
       );
-      if (next !== undefined) saved[at.repository.node_id] = next;
+      if (next === undefined)
+        Reflect.deleteProperty(saved, at.repository.node_id);
+      else saved[at.repository.node_id] = next;
     } catch (error) {
       if (context.signal.aborted || !rateLimited(error)) throw error;
       run.waiting(`${at.repository.full_name}'s files`);
@@ -285,7 +287,8 @@ export async function syncFiles(
 }
 
 /** Reads one repository's files and writes what changed; returns what to
- *  save, or nothing where the next run must read the tree again. */
+ *  save, or nothing where the run read the tree but not all of it, so the
+ *  next run reads it whole even if the branch is back as it was. */
 async function syncRepositoryFiles(
   context: Context,
   octokit: Client,
@@ -323,7 +326,7 @@ async function syncRepositoryFiles(
       unlisted,
       `${name}: ${why} for the files of its default branch, ${branch}, so its files are left as they are; the other kinds keep syncing`,
     );
-    return undefined;
+    return before;
   }
   reached(unlisted);
   if (answer === undefined) return before;
@@ -372,8 +375,19 @@ async function syncRepositoryFiles(
     if (blob.size > sizeAtMost) skip(blob.path, "over 512 KiB");
     else chosen.set(blob.path, blob);
   }
+  const held = await rows();
+  const everyFile = heldUnder(held.files, node, false);
+  const everyDirectory = heldUnder(held.directories, node, true);
+  const active = (byPath: Map<string, Item>) =>
+    new Map([...byPath].filter(([, row]) => row.state === "active"));
+  const heldFiles = active(everyFile);
+  const heldDirectories = active(everyDirectory);
+  // A skipped file keeps its row, so the directory holding it stays too.
   const included = new Set<string>();
-  for (const path of chosen.keys()) {
+  for (const path of [
+    ...chosen.keys(),
+    ...[...skippedPaths].filter((path) => heldFiles.has(path)),
+  ]) {
     const root = roots
       .filter((one) => trees.has(one) && within(path, one))
       .sort((a, b) => a.length - b.length)[0];
@@ -383,9 +397,6 @@ async function syncRepositoryFiles(
       if (at === root) break;
     }
   }
-  const held = await rows();
-  const heldFiles = heldUnder(held.files, node, false);
-  const heldDirectories = heldUnder(held.directories, node, true);
   const base = repository.html_url;
   const fileUrl = (path: string) =>
     `${base}/blob/${encoded(branch)}/${encoded(path)}`;
@@ -402,21 +413,25 @@ async function syncRepositoryFiles(
       path,
       sha: heldFiles.get(path)?.properties["blob_sha"],
     })),
-    [...chosen.values()].filter((blob) => !heldFiles.has(blob.path)),
+    // A path with a row in any state takes its own row back, not another's.
+    [...chosen.values()].filter((blob) => !everyFile.has(blob.path)),
   );
   const directoryMoves = pairDirectoryMoves(
     moves,
     (path) => heldDirectories.has(path) && !included.has(path),
-    (path) => included.has(path) && !heldDirectories.has(path),
+    (path) => included.has(path) && !everyDirectory.has(path),
   );
   let complete = !truncated;
   const fileEntries: Entry[] = [];
   for (const blob of chosen.values()) {
-    const row = heldFiles.get(blob.path);
+    const row = everyFile.get(blob.path);
     const url = fileUrl(blob.path);
+    // A row in the bin takes no entry, so its blob is not read.
     if (
-      row?.properties["blob_sha"] === blob.sha &&
-      row.properties["url"] === url
+      row?.state === "trashed" ||
+      (row?.state === "active" &&
+        row.properties["blob_sha"] === blob.sha &&
+        row.properties["url"] === url)
     )
       continue;
     let body: string | undefined;

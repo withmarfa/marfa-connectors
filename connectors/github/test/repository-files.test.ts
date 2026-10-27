@@ -366,6 +366,123 @@ describe("repository files", { timeout: 60_000 }, () => {
     );
   });
 
+  it("leaves a trashed directory in the bin, and the files in it in place", async () => {
+    await sync();
+    const skills = folder("skills/skills");
+    if (skills === undefined) throw new Error("no row");
+    marfa.trash(skills.id);
+    expect(folder("skills/skills/review")?.state).toBe("trashed");
+    files().set("skills/skills/review/SKILL.md", "# Review, revised\n");
+    await sync();
+    expect(folder("skills/skills")?.state).toBe("trashed");
+    expect(folder("skills/skills/review")?.state).toBe("trashed");
+    expect(file("skills/skills/review/SKILL.md")?.state).toBe("active");
+    expect(file("skills/skills/review/SKILL.md")?.properties["body"]).toBe(
+      "# Review, revised\n",
+    );
+  });
+
+  it("leaves a trashed file in the bin unread, and brings it up to date after a restore and the next change", async () => {
+    await sync();
+    const access = file("runbooks/access.md");
+    if (access === undefined) throw new Error("no row");
+    marfa.trash(access.id);
+    files().set("runbooks/access.md", "# Access, revised\n");
+    await sync();
+    expect(file("runbooks/access.md")?.state).toBe("trashed");
+    expect(file("runbooks/access.md")?.properties["body"]).toBe("# Access\n");
+    marfa.restore(access.id);
+    files().set("runbooks/new.md", "# New\n");
+    await sync();
+    expect(file("runbooks/access.md")?.state).toBe("active");
+    expect(file("runbooks/access.md")?.properties["body"]).toBe(
+      "# Access, revised\n",
+    );
+  });
+
+  it("marks the files and directories of a paused repository private when it turns private", async () => {
+    repository.private = false;
+    github.addRepository("someone/other");
+    await sync();
+    expect(file("runbooks/access.md")?.properties["private"]).toBe(false);
+    expect(folder("runbooks")?.properties["private"]).toBe(false);
+    repository.private = true;
+    await sync({ GITHUB_REPOSITORIES: "someone/other" });
+    expect(
+      [...rowsOf("github.repository_file"), ...rowsOf("github.directory")].map(
+        (one) => one.properties["private"],
+      ),
+    ).toEqual(Array<boolean>(8).fill(true));
+  });
+
+  it("archives the file renamed onto the path of an archived one, and updates that one", async () => {
+    await sync();
+    const access = file("runbooks/access.md");
+    files().delete("runbooks/access.md");
+    await sync();
+    expect(file("runbooks/access.md")?.state).toBe("archived");
+    files().delete("runbooks/development.md");
+    files().set("runbooks/access.md", "# Development\n");
+    await sync();
+    const at = rowsOf("github.repository_file").filter(
+      (one) => one.properties["path"] === "runbooks/access.md",
+    );
+    expect(at.map((one) => [one.id, one.state])).toEqual([
+      [access?.id, "active"],
+    ]);
+    expect(at[0]?.properties["body"]).toBe("# Development\n");
+    expect(file("runbooks/development.md")?.state).toBe("archived");
+    // A later change to the branch reads no blob of the file again.
+    const blobs = () =>
+      github.asked.filter((one) => one.path.includes("/git/blobs/")).length;
+    const before = blobs();
+    files().set("runbooks/new.md", "# New\n");
+    await sync();
+    expect(blobs() - before).toBe(1);
+  });
+
+  it("archives the file renamed onto the path of a trashed one, and leaves that one in the bin unread", async () => {
+    await sync();
+    const access = file("runbooks/access.md");
+    if (access === undefined) throw new Error("no row");
+    marfa.trash(access.id);
+    files().delete("runbooks/development.md");
+    files().set("runbooks/access.md", "# Development\n");
+    await sync();
+    expect(file("runbooks/access.md")?.state).toBe("trashed");
+    expect(file("runbooks/development.md")?.state).toBe("archived");
+    const blobs = () =>
+      github.asked.filter((one) => one.path.includes("/git/blobs/")).length;
+    const before = blobs();
+    files().set("runbooks/new.md", "# New\n");
+    await sync();
+    expect(blobs() - before).toBe(1);
+  });
+
+  it("keeps a directory that holds only a skipped file with a row", async () => {
+    await sync();
+    files().set("runbooks/access.md", "x".repeat(600 * 1024));
+    files().delete("runbooks/development.md");
+    await sync();
+    expect(file("runbooks/development.md")?.state).toBe("archived");
+    expect(file("runbooks/access.md")?.state).toBe("active");
+    expect(folder("runbooks")?.state).toBe("active");
+  });
+
+  it("reads the tree again after a truncated read, so a revert is not missed", async () => {
+    await sync();
+    files().set("runbooks/access.md", "# Access, revised\n");
+    repository.treeTruncated = true;
+    await sync();
+    expect(file("runbooks/access.md")?.properties["body"]).toBe(
+      "# Access, revised\n",
+    );
+    files().set("runbooks/access.md", "# Access\n");
+    repository.treeTruncated = false;
+    await sync();
+    expect(file("runbooks/access.md")?.properties["body"]).toBe("# Access\n");
+  });
+
   it("refuses a malformed setting at the start, naming the entry", async () => {
     for (const value of [
       "someone/agents",

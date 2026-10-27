@@ -77,7 +77,9 @@ import {
   tokenName,
 } from "./notifications.js";
 import {
+  directoryType,
   forgetFiles,
+  repositoryFileType,
   syncFiles,
   takeOutFiles,
   type FilesEntry,
@@ -1430,6 +1432,13 @@ async function markRows(
       (row) => linkOf(row) ?? [],
     );
     await context.derive(type, links, { private: hidden });
+  }
+  // These have no link: they are held by natural key.
+  for (const type of [repositoryFileType, directoryType]) {
+    const keys = (await context.linked(type, inRepository, under)).flatMap(
+      (row) => (row.source_id === undefined ? [] : [row.source_id]),
+    );
+    if (keys.length > 0) await context.derive(type, keys, { private: hidden });
   }
 }
 
