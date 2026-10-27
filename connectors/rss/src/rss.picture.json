@@ -7,7 +7,7 @@
     "source_url": {
       "type": "url",
       "required": true,
-      "description": "The web address the picture was saved from, as the entry's text or image gives it."
+      "description": "The web address the picture was saved from, as the entry's text or image gives it, in the standard form a URL parser writes."
     }
   }
 }

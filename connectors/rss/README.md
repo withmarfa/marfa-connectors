@@ -195,7 +195,7 @@ Each saved picture is an `rss.picture` row, a kind of `core.file.image`, with th
 
 | Field                   | What it holds                                                                                                           |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `source_url`            | The web address the picture was saved from, as the entry gave it.                                                       |
+| `source_url`            | The web address the picture was saved from, as the entry gave it, in the standard form a URL parser writes.             |
 | `title`                 | `p-`, the first 12 characters of a hash of that address, then the extension for its type, such as `p-0123456789ab.png`. |
 | `blob_ref`, `mime_type` | The file, and its type, as for every file in Marfa.                                                                     |
 
