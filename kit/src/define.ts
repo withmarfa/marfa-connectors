@@ -81,6 +81,15 @@ export interface Entry {
   properties: Readonly<Record<string, unknown>>;
   occurred_at?: string | undefined;
   /**
+   * The tier a new row is made in; `feed` when left out. A row is written to
+   * the library only when it belongs to something already there, such as the
+   * picture files of an entry the owner has kept, and never because a vendor
+   * sent it: moving a vendor's row to the library is a person's or an app's
+   * act. It sets the tier of a row on its creation alone; a row that exists
+   * stays in the tier it is in.
+   */
+  tier?: "feed" | "library" | undefined;
+  /**
    * When the vendor last changed the entry. Read where a row in Marfa has
    * changed since the connector's own write: the later of the two changes
    * wins, and a vendor that names no time loses.

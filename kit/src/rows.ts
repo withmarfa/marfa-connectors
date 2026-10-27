@@ -513,6 +513,7 @@ export class Rows {
           source_id: entry.source_id,
           properties,
           ...(occurredAt !== undefined && { occurred_at: occurredAt }),
+          ...(entry.tier !== undefined && { tier: entry.tier }),
         },
       ]);
     }
