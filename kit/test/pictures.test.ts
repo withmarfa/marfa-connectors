@@ -224,8 +224,9 @@ const server = createServer({ key, cert }, (req, res) => {
     headers: req.headers,
   };
   seen.push(entry);
-  const route = routes[req.url ?? ""];
-  if (route === undefined) {
+  const path = req.url ?? "";
+  const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
+  if (typeof route !== "function") {
     res.writeHead(404).end();
     return;
   }

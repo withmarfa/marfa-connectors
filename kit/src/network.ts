@@ -42,8 +42,15 @@ for (const [network, prefix] of [
 }
 
 function ipv6Bytes(address: string): number[] | undefined {
-  let text = address.toLowerCase().replace(/%.*$/, "");
-  const quad = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  let text = address.toLowerCase();
+  const zone = text.indexOf("%");
+  if (zone >= 0) text = text.slice(0, zone);
+  // Only the part after the last colon can be a dotted quad, so the pattern is anchored at both ends and each
+  // octet is at most three digits: it cannot backtrack on a long input.
+  const start = text.lastIndexOf(":") + 1;
+  const quad = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(
+    text.slice(start),
+  );
   if (quad !== null) {
     const [a, b, c, d] = quad.slice(1).map(Number) as [
       number,
@@ -51,7 +58,7 @@ function ipv6Bytes(address: string): number[] | undefined {
       number,
       number,
     ];
-    text = `${text.slice(0, quad.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+    text = `${text.slice(0, start)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
   }
   const [head = "", tail] = text.split("::");
   const groups = (part: string): string[] =>
