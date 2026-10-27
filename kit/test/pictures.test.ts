@@ -599,7 +599,25 @@ describe("a picture that claims too many pixels", () => {
 });
 
 describe("a body built to make the reader work", () => {
-  const quickly = 750;
+  // The unfixed pattern never returns on this body, so any bound separates the two, and a slow runner cannot fail
+  // the fixed one. The box tests below assert what was refused, not how long it took.
+  const quickly = 5000;
+  const freeBoxes = (count: number): Buffer => {
+    const free = Buffer.alloc(count * 8);
+    for (let at = 0; at < free.length; at += 8) {
+      free.writeUInt32BE(8, at);
+      free.write("free", at + 4, "latin1");
+    }
+    return free;
+  };
+  const meta = (): Buffer =>
+    box(
+      "meta",
+      Buffer.alloc(4),
+      box("iprp", box("ipco", box("ispe", Buffer.alloc(4), u32(64), u32(48)))),
+    );
+  const ftyp = (): Buffer =>
+    box("ftyp", Buffer.from("avif"), Buffer.alloc(4), Buffer.from("avif"));
 
   it("an SVG test that would backtrack is linear", async () => {
     routes["/p"] = serve(Buffer.from("<!---->".repeat(300) + "x"));
@@ -613,40 +631,32 @@ describe("a body built to make the reader work", () => {
     expect(await refusal(`${base()}/p`, allowed)).toBe("svg");
   });
 
-  it("millions of small boxes after the file type are not listed", async () => {
-    const free = Buffer.alloc(3_000_000 * 8);
-    for (let at = 0; at < free.length; at += 8) {
-      free.writeUInt32BE(8, at);
-      free.write("free", at + 4, "latin1");
-    }
-    const ftyp = box(
-      "ftyp",
-      Buffer.from("avif"),
-      Buffer.alloc(4),
-      Buffer.from("avif"),
-    );
-    routes["/many"] = serve(Buffer.concat([ftyp, free]));
-    // The witness: the properties ahead of the boxes are found.
-    routes["/first"] = serve(
-      Buffer.concat([isobmff("avif", [[64, 48]]), free]),
-    );
-    const started = performance.now();
+  it("a file whose properties come after thousands of small boxes is refused, not listed", async () => {
+    routes["/many"] = serve(Buffer.concat([ftyp(), freeBoxes(5_000), meta()]));
+    // The witness: the same file with few boxes ahead of the properties is read.
+    routes["/few"] = serve(Buffer.concat([ftyp(), freeBoxes(100), meta()]));
     expect(await refusal(`${base()}/many`, allowed)).toBe("not_a_picture");
-    expect(performance.now() - started).toBeLessThan(quickly);
-    expect(await trusting(`${base()}/first`, allowed)).toMatchObject({
+    expect(await trusting(`${base()}/few`, allowed)).toMatchObject({
       ok: true,
       width: 64,
       height: 48,
     });
   });
 
-  it("an ftyp box of 25 MiB is refused without reading its brands", async () => {
-    const brands = Buffer.alloc(25 * 1024 * 1024 - 64, "avif");
-    const ftyp = box("ftyp", Buffer.from("mif1"), Buffer.alloc(4), brands);
-    routes["/p"] = serve(ftyp);
-    const started = performance.now();
+  it("an ftyp box far past 256 bytes is refused without reading its brands", async () => {
+    // The brand that makes it an AVIF comes last, after a megabyte of others, so a reader that lists every brand
+    // would accept the file.
+    const brands = Buffer.concat([
+      Buffer.alloc(1024 * 1024, "mif1"),
+      Buffer.from("avif"),
+    ]);
+    routes["/p"] = serve(
+      Buffer.concat([
+        box("ftyp", Buffer.from("mif1"), Buffer.alloc(4), brands),
+        meta(),
+      ]),
+    );
     expect(await refusal(`${base()}/p`, allowed)).toBe("not_a_picture");
-    expect(performance.now() - started).toBeLessThan(quickly);
   });
 
   it("an ftyp box is read to 256 bytes and no further", async () => {
@@ -664,15 +674,10 @@ describe("a body built to make the reader work", () => {
     expect(await refusal(`${base()}/over`, allowed)).toBe("not_a_picture");
   });
 
-  it("a property box with millions of small boxes ahead of the size is not walked", async () => {
-    const free = Buffer.alloc(1_000_000 * 8);
-    for (let at = 0; at < free.length; at += 8) {
-      free.writeUInt32BE(8, at);
-      free.write("free", at + 4, "latin1");
-    }
-    routes["/p"] = serve(
+  it("a property box with thousands of small boxes ahead of the size is not walked", async () => {
+    const withProperties = (free: Buffer): Buffer =>
       Buffer.concat([
-        box("ftyp", Buffer.from("avif"), Buffer.alloc(4), Buffer.from("avif")),
+        ftyp(),
         box(
           "meta",
           Buffer.alloc(4),
@@ -681,11 +686,16 @@ describe("a body built to make the reader work", () => {
             box("ipco", free, box("ispe", Buffer.alloc(4), u32(64), u32(48))),
           ),
         ),
-      ]),
-    );
-    const started = performance.now();
-    expect(await refusal(`${base()}/p`, allowed)).toBe("not_a_picture");
-    expect(performance.now() - started).toBeLessThan(quickly);
+      ]);
+    routes["/many"] = serve(withProperties(freeBoxes(5_000)));
+    // The witness: the same property box with few boxes ahead of the size is read.
+    routes["/few"] = serve(withProperties(freeBoxes(100)));
+    expect(await refusal(`${base()}/many`, allowed)).toBe("not_a_picture");
+    expect(await trusting(`${base()}/few`, allowed)).toMatchObject({
+      ok: true,
+      width: 64,
+      height: 48,
+    });
   });
 });
 
