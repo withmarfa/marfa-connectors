@@ -129,10 +129,14 @@ export function replacement(
 /**
  * Registers each type the instance does not hold, and holds each it does
  * to what the connector carries. A key holding `metadata.types:write` adds
- * the optional fields the server lacks itself, when the server allows that
- * key the change; one that lacks the scope, or is refused, runs without
- * them. Every other difference stops the start, so two versions of a
- * connector never rewrite each other's type. `again` is a registration
+ * the optional fields the server lacks itself, and sets the `label`,
+ * `description` and `display_hints` the type declares differently itself,
+ * in one replacement, when the server allows that key the change; one that
+ * lacks the scope, or is refused, runs without them. Every other difference
+ * stops the start, so two versions of a connector never rewrite each
+ * other's structure. Nothing orders presentation between versions: each
+ * start writes the connector's own, so two versions running at once with
+ * different labels would swap them on every start. `again` is a registration
  * made again, so a type missing now was deleted since it was registered.
  */
 export async function ensureTypes(
@@ -223,12 +227,21 @@ async function reconcile(
       problem: `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${listed(differences)}. ${capitalized(operatorFix(type.id))}`,
     };
   }
-  const { missing } = differences;
-  if (missing.length === 0) return { omitted: [] };
+  const { missing, presentation } = differences;
+  if (missing.length === 0 && presentation.length === 0) {
+    return { omitted: [] };
+  }
   const needed = missing.filter(
     (name) => name === type.link_field || fileFields.includes(name),
   );
   const withheld = (reason: Withheld): Outcome => {
+    if (presentation.length > 0) {
+      say(
+        reason.kind === "grant"
+          ? `the type ${type.id} on the server differs from this connector's ${presentation.join(", ")}, and the key ${reason.key} may not change it; grant it metadata types=write with \`${reason.command}\` and the connector sets it on its next start`
+          : `the server refused the key the change to the ${presentation.join(", ")} of the type ${type.id}, which this connector carries; it runs on with the server's`,
+      );
+    }
     if (needed.length === 0) return { omitted: missing, withheld: reason };
     const fix =
       reason.kind === "grant"
@@ -252,6 +265,13 @@ async function reconcile(
   } catch (error) {
     if (causeOf(error) === "marfa") throw error;
     if (error instanceof Refusal && error.status === 404) return gone();
+    if (
+      error instanceof Refusal &&
+      missing.length === 0 &&
+      refusedChanges(error) === undefined
+    ) {
+      return withheld({ kind: "refused", changes: [...presentation] });
+    }
     const changes = refusedChanges(error);
     if (changes !== undefined) {
       return withheld(
@@ -264,9 +284,16 @@ async function reconcile(
       problem: `the type ${type.id} could not be brought up to date with ${missing.join(", ")}, which this connector declares and the server lacks: ${said(error)}`,
     };
   }
-  say(
-    `added ${missing.join(", ")} to the type ${type.id}, which this connector declares and the server lacked`,
-  );
+  if (missing.length > 0) {
+    say(
+      `added ${missing.join(", ")} to the type ${type.id}, which this connector declares and the server lacked`,
+    );
+  }
+  if (presentation.length > 0) {
+    say(
+      `changed the ${presentation.join(", ")} of the type ${type.id} to the ones this connector carries`,
+    );
+  }
   const now = await marfa.normalizeType(type);
   if (now.resolved_type === null) return gone();
   if (now.registered_type === null)

@@ -2206,9 +2206,14 @@ export class ScriptedServer {
       const below = (own["merge_policy"] ?? {}) as Record<string, unknown>;
       const merging =
         Object.keys(above).length > 0 || Object.keys(below).length > 0;
+      const hints = {
+        ...(parent["display_hints"] as object | undefined),
+        ...(own["display_hints"] as object | undefined),
+      };
       served = {
         ...own,
         fields: { ...fieldsOf(parent), ...fieldsOf(own) },
+        ...(Object.keys(hints).length > 0 && { display_hints: hints }),
         ...(roles.length > 0 && { roles }),
         ...(Object.keys(versions).length > 0 && { version_policy: versions }),
         ...(merging && {
