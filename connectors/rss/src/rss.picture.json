@@ -1,0 +1,13 @@
+{
+  "id": "rss.picture",
+  "label": "RSS Picture",
+  "description": "A picture the RSS connector saved from an entry's text or image, attached to the entry by an attached-to connection. Its source_url is the web address it was saved from, and its title is p- followed by twelve characters of a hash of that address and the extension of its type.",
+  "parent": "core.file.image",
+  "fields": {
+    "source_url": {
+      "type": "url",
+      "required": true,
+      "description": "The web address the picture was saved from, as the entry's text or image gives it, in the standard form a URL parser writes."
+    }
+  }
+}

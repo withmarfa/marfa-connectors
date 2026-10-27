@@ -41,7 +41,8 @@ export type PictureType =
  *   network that the connector did not allow.
  * - `tracker`: the address is a known tracker's counting pixel.
  * - `too_many_redirects`: more than four redirects.
- * - `bad_status`: the answer was not a 200.
+ * - `bad_status`: the answer was not a 200. The refusal carries the answer's
+ *   `status`, so that a connector can tell a 404 from a 429 or a 503.
  * - `too_large`: more than 25 MiB, by the declared or the streamed length.
  * - `timed_out`: not complete within 30 seconds.
  * - `fetch_failed`: the connection, the certificate or the transfer failed.
@@ -80,7 +81,13 @@ export type Picture =
       /** Where the picture came from, after any redirects. */
       readonly url: string;
     }
-  | { readonly ok: false; readonly reason: PictureRefusal };
+  | {
+      readonly ok: false;
+      readonly reason: PictureRefusal;
+      /** The HTTP status of the answer, set only when `reason` is
+       *  `bad_status`. */
+      readonly status?: number;
+    };
 
 export interface PictureOptions {
   /**
@@ -100,7 +107,10 @@ export interface PictureOptions {
 class Refuse extends Error {
   override name = "Refuse";
 
-  constructor(readonly reason: PictureRefusal) {
+  constructor(
+    readonly reason: PictureRefusal,
+    readonly status?: number,
+  ) {
     super(reason);
   }
 }
@@ -445,7 +455,7 @@ export function pictureFetcher(
         }
         if (status !== 200) {
           response.destroy();
-          throw new Refuse("bad_status");
+          throw new Refuse("bad_status", status);
         }
         const bytes = await bodyOf(response, limit, signal);
         const found = read(bytes);
@@ -465,7 +475,13 @@ export function pictureFetcher(
         };
       }
     } catch (error) {
-      if (error instanceof Refuse) return { ok: false, reason: error.reason };
+      if (error instanceof Refuse) {
+        return {
+          ok: false,
+          reason: error.reason,
+          ...(error.status !== undefined && { status: error.status }),
+        };
+      }
       if (options.signal?.aborted === true) throw options.signal.reason;
       if (timeout.aborted) return { ok: false, reason: "timed_out" };
       if (error instanceof RefusedAddress) {

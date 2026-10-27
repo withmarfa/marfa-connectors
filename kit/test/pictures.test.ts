@@ -551,6 +551,33 @@ describe("bytes that are not a picture", () => {
     expect(await refusal(`${base()}/created`, allowed)).toBe("bad_status");
     expect(await refusal(`${base()}/missing`, allowed)).toBe("bad_status");
   });
+
+  it("carry the status of the answer that was refused, and only that refusal does", async () => {
+    routes["/busy"] = (_seen, res) => {
+      res.writeHead(503).end();
+    };
+    routes["/slow-down"] = (_seen, res) => {
+      res.writeHead(429, { "Retry-After": "60" }).end();
+    };
+    routes["/created"] = (_seen, res) => {
+      res.writeHead(201).end(png(9, 9));
+    };
+    routes["/no-location"] = (_seen, res) => {
+      res.writeHead(302).end();
+    };
+    routes["/svg"] = serve(Buffer.from("<svg/>"), "image/png");
+    const statusOf = async (path: string): Promise<unknown> => {
+      const result = await trusting(`${base()}${path}`, allowed);
+      return result.ok ? "fetched" : (result.status ?? "none");
+    };
+    expect(await statusOf("/busy")).toBe(503);
+    expect(await statusOf("/slow-down")).toBe(429);
+    expect(await statusOf("/created")).toBe(201);
+    expect(await statusOf("/no-location")).toBe(302);
+    expect(await statusOf("/missing")).toBe(404);
+    // Another reason has no status to carry.
+    expect(await statusOf("/svg")).toBe("none");
+  });
 });
 
 describe("a picture one pixel wide or high", () => {
