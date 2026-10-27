@@ -258,7 +258,7 @@ export async function syncFiles(
       context.log.condition(
         key,
         run.paused.has(entry.repository)
-          ? `GITHUB_FILES names ${entry.repository}, which GITHUB_REPOSITORIES leaves out, so its files are not read and their rows are left as they are`
+          ? `GITHUB_FILES names ${entry.repository}, which GITHUB_REPOSITORIES leaves out, so its files are not read and their rows are left as they are, bar the private marker, which follows its visibility`
           : `GITHUB_FILES names ${entry.repository}, which the run does not sync, so none of its files are read`,
       );
       continue;
