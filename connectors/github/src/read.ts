@@ -121,6 +121,10 @@ export interface Kept {
   /** The time Discussions were last read down to; absent until they are. */
   discussions?: { since: string };
   paused?: boolean;
+  /** Set once the repository left the installation while a row under it was
+   *  still active: only `takeOut` revisits it, and the writes, which reach
+   *  only repositories the App reads, leave it out. */
+  leaving?: boolean;
   /** The repository's visibility as its rows last said it. */
   private?: boolean;
   /** Issues Marfa has no row for that may be mid-transfer, each with when
@@ -615,6 +619,7 @@ async function readAll(
       id: repository.id,
     };
     Reflect.deleteProperty(next[node], "paused");
+    Reflect.deleteProperty(next[node], "leaving");
   }
   for (const [node, repository] of Object.entries(kept)) {
     if (listed.has(node) || deferred.has(repository.installation)) continue;
@@ -627,17 +632,14 @@ async function readAll(
         );
       }
       // Under the name its rows hold, which a rename meanwhile does not change.
-      next[node] = await marked(
-        scoped,
-        node,
-        { ...repository, paused: true, id: left.id },
-        left.private,
-      );
+      const named: Kept = { ...repository, paused: true, id: left.id };
+      Reflect.deleteProperty(named, "leaving");
+      next[node] = await marked(scoped, node, named, left.private);
       await save(scoped, node, next[node]);
       continue;
     }
     if (answered.has(repository.installation)) {
-      await takeOut(
+      const retained = await takeOut(
         scoped,
         node,
         repository.name,
@@ -645,7 +647,13 @@ async function readAll(
         stars.starred(node),
       );
       forgetFiles(state, node);
-      await save(scoped, node);
+      // Kept while a row under it is active, so the next run takes it out
+      // again and archives its row once nothing under it is.
+      await save(
+        scoped,
+        node,
+        retained ? { ...repository, leaving: true } : undefined,
+      );
       continue;
     }
     // Its visibility is no longer known, so its rows say what is safe.
@@ -902,13 +910,19 @@ async function readAll(
   }
 }
 
+/** Takes a repository out of this process: archives the rows this process
+ *  holds an agreement for under it. Its own row stays while any row under it
+ *  is still active, whoever wrote it, since another process may still sync
+ *  it, and while the repository is starred. Answers whether it stayed for a
+ *  row, so the caller keeps the repository's progress and takes it out again
+ *  once nothing under it is active. */
 async function takeOut(
   context: Context,
   node: string,
   name: string,
   personal: boolean,
   starred: boolean,
-) {
+): Promise<boolean> {
   const { linked, archive, log } = context;
   const under = { type: repositoryType, id: node };
   const links = (rows: Item[]): string[] =>
@@ -927,12 +941,38 @@ async function takeOut(
     links(await linked(pullRequestType, inRepository, under)),
   );
   await takeOutFiles(context, node);
+  // Read after the archives above, so it is what they left active.
+  let remaining = 0;
+  for (const type of [
+    commentType,
+    issueType,
+    discussionType,
+    pullRequestType,
+    repositoryFileType,
+    directoryType,
+  ]) {
+    const rows = await linked(type, inRepository, under, { rows: "all" });
+    remaining += rows.filter((row) => row.state === "active").length;
+  }
   // A starred repository keeps its row and its `synced`, since another
   // process may still sync it: a lost star then only unmarks it.
-  if (!starred) await archive(repositoryType, [node]);
+  if (!starred && remaining === 0) await archive(repositoryType, [node]);
+  const bar = [
+    ...(remaining > 0
+      ? [
+          `${String(remaining)} active ${remaining === 1 ? "row" : "rows"} under it that this process did not archive, which another process may still sync`,
+        ]
+      : []),
+    ...(starred
+      ? ["its repository row, which its star keeps"]
+      : remaining > 0
+        ? ["its repository row, which stays while they are active"]
+        : []),
+  ];
   log.info(
-    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : ""}`,
+    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${bar.length > 0 ? `, bar ${bar.join(", and ")}` : ""}`,
   );
+  return remaining > 0;
 }
 
 async function syncRepository(

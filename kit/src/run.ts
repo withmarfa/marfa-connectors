@@ -1118,7 +1118,12 @@ export async function runOnce<E extends EnvDeclaration>(
       [...found].filter(([, row]) => told.has(row.id)).map(([key]) => key),
     );
   };
-  const linked: RunContext<E>["linked"] = async (type, connection, target) => {
+  const linked: RunContext<E>["linked"] = async (
+    type,
+    connection,
+    target,
+    options,
+  ) => {
     const { rows } = lane(type);
     if (!specs.get(type)?.connections.has(connection)) {
       throw new Error(`${type} declares no connection ${connection}`);
@@ -1133,10 +1138,13 @@ export async function runOnce<E extends EnvDeclaration>(
       held.id,
       wireOf(connection).inbound,
     );
-    const told = await rows.told(found);
+    const told =
+      options?.rows === "all"
+        ? new Set(found.map((row) => row.id))
+        : await rows.told(found);
     return found
       .filter((row) => {
-        if (!told.has(row.id)) return false;
+        if (!told.has(row.id) || row.type !== type) return false;
         const named =
           rows.connecting.get(row.id)?.connections[connection] ??
           answeredConnections.get(row.id)?.[connection];

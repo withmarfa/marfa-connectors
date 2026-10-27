@@ -205,10 +205,17 @@ export function linkRefused(error: unknown): never {
   throw error;
 }
 
+/** The repositories the App reads, which a change may be placed in or
+ *  resolved against. One that left the installation but is kept for its
+ *  clean-up is not among them: the App can no longer reach it. */
 export function allKept(context: Context): Record<string, Kept> {
   const value = context.state.get("repositories");
   return typeof value === "object" && value !== null
-    ? (value as Record<string, Kept>)
+    ? Object.fromEntries(
+        Object.entries(value as Record<string, Kept>).filter(
+          ([, one]) => one.leaving !== true,
+        ),
+      )
     : {};
 }
 

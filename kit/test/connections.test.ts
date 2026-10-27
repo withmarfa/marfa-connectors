@@ -794,6 +794,32 @@ describe("what a run finds linked", () => {
     expect(held.answers).toEqual([[]]);
   });
 
+  it("answers every active row connected to the target where asked for all, whoever wrote it", async () => {
+    const held = connected([entry(1, [2]), entry(2)]);
+    await harness.twoWay(held);
+    const untold = harness.server.insert(
+      undefined,
+      { title: "Untold" },
+      "test.entry",
+      "person",
+    );
+    harness.server.drawEdge(
+      untold.id,
+      harness.server.row("a:2").id,
+      "test.blocks",
+    );
+    held.entries = [];
+    const target = { type: "test.entry", id: "v2" };
+    held.ask = { connection: "test.blocks", target };
+    await harness.twoWay(held);
+    held.ask = { connection: "test.blocks", target, rows: "all" };
+    await harness.twoWay(held);
+    expect(held.answers?.map((rows) => rows.sort())).toEqual([
+      ["v1"],
+      ["undefined", "v1"],
+    ]);
+  });
+
   it("reads every page", async () => {
     const many = Array.from({ length: 450 }, (_, at) => entry(at + 2, [1]));
     const held = connected([entry(1), ...many]);
