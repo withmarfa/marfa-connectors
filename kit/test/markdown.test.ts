@@ -94,6 +94,17 @@ describe("htmlToMarkdown", () => {
     expect(out).toBe("Text\n\n![Real](https://x.test/real.jpg)");
   });
 
+  it("drops a tracking picture whose address names a port or a final dot", () => {
+    const out = htmlToMarkdown(
+      "<p>Text</p>" +
+        '<img src="https://feeds.feedburner.com:8443/~r/blog/~4/abc">' +
+        '<img src="https://pixel.wp.com:444/b.gif">' +
+        '<img src="https://stats.wp.com./b.gif">' +
+        '<img src="https://x.test/real.jpg" width="640" height="480" alt="Real">',
+    );
+    expect(out).toBe("Text\n\n![Real](https://x.test/real.jpg)");
+  });
+
   it("leaves out a link or picture that does not resolve, and keeps its text", () => {
     const out = htmlToMarkdown(
       '<p><a href="/rel">relative</a> <a href="mailto:a@example.org">mail</a> <img src="data:image/png;base64,AAAA" alt="d"></p>',

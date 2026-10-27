@@ -11,6 +11,10 @@ export const maxPictureBytes = 25 * 1024 * 1024;
 /** The most redirects followed to reach a picture. */
 export const maxPictureRedirects = 4;
 
+/** The most pixels a picture may claim, width times height. A header can
+ *  claim far more than its bytes hold; a later decoder is not handed that. */
+export const maxPicturePixels = 100_000_000;
+
 /** The longest a fetch may take, from the first request to the last byte. */
 export const pictureTimeoutMs = 30_000;
 
@@ -45,6 +49,8 @@ export type PictureType =
  *   picture's size cannot be read from them.
  * - `svg`: the bytes are an SVG document, which is never fetched.
  * - `one_pixel`: the picture is one pixel wide or high.
+ * - `too_large_dimensions`: the picture claims more than 100 million pixels,
+ *   whatever its length in bytes.
  */
 export type PictureRefusal =
   | "invalid_address"
@@ -58,7 +64,8 @@ export type PictureRefusal =
   | "fetch_failed"
   | "not_a_picture"
   | "svg"
-  | "one_pixel";
+  | "one_pixel"
+  | "too_large_dimensions";
 
 export type Picture =
   | {
@@ -200,33 +207,49 @@ interface Box {
   readonly end: number;
 }
 
-/** The boxes of an ISO base media file between two offsets, stopping at one
- *  whose size does not fit. */
-function boxes(bytes: Uint8Array, from: number, to: number): Box[] {
-  const found: Box[] = [];
+/** The most boxes read at one level. A picture's header holds a few dozen;
+ *  a body of millions of tiny boxes is not one. */
+const maxBoxes = 4096;
+
+/** The longest `ftyp` box read. Its brands are a handful. */
+const maxFtypBytes = 256;
+
+/** The boxes of an ISO base media file between two offsets, one at a time,
+ *  stopping at one whose size does not fit, or after `maxBoxes`. A caller
+ *  stops reading when it has what it wants. */
+function* boxes(bytes: Uint8Array, from: number, to: number): Generator<Box> {
   let at = from;
-  while (at + 8 <= to) {
+  for (let count = 0; count < maxBoxes && at + 8 <= to; count += 1) {
     let size = be32(bytes, at);
     let header = 8;
     if (size === 1) {
-      if (at + 16 > to) break;
+      if (at + 16 > to) return;
       const high = be32(bytes, at + 8);
-      if (high > 0xffff) break;
+      if (high > 0xffff) return;
       size = high * 2 ** 32 + be32(bytes, at + 12);
       header = 16;
     } else if (size === 0) {
       size = to - at;
     }
-    if (size < header || at + size > to) break;
-    found.push({
+    if (size < header || at + size > to) return;
+    yield {
       type: ascii(bytes, at + 4, at + 8),
       body: at + header,
       end: at + size,
-    });
+    };
     at += size;
   }
-  return found;
 }
+
+const firstBox = (
+  bytes: Uint8Array,
+  from: number,
+  to: number,
+  type: string,
+): Box | undefined => {
+  for (const box of boxes(bytes, from, to)) if (box.type === type) return box;
+  return undefined;
+};
 
 /** The size of the largest image property in an AVIF or HEIC file. The
  *  properties sit in `meta`, `iprp`, `ipco`, each an `ispe` box; the largest
@@ -234,13 +257,11 @@ function boxes(bytes: Uint8Array, from: number, to: number): Box[] {
 function isobmffSize(
   bytes: Uint8Array,
 ): { width: number; height: number } | undefined {
-  const meta = boxes(bytes, 0, bytes.length).find((box) => box.type === "meta");
+  const meta = firstBox(bytes, 0, bytes.length, "meta");
   if (meta === undefined) return undefined;
-  const within = (box: Box | undefined, type: string, skip: number) =>
-    box === undefined
-      ? undefined
-      : boxes(bytes, box.body + skip, box.end).find((one) => one.type === type);
-  const properties = within(within(meta, "iprp", 4), "ipco", 0);
+  const iprp = firstBox(bytes, meta.body + 4, meta.end, "iprp");
+  if (iprp === undefined) return undefined;
+  const properties = firstBox(bytes, iprp.body, iprp.end, "ipco");
   if (properties === undefined) return undefined;
   let largest: { width: number; height: number } | undefined;
   for (const box of boxes(bytes, properties.body, properties.end)) {
@@ -323,9 +344,6 @@ function webpSize(
   }
 }
 
-const svgStart =
-  /^(?:\s*<\?xml[^>]*\?>)?(?:\s*<!--[\s\S]*?-->)*(?:\s*<!doctype[^>[]*(?:\[[\s\S]*?\])?\s*>)?(?:\s*<!--[\s\S]*?-->)*\s*<svg[\s>/]/i;
-
 /**
  * What the first bytes say a picture is, and its size read from the same
  * bytes: PNG's header chunk, GIF's screen descriptor, the first frame header
@@ -356,17 +374,15 @@ function read(
   } else if (head.startsWith("RIFF") && head.slice(8, 12) === "WEBP") {
     type = "image/webp";
     size = webpSize(bytes);
-  } else if (head.slice(4, 8) === "ftyp" && be32(bytes, 0) >= 16) {
-    const ftyp = boxes(bytes, 0, bytes.length)[0];
-    const brands =
-      ftyp === undefined
-        ? []
-        : [
-            ascii(bytes, ftyp.body, ftyp.body + 4),
-            ...Array.from({ length: (ftyp.end - ftyp.body - 8) >> 2 }, (_, i) =>
-              ascii(bytes, ftyp.body + 8 + i * 4, ftyp.body + 12 + i * 4),
-            ),
-          ];
+  } else if (head.slice(4, 8) === "ftyp") {
+    const length = be32(bytes, 0);
+    const brands: string[] = [];
+    if (length >= 16 && length <= maxFtypBytes && length <= bytes.length) {
+      brands.push(ascii(bytes, 8, 12));
+      for (let at = 16; at + 4 <= length; at += 4) {
+        brands.push(ascii(bytes, at, at + 4));
+      }
+    }
     const brand = brands.find(
       (one) => avifBrands.has(one) || heicBrands.has(one),
     );
@@ -376,7 +392,11 @@ function read(
     }
   }
   if (type === undefined) {
-    return svgStart.test(ascii(bytes, 0, 2048).replace(/^\xef\xbb\xbf/, ""))
+    // Linear in the bytes read. Both outcomes are refusals, so an HTML page
+    // with an inline `<svg` that is labeled `svg` is harmless.
+    return /<svg[\s>/]/i.test(
+      ascii(bytes, 0, 2048).replace(/^\xef\xbb\xbf/, ""),
+    )
       ? "svg"
       : "not_a_picture";
   }
@@ -385,9 +405,9 @@ function read(
 }
 
 /**
- * A fetcher that makes its requests with `request`. `fetchPicture` is the one
- * a connector uses; a test supplies a `request` that trusts its own server's
- * certificate.
+ * A fetcher that makes its requests with `request`. It is exported for tests,
+ * which supply a `request` that trusts their own server's certificate; a
+ * connector uses `fetchPicture`.
  */
 export function pictureFetcher(
   request: typeof httpsRequest,
@@ -435,6 +455,9 @@ export function pictureFetcher(
         if (typeof found === "string") throw new Refuse(found);
         if (found.width <= 1 || found.height <= 1)
           throw new Refuse("one_pixel");
+        if (found.width * found.height > maxPicturePixels) {
+          throw new Refuse("too_large_dimensions");
+        }
         return {
           ok: true,
           bytes,

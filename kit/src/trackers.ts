@@ -18,6 +18,6 @@ const trackers: readonly RegExp[] = [
 export function isTracker(address: string): boolean {
   const url = URL.parse(address);
   if (url === null) return false;
-  const where = `${url.host}${url.pathname}`;
+  const where = `${url.hostname.replace(/\.$/, "")}${url.pathname}`;
   return trackers.some((tracker) => tracker.test(where));
 }

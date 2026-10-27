@@ -145,6 +145,13 @@ function isobmff(brand: string, sizes: [number, number][]): Buffer {
   ]);
 }
 
+/** Like `isobmff`, with the `ftyp` box given. */
+function isobmffWith(ftyp: Buffer, sizes: [number, number][]): Buffer {
+  const whole = isobmff("avif", sizes);
+  const first = whole.readUInt32BE(0);
+  return Buffer.concat([ftyp, whole.subarray(first)]);
+}
+
 const formats: [string, string, (w: number, h: number) => Buffer][] = [
   ["PNG", "image/png", png],
   ["JPEG", "image/jpeg", jpeg],
@@ -375,6 +382,18 @@ describe("an address that is refused before any connection", () => {
   ])("is the known tracker's %s", async (address) => {
     expect(await refusal(address)).toBe("tracker");
   });
+
+  it.each([
+    "https://feeds.feedburner.com:8443/~r/site/~4/abc",
+    "https://pixel.wp.com:444/g.gif",
+    "https://stats.wp.com./g.gif",
+    "https://stats.wordpress.com.:8443/b.gif",
+  ])(
+    "is the known tracker's %s, though it names a port or a final dot",
+    async (address) => {
+      expect(await refusal(address)).toBe("tracker");
+    },
+  );
 });
 
 describe("a name that resolves to this machine", () => {
@@ -553,6 +572,120 @@ describe("a picture one pixel wide or high", () => {
     routes["/gif"] = serve(gif(20, 0));
     expect(await refusal(`${base()}/png`, allowed)).toBe("one_pixel");
     expect(await refusal(`${base()}/gif`, allowed)).toBe("one_pixel");
+  });
+});
+
+describe("a picture that claims too many pixels", () => {
+  it("is refused by its header, though its bytes are few", async () => {
+    routes["/png"] = serve(png(4294967295, 4294967295));
+    routes["/jpeg"] = serve(jpeg(65535, 65535));
+    routes["/avif"] = serve(isobmff("avif", [[4294967295, 4294967295]]));
+    for (const path of ["png", "jpeg", "avif"]) {
+      expect([path, await refusal(`${base()}/${path}`, allowed)]).toEqual([
+        path,
+        "too_large_dimensions",
+      ]);
+    }
+  });
+
+  it("is fetched at 100 million pixels exactly, and refused one pixel more", async () => {
+    routes["/at"] = serve(png(10_000, 10_000));
+    routes["/over"] = serve(png(10_000, 10_001));
+    expect(await refusal(`${base()}/at`, allowed)).toBe("fetched");
+    expect(await refusal(`${base()}/over`, allowed)).toBe(
+      "too_large_dimensions",
+    );
+  });
+});
+
+describe("a body built to make the reader work", () => {
+  const quickly = 750;
+
+  it("an SVG test that would backtrack is linear", async () => {
+    routes["/p"] = serve(Buffer.from("<!---->".repeat(300) + "x"));
+    const started = performance.now();
+    expect(await refusal(`${base()}/p`, allowed)).toBe("not_a_picture");
+    expect(performance.now() - started).toBeLessThan(quickly);
+  });
+
+  it("an SVG after a long run of comments is still an SVG", async () => {
+    routes["/p"] = serve(Buffer.from("<!---->".repeat(100) + "<svg/>"));
+    expect(await refusal(`${base()}/p`, allowed)).toBe("svg");
+  });
+
+  it("millions of small boxes after the file type are not listed", async () => {
+    const free = Buffer.alloc(3_000_000 * 8);
+    for (let at = 0; at < free.length; at += 8) {
+      free.writeUInt32BE(8, at);
+      free.write("free", at + 4, "latin1");
+    }
+    const ftyp = box(
+      "ftyp",
+      Buffer.from("avif"),
+      Buffer.alloc(4),
+      Buffer.from("avif"),
+    );
+    routes["/many"] = serve(Buffer.concat([ftyp, free]));
+    // The witness: the properties ahead of the boxes are found.
+    routes["/first"] = serve(
+      Buffer.concat([isobmff("avif", [[64, 48]]), free]),
+    );
+    const started = performance.now();
+    expect(await refusal(`${base()}/many`, allowed)).toBe("not_a_picture");
+    expect(performance.now() - started).toBeLessThan(quickly);
+    expect(await trusting(`${base()}/first`, allowed)).toMatchObject({
+      ok: true,
+      width: 64,
+      height: 48,
+    });
+  });
+
+  it("an ftyp box of 25 MiB is refused without reading its brands", async () => {
+    const brands = Buffer.alloc(25 * 1024 * 1024 - 64, "avif");
+    const ftyp = box("ftyp", Buffer.from("mif1"), Buffer.alloc(4), brands);
+    routes["/p"] = serve(ftyp);
+    const started = performance.now();
+    expect(await refusal(`${base()}/p`, allowed)).toBe("not_a_picture");
+    expect(performance.now() - started).toBeLessThan(quickly);
+  });
+
+  it("an ftyp box is read to 256 bytes and no further", async () => {
+    const withBrandLast = (length: number): Buffer =>
+      box(
+        "ftyp",
+        Buffer.from("mif1"),
+        Buffer.alloc(4),
+        Buffer.alloc(length - 20, "mif1"),
+        Buffer.from("avif"),
+      );
+    routes["/at"] = serve(isobmffWith(withBrandLast(256), [[64, 48]]));
+    routes["/over"] = serve(isobmffWith(withBrandLast(260), [[64, 48]]));
+    expect(await refusal(`${base()}/at`, allowed)).toBe("fetched");
+    expect(await refusal(`${base()}/over`, allowed)).toBe("not_a_picture");
+  });
+
+  it("a property box with millions of small boxes ahead of the size is not walked", async () => {
+    const free = Buffer.alloc(1_000_000 * 8);
+    for (let at = 0; at < free.length; at += 8) {
+      free.writeUInt32BE(8, at);
+      free.write("free", at + 4, "latin1");
+    }
+    routes["/p"] = serve(
+      Buffer.concat([
+        box("ftyp", Buffer.from("avif"), Buffer.alloc(4), Buffer.from("avif")),
+        box(
+          "meta",
+          Buffer.alloc(4),
+          box(
+            "iprp",
+            box("ipco", free, box("ispe", Buffer.alloc(4), u32(64), u32(48))),
+          ),
+        ),
+      ]),
+    );
+    const started = performance.now();
+    expect(await refusal(`${base()}/p`, allowed)).toBe("not_a_picture");
+    expect(performance.now() - started).toBeLessThan(quickly);
   });
 });
 
