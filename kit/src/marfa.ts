@@ -673,11 +673,14 @@ export class Marfa {
     throw refusal(response, error);
   }
 
-  /** `/items?type=` matches subtypes, so callers filter by exact type. */
+  /** `/items?type=` matches subtypes, so callers filter by exact type. With
+   *  `edges`, each row carries its outbound edges (`include=edges`), the
+   *  first page of each edge type. */
   async ownRows(
     type: string,
     state: "any" | "active" = "any",
     tier: "feed" | "library" | "all" = "all",
+    edges = false,
   ): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -687,6 +690,7 @@ export class Marfa {
             type,
             state,
             ...(tier !== "all" && { tier }),
+            ...(edges && { include: "edges" }),
             limit: 200,
             ...(cursor !== undefined && { cursor }),
           },

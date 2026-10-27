@@ -303,10 +303,18 @@ export interface RunContext<E extends EnvDeclaration> {
   /** With state:any, also includes same-source rows without a link, including
    * archived and trashed identities that predate a type's link field.
    * includeUnlinked also returns visible rows from other sources without a link
-   * or natural key, for checking explicit local requests before importing. */
+   * or natural key, for checking explicit local requests before importing.
+   * `edges` also reads each row's outbound edges, in the same pages of up to
+   * 200 rows (`Item.edges`: the first page of each edge type), to see what
+   * the rows are connected to without a request for each. Connections a run
+   * names are written when it ends, so they show from the next run. */
   readonly held: (
     type: string,
-    options?: { state: "any" | "active"; includeUnlinked?: boolean },
+    options?: {
+      state: "any" | "active";
+      includeUnlinked?: boolean;
+      edges?: boolean;
+    },
   ) => Promise<Item[]>;
   /** Fresh identity evidence, without an agreement requirement. Includes every
    * item state and purge tombstones. source_ids use the connector's item source.

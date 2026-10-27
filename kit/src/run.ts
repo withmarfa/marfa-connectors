@@ -1161,7 +1161,12 @@ export async function runOnce<E extends EnvDeclaration>(
   const heldRows: RunContext<E>["held"] = async (type, options) => {
     const { rows, spec } = lane(type);
     const state = options?.state ?? "active";
-    const found = await setup.marfa.ownRows(type, state);
+    const found = await setup.marfa.ownRows(
+      type,
+      state,
+      "all",
+      options?.edges === true,
+    );
     return found
       .filter(
         (row) =>
@@ -1174,7 +1179,10 @@ export async function runOnce<E extends EnvDeclaration>(
               : rows.linkOf(row.properties) !== undefined)),
       )
       .map((row) => {
-        rows.adopt(row);
+        // The rows index holds the row as a write reads it, without edges.
+        const bare = { ...row };
+        delete bare.edges;
+        rows.adopt(bare);
         return structuredClone(row);
       });
   };

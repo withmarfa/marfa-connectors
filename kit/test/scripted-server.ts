@@ -399,6 +399,11 @@ export class ScriptedServer {
     return held;
   }
   private readonly refusals = new Map<string, Refusal[]>();
+  private readonly refusalsWhere: {
+    route: string;
+    match: (request: Request) => boolean;
+    refusal: Refusal;
+  }[] = [];
   private readonly snapshots = new Map<string, Snapshot[]>();
   private readonly http = createServer((req, res) => {
     void this.answer(req, res);
@@ -463,6 +468,25 @@ export class ScriptedServer {
       ...(details !== undefined && { details }),
     });
     this.refusals.set(route, queue);
+  }
+
+  /** Refuses every request to the route that `match` accepts, until
+   *  `stopRefusing`. */
+  refuseWhere(
+    route: string,
+    match: (request: Request) => boolean,
+    status: number,
+    code: string,
+  ): void {
+    this.refusalsWhere.push({
+      route,
+      match,
+      refusal: { status, code, message: code },
+    });
+  }
+
+  stopRefusing(): void {
+    this.refusalsWhere.length = 0;
   }
 
   deliver(
@@ -1069,7 +1093,10 @@ export class ScriptedServer {
       return;
     }
     const route = `${method} ${url.pathname}`;
-    const scripted = this.refusals.get(route)?.shift();
+    const matched = this.refusalsWhere.find(
+      (one) => one.route === route && one.match(request),
+    );
+    const scripted = matched?.refusal ?? this.refusals.get(route)?.shift();
     if (scripted !== undefined) {
       if (scripted.retryAfter !== undefined) {
         res.setHeader("Retry-After", scripted.retryAfter);
@@ -1967,7 +1994,15 @@ export class ScriptedServer {
     const start = Number(query.get("cursor") ?? "0");
     const page = matches.slice(start, start + limit);
     const next = start + limit < matches.length ? String(start + limit) : null;
-    send(200, { data: page.map((row) => this.wire(row)), next_cursor: next });
+    const include = (query.get("include") ?? "").split(",");
+    send(200, {
+      data: page.map((row) =>
+        include.includes("edges")
+          ? { ...this.wire(row), edges: this.hydrated(row.id) }
+          : this.wire(row),
+      ),
+      next_cursor: next,
+    });
   }
 
   /**
