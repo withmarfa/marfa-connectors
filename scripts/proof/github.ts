@@ -36,6 +36,8 @@ const types = [
   "github.pull_request",
   "github.discussion",
   "github.notification",
+  "github.repository_file",
+  "github.directory",
 ];
 const connections = [
   "github.in-repository",
@@ -49,6 +51,7 @@ const connections = [
   "parent-of",
   "references",
   "in-thread",
+  "in-collection",
 ];
 
 async function targets(
@@ -128,7 +131,7 @@ export async function proveGitHub(
     };
 
     await check(
-      "github: its key is minted with write on its seven types and ten connection types, in-thread among them, and the metadata to register them and keep the types current",
+      "github: its key is minted with write on each of its types and connection types, in-thread and in-collection among them, and the metadata to register them and keep the types current",
       async () => {
         const { data, error } = await marfa.POST("/keys", {
           body: {
@@ -210,7 +213,7 @@ export async function proveGitHub(
           .map((kind) => `${kind.id} ${kind.cascade_on_delete}`);
         if (
           parents.join() !==
-            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image,github.pull_request on core.task,github.discussion on core.note,github.notification on core.message" ||
+            "github.repository on core.entity,github.issue on core.task,github.comment on core.message,github.file on core.file,github.file.image on core.file.image,github.pull_request on core.task,github.discussion on core.note,github.notification on core.message,github.repository_file on core.note,github.directory on core.collection" ||
           inRepo.join() !== repo.id ||
           subOf.join() !== top.id ||
           blockedBy.join() !== blockerRow.id ||
@@ -793,6 +796,64 @@ export async function proveGitHub(
           );
         }
         return "refused once and named, not asked again, then sent whole after the next edit; the comment answered 502 found by its mark, once, and linked";
+      },
+    );
+
+    await check(
+      "github: GITHUB_FILES mirrors a path's Markdown files as notes in a collection for each directory, the directories nested through the instance's parent-of, and an edit made in Marfa is put back",
+      async () => {
+        repository.files = new Map<string, string | Buffer>([
+          ["docs/guide.md", "# Guide\n"],
+          ["docs/skills/alpha/SKILL.md", "# Alpha\n"],
+          ["docs/logo.png", Buffer.from([0x89, 0x50])],
+          ["src/main.ts", "export {};\n"],
+        ]);
+        const runFiles = async (): Promise<void> => {
+          const runner = new ConnectorUnderProof(source, url, key.key, {
+            ...env,
+            GITHUB_FILES: "someone/tracker:docs",
+          });
+          const { code, output } = await runner.once();
+          if (code !== 0)
+            throw new Error(`the run exited ${String(code)}: ${output}`);
+        };
+        await runFiles();
+        const files = await rowsOf(marfa, "github.repository_file", source);
+        const folders = await rowsOf(marfa, "github.directory", source);
+        const node = repository.node;
+        const guide = files.get(`${node}:docs/guide.md`);
+        const alpha = files.get(`${node}:docs/skills/alpha/SKILL.md`);
+        const docs = folders.get(`${node}:docs/`);
+        const skills = folders.get(`${node}:docs/skills/`);
+        const alphaFolder = folders.get(`${node}:docs/skills/alpha/`);
+        if (!guide || !alpha || !docs || !skills || !alphaFolder)
+          throw new Error(
+            `rows missing: ${[...files.keys(), ...folders.keys()].join(", ")}`,
+          );
+        await edit(marfa, guide, { body: "Changed in Marfa" });
+        await runFiles();
+        const [inDocs, inAlpha, below, belowSkills] = await Promise.all([
+          targets(marfa, guide, "in-collection"),
+          targets(marfa, alpha, "in-collection"),
+          targets(marfa, docs, "parent-of"),
+          targets(marfa, skills, "parent-of"),
+        ]);
+        const back = await item(marfa, guide.id);
+        if (
+          files.size !== 2 ||
+          folders.size !== 3 ||
+          alpha.properties["title"] !== "alpha" ||
+          alpha.properties["body"] !== "# Alpha\n" ||
+          back.properties["body"] !== "# Guide\n" ||
+          inDocs.join() !== docs.id ||
+          inAlpha.join() !== alphaFolder.id ||
+          below.join() !== skills.id ||
+          belowSkills.join() !== alphaFolder.id
+        )
+          throw new Error(
+            `files wrong: ${JSON.stringify({ files: [...files.keys()], folders: [...folders.keys()], inDocs, inAlpha, below, belowSkills, body: back.properties["body"] })}`,
+          );
+        return "two Markdown files as notes and three directory collections, each file in its directory's collection and each directory under its parent through parent-of; the edit made in Marfa put back";
       },
     );
   } finally {

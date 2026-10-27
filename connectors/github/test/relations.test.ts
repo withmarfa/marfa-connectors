@@ -20,6 +20,8 @@ beforeEach(async () => {
       "github.pull_request",
       "github.discussion",
       "github.notification",
+      "github.repository_file",
+      "github.directory",
     ],
     edges: [
       "github.in-repository",
@@ -32,6 +34,7 @@ beforeEach(async () => {
       "parent-of",
       "references",
       "in-thread",
+      "in-collection",
       "attached-to",
     ],
   }).start();

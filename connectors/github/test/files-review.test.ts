@@ -40,6 +40,16 @@ const repositoryType = {
   link_field: "github_id",
   fields: { github_id: { type: "string" } },
 } as TypeDefinition;
+const repositoryFileType: TypeDefinition = {
+  id: "github.repository_file",
+  label: "Repository file",
+  fields: { path: { type: "string" } },
+};
+const directoryType: TypeDefinition = {
+  ...repositoryFileType,
+  id: "github.directory",
+  label: "Directory",
+};
 let h: Harness | undefined;
 afterEach(async () => {
   await h?.close();
@@ -62,6 +72,8 @@ async function fixture(content = png, mime = "image/png") {
         "github.repository",
         "github.file",
         "github.file.image",
+        repositoryFileType.id,
+        directoryType.id,
       ].map((id) => [id, "write"]),
     ),
     edge_permissions: {
@@ -111,6 +123,10 @@ async function fixture(content = png, mime = "image/png") {
     types: [
       ...fileKinds,
       { type: repositoryType, fields: ["github_id"] },
+      ...[repositoryFileType, directoryType].map((type) => ({
+        type,
+        fields: ["path"],
+      })),
       ...[parent, comment, pullRequest, discussion].map((type) => ({
         type,
         fields: ["github_id", "body", "repository", "private", "github_files"],
@@ -128,6 +144,8 @@ async function fixture(content = png, mime = "image/png") {
           comment.id,
           pullRequest.id,
           discussion.id,
+          repositoryFileType.id,
+          directoryType.id,
         ],
         target_type_constraints: [repositoryType.id],
       },
@@ -220,6 +238,8 @@ async function fixture(content = png, mime = "image/png") {
                 { token: "review-token", base: github.url },
                 undefined,
                 { token: undefined, scopeText: undefined },
+                true,
+                [],
               ),
           }),
           active.runtime(["--once"]),

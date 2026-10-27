@@ -47,6 +47,23 @@ export interface Repository {
   discussionsOff?: boolean;
   /** Category names, in the order GitHub lists them. */
   categories?: string[];
+  /** The default branch, `main` where unset. */
+  branch?: string;
+  /** The files on the default branch, by path, as their bytes or text. */
+  files?: Map<string, string | Buffer>;
+  /** Answers the recursive tree truncated, as GitHub does past its limit. */
+  treeTruncated?: boolean;
+  /** Answers every Git database read of the repository with this status. */
+  contentsRefused?: number;
+}
+
+/** Git's object ID for a blob of these bytes. */
+export function blobSha(content: string | Buffer): string {
+  const bytes = typeof content === "string" ? Buffer.from(content) : content;
+  return createHash("sha1")
+    .update(`blob ${String(bytes.length)}\0`)
+    .update(bytes)
+    .digest("hex");
 }
 
 export interface Issue {
@@ -234,6 +251,9 @@ export class GitHubStub {
   /** Repositories, by node, whose pull request listing GitHub answers with
    *  FORBIDDEN at `repository` and no repository. */
   pullRepositoriesForbidden = new Set<string>();
+  /** Refuses the personal token every Git database read, as a fine-grained
+   *  token without Contents. */
+  personalNoContents = false;
   /** Answers every Discussions query of the App as FORBIDDEN, though its
    *  token mints: the installation holds the permission, GitHub still says no. */
   discussionsForbidden = false;
@@ -282,6 +302,7 @@ export class GitHubStub {
     statuses: "read",
     metadata: "read",
     discussions: "write",
+    contents: "read",
   };
   /** Seconds GitHub's clock runs ahead of this machine's. */
   clockAhead = 0;
@@ -808,6 +829,7 @@ export class GitHubStub {
       archived: repository.archived,
       has_issues: repository.issuesOff !== true,
       updated_at: repository.updated_at,
+      default_branch: repository.branch ?? "main",
     };
   }
 
@@ -843,11 +865,14 @@ export class GitHubStub {
   private allows(
     req: IncomingMessage,
     wanted: Access,
-    scope: "issues" | "discussions" = "issues",
+    scope: "issues" | "discussions" | "contents" = "issues",
   ): boolean {
     if (this.isPersonal(req))
       return (
-        wanted === "read" && (scope === "issues" || !this.personalNoDiscussions)
+        wanted === "read" &&
+        (scope === "issues" ||
+          (scope === "discussions" && !this.personalNoDiscussions) ||
+          (scope === "contents" && !this.personalNoContents))
       );
     if (scope === "discussions" && this.discussionsForbidden) return false;
     const held = this.grantOf(req)?.permissions[scope];
@@ -1159,11 +1184,13 @@ export class GitHubStub {
           : method === "GET"
             ? "read"
             : "write";
-      const scope = /^\s*(?:query|mutation)\s+\w*Discussion/.test(
-        String((body as { query?: unknown } | undefined)?.query),
-      )
-        ? "discussions"
-        : "issues";
+      const scope = /^\/repos\/[^/]+\/[^/]+\/git\//.test(path)
+        ? "contents"
+        : /^\s*(?:query|mutation)\s+\w*Discussion/.test(
+              String((body as { query?: unknown } | undefined)?.query),
+            )
+          ? "discussions"
+          : "issues";
       if (
         (path === "/graphql" || /^\/repos\/[^/]+\/[^/]+\/./.test(path)) &&
         !this.allows(req, wanted, scope)
@@ -1180,6 +1207,14 @@ export class GitHubStub {
               },
             ],
           });
+        } else if (this.isPersonal(req)) {
+          send(
+            403,
+            { message: "Resource not accessible by personal access token" },
+            scope === "contents"
+              ? { "x-accepted-github-permissions": "contents=read" }
+              : {},
+          );
         } else {
           send(403, { message: "Resource not accessible by integration" });
         }
@@ -1398,6 +1433,94 @@ export class GitHubStub {
           : undefined;
       if (repository === undefined) send(404, { message: "Not Found" });
       else send(200, this.restRepository(repository));
+      return;
+    }
+    if (
+      (match = /^\/repos\/([^/]+)\/([^/]+)\/git\/(trees|blobs)\/(.+)$/.exec(
+        path,
+      )) &&
+      method === "GET"
+    ) {
+      const repository = this.readable(req, match[1] ?? "", match[2] ?? "");
+      if (repository === undefined) {
+        send(404, { message: "Not Found" });
+        return;
+      }
+      if (repository.contentsRefused !== undefined) {
+        send(repository.contentsRefused, {
+          message:
+            repository.contentsRefused === 404
+              ? "Not Found"
+              : "Resource not accessible by integration",
+        });
+        return;
+      }
+      const files = [...(repository.files ?? new Map<string, string>())];
+      const ref = decodeURIComponent(match[4] ?? "");
+      if (match[3] === "blobs") {
+        const found = files.find(([, content]) => blobSha(content) === ref);
+        if (found === undefined) {
+          send(404, { message: "Not Found" });
+          return;
+        }
+        const bytes =
+          typeof found[1] === "string" ? Buffer.from(found[1]) : found[1];
+        send(200, {
+          sha: ref,
+          node_id: `B_${ref}`,
+          size: bytes.length,
+          url: `${this.url}${path}`,
+          content: bytes.toString("base64").replace(/(.{60})/g, "$1\n"),
+          encoding: "base64",
+        });
+        return;
+      }
+      if (ref !== (repository.branch ?? "main")) {
+        send(404, { message: "Not Found" });
+        return;
+      }
+      const directories = new Set<string>();
+      for (const [name] of files) {
+        const parts = name.split("/");
+        for (let at = 1; at < parts.length; at += 1)
+          directories.add(parts.slice(0, at).join("/"));
+      }
+      const tree = [
+        ...[...directories].map((name) => ({
+          path: name,
+          mode: "040000",
+          type: "tree",
+          sha: createHash("sha1").update(`tree ${name}`).digest("hex"),
+        })),
+        ...files.map(([name, content]) => ({
+          path: name,
+          mode: "100644",
+          type: "blob",
+          sha: blobSha(content),
+          size: (typeof content === "string" ? Buffer.from(content) : content)
+            .length,
+        })),
+      ].sort((a, b) => a.path.localeCompare(b.path));
+      const sha = createHash("sha1").update(JSON.stringify(tree)).digest("hex");
+      const etag = `"${sha}"`;
+      if ((req.headers["if-none-match"] ?? "").includes(etag)) {
+        budget.remaining += 1;
+        send(304, undefined, { etag });
+        return;
+      }
+      send(
+        200,
+        {
+          sha,
+          url: `${this.url}${path}`,
+          tree:
+            repository.treeTruncated === true
+              ? tree.slice(0, Math.ceil(tree.length / 2))
+              : tree,
+          truncated: repository.treeTruncated === true,
+        },
+        { etag },
+      );
       return;
     }
     if (

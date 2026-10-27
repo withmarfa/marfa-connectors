@@ -166,10 +166,11 @@ function counted(octokit: Client, key: string, guard: boolean): Client {
 /** What an installation token is minted for: `list` reads only which
  *  repositories the installation holds; `read` reaches issues and pull
  *  requests, and `write` carries only issues and their comments. The two
- *  Discussions accesses are separate so an installation that has not yet
- *  accepted the Discussions permission still mints every other token. */
+ *  Discussions accesses and `contents`, which reads repository files, are
+ *  separate so an installation that has not yet accepted one of those
+ *  permissions still mints every other token. */
 export type Access =
-  "list" | "read" | "write" | "discussions" | "discussions-write";
+  "list" | "read" | "write" | "discussions" | "discussions-write" | "contents";
 
 const permissions = {
   list: { metadata: "read" },
@@ -183,6 +184,7 @@ const permissions = {
   write: { issues: "write", metadata: "read" },
   discussions: { discussions: "read", metadata: "read" },
   "discussions-write": { discussions: "write", metadata: "read" },
+  contents: { contents: "read", metadata: "read" },
 } as const;
 
 /** GitHub's cap on the repositories one token can name. */

@@ -27,6 +27,12 @@ import { hints } from "./hooks.js";
 import { notificationType } from "./notifications.js";
 import { read } from "./read.js";
 import { fileKinds, filesConnection } from "./files.js";
+import {
+  directoryType,
+  filesOf,
+  inCollection,
+  repositoryFileType,
+} from "./repository-files.js";
 import { scopeOf } from "./scope.js";
 import { readOnly, setUp, starsOn } from "./setup.js";
 import { carry, remake } from "./write.js";
@@ -36,6 +42,8 @@ import issue from "./github.issue.json" with { type: "json" };
 import pullRequest from "./github.pull_request.json" with { type: "json" };
 import notification from "./github.notification.json" with { type: "json" };
 import repository from "./github.repository.json" with { type: "json" };
+import repositoryFile from "./github.repository_file.json" with { type: "json" };
+import directory from "./github.directory.json" with { type: "json" };
 
 const env = {
   GITHUB_APP_ID: "optional",
@@ -50,6 +58,7 @@ const env = {
   GITHUB_ORGANIZATION: "optional",
   GITHUB_APP_NAME: "optional",
   GITHUB_REPOSITORIES: "optional",
+  GITHUB_FILES: "optional",
 } as const;
 
 function appOf(values: {
@@ -80,7 +89,7 @@ const starFields =
 const connector = defineConnector<typeof env>({
   name: "github",
   description:
-    "Repositories, issues, discussions, comments, read-only pull requests and read-only notifications through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue, discussion and comment edits back.",
+    "Repositories, issues, discussions, comments, read-only pull requests, read-only notifications and read-only Markdown files from chosen repository paths through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue, discussion and comment edits back.",
   source: "github",
   types: [
     ...fileKinds,
@@ -285,6 +294,46 @@ const connector = defineConnector<typeof env>({
         references,
       ],
     },
+    // GitHub is the source of these, whatever GITHUB_READ_ONLY says: no
+    // kind outside `carries` goes back, so the kit puts back every edit.
+    {
+      type: repositoryFile as TypeDefinition,
+      fields: [
+        "title",
+        "body",
+        "repository",
+        "path",
+        "blob_sha",
+        "url",
+        "private",
+      ],
+      readOnly: [
+        "title",
+        "body",
+        "repository",
+        "path",
+        "blob_sha",
+        "url",
+        "private",
+        inCollection,
+        inRepository,
+      ],
+      derived: ["private"],
+    },
+    {
+      type: directory as TypeDefinition,
+      fields: ["title", "repository", "path", "url", "private"],
+      readOnly: [
+        "title",
+        "repository",
+        "path",
+        "url",
+        "private",
+        childOf,
+        inRepository,
+      ],
+      derived: ["private"],
+    },
   ],
   connections: [
     filesConnection,
@@ -301,13 +350,15 @@ const connector = defineConnector<typeof env>({
       id: inRepository,
       label: "In repository",
       description:
-        "An issue, discussion, comment or pull request in the GitHub repository it belongs to.",
+        "An issue, discussion, comment, pull request, repository file or directory in the GitHub repository it belongs to.",
       cardinality: "many-to-one",
       source_type_constraints: [
         issueType,
         commentType,
         discussionType,
         pullRequestType,
+        repositoryFileType,
+        directoryType,
       ],
       target_type_constraints: [repositoryType],
     },
@@ -353,8 +404,14 @@ const connector = defineConnector<typeof env>({
       id: childOf,
       cardinality: "many-to-one",
       cascade_on_delete: "cascade",
-      source_type_constraints: [commentType],
-      target_type_constraints: [commentType],
+      source_type_constraints: [commentType, directoryType],
+      target_type_constraints: [commentType, directoryType],
+    },
+    {
+      id: inCollection,
+      cardinality: "many-to-many",
+      source_type_constraints: [repositoryFileType],
+      target_type_constraints: [directoryType],
     },
     {
       id: githubCloses,
@@ -384,6 +441,7 @@ const connector = defineConnector<typeof env>({
         ),
   checkEnv(values) {
     scopeOf(values.GITHUB_REPOSITORIES);
+    filesOf(values.GITHUB_FILES);
     readOnly(values.GITHUB_READ_ONLY);
     starsOn(values.GITHUB_STARS);
     const app = [
@@ -420,6 +478,7 @@ const connector = defineConnector<typeof env>({
         scopeText: context.env.GITHUB_REPOSITORIES,
       },
       starsOn(context.env.GITHUB_STARS),
+      filesOf(context.env.GITHUB_FILES),
     );
   },
   async onChange(change, context) {

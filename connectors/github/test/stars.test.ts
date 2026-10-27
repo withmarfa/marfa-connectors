@@ -21,6 +21,8 @@ const types = [
   "github.pull_request",
   "github.discussion",
   "github.notification",
+  "github.repository_file",
+  "github.directory",
 ];
 const connections = [
   "github.in-repository",
@@ -33,6 +35,7 @@ const connections = [
   "github.closed-by",
   "parent-of",
   "in-thread",
+  "in-collection",
   "references",
 ];
 

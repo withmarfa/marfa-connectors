@@ -1,0 +1,37 @@
+{
+  "id": "github.repository_file",
+  "label": "GitHub Repository File",
+  "description": "A Markdown file under a path that GITHUB_FILES names, read from the repository's default branch. Read only: GitHub is the source, and a change made in Marfa is put back on the next run. It joins the collection of its directory.",
+  "parent": "core.note",
+  "merge_policy": {
+    "fields": { "body": "last_writer_wins", "notes": "last_writer_wins" },
+    "default": "last_writer_wins"
+  },
+  "fields": {
+    "repository": {
+      "type": "string",
+      "description": "The repository's full name, as owner/name."
+    },
+    "path": {
+      "type": "string",
+      "description": "The file's path in the repository, from its root."
+    },
+    "blob_sha": {
+      "type": "string",
+      "description": "The Git object ID of the file's contents, which changes whenever its contents do."
+    },
+    "url": {
+      "type": "string",
+      "format": "url",
+      "description": "The file's address on GitHub, on the default branch."
+    },
+    "private": {
+      "type": "boolean",
+      "description": "Whether the repository this row is in is private on GitHub, as of the last read: a row marked private holds what is not public, and its contents are not to be copied into a public place."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "body"
+  }
+}

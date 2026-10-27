@@ -34,6 +34,8 @@ export async function proveGitHubRelations(
       "github.pull_request",
       "github.discussion",
       "github.notification",
+      "github.repository_file",
+      "github.directory",
     ];
     const connections = [
       "github.in-repository",
@@ -47,6 +49,7 @@ export async function proveGitHubRelations(
       "parent-of",
       "references",
       "in-thread",
+      "in-collection",
     ];
     const key = await mintKey({
       label: "related issue proof",

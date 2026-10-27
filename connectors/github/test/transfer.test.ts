@@ -30,6 +30,8 @@ beforeEach(async () => {
       "github.file.image",
       "github.pull_request",
       "github.notification",
+      "github.repository_file",
+      "github.directory",
     ],
     edges: [
       "github.in-repository",
@@ -41,6 +43,7 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "in-thread",
+      "in-collection",
       "parent-of",
       "references",
     ],

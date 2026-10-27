@@ -76,6 +76,15 @@ import {
   readNotifications,
   tokenName,
 } from "./notifications.js";
+import {
+  directoryType,
+  forgetFiles,
+  repositoryFileType,
+  syncFiles,
+  takeOutFiles,
+  type FilesEntry,
+  type Synced,
+} from "./repository-files.js";
 import { Stars, starsKept, type Reader } from "./stars.js";
 import { everywhere, takeUnsettled } from "./unsettled.js";
 import {
@@ -187,6 +196,10 @@ const readPrefixes = [
   "issue-moved:",
   "duplicate:",
   "github-files:",
+  "files-unlisted:",
+  "files-missing:",
+  "files-skipped:",
+  "files-unsynced:",
 ];
 
 class Coverage {
@@ -258,10 +271,19 @@ export async function read(
   scope: Scope | undefined,
   notifications: { token: string | undefined; scopeText: string | undefined },
   starsOn = true,
+  files: readonly FilesEntry[] = [],
 ): Promise<void> {
   const coverage = new Coverage();
   try {
-    await readAll(context, app, scope, coverage, notifications.token, starsOn);
+    await readAll(
+      context,
+      app,
+      scope,
+      coverage,
+      notifications.token,
+      starsOn,
+      files,
+    );
   } catch (error) {
     if ("token" in app && status(error) === 401)
       throw new Error(
@@ -300,6 +322,7 @@ async function readAll(
   coverage: Coverage,
   notificationsToken: string | undefined,
   starsOn: boolean,
+  files: readonly FilesEntry[],
 ): Promise<void> {
   const { state, log, secret, signal } = context;
   const unsettled = takeUnsettled(state);
@@ -621,6 +644,7 @@ async function readAll(
         personal !== undefined,
         stars.starred(node),
       );
+      forgetFiles(state, node);
       await save(scoped, node);
       continue;
     }
@@ -782,6 +806,40 @@ async function readAll(
     await save(scoped, node, next[node]);
   };
 
+  // Files are read with their own token, so an installation that has not
+  // accepted the Contents permission still reads everything else.
+  const filesClients = (): Map<string, Synced> => {
+    const named = new Set(files.map((entry) => entry.repository));
+    const chosen = [...listed.values()].filter(({ repository }) =>
+      named.has(repository.full_name.toLowerCase()),
+    );
+    const byInstallation = new Map<number, number[]>();
+    for (const { repository, installation } of chosen)
+      byInstallation.set(installation, [
+        ...(byInstallation.get(installation) ?? []),
+        repository.id,
+      ]);
+    const octokits = new Map(
+      [...byInstallation].map(([installation, repositoryIds]) => [
+        installation,
+        personal ??
+          asInstallation(
+            app as App,
+            installation,
+            { access: "contents", repositoryIds },
+            secret,
+            signal,
+          ),
+      ]),
+    );
+    return new Map(
+      chosen.map(({ repository, installation }) => [
+        repository.full_name.toLowerCase(),
+        { repository, octokit: octokits.get(installation) },
+      ]),
+    );
+  };
+
   const now = Date.now();
   for (const [node, at] of listed) {
     coverage.reached(`unsettled:${node}`);
@@ -812,6 +870,22 @@ async function readAll(
   });
   if (stars.listed) coverage.reached(starsKept);
   if (scheduled && rollup.answered) coverage.reached(checksUnreadable);
+  await syncFiles(context, state, files, {
+    synced: filesClients(),
+    paused: new Set(
+      [...paused].flatMap((node) => {
+        const name = outside.get(node)?.repository.full_name;
+        return name === undefined ? [] : [name.toLowerCase()];
+      }),
+    ),
+    complete: answered.size === installations.length,
+    reached: (...keys) => {
+      coverage.reached(...keys);
+    },
+    waiting: (name) => {
+      waiting.push(name);
+    },
+  });
   if (waiting.length > 0) {
     log.condition(
       "rate-limit-reserve",
@@ -852,6 +926,7 @@ async function takeOut(
     pullRequestType,
     links(await linked(pullRequestType, inRepository, under)),
   );
+  await takeOutFiles(context, node);
   // A starred repository keeps its row and its `synced`, since another
   // process may still sync it: a lost star then only unmarks it.
   if (!starred) await archive(repositoryType, [node]);
@@ -1357,6 +1432,13 @@ async function markRows(
       (row) => linkOf(row) ?? [],
     );
     await context.derive(type, links, { private: hidden });
+  }
+  // These have no link: they are held by natural key.
+  for (const type of [repositoryFileType, directoryType]) {
+    const keys = (await context.linked(type, inRepository, under)).flatMap(
+      (row) => (row.source_id === undefined ? [] : [row.source_id]),
+    );
+    if (keys.length > 0) await context.derive(type, keys, { private: hidden });
   }
 }
 

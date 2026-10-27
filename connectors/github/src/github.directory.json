@@ -1,0 +1,29 @@
+{
+  "id": "github.directory",
+  "label": "GitHub Directory",
+  "description": "A directory that holds Markdown files the GitHub connector syncs from a repository, as a collection of those files. Read only: GitHub is the source, and a change made in Marfa is put back on the next run. It is a child of its parent directory where that is synced too.",
+  "parent": "core.collection",
+  "fields": {
+    "repository": {
+      "type": "string",
+      "description": "The repository's full name, as owner/name."
+    },
+    "path": {
+      "type": "string",
+      "description": "The directory's path in the repository, from its root."
+    },
+    "url": {
+      "type": "string",
+      "format": "url",
+      "description": "The directory's address on GitHub, on the default branch."
+    },
+    "private": {
+      "type": "boolean",
+      "description": "Whether the repository this row is in is private on GitHub, as of the last read: a row marked private holds what is not public, and its contents are not to be copied into a public place."
+    }
+  },
+  "display_hints": {
+    "title_field": "title",
+    "body_field": "description"
+  }
+}

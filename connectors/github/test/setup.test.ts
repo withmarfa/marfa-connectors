@@ -25,6 +25,8 @@ beforeEach(async () => {
       "github.pull_request",
       "github.discussion",
       "github.notification",
+      "github.repository_file",
+      "github.directory",
     ],
     edges: [
       "github.in-repository",
@@ -38,6 +40,7 @@ beforeEach(async () => {
       "parent-of",
       "references",
       "in-thread",
+      "in-collection",
     ],
   }).start();
   marfa.grants = {
@@ -171,6 +174,7 @@ describe("setup", () => {
         pull_requests: "read",
         checks: "read",
         statuses: "read",
+        contents: "read",
         metadata: "read",
       },
       default_events: [
@@ -246,6 +250,7 @@ describe("setup", () => {
         pull_requests: "read",
         checks: "read",
         statuses: "read",
+        contents: "read",
         metadata: "read",
       },
     });

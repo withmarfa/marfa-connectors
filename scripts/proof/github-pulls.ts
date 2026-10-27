@@ -43,6 +43,8 @@ export async function proveGitHubPullRequests(
       "github.pull_request",
       "github.discussion",
       "github.notification",
+      "github.repository_file",
+      "github.directory",
       "github.file",
       "github.file.image",
     ];
@@ -57,6 +59,7 @@ export async function proveGitHubPullRequests(
       "parent-of",
       "references",
       "in-thread",
+      "in-collection",
       "attached-to",
     ];
     const key = await mintKey({
