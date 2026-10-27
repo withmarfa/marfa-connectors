@@ -852,10 +852,9 @@ async function takeOut(
     pullRequestType,
     links(await linked(pullRequestType, inRepository, under)),
   );
-  // A starred repository stays as the repository row alone, which a star
-  // keeps, and which a lost star may then archive.
-  if (starred) await context.derive(repositoryType, [node], { synced: false });
-  else await archive(repositoryType, [node]);
+  // A starred repository keeps its row and its `synced`, since another
+  // process may still sync it: a lost star then only unmarks it.
+  if (!starred) await archive(repositoryType, [node]);
   log.info(
     `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : ""}`,
   );
