@@ -63,6 +63,7 @@ import {
 import {
   listPullRequests,
   pullRequestsByNode,
+  withStoredChecks,
   closedByOf,
   pullNodeOfNumber,
   checksUnreadable,
@@ -689,7 +690,7 @@ async function readAll(
         );
         await scoped.upsert(
           pullRequestType,
-          prs.map((pr) =>
+          (await withStoredChecks(scoped, prs)).map((pr) =>
             pullRequestEntry(
               pr,
               new Set([...synced, ...paused]),
@@ -1024,7 +1025,7 @@ async function syncRepository(
   }
   await upsert(
     pullRequestType,
-    [...allPRs.values()].map((pr) =>
+    (await withStoredChecks(context, [...allPRs.values()])).map((pr) =>
       pullRequestEntry(
         pr,
         options.inside,
@@ -2058,7 +2059,7 @@ async function readNamed(
   );
   await upsert(
     pullRequestType,
-    [...prs.values()].map((pr) =>
+    (await withStoredChecks(context, [...prs.values()])).map((pr) =>
       pullRequestEntry(
         pr,
         new Set([...synced, ...paused]),

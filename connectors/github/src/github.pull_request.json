@@ -49,7 +49,7 @@
     },
     "checks": {
       "type": "object",
-      "description": "A summary of the checks on the pull request's head commit: the rollup state, non-zero check run counts by state (check_runs), and non-zero commit status counts by state (statuses). Null when the commit has no checks."
+      "description": "A summary of the checks on the pull request's head commit: the rollup state, non-zero check run counts by state (check_runs), and non-zero commit status counts by state (statuses). Null when the commit has no checks. When GitHub refuses the token the checks, the summary read last is kept, and a pull request first read then has none."
     },
     "github_updated_at": {
       "type": "string",

@@ -333,7 +333,9 @@ export interface PullRequest {
   baseBranch: string;
   headBranch: string;
   author: string | null;
-  checks: CheckCounts | null;
+  /** Null when the commit has no checks, and undefined when GitHub refused
+   *  them to the token, so nothing is known. */
+  checks: CheckCounts | null | undefined;
   createdAt: string;
   updatedAt: string;
   repository: { node: string; name: string };
@@ -346,8 +348,12 @@ export function prStatusOf(prState: "open" | "closed" | "merged"): string {
   return "canceled";
 }
 
+/** A pull request whose check summary is known, as `withStoredChecks` makes
+ *  it, so a write never clears a summary GitHub refused this run. */
+export type CheckedPullRequest = PullRequest & { checks: CheckCounts | null };
+
 export function pullRequestEntry(
-  pr: PullRequest,
+  pr: CheckedPullRequest,
   syncedRepositories: ReadonlySet<string>,
   hidden: boolean,
 ): Entry {

@@ -321,6 +321,27 @@ describe("pull request reading", () => {
       });
     });
 
+    it("keeps the stored check summary on a run GitHub refuses it", async () => {
+      github.personalToken = personal;
+      const repo = github.addRepository("someone/tracker");
+      const pr = github.addPullRequest(repo, {
+        checks: { state: "SUCCESS", check_runs: { SUCCESS: 1 }, statuses: {} },
+      });
+      await ok(env);
+      expect(row(pr.node).properties["checks"]).toEqual(pr.checks);
+
+      github.personalChecksError = "FORBIDDEN";
+      github.edit(pr, { title: "After" });
+      const added = github.addPullRequest(repo, {
+        checks: { state: "FAILURE", check_runs: { FAILURE: 1 }, statuses: {} },
+      });
+      await ok(env);
+      expect(row(pr.node).properties["title"]).toBe("After");
+      expect(row(pr.node).properties["checks"]).toEqual(pr.checks);
+      expect(row(added.node).properties["checks"] ?? null).toBeNull();
+      expect(Object.keys(problems())).toContain("checks-unreadable");
+    });
+
     it("still fails the run on any other GraphQL error", async () => {
       github.personalToken = personal;
       github.personalChecksError = "SERVICE_UNAVAILABLE";
@@ -330,6 +351,33 @@ describe("pull request reading", () => {
       expect(result.code).not.toBe(0);
       expect(Object.keys(problems())).not.toContain("checks-unreadable");
     });
+  });
+  it("still reads checks through an installation GitHub does not refuse them", async () => {
+    github.installations = [
+      { id: 1, login: "someone" },
+      { id: 2, login: "elsewhere" },
+    ];
+    const checks = {
+      state: "SUCCESS",
+      check_runs: { SUCCESS: 1 },
+      statuses: {},
+    };
+    const refused = github.addPullRequest(
+      github.addRepository("someone/tracker", { installation: 1 }),
+      { checks },
+    );
+    const open = github.addPullRequest(
+      github.addRepository("elsewhere/tracker", { installation: 2 }),
+      { checks },
+    );
+    github.checksRefused.add(1);
+    await ok();
+    expect(row(refused.node).properties["title"]).toBe(refused.title);
+    expect(row(refused.node).properties["checks"] ?? null).toBeNull();
+    expect(row(open.node).properties["checks"]).toEqual(checks);
+    expect(Object.keys(marfa.problems.get("github") ?? {})).toContain(
+      "checks-unreadable",
+    );
   });
   it("polls checks without updated_at changes and preserves exact versions on no-op reruns", async () => {
     const repo = github.addRepository("someone/tracker");
