@@ -126,7 +126,7 @@ With `GITHUB_FILES` set, the connector mirrors the Markdown files under chosen p
 - **Directories:** each directory between a named path and a synced file is a `github.directory` on `core.collection`, with `repository`, `path`, `url`, and `private`. A file joins the directory that holds it through Marfa's own `in-collection`. A directory joins its parent through Marfa's own `parent-of`, written from the parent to the child, which the connector declares from the child's side as `child-of`. A directory that holds no synced file, directly or below, is not a row.
 - **Repository:** every file and directory row is joined to its `github.repository` through `github.in-repository`.
 
-Trashing a directory in Marfa trashes the directories below it, since `parent-of` cascades, but not the files in them, since `in-collection` leaves its members in place. The next run puts the rows back.
+Trashing a directory in Marfa trashes the directories below it, since `parent-of` cascades, but not the files in them. The directories stay in the bin until restored in Marfa; a later run does not bring them back. A file trashed in Marfa stays in the bin the same way, and its changes on GitHub are not read while it is there; once restored, it takes them the next time the branch changes.
 
 ### The setting
 
@@ -138,7 +138,7 @@ A repository the setting names is read only when the run syncs it. One the run d
 
 Files are read on scheduled runs. Each run asks GitHub for the default branch's whole tree in one request, with the answer's ETag from the last complete read, so a run on an unchanged branch costs one request and writes nothing. A changed branch costs one request more for each file that is new or changed. A renamed default branch is followed.
 
-Each row's identity is the repository's GitHub node id and the path. A file moved or renamed with the same content keeps its row, and so does a directory whose files moved with it. A file removed from GitHub, or moved there out of the named paths, is archived, and so is a directory left with no synced file. Taking a path or a repository out of `GITHUB_FILES` archives nothing: its rows are left as they are.
+Each row's identity is the repository's GitHub node id and the path. A file moved or renamed with the same content keeps its row, and so does a directory whose files moved with it, unless the path it reaches already has a row, archived or in the bin: that row stays the path's, and the row of the path it left is archived. A file removed from GitHub, or moved there out of the named paths, is archived, and so is a directory left with no synced file. Taking a path or a repository out of `GITHUB_FILES` archives nothing: its rows are left as they are.
 
 ### When a read falls short
 
@@ -153,7 +153,25 @@ Nothing is archived in a run that does not read the whole tree, and each case is
 
 A fine-grained personal access token needs Contents read access on the repositories `GITHUB_FILES` names. The App's manifest asks for the Contents read permission; an App registered before needs its owner to add Contents read in the App's settings on GitHub, and each installation's owner to accept it. Until then, the run names `files-unlisted` for each such repository.
 
-The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up. The connector declares these types whether or not `GITHUB_FILES` is set, so a key minted before them is refused at the start: mint a new one as Setting it up says. Its first start also needs `--metadata-permission edge_types=write`, since `github.in-repository` widens to the new types.
+The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up. The connector declares these types whether or not `GITHUB_FILES` is set, so after an upgrade the start refuses a key minted before them until it holds `write` on both types and on `in-collection`. Its first start after the upgrade also needs `edge_types=write`, since `github.in-repository` widens to the new types. Widen the key in place as the owner, through the private socket, since a key holding `keys.manage` can only narrow one. An update replaces each map it names whole, so the command names every type, connection, and metadata entry the key holds:
+
+```bash
+marfa --socket <socket-path> keys update <key-id> \
+  --type-permission github.repository=write --type-permission github.issue=write \
+  --type-permission github.discussion=write --type-permission github.comment=write \
+  --type-permission github.pull_request=write --type-permission github.notification=write \
+  --type-permission github.file=write --type-permission github.file.image=write \
+  --type-permission github.repository_file=write --type-permission github.directory=write \
+  --edge-permission github.in-repository=write --edge-permission github.sub-issue-of=write \
+  --edge-permission github.blocked-by=write --edge-permission github.relates-to=write \
+  --edge-permission github.duplicate-of=write --edge-permission github.closes=write \
+  --edge-permission github.closed-by=write --edge-permission in-thread=write \
+  --edge-permission references=write --edge-permission attached-to=write \
+  --edge-permission in-collection=write --edge-permission parent-of=write \
+  --metadata-permission types=write --metadata-permission edge_types=write
+```
+
+Once that start has widened `github.in-repository`, narrow `edge_types` back to `read` as `template/README.md` says.
 
 ## Setting it up
 
