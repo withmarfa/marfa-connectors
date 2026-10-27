@@ -640,14 +640,19 @@ function contentOf(
   const picture = countedPicture(reading, base);
   const text = textOf(content);
   const enclosed = linkOf(images.enclosure, base);
-  const found =
-    enclosed === undefined
-      ? ((contentIsHtml ? countedPicture(readingOf(text), base) : undefined) ??
-        picture)
-      : undefined;
   const main: Converted = contentIsHtml
     ? markdownOf(text, base, converting)
     : { markdown: text, failure: undefined };
+  // The content is read into a tree for its first picture only once the
+  // converter has taken it: markup it refused or came too late for is the
+  // largest a feed carries, and building its tree costs several times what
+  // refusing it did.
+  const found =
+    enclosed === undefined
+      ? ((contentIsHtml && main.failure === undefined
+          ? countedPicture(readingOf(text), base)
+          : undefined) ?? picture)
+      : undefined;
   const fallback = main.markdown === undefined ? textOf(plain) : undefined;
   const summed =
     main.markdown === undefined && fallback === undefined

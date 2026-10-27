@@ -205,20 +205,57 @@ describe("htmlToMarkdown", () => {
       ).toBe(maxHtmlElements - 10);
     });
 
-    it("converts the largest inputs it takes in time that grows with their size", () => {
+    // A time bound tuned to one machine fails on a slower one, so these
+    // compare a conversion with one of half the input: linear work takes about
+    // twice as long and quadratic work four times. The inputs are a quarter
+    // and a half of the limit, because turndown's own joining of a list's
+    // items grows faster than its input near the limit (an ordered list of
+    // 24,000 items takes six times what 12,000 do), which is bounded by the
+    // limit and not ours to fix here. Each takes the fastest of several runs,
+    // so a pause from another process does not count. The absolute bound,
+    // for the largest input, stops a regression slow at any speed: the
+    // quadratic cases measured on a fast machine took tens of seconds, and a
+    // shared CI runner converts the largest input in about three.
+    const fastest = (run: () => void, times = 5): number => {
+      let best = Infinity;
+      for (let each = 0; each < times; each += 1) {
+        const started = performance.now();
+        run();
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const slowestAllowed = 10_000;
+
+    const shapes: Record<string, (size: number) => string> = {
+      "a table of rows": (size) =>
+        `<table>${"<tr><td>cell</td><td>two</td></tr>".repeat(Math.floor((size - 1) / 3))}</table>`,
+      "an ordered list": (size) =>
+        "<ol>" + "<li>item</li>".repeat(size - 2) + "</ol>",
+      "paragraphs with blank lines": (size) =>
+        "<p>x</p>\n\n\n\n".repeat(Math.floor(size * 0.4)),
+      "rules and a long preformatted block": (size) =>
+        `${"<p>a</p><hr>".repeat(Math.floor(size * 0.32))}<pre>${"x\n".repeat(size * 2)}</pre>`,
+    };
+
+    for (const [name, build] of Object.entries(shapes)) {
+      it(`converts ${name} in time that grows with its size`, () => {
+        const largest = build(maxHtmlElements);
+        const quarter = build(maxHtmlElements / 4);
+        const half = build(maxHtmlElements / 2);
+        htmlToMarkdown(quarter);
+        const small = fastest(() => htmlToMarkdown(quarter));
+        const medium = fastest(() => htmlToMarkdown(half));
+        const large = fastest(() => htmlToMarkdown(largest), 2);
+        expect(large).toBeLessThan(slowestAllowed);
+        expect(medium / small).toBeLessThan(3.5);
+      });
+    }
+
+    it("lays the largest table out one line a row", () => {
       const rows = Math.floor((maxHtmlElements - 1) / 3);
       const table = `<table>${"<tr><td>cell</td><td>two</td></tr>".repeat(rows)}</table>`;
-      const out = within(1500, () => htmlToMarkdown(table));
-      expect(out.split("\n")).toHaveLength(rows + 2);
-      within(1500, () => {
-        htmlToMarkdown(
-          "<ol>" + "<li>item</li>".repeat(maxHtmlElements - 2) + "</ol>",
-        );
-        htmlToMarkdown("<p>x</p>\n\n\n\n".repeat(10_000));
-        htmlToMarkdown(
-          `${"<p>a</p><hr>".repeat(8000)}<pre>${"x\n".repeat(50_000)}</pre>`,
-        );
-      });
+      expect(htmlToMarkdown(table).split("\n")).toHaveLength(rows + 2);
     });
   });
 

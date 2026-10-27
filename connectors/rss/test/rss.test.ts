@@ -1144,7 +1144,12 @@ describe("an entry's content and image", () => {
           at("https://example.org/rss.xml"),
           rss(item("before", good) + entries + item("after", good)),
         );
-        expect(performance.now() - started).toBeLessThan(10_000);
+        // Time is judged by what it would have cost: an entry past the
+        // 12 s conversion budget is held back, and that fails the counts
+        // below. This bound only stops a slowdown at any speed; a shared CI
+        // runner reads this feed in about three seconds.
+        expect(performance.now() - started).toBeLessThan(30_000);
+        expect(read.late).toBe(0);
         const bodies = read.entries.map((entry) => entry.properties["body"]);
         expect(bodies).toHaveLength(102);
         expect(bodies[0]).toBe("A **good** body.");
@@ -1155,6 +1160,23 @@ describe("an entry's content and image", () => {
         expect(read.unconverted).toBe(name === "a 3.6 MB article" ? 3 : 100);
       });
     }
+
+    it("builds no tree for markup the converter refused, so takes its picture from nowhere", () => {
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          item(
+            "big",
+            `<img src="https://example.org/p.png">${"<span>a</span>".repeat(25_001)}`,
+          ) + item("small", `<img src="https://example.org/q.png"><p>x</p>`),
+        ),
+      );
+      const [big, small] = read.entries;
+      expect(big?.properties["body"]).toBeUndefined();
+      expect(big?.properties["image_url"]).toBeUndefined();
+      expect(small?.properties["image_url"]).toBe("https://example.org/q.png");
+      expect(read.unconverted).toBe(1);
+    });
 
     it("reads the same feeds in the worker that bounds a read, within its time and memory", async () => {
       const { readBounded } = (await import(
@@ -1181,7 +1203,9 @@ describe("an entry's content and image", () => {
         },
         AbortSignal.timeout(60_000),
       );
-      expect(performance.now() - started).toBeLessThan(20_000);
+      // The worker ends after 30 s, so a read this close to that has
+      // failed anyway; a shared CI runner reads this feed in about two.
+      expect(performance.now() - started).toBeLessThan(25_000);
       const bodies = read.entries.map((entry) => entry.properties["body"]);
       expect(bodies[0]).toBe("A **good** body.");
       expect(bodies.at(-1)).toBe("A **good** body.");
