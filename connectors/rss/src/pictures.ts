@@ -1,0 +1,431 @@
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import type {
+  ConnectionDefinition,
+  Entry,
+  EnvDeclaration,
+  Item,
+  RunContext,
+  TypeDefinition,
+} from "@withmarfa/connector";
+import { fetchPicture, type PictureType } from "@withmarfa/connector/pictures";
+import rssEntry from "./rss.entry.json" with { type: "json" };
+import rssPicture from "./rss.picture.json" with { type: "json" };
+
+/**
+ * What the connector does with the pictures an entry points to:
+ *
+ * - `addresses`: nothing. The entry keeps the addresses in its text.
+ * - `save`: saves the pictures of each entry in the feed as files.
+ * - `save-in-library`: saves the pictures of each entry that is in the
+ *   library, and of none that is in the feed.
+ */
+export type PicturesSetting = "addresses" | "save" | "save-in-library";
+
+export function picturesSetting(value: string | undefined): PicturesSetting {
+  if (value === undefined || value === "addresses") return "addresses";
+  if (value === "save" || value === "save-in-library") return value;
+  throw new Error("RSS_PICTURES must be addresses, save or save-in-library");
+}
+
+/** A picture's type, the entry's property that accounts for its pictures,
+ *  and the connection that attaches one to the other. */
+export const pictureTypeId = rssPicture.id;
+export const manifestField = "rss_pictures";
+export const attachedTo: ConnectionDefinition = {
+  id: "attached-to",
+  cardinality: "many-to-many",
+  source_type_constraints: [rssPicture.id],
+  target_type_constraints: [rssEntry.id],
+};
+
+/** The entry type as it is declared when pictures are saved: with the field
+ *  that accounts for them. */
+export function entryTypeWithManifest(): TypeDefinition {
+  return {
+    ...(rssEntry as TypeDefinition),
+    fields: {
+      ...(rssEntry.fields as TypeDefinition["fields"]),
+      [manifestField]: {
+        type: "object",
+        description:
+          "What became of each picture address in the entry's text and image: those saved, those left for the next run, and those not kept with a reason, beside a hash of the text they were read from. The connector sets it; the addresses are not secrets, and signed ones should not be in a feed.",
+      },
+    },
+  };
+}
+
+export const pictureKind = {
+  type: rssPicture as TypeDefinition,
+  fields: ["title", "source_url", "blob_ref", "mime_type"],
+};
+
+/** At most this many distinct picture addresses are read from one entry's
+ *  image and text, in the order they come; the rest are only counted. */
+export const maxPicturesPerEntry = 20;
+/** At most this many pictures are fetched in one run. */
+export const maxPicturesPerRun = 100;
+/** A picture that would take the bytes saved in one run past this is left
+ *  for the next run. */
+export const maxBytesPerRun = 200 * 1024 * 1024;
+/** A picture whose fetch fails in a way that may pass is asked for this many
+ *  times, a run at a time, before it is not kept. */
+export const maxAttempts = 3;
+/** A longer address is not read from an entry's text. */
+export const maxAddressLength = 2048;
+
+/** Why a picture was left out, beside the reasons the kit's fetch gives. */
+export type Reason = "removed" | "not_https";
+
+/** Failures that may pass, which are asked for again in a later run. */
+const transient = new Set(["timed_out", "fetch_failed", "upload_failed"]);
+
+export interface Manifest {
+  /** A hash of the text the addresses were read from. */
+  text: string;
+  /** Addresses whose pictures are held. */
+  saved: string[];
+  /** Addresses to try again in the next run. */
+  pending: string[];
+  /** Addresses given up on, each with the reason, until the text changes. */
+  not_kept: Record<string, string>;
+  /** How many runs a pending address has failed in. */
+  attempts?: Record<string, number>;
+  /** How many addresses past the limit for one entry were not read. */
+  over?: number;
+}
+
+const object = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const strings = (value: unknown): string[] | undefined =>
+  Array.isArray(value) &&
+  value.every((one: unknown): one is string => typeof one === "string")
+    ? value
+    : undefined;
+
+/** A manifest as the entry holds it, or `undefined` for anything else. */
+export function manifestOf(value: unknown): Manifest | undefined {
+  const at = object(value);
+  const saved = strings(at["saved"]);
+  const pending = strings(at["pending"]);
+  if (typeof at["text"] !== "string" || saved === undefined) return undefined;
+  if (pending === undefined) return undefined;
+  const numbers = Object.entries(object(at["attempts"])).filter(
+    (one): one is [string, number] => typeof one[1] === "number",
+  );
+  const over = at["over"];
+  return {
+    text: at["text"],
+    saved,
+    pending,
+    not_kept: Object.fromEntries(
+      Object.entries(object(at["not_kept"])).filter(
+        (one): one is [string, string] => typeof one[1] === "string",
+      ),
+    ),
+    ...(numbers.length > 0 && { attempts: Object.fromEntries(numbers) }),
+    ...(typeof over === "number" && over > 0 && { over }),
+  };
+}
+
+const sha256 = (text: string | Uint8Array): string =>
+  createHash("sha256").update(text).digest("hex");
+
+/** The hash of the text a manifest was read from. */
+export function textHash(body: unknown, image: unknown): string {
+  return sha256(
+    JSON.stringify([
+      typeof body === "string" ? body : null,
+      typeof image === "string" ? image : null,
+    ]),
+  );
+}
+
+// A Markdown image: its label, then its destination, which the converter
+// writes without spaces, parentheses or angle brackets, and an optional title.
+const markdownImage =
+  /!\[(?:\\.|[^\]\\])*\]\(\s*<?([^\s()<>]+)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+
+/**
+ * The web addresses of an entry's pictures: its image, then the Markdown
+ * images in its body, each once. Only `http` and `https` addresses count;
+ * another scheme, a relative address and one over `maxAddressLength` are not
+ * addresses to save.
+ */
+export function addressesOf(
+  body: unknown,
+  image: unknown,
+): { addresses: string[]; over: number } {
+  const found = new Set<string>();
+  const take = (raw: string): void => {
+    if (raw.length > maxAddressLength) return;
+    const url = URL.parse(raw);
+    if (url?.protocol !== "https:" && url?.protocol !== "http:") return;
+    found.add(url.href);
+  };
+  if (typeof image === "string") take(image);
+  if (typeof body === "string") {
+    for (const match of body.matchAll(markdownImage)) take(match[1] ?? "");
+  }
+  const all = [...found];
+  return {
+    addresses: all.slice(0, maxPicturesPerEntry),
+    over: Math.max(0, all.length - maxPicturesPerEntry),
+  };
+}
+
+const extensions: Record<PictureType, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "image/heic": "heic",
+};
+
+/** A picture's `source_id`: the id of its entry's row, which holds when a
+ *  feed's key changes and its entries are moved to new ones, a number sign,
+ *  and a hash of the address. */
+export function pictureId(entryRow: string, address: string): string {
+  return `${entryRow}#${sha256(address).slice(0, 32)}`;
+}
+
+/** The id of the entry row a picture was saved for. */
+export function entryOf(pictureId: string): string {
+  return pictureId.slice(0, pictureId.lastIndexOf("#"));
+}
+
+export function titleOf(address: string, type: PictureType): string {
+  return `p-${sha256(address).slice(0, 12)}.${extensions[type]}`;
+}
+
+type Context = Pick<
+  RunContext<EnvDeclaration>,
+  "held" | "archive" | "derive" | "upsert" | "inspect" | "signal" | "log"
+>;
+
+/** The manifests the entries hold, by `source_id`, for a read to carry. */
+export async function manifestsHeld(
+  context: Pick<Context, "held">,
+): Promise<Map<string, Manifest>> {
+  const manifests = new Map<string, Manifest>();
+  for (const row of await context.held(rssEntry.id, { state: "any" })) {
+    const manifest = manifestOf(row.properties[manifestField]);
+    if (row.source_id !== undefined && manifest !== undefined) {
+      manifests.set(row.source_id, manifest);
+    }
+  }
+  return manifests;
+}
+
+/** The entries with the manifests their rows hold, so that a write of the
+ *  entry does not clear what accounts for its pictures. */
+export function carrying(
+  entries: readonly Entry[],
+  manifests: ReadonlyMap<string, Manifest>,
+): Entry[] {
+  return entries.map((entry) => {
+    const manifest = [entry.source_id, [entry.movedFrom ?? []].flat()]
+      .flat()
+      .map((id) => manifests.get(id))
+      .find((one) => one !== undefined);
+    return manifest === undefined
+      ? entry
+      : {
+          ...entry,
+          properties: { ...entry.properties, [manifestField]: manifest },
+        };
+  });
+}
+
+export interface Saved {
+  fetched: number;
+  saved: number;
+  notKept: number;
+  left: number;
+  swept: number;
+}
+
+/**
+ * One pass over the entries that are in the tier the setting names: archives
+ * the pictures of entries that are no longer active, and for each entry whose
+ * pictures are not all accounted for, saves what it can and records the rest.
+ */
+export async function savePictures(
+  context: Context,
+  options: {
+    setting: Exclude<PicturesSetting, "addresses">;
+    privateHosts: ReadonlySet<string>;
+  },
+): Promise<Saved> {
+  const tier = options.setting === "save" ? "feed" : "library";
+  const result: Saved = { fetched: 0, saved: 0, notKept: 0, left: 0, swept: 0 };
+  const entries = await context.held(rssEntry.id, { state: "any" });
+  const states = new Map(entries.map((row) => [row.id, row]));
+  const pictures = new Map<string, Item>();
+  for (const row of await context.held(pictureTypeId, { state: "any" })) {
+    if (row.source_id !== undefined) pictures.set(row.source_id, row);
+  }
+
+  // A picture follows its entry out of use: one whose entry is archived,
+  // trashed or gone is archived with it. It is not brought back if the entry
+  // is, since a person may have archived it for their own reasons.
+  const gone = [...pictures]
+    .filter(
+      ([id, row]) =>
+        row.state === "active" && states.get(entryOf(id))?.state !== "active",
+    )
+    .map(([id]) => id);
+  if (gone.length > 0) {
+    await context.archive(pictureTypeId, gone);
+    result.swept = gone.length;
+  }
+
+  let bytes = 0;
+  let full = false;
+  for (const entry of entries) {
+    const entryId = entry.source_id;
+    if (
+      entryId === undefined ||
+      entry.state !== "active" ||
+      (entry.tier ?? "feed") !== tier
+    ) {
+      continue;
+    }
+    const text = textHash(
+      entry.properties["body"],
+      entry.properties["image_url"],
+    );
+    const { addresses, over } = addressesOf(
+      entry.properties["body"],
+      entry.properties["image_url"],
+    );
+    const prior = manifestOf(entry.properties[manifestField]);
+    if (prior === undefined && addresses.length === 0) continue;
+    const same = prior?.text === text ? prior : undefined;
+    // An entry is left alone while its manifest still tells the truth: the
+    // text is the one it was read from, nothing waits, and each picture it
+    // lists is still held.
+    if (
+      same?.pending.length === 0 &&
+      same.saved.every((address) => {
+        const state = pictures.get(pictureId(entry.id, address))?.state;
+        return state === "active" || state === "archived";
+      })
+    ) {
+      continue;
+    }
+
+    const next: Manifest = { text, saved: [], pending: [], not_kept: {} };
+    const attempts: Record<string, number> = {};
+    const open: string[] = [];
+    for (const address of addresses) {
+      if (same !== undefined && address in same.not_kept) {
+        next.not_kept[address] = same.not_kept[address] ?? "";
+      } else if (address.startsWith("http:")) {
+        next.not_kept[address] = "not_https";
+      } else open.push(address);
+    }
+
+    // A picture removed in Marfa is not saved again for this entry, and one
+    // already held is not fetched again.
+    const ids = new Map(open.map((a) => [a, pictureId(entry.id, a)]));
+    const missing = [...ids.values()].filter((id) => !pictures.has(id));
+    const purged = new Set(
+      missing.length === 0
+        ? []
+        : (
+            await context.inspect(pictureTypeId, { source_ids: missing })
+          ).tombstones.map((one) => one.key),
+    );
+    for (const address of open) {
+      context.signal.throwIfAborted();
+      const id = ids.get(address) ?? "";
+      const held = pictures.get(id);
+      if (held !== undefined) {
+        if (held.state === "trashed" || held.state === "revoked") {
+          next.not_kept[address] = "removed";
+        } else next.saved.push(address);
+        continue;
+      }
+      if (purged.has(id)) {
+        next.not_kept[address] = "removed";
+        continue;
+      }
+      if (full || result.fetched >= maxPicturesPerRun) {
+        next.pending.push(address);
+        const tried = same?.attempts?.[address];
+        if (tried !== undefined) attempts[address] = tried;
+        continue;
+      }
+      result.fetched += 1;
+      const got = await fetchPicture(address, {
+        privateHosts: options.privateHosts,
+        signal: context.signal,
+      });
+      let failure: string;
+      if (!got.ok) failure = got.reason;
+      else if (bytes + got.bytes.length > maxBytesPerRun) {
+        full = true;
+        next.pending.push(address);
+        const tried = same?.attempts?.[address];
+        if (tried !== undefined) attempts[address] = tried;
+        continue;
+      } else {
+        const row: Entry = {
+          source_id: id,
+          properties: {
+            title: titleOf(address, got.mime_type),
+            source_url: address,
+          },
+          tier,
+          connections: { "attached-to": [{ type: rssEntry.id, id: entryId }] },
+          file: {
+            key: sha256(got.bytes),
+            load: () =>
+              Promise.resolve({ bytes: got.bytes, mime_type: got.mime_type }),
+          },
+        };
+        await context.upsert(pictureTypeId, [row]);
+        const after = await context.inspect(pictureTypeId, {
+          source_ids: [id],
+        });
+        const made = after.items.find((one) => one.source_id === id);
+        if (typeof made?.properties["blob_ref"] === "string") {
+          bytes += got.bytes.length;
+          result.saved += 1;
+          pictures.set(id, made);
+          next.saved.push(address);
+          continue;
+        }
+        failure = "upload_failed";
+      }
+      if (transient.has(failure)) {
+        const tries = (same?.attempts?.[address] ?? 0) + 1;
+        if (tries < maxAttempts) {
+          next.pending.push(address);
+          attempts[address] = tries;
+          continue;
+        }
+      }
+      next.not_kept[address] = failure;
+    }
+    if (Object.keys(attempts).length > 0) next.attempts = attempts;
+    if (over > 0) next.over = over;
+    result.notKept += Object.keys(next.not_kept).length;
+    result.left += next.pending.length;
+    if (!isDeepStrictEqual(prior, next)) {
+      await context.derive(rssEntry.id, [entryId], { [manifestField]: next });
+    }
+  }
+  if (result.left > 0 && (full || result.fetched >= maxPicturesPerRun)) {
+    context.log.condition(
+      "pictures:limit",
+      `this run reached its limit of ${String(maxPicturesPerRun)} pictures or ${String(maxBytesPerRun / 1024 / 1024)} MiB, so ${String(result.left)} are left for the next run`,
+    );
+  }
+  return result;
+}

@@ -1,6 +1,6 @@
 # RSS
 
-Reads feeds in Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed, and it never writes into a library type. Moving an entry to the library is a person's or an app's act.
+Reads feeds in Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed. By default it keeps only the addresses of an entry's pictures; if you ask it to, it also saves those pictures as files attached to the entry (see [Saving pictures](#saving-pictures)). It never writes an entry into the library, and moving an entry to the library is a person's or an app's act. A picture file reaches the library only as part of an entry that is already there.
 
 ## What it does
 
@@ -30,7 +30,16 @@ You need a Marfa server, the CLI (`marfa`), a credential that can mint keys, and
    - `--metadata-permission types=write`: lets it register `rss.entry` on its first start and keep the type current.
    - `--default-tier feed`: puts what it writes in the feed.
 
-   The key holds no other permission, and the connector refuses to run on a key that holds more, or less, naming what is wrong. Revoke such a key with `marfa keys revoke <key-id>` and mint another as above. [The template's README](../../template/README.md#the-key) says why the key has this shape, and how to give a second account's connector its own key.
+   To have the connector save pictures, set `RSS_PICTURES` to `save` or `save-in-library`, and mint the key with two more permissions:
+
+   ```bash
+   marfa keys create --label rss --source rss --type-permission rss.entry=write --type-permission rss.picture=write --edge-permission attached-to=write --metadata-permission types=write --default-tier feed
+   ```
+
+   - `--type-permission rss.picture=write`: read and write on the picture type, which the connector registers.
+   - `--edge-permission attached-to=write`: lets it attach a picture to its entry. The connection type ships with Marfa, so the connector does not register it.
+
+   The key holds no other permission, and the connector refuses to run on a key that holds more, or less, naming what is wrong. That includes the picture permissions: they belong on the key only when `RSS_PICTURES` is `save` or `save-in-library`, and a key that holds them is refused while it is `addresses`. Changing the setting therefore means a key of the other shape. Revoke such a key with `marfa keys revoke <key-id>` and mint another as above. [The template's README](../../template/README.md#the-key) says why the key has this shape, and how to give a second account's connector its own key.
 
 3. Set the connector's settings, below, and run it.
 
@@ -38,12 +47,13 @@ You need a Marfa server, the CLI (`marfa`), a credential that can mint keys, and
 
 The connector reads its settings from the environment.
 
-| Variable            | Required | What it holds                                                                              |
-| ------------------- | -------- | ------------------------------------------------------------------------------------------ |
-| `MARFA_API_URL`     | yes      | The address of the Marfa server.                                                           |
-| `MARFA_API_KEY`     | yes      | The connector's key from step 2.                                                           |
-| `RSS_FEEDS`         | yes      | The feeds to read, as below. A secret.                                                     |
-| `RSS_PRIVATE_HOSTS` | no       | Host names that may resolve to this machine or a private network, set apart by whitespace. |
+| Variable            | Required | What it holds                                                                                            |
+| ------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `MARFA_API_URL`     | yes      | The address of the Marfa server.                                                                         |
+| `MARFA_API_KEY`     | yes      | The connector's key from step 2.                                                                         |
+| `RSS_FEEDS`         | yes      | The feeds to read, as below. A secret.                                                                   |
+| `RSS_PRIVATE_HOSTS` | no       | Host names that may resolve to this machine or a private network, set apart by whitespace.               |
+| `RSS_PICTURES`      | no       | What to do with the pictures an entry points to: `addresses` (the default), `save` or `save-in-library`. |
 
 ### `RSS_FEEDS`
 
@@ -63,6 +73,14 @@ An address may carry credentials, as `https://reader:pass@example.org/feed.xml`.
 ### `RSS_PRIVATE_HOSTS`
 
 The connector does not fetch from this machine or a private network, whether a feed names one, or redirects to one. An address that lists a private IP address itself is allowed. To read a feed at a host name that resolves to a private address, name the host in `RSS_PRIVATE_HOSTS`, such as `feeds.internal.example`. A host here is allowed for the feed listed at it, and its redirects to the same host, and is never allowed as another feed's redirect. An entry holds a host name only, with no port, path or credentials, or the start stops with exit code 2.
+
+### `RSS_PICTURES`
+
+- `addresses` (the default): the connector keeps the addresses of an entry's pictures in its text and `image_url`, and fetches nothing from them. The rows, the type and the key are exactly as they are without this setting.
+- `save`: the connector saves the pictures of every entry in the feed as files, attached to the entry.
+- `save-in-library`: the connector saves the pictures only of entries that are already in the library. An entry in the feed gets none until a person or an app moves it.
+
+Any other value stops the start with exit code 2. [Saving pictures](#saving-pictures) says what is saved and how.
 
 ## Run it
 
@@ -151,7 +169,7 @@ An entry with an image enclosure takes it as `image_url`: an Atom `enclosure` li
 
 A `media:thumbnail` is held to the same rules, with its `url` for the `src`.
 
-Only the declared size is read: a picture is never fetched, and one that is hidden by a style or sized by the stylesheet counts.
+Only the declared size is read, and one that is hidden by a style or sized by the stylesheet counts. A picture is fetched only when `RSS_PICTURES` is `save` or `save-in-library`, as [Saving pictures](#saving-pictures) says.
 
 ### Dates
 
@@ -163,9 +181,69 @@ An entry with none of these has no date from its feed. Marfa then dates it by wh
 
 An entry is its feed's identity and its `entry_id`. A change to an entry's title, content or link, where it has an id, updates its row. A change to how the connector renders an entry, such as the Markdown conversion, reaches entries already stored the next time their feed is read, and the connector reads every feed whole once after such a release, though its server says it has not changed. An entry its feed no longer carries is not read again, so it keeps the body it was written with. A change to an entry's id makes a new row, and so does a change to the link of an entry that has no `guid` or Atom `id`, since its link is its id. Moving a feed that has no name makes a new row of every entry.
 
+## Saving pictures
+
+With `RSS_PICTURES` set to `save` or `save-in-library`, the connector fetches the pictures an entry points to and saves each one as a file in Marfa. The entry's text is not changed: its `body` and `image_url` still hold the addresses the feed gave.
+
+### What is saved
+
+For each entry it is allowed to work on, the connector takes the entry's `image_url`, then the Markdown images in its `body`, in that order, each address once. Only an address that is `https` is fetched. An `http` address is never fetched and is recorded as not kept with the reason `not_https`; a redirect to an `http` address is refused for the same reason. A relative address, another scheme and an address longer than 2,048 characters are not addresses to save and are ignored.
+
+Every picture is fetched with the connector kit's picture fetch. It follows at most four redirects, each to an `https` address; refuses a private or local address unless `RSS_PRIVATE_HOSTS` names its host; refuses a known tracker; reads at most 25 MiB; and keeps only a PNG, JPEG, GIF, WebP, AVIF or HEIC file that is neither one pixel wide nor one pixel high and is not larger than 100 million pixels. An SVG file is refused.
+
+Each saved picture is an `rss.picture` row, a kind of `core.file.image`, with these fields:
+
+| Field                   | What it holds                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `source_url`            | The web address the picture was saved from, as the entry gave it.                                                       |
+| `title`                 | `p-`, the first 12 characters of a hash of that address, then the extension for its type, such as `p-0123456789ab.png`. |
+| `blob_ref`, `mime_type` | The file, and its type, as for every file in Marfa.                                                                     |
+
+An `attached-to` connection runs from the picture to its entry. To find the pictures of an entry, follow its `attached-to` connections, and match a picture to an address in the entry's text by `source_url`. The title is the same for the same address wherever it appears, so a picture is told apart by its address and never by its file name: two sites that both serve `cat.png` give two pictures.
+
+### What the entry records
+
+Marfa does not show an entry's pictures from its text alone, so the entry carries `rss_pictures`, a read-only field the connector sets. It holds:
+
+- `text`: a hash of the text (`body` and `image_url`) the addresses were read from;
+- `saved`: the addresses whose pictures are held;
+- `pending`: the addresses the connector will try again, or has not reached yet;
+- `not_kept`: each address it gave up on, with a reason; and
+- `over`, where the entry had more than 20 addresses: how many past the first 20 were not read.
+
+The reason for an address that was not kept is `removed` (a person trashed or purged the picture), `not_https`, or the reason the picture fetch gave: `invalid_address`, `private_address`, `tracker`, `too_many_redirects`, `bad_status`, `too_large`, `timed_out`, `fetch_failed`, `not_a_picture`, `svg`, `one_pixel`, `too_large_dimensions` or `upload_failed`. The addresses are not secrets, so signed ones should not be in a feed. An entry without `rss_pictures` has had no picture work done.
+
+### When a picture is tried again
+
+- An address in `saved` or `not_kept` is not fetched again while the entry's text is the one in `text`.
+- When the text changes, the connector reads the addresses again. An address that was not kept is tried again; one already saved is kept without a new fetch.
+- A fetch that fails in a way that may pass (`timed_out`, `fetch_failed`, or a file Marfa did not take) stays in `pending` and is tried in the next run, up to three runs in all, and is then recorded as not kept.
+- A picture a person trashed or purged is not saved again for that entry, even when the text changes.
+- A picture the text no longer mentions stays where it is. The connector never removes a file it saved because the text stopped pointing at it.
+
+### Limits
+
+| Limit                        | Value   | Where it is reached                                                               |
+| ---------------------------- | ------- | --------------------------------------------------------------------------------- |
+| Pictures read from one entry | 20      | The rest are only counted, in `over`.                                             |
+| Pictures fetched in one run  | 100     | The rest stay in `pending`, and the run raises `pictures:limit`.                  |
+| Bytes saved in one run       | 200 MiB | A picture that would pass it stays in `pending`; the run raises `pictures:limit`. |
+
+The next run carries on with what was left. A run that has pictures to save does them after every feed has been read, and a failure there is raised as `pictures:failed` and does not fail the feeds.
+
+### `save` and `save-in-library`
+
+With `save`, a picture is written at the feed tier, beside its entry.
+
+With `save-in-library`, the connector works from the entries of its own that are in the library. It looks for them at the start of each run, so a picture is saved up to one run interval after an entry reaches the library, and not at the moment it does. Its pictures are written at the library tier, since they belong to something already there. An entry in the feed, whether it was never moved or is moved back, gets no new pictures; the pictures it already has stay where they are, at the tier they were saved in.
+
+### When an entry leaves
+
+A picture follows its entry out of use. When an entry is archived or trashed, or is gone, the next run archives the pictures saved for it, so the file is not left on its own. A picture archived this way is not brought back when the entry is restored, since a person may have archived it for their own reasons; restore it in Marfa if you want it. The connector does not trash or purge a picture. A type's retention in Marfa, where an operator has set one on `rss.picture`, applies to these pictures as to any other file.
+
 ## What stays
 
-The connector never archives, trashes or removes a row.
+The connector never trashes or removes a row. It archives a row only for a picture whose entry is archived, trashed or gone, and only when `RSS_PICTURES` is not `addresses`; it never archives an entry.
 
 - An entry a feed drops stays in Marfa as it was last written. Feeds hold only their latest entries, so this is how the older ones are kept.
 - A feed taken out of `RSS_FEEDS` leaves its rows where they are, and stops being read. Put it back, under the same name or address, and it carries on from them. The connector remembers the last hundred feeds that left the list, so a feed that returns finds the rows it wrote before it left.

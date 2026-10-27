@@ -35,6 +35,18 @@ import {
   TooHeavy,
   TooSlow,
 } from "./parse.js";
+import {
+  attachedTo,
+  carrying,
+  entryTypeWithManifest,
+  manifestField,
+  manifestsHeld,
+  pictureKind,
+  picturesSetting,
+  savePictures,
+  type Manifest,
+  type PicturesSetting,
+} from "./pictures.js";
 import rssEntry from "./rss.entry.json" with { type: "json" };
 
 interface FeedState {
@@ -103,6 +115,19 @@ function refusal(error: unknown): string | undefined {
   return undefined;
 }
 
+// A process that saves no pictures declares no picture type, connection or
+// manifest field, so its key needs, and holds, nothing for them. A value
+// checkEnv refuses is read as the default here; the start stops before any
+// feed is read.
+const saving = ((): PicturesSetting => {
+  try {
+    return picturesSetting(process.env["RSS_PICTURES"]);
+  } catch {
+    return "addresses";
+  }
+})();
+const savesPictures = saving !== "addresses";
+
 const connector = defineConnector({
   name: "rss",
   description: "Entries from Atom, RSS and JSON feeds.",
@@ -112,22 +137,38 @@ const connector = defineConnector({
     {
       // Imported JSON widens every string, so its field types read as
       // `string` here; the check on start holds the file to the server's.
-      type: rssEntry as TypeDefinition,
-      fields: entryFields,
+      type: savesPictures
+        ? entryTypeWithManifest()
+        : (rssEntry as TypeDefinition),
+      fields: savesPictures ? [...entryFields, manifestField] : entryFields,
+      ...(savesPictures && {
+        readOnly: [manifestField],
+        derived: [manifestField],
+      }),
     },
+    ...(savesPictures ? [pictureKind] : []),
   ],
+  ...(savesPictures && { connections: [attachedTo] }),
   // A secret, since a private feed's address carries its token.
   env: {
     RSS_FEEDS: "secret",
     RSS_PRIVATE_HOSTS: "optional",
+    RSS_PICTURES: "optional",
   },
   checkEnv(env) {
     feedList(env.RSS_FEEDS);
     privateHosts(env.RSS_PRIVATE_HOSTS);
+    picturesSetting(env.RSS_PICTURES);
   },
-  async run({ env, signal, state, log, forScope }) {
+  async run(context) {
+    const { env, signal, state, log, forScope } = context;
+    const setting = picturesSetting(env.RSS_PICTURES);
     const feeds = feedList(env.RSS_FEEDS);
     const allowed = privateHosts(env.RSS_PRIVATE_HOSTS);
+    // A write of an entry clears a property it leaves out, so each carries
+    // the manifest its row holds.
+    const manifests: ReadonlyMap<string, Manifest> =
+      setting === "addresses" ? new Map() : await manifestsHeld(context);
     const known = (state.get("feeds") ?? {}) as Record<string, FeedState>;
     const configured = new Set(feeds.map((feed) => feed.key));
     const claimed = new Set<string>();
@@ -408,12 +449,18 @@ const connector = defineConnector({
       // holds back that feed alone.
       await forScope(feed.key).upsert(
         rssEntry.id,
-        was.length === 0
-          ? parsed.entries
-          : parsed.entries.map((entry) => {
-              const id = entry.source_id.slice(feed.key.length);
-              return { ...entry, movedFrom: was.map((key) => `${key}${id}`) };
-            }),
+        carrying(
+          was.length === 0
+            ? parsed.entries
+            : parsed.entries.map((entry) => {
+                const id = entry.source_id.slice(feed.key.length);
+                return {
+                  ...entry,
+                  movedFrom: was.map((key) => `${key}${id}`),
+                };
+              }),
+          manifests,
+        ),
       );
       const progress = await checkpointed(feed, id, now);
       if (!progress.committed) {
@@ -433,6 +480,24 @@ const connector = defineConnector({
       );
     }
     state.set("feeds", { ...kept, ...Object.fromEntries(departed) });
+    if (setting === "addresses") return;
+    // The pictures are the last of the run, and a failure in them leaves the
+    // feeds' progress as it is: the entries are read again only as they change.
+    try {
+      const done = await savePictures(context, {
+        setting,
+        privateHosts: allowed,
+      });
+      log.info(
+        `pictures: ${String(done.saved)} saved, ${String(done.notKept)} not kept, ${String(done.left)} left for the next run, ${String(done.swept)} archived with their entries`,
+      );
+    } catch (error) {
+      if (signal.aborted) throw error;
+      log.condition(
+        "pictures:failed",
+        `the pictures could not be saved this run: ${failureOf(error)}`,
+      );
+    }
   },
 });
 
