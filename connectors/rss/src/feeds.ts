@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
+import { htmlToMarkdown, NotConvertible } from "@withmarfa/connector/markdown";
 import { parseFeed, parseJsonFeed } from "feedsmith";
 import { DomUtils, ElementType, parseDocument } from "htmlparser2";
 import { isIP } from "node:net";
@@ -554,24 +555,59 @@ function thumbnailOf(media: Media | undefined, base: Base): string | undefined {
 }
 
 /**
+ * What this connector writes for an entry's markup. Raise it when a change
+ * to how `body` is rendered should reach entries already stored: a feed is
+ * then read whole once, though its server says it has not changed.
+ */
+export const renderVersion = 1;
+
+/**
+ * Converts markup to the Markdown a body holds. Links and pictures resolve
+ * against the entry's base, so one relative to the fetch path, where a
+ * private feed may carry its token, is left out as the entry's other links
+ * are. Markup the converter refuses is left out, and counted.
+ */
+function markdownOf(
+  markup: string | undefined,
+  base: Base,
+  refused: () => void,
+): string | undefined {
+  if (markup === undefined) return undefined;
+  try {
+    return textOf(
+      htmlToMarkdown(markup, {
+        resolve: (reference) => linkOf(reference, base),
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof NotConvertible)) throw error;
+    refused();
+    return undefined;
+  }
+}
+
+/**
  * A feed's content is its content element where it has one, else its
- * summary where that holds markup. The description is the summary as plain
- * text, or for a summary that is only a picture, that picture's caption.
+ * summary where that holds markup. Both are written as Markdown where they
+ * are HTML, and as they are where they are text. The description is the
+ * summary as plain text, or for a summary that is only a picture, that
+ * picture's caption.
  */
 function contentOf(
   summary: Summary,
   content: string | undefined,
   images: Images,
   base: Base,
+  refused: () => void,
   contentIsHtml = true,
 ): Written {
   const reading = summary.html ? readingOf(summary.value) : undefined;
   const picture = countedPicture(reading, base);
-  const body = textOf(content);
+  const text = textOf(content);
   const enclosed = linkOf(images.enclosure, base);
   const found =
     enclosed === undefined
-      ? ((contentIsHtml ? countedPicture(readingOf(body), base) : undefined) ??
+      ? ((contentIsHtml ? countedPicture(readingOf(text), base) : undefined) ??
         picture)
       : undefined;
   return {
@@ -579,9 +615,9 @@ function contentOf(
       ? (reading?.plain ?? picture?.caption)
       : textOf(summary.value),
     body:
-      body ??
+      (contentIsHtml ? markdownOf(text, base, refused) : text) ??
       (reading?.marked === true && !reading.empty
-        ? textOf(summary.value)
+        ? markdownOf(summary.value, base, refused)
         : undefined),
     image_url: enclosed ?? found?.url ?? images.thumbnail,
   };
@@ -596,6 +632,8 @@ export interface Read {
   unkeyed: number;
   /** Values longer than Marfa takes, left out of their entries. */
   dropped: number;
+  /** Entries whose markup could not be converted, so they have no body. */
+  unconverted: number;
   /** A hash of the id an Atom feed declares for itself, which identifies
    *  nothing here and is compared only to say two feeds claim one id. */
   declared: string | undefined;
@@ -650,6 +688,10 @@ export function readFeed(
   const documentBase: Base = { href: documentUrl, fromAddress: true };
   let unkeyed = 0;
   let dropped = 0;
+  let unconverted = 0;
+  const refused = (): void => {
+    unconverted += 1;
+  };
   const entries: Entry[] = [];
   const keep = (
     entryId: string | undefined,
@@ -704,6 +746,7 @@ export function readFeed(
         entry.content?.value,
         { enclosure: image, thumbnail: thumbnailOf(entry.media, entryBase) },
         entryBase,
+        refused,
         entry.content?.type === "html" || entry.content?.type === "xhtml",
       );
       keep(
@@ -725,6 +768,7 @@ export function readFeed(
       entries,
       unkeyed,
       dropped,
+      unconverted,
       declared:
         declared === undefined || declared === ""
           ? undefined
@@ -753,6 +797,7 @@ export function readFeed(
         item.content?.encoded,
         { enclosure: image, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
+        refused,
       );
       keep(
         item.guid?.value ?? url,
@@ -769,7 +814,7 @@ export function readFeed(
         published ?? isoOf(item.dc?.dates?.[0]),
       );
     }
-    return { entries, unkeyed, dropped, declared: undefined };
+    return { entries, unkeyed, dropped, unconverted, declared: undefined };
   }
   if (parsed.format === "rdf") {
     const rdf = parsed.feed;
@@ -787,6 +832,7 @@ export function readFeed(
         item.content?.encoded,
         { enclosure: undefined, thumbnail: thumbnailOf(item.media, itemBase) },
         itemBase,
+        refused,
       );
       keep(
         item.rdf?.about ?? url,
@@ -803,7 +849,7 @@ export function readFeed(
         published,
       );
     }
-    return { entries, unkeyed, dropped, declared: undefined };
+    return { entries, unkeyed, dropped, unconverted, declared: undefined };
   }
   const json = parsed.feed;
   if ((json.items?.length ?? 0) > maxFeedEntries) throw new TooManyEntries();
@@ -821,6 +867,7 @@ export function readFeed(
         thumbnail: undefined,
       },
       documentBase,
+      refused,
       html !== undefined,
     );
     keep(
@@ -838,5 +885,5 @@ export function readFeed(
       published ?? isoOf(item.date_modified),
     );
   }
-  return { entries, unkeyed, dropped, declared: undefined };
+  return { entries, unkeyed, dropped, unconverted, declared: undefined };
 }

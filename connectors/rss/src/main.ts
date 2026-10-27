@@ -12,6 +12,7 @@ import {
   maxFeedEntries,
   maxFieldLength,
   privateHosts,
+  renderVersion,
   TooManyElements,
   TooManyEntries,
   type Feed,
@@ -50,6 +51,10 @@ interface FeedState {
   shared?: string[];
   unkeyed?: number;
   dropped?: number;
+  unconverted?: number;
+  /** The `renderVersion` its entries were last written under: validators
+   *  from an older one are not sent, so the feed is read whole. */
+  render?: number;
   declared?: string;
   /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
    *  named again if it returns. */
@@ -207,6 +212,15 @@ const connector = defineConnector({
             : `${String(long)} values in ${name} are longer than ${String(maxFieldLength)} characters, and are left out`,
         );
       }
+      const unconverted = held.unconverted ?? 0;
+      if (unconverted > 0) {
+        log.condition(
+          `unconverted:${feed.key}`,
+          unconverted === 1
+            ? `an entry in ${name} has markup nested too deeply to convert, and its body is left out`
+            : `${String(unconverted)} entries in ${name} have markup nested too deeply to convert, and their bodies are left out`,
+        );
+      }
       const count = held.unkeyed ?? 0;
       if (count > 0) {
         log.condition(
@@ -284,7 +298,9 @@ const connector = defineConnector({
         // Rows not yet under this key are read whole, so they move now.
         fetched = await fetchFeed(
           feed,
-          held.address === feed.address && held.key === feed.key
+          held.address === feed.address &&
+            held.key === feed.key &&
+            held.render === renderVersion
             ? held.validators
             : undefined,
           allowed,
@@ -348,6 +364,7 @@ const connector = defineConnector({
       }
       const now: FeedState = {
         validators: fetched.validators,
+        render: renderVersion,
         address: feed.address,
         key: feed.key,
         ...(was.length > 0 && { was }),
@@ -355,6 +372,7 @@ const connector = defineConnector({
         ...(fetched.moved && { moved: true as const }),
         ...(parsed.unkeyed > 0 && { unkeyed: parsed.unkeyed }),
         ...(parsed.dropped > 0 && { dropped: parsed.dropped }),
+        ...(parsed.unconverted > 0 && { unconverted: parsed.unconverted }),
         ...(parsed.declared !== undefined && { declared: parsed.declared }),
       };
       read += 1;

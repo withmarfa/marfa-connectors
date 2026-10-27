@@ -98,7 +98,7 @@ Each entry is an `rss.entry` row, a kind of `core.bookmark`, written at the feed
 | `url`          | The entry's link: an Atom entry's `alternate` link, an RSS item's `link`, or a JSON Feed item's `url`.                                                                                |
 | `title`        | The entry's title as plain text: entities decoded, markup removed and whitespace collapsed, whatever the feed's format.                                                               |
 | `description`  | The entry's summary as plain text. Where the summary is only a picture, the picture's `title` text, else its `alt` text.                                                              |
-| `body`         | The entry's content with its markup, as the feed gave it. Where the feed gives no content, its summary with its markup, if the summary holds any. See below.                          |
+| `body`         | The entry's content as Markdown. Where the feed gives no content, its summary as Markdown, if the summary holds markup. See below.                                                    |
 | `author`       | The first author the entry names, else, for Atom and JSON Feed, the feed's first author.                                                                                              |
 | `published_at` | When the feed says the entry was published, in UTC.                                                                                                                                   |
 | `image_url`    | The entry's image enclosure, else the first picture in its content or summary, else its first `media:thumbnail`. See below.                                                           |
@@ -127,13 +127,17 @@ A document in another format is skipped and named in the run. The connector read
 
 Where a feed gives an entry content (an Atom `content`, an RSS `content:encoded`), `body` holds it and `description` holds the plain text of the summary, if there is one.
 
-In a JSON Feed, `content_html` is the content and is kept as markup. `content_text` is the content as plain text, so `body` holds it as it is. A `summary` is plain text, so it goes to `description` alone, and a JSON Feed item with only a summary has no `body`.
+An item's `body` is Markdown. Where the content is HTML, the connector converts it before it writes: an Atom `content` of type `html` or `xhtml`, an RSS `content:encoded`, and a JSON Feed `content_html`. Headings, emphasis, links, lists, quotes, code and tables stay, and a picture becomes a Markdown image. A script, a style, a frame, a video or audio player, a form control and a picture that counts the reader (one pixel wide or high, or from a known tracker such as FeedBurner or WordPress stats) are dropped. A link or picture address is resolved the way the entry's other links are, against the entry's base, and one that is not an `http` or `https` address, or is relative to the path the feed was fetched from, is left out, keeping a link's text. Content that is text is written as it is, without escaping: an Atom `content` of type `text`, a JSON Feed `content_text`, and an RSS description with no HTML in it.
 
-Where the summary or description is the feed's only content, `body` holds its markup and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS 2.0 or RSS 1.0 description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing, such as a lone tracking pixel or empty paragraphs and line breaks, gives no `body`; one that shows anything else, such as an embedded player or a picture that does not count as the entry's image, keeps its markup in `body`.
+Markup nested more than 200 levels deep is not converted. The entry is written without a `body`, and the run names how many entries that happened to.
 
-The connector does not clean the markup it keeps in `body`. Treat it as untrusted wherever it is shown.
+In a JSON Feed, `content_html` is the content and is converted to Markdown. `content_text` is the content as plain text, so `body` holds it as it is. A `summary` is plain text, so it goes to `description` alone, and a JSON Feed item with only a summary has no `body`.
 
-A summary that is only a picture, as in a comic's feed, gives a `body` that is the picture's markup, a `description` from the picture's `title` text, else its `alt` text, and an `image_url`.
+Where the summary or description is the feed's only content, `body` holds it as Markdown and `description` holds its plain text. This applies when the summary holds markup: an Atom summary of type `html` or `xhtml`, or an RSS 2.0 or RSS 1.0 description with HTML in it, which RSS 2.0 allows to be entity-encoded. An Atom summary of type `text`, or a description without markup, is plain text already, so it goes to `description` alone. A summary whose markup shows nothing once converted, such as a lone tracking pixel, empty paragraphs and line breaks, or only an embedded player or frame, gives no `body`.
+
+The conversion drops what runs, but `body` is still text a feed wrote: treat it as untrusted wherever it is shown.
+
+A summary that is only a picture, as in a comic's feed, gives a `body` that is the picture as a Markdown image, a `description` from the picture's `title` text, else its `alt` text, and an `image_url`.
 
 ### Which images count
 
@@ -155,7 +159,7 @@ An entry with none of these has no date from its feed. Marfa then dates it by wh
 
 ### What identifies an entry
 
-An entry is its feed's identity and its `entry_id`. A change to an entry's title, content or link, where it has an id, updates its row. A change to an entry's id makes a new row, and so does a change to the link of an entry that has no `guid` or Atom `id`, since its link is its id. Moving a feed that has no name makes a new row of every entry.
+An entry is its feed's identity and its `entry_id`. A change to an entry's title, content or link, where it has an id, updates its row. A change to how the connector renders an entry, such as the Markdown conversion, reaches entries already stored the next time their feed is read, and the connector reads every feed whole once after such a release, though its server says it has not changed. An entry its feed no longer carries is not read again, so it keeps the body it was written with. A change to an entry's id makes a new row, and so does a change to the link of an entry that has no `guid` or Atom `id`, since its link is its id. Moving a feed that has no name makes a new row of every entry.
 
 ## What stays
 
