@@ -1,4 +1,9 @@
 import type { Entry, JsonValue } from "@withmarfa/connector";
+import {
+  htmlToMarkdown,
+  markdownToHtml,
+  NotConvertible,
+} from "@withmarfa/connector/markdown";
 import { flag, isJson, list, object, text, type Json } from "./api.js";
 import { calendarType, childOf, eventType, inCalendar } from "./config.js";
 import { dayStart, iso, nextDay, validZone } from "./time.js";
@@ -12,6 +17,55 @@ export interface CalendarInfo {
   readonly description: string | undefined;
   readonly primary: boolean;
   readonly color: string | undefined;
+}
+
+/** A description Google holds as Markdown: `""` where it holds nothing, and
+ *  `undefined` where it cannot be converted. */
+function markdownOf(value: string): string | undefined {
+  try {
+    return htmlToMarkdown(value);
+  } catch (error) {
+    if (error instanceof NotConvertible) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Google lets a description hold HTML, and a description is the row's body,
+ * which is Markdown: HTML is converted, and text is kept as it is. A
+ * description Google holds that cannot be converted is left out.
+ */
+export function descriptionOf(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const markdown = markdownOf(value);
+  return markdown === undefined || markdown === "" ? undefined : markdown;
+}
+
+/**
+ * What Google is sent for a description: the row's Markdown as the HTML
+ * Google shows, or as plain text where it holds no formatting. Throws
+ * `NotConvertible`, with its reason, for a description it cannot convert.
+ */
+export function descriptionToGoogle(markdown: string): string {
+  return markdownToHtml(markdown);
+}
+
+/**
+ * Whether what Google would be sent says what Google already holds. Both are
+ * read back as Markdown, so that formatting Google keeps differently, such as
+ * a line break, is not a change and an unchanged description never rewrites
+ * the formatted one Google holds. Where either cannot be read back, as with
+ * a description of too many elements, only the same text is the same.
+ */
+export function sameDescription(
+  sent: string,
+  held: string | undefined,
+): boolean {
+  const there = markdownOf(held ?? "");
+  const here = markdownOf(sent);
+  return there === undefined || here === undefined
+    ? sent === (held ?? "")
+    : here === there;
 }
 
 /** The access roles that may change the events of a calendar. */
@@ -34,7 +88,7 @@ export function calendarOf(item: Json): CalendarInfo | undefined {
     title,
     zone: zoneOf(text(item, "timeZone")),
     role: text(item, "accessRole") ?? "reader",
-    description: text(item, "description"),
+    description: descriptionOf(text(item, "description")),
     primary: flag(item, "primary") === true,
     color: text(item, "backgroundColor"),
   };
@@ -332,7 +386,7 @@ export function eventEntry(
       source_id: `${account}:${link}`,
       properties: {
         title: text(raw, "summary") ?? "(No title)",
-        description: text(raw, "description"),
+        description: descriptionOf(text(raw, "description")),
         starts_at: iso(times.first),
         ends_at: iso(times.last),
         all_day: times.allDay ? true : undefined,

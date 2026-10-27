@@ -17,6 +17,7 @@ import {
   inCalendar,
 } from "../src/config.js";
 import { createConnector } from "../src/connector.js";
+import { descriptionToGoogle, sameDescription } from "../src/events.js";
 import { eventIdFor } from "../src/write.js";
 import { CalendarStub, type Call } from "./calendar-stub.js";
 
@@ -372,6 +373,125 @@ describe("an edit made in Marfa", () => {
     expect(server.byId(one.id).properties["etag"]).toBe(
       calendar.event(me, "e1")?.["etag"],
     );
+  });
+
+  it("sends a description written in Markdown as the HTML Google shows, and settles on what Google holds", async () => {
+    const one = await read();
+    const markdown = [
+      "Agenda",
+      "",
+      "1. Welcome and **apologies**",
+      "2. The [budget](https://example.org/budget?a=1&b=2)",
+      "   - revenue",
+      "",
+      "Notes by *Alex* & Sam, 5 < 6.",
+    ].join("\n");
+
+    server.edit(one.id, { description: markdown });
+    await landed();
+
+    const sent = String(writes("PATCH")[0]?.body?.["description"]);
+    expect(sent).toBe(
+      'Agenda<ol><li>Welcome and <b>apologies</b></li><li>The <a href="https://example.org/budget?a=1&amp;b=2">budget</a><ul><li>revenue</li></ul></li></ol>Notes by <i>Alex</i> &amp; Sam, 5 &lt; 6.',
+    );
+    expect(calendar.event(me, "e1")?.["description"]).toBe(sent);
+
+    const count = writes().length;
+    await landed();
+    server.edit(one.id, { title: "Long lunch" });
+    await landed();
+    expect(writes().slice(count)).toEqual([
+      expect.objectContaining({ body: { summary: "Long lunch" } }),
+    ]);
+    expect(server.byId(one.id).properties["description"]).toBe(markdown);
+  });
+
+  it("keeps HTML typed into a description as text, on the way out and on the way back", async () => {
+    const one = await read();
+
+    server.edit(one.id, { description: "Use the <br> tag\n**bold**" });
+    await landed();
+    await landed();
+
+    expect(writes("PATCH")[0]?.body).toEqual({
+      description: "Use the &lt;br&gt; tag<br><b>bold</b>",
+    });
+    expect(server.byId(one.id).properties["description"]).toBe(
+      "Use the <br> tag\n**bold**",
+    );
+    const count = writes().length;
+    await landed();
+    expect(writes()).toHaveLength(count);
+  });
+
+  it("sends an edit to a description too large to convert back, whether Google holds none or another large one", async () => {
+    const one = await read();
+    const first = "a\n".repeat(26_000);
+
+    server.edit(one.id, { description: first });
+    await landed();
+    expect(writes("PATCH")).toHaveLength(1);
+    expect(String(writes("PATCH")[0]?.body?.["description"])).toMatch(
+      /^a<br>a<br>/,
+    );
+
+    server.edit(one.id, { description: "b\n".repeat(26_000) });
+    await landed();
+    expect(writes("PATCH")).toHaveLength(2);
+    expect(String(writes("PATCH")[1]?.body?.["description"])).toMatch(
+      /^b<br>b<br>/,
+    );
+    expect(String(calendar.event(me, "e1")?.["description"])).toMatch(
+      /^b<br>b<br>/,
+    );
+  });
+
+  it("compares a description too large to convert as the text it is", () => {
+    const sent = descriptionToGoogle("a\n".repeat(26_000));
+    expect(sameDescription(sent, undefined)).toBe(false);
+    expect(
+      sameDescription(sent, descriptionToGoogle("b\n".repeat(26_000))),
+    ).toBe(false);
+    expect(sameDescription(sent, sent)).toBe(true);
+    expect(sameDescription("Plain", "Plain")).toBe(true);
+    expect(sameDescription("Plain", undefined)).toBe(false);
+  });
+
+  it.each([
+    ["nested too deeply", "> ".repeat(3000) + "x", "is nested too deeply"],
+    ["too long", "a".repeat(100_001), "is too long"],
+    [
+      "full of emphasis marks",
+      "*a **b ".repeat(10_000),
+      "has too many emphasis marks in one paragraph",
+    ],
+  ])(
+    "refuses a description that is %s, keeps running, and sends nothing for it",
+    async (_name, description, said) => {
+      const one = await read();
+
+      server.edit(one.id, { description });
+      await landed();
+      await landed();
+
+      expect(writes("PATCH")).toEqual([]);
+      expect(Object.values(conditions()).join(" ")).toContain(said);
+      expect(server.byId(one.id).properties["description"]).toBe(description);
+    },
+  );
+
+  it("sends nothing for a description that only differs from Google's in how Google holds it", async () => {
+    const one = await read(
+      timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z", {
+        description: "Agenda<br><b>Items</b><br><ul><li>one</li></ul>",
+      }),
+    );
+    const markdown = String(one.properties["description"]);
+
+    server.edit(one.id, { description: markdown.replace("  \n", "\n") });
+    await landed();
+
+    expect(writes()).toEqual([]);
   });
 
   it("clears a field cleared in Marfa", async () => {
@@ -738,6 +858,27 @@ describe("a trash, restore and purge", () => {
     server.purgeById(one.id);
     await landed();
     expect(writes()).toHaveLength(sent);
+  });
+
+  it("brings back a restored event with its description as the HTML Google shows", async () => {
+    calendar.put(
+      me,
+      timed("e1", "Lunch", "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z", {
+        description: "Menu<br><b>Soup</b>",
+      }),
+    );
+    await landed();
+    const one = row(`${me}/e1`);
+
+    server.trash(one.id);
+    await landed();
+    server.restore(one.id);
+    await landed();
+
+    expect(writes().at(-1)?.body?.["description"]).toBe("Menu<br><b>Soup</b>");
+    expect(calendar.event(me, "e1")?.["description"]).toBe(
+      "Menu<br><b>Soup</b>",
+    );
   });
 
   it.each([
@@ -2121,6 +2262,30 @@ describe("a series", () => {
       ...agenda,
       summary: "Planning",
     });
+  });
+
+  it("keeps an occurrence's formatted agenda when a changed occurrence made in Marfa holds the same text", async () => {
+    calendar.put(me, {
+      ...series,
+      description: "Agenda<br><b>Hiring</b><ul><li>roles</li></ul>",
+    });
+    await landed();
+    const parent = row(`${me}/weekly`);
+    madeUnder(parent, {
+      ...moved,
+      description: String(parent.properties["description"]),
+    });
+
+    await landed();
+
+    expect(writes()[0]?.body).toEqual({
+      summary: "Planning, later",
+      start: { dateTime: "2026-10-26T14:00:00Z", timeZone: london },
+      end: { dateTime: "2026-10-26T15:00:00Z", timeZone: london },
+    });
+    expect(calendar.event(me, "weekly_20261026T100000Z")?.["description"]).toBe(
+      "Agenda<br><b>Hiring</b><ul><li>roles</li></ul>",
+    );
   });
 
   it("sends the fields a changed occurrence made in Marfa sets that differ from the occurrence", async () => {

@@ -307,6 +307,35 @@ describe("a first read", () => {
     expect(row(`${me}/titleless`).properties["title"]).toBe("(No title)");
   });
 
+  it("writes a description as Markdown where Google holds HTML, and as it is where Google holds text", async () => {
+    const times = {
+      start: { dateTime: "2026-11-02T09:00:00Z" },
+      end: { dateTime: "2026-11-02T10:00:00Z" },
+    };
+    calendar.put(me, {
+      id: "html",
+      summary: "Html",
+      ...times,
+      description:
+        'Agenda:<br><ul><li>Roadmap</li><li><b>Hiring</b></li></ul><a href="https://example.org/doc?a=1&amp;b=2">The doc</a><script>x()</script>',
+    });
+    calendar.put(me, {
+      id: "text",
+      summary: "Text",
+      ...times,
+      description: "Plain * text with _marks_ and a < b\nsecond line",
+    });
+
+    expect(await once()).toBe(0);
+
+    expect(row(`${me}/html`).properties["description"]).toBe(
+      "Agenda:\n\n- Roadmap\n- **Hiring**\n\n[The doc](https://example.org/doc?a=1&b=2)",
+    );
+    expect(row(`${me}/text`).properties["description"]).toBe(
+      "Plain * text with _marks_ and a < b\nsecond line",
+    );
+  });
+
   it("puts an all-day event on its own days in the zone of its calendar, across a clock change, whatever zone this process is in", async () => {
     calendar.put(team, allDay("la", "2026-10-26", "2026-10-27"));
     calendar.put(me, allDay("changeover", "2026-10-25", "2026-10-26"));
@@ -842,6 +871,36 @@ describe("a later run", () => {
       expect.stringMatching(/^sync-/),
       expect.stringMatching(/^sync-/),
     ]);
+  });
+
+  it("reads every calendar whole once when it was last read the way version 1 read events, then only what changed", async () => {
+    calendar.put(
+      me,
+      timed("a", "A", "2026-11-02T09:00:00Z", "2026-11-02T10:00:00Z"),
+    );
+    expect(await once()).toBe(0);
+    const kept = server.states.get("google-calendar") as {
+      state: { calendars: Record<string, { token?: string; shape: string }> };
+    };
+    const held = kept.state.calendars[me];
+    // The shape the version before this one stored for this calendar.
+    expect(held).toBeDefined();
+    if (held !== undefined) held.shape = "cc2307c264e49b2c";
+    calendar.calls.length = 0;
+
+    expect(await once()).toBe(0);
+    const whole = eventCalls().filter((call) =>
+      call.path.includes(encodeURIComponent(me)),
+    );
+    expect(whole.map((call) => call.query["syncToken"])).toEqual([undefined]);
+
+    calendar.calls.length = 0;
+    expect(await once()).toBe(0);
+    expect(
+      eventCalls()
+        .filter((call) => call.path.includes(encodeURIComponent(me)))
+        .map((call) => call.query["syncToken"]),
+    ).toEqual([expect.stringMatching(/^sync-/)]);
   });
 
   it("reads a calendar whole again when its token is gone, asks about a row that Google does not list, and archives only one it says is deleted", async () => {

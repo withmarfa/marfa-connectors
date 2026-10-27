@@ -12,6 +12,7 @@ import {
   maxFeedEntries,
   maxFieldLength,
   privateHosts,
+  renderVersion,
   TooManyElements,
   TooManyEntries,
   type Feed,
@@ -50,6 +51,12 @@ interface FeedState {
   shared?: string[];
   unkeyed?: number;
   dropped?: number;
+  unconverted?: number;
+  substituted?: number;
+  late?: number;
+  /** The `renderVersion` its entries were last written under: validators
+   *  from an older one are not sent, so the feed is read whole. */
+  render?: number;
   declared?: string;
   /** When it left RSS_FEEDS, for a feed kept only so its earlier keys are
    *  named again if it returns. */
@@ -207,6 +214,33 @@ const connector = defineConnector({
             : `${String(long)} values in ${name} are longer than ${String(maxFieldLength)} characters, and are left out`,
         );
       }
+      const unconverted = held.unconverted ?? 0;
+      if (unconverted > 0) {
+        log.condition(
+          `unconverted:${feed.key}`,
+          unconverted === 1
+            ? `an entry in ${name} has markup too large, too complex or too deeply nested to convert, and its body is left out`
+            : `${String(unconverted)} entries in ${name} have markup too large, too complex or too deeply nested to convert, and their bodies are left out`,
+        );
+      }
+      const substituted = held.substituted ?? 0;
+      if (substituted > 0) {
+        log.condition(
+          `substituted:${feed.key}`,
+          substituted === 1
+            ? `an entry in ${name} has markup too large, too complex or too deeply nested to convert, and its plain text content is its body instead`
+            : `${String(substituted)} entries in ${name} have markup too large, too complex or too deeply nested to convert, and their plain text content is their body instead`,
+        );
+      }
+      const late = held.late ?? 0;
+      if (late > 0) {
+        log.condition(
+          `late:${feed.key}`,
+          late === 1
+            ? `${name} ran out of time to convert its markup, so an entry is not written yet and the feed is read again next run`
+            : `${name} ran out of time to convert its markup, so ${String(late)} entries are not written yet and the feed is read again next run`,
+        );
+      }
       const count = held.unkeyed ?? 0;
       if (count > 0) {
         log.condition(
@@ -284,7 +318,9 @@ const connector = defineConnector({
         // Rows not yet under this key are read whole, so they move now.
         fetched = await fetchFeed(
           feed,
-          held.address === feed.address && held.key === feed.key
+          held.address === feed.address &&
+            held.key === feed.key &&
+            held.render === renderVersion
             ? held.validators
             : undefined,
           allowed,
@@ -346,8 +382,11 @@ const connector = defineConnector({
         raise(feed, carried);
         continue;
       }
+      // A feed that ran out of time has entries left unwritten, so its server
+      // saying it has not changed must not end the next read.
       const now: FeedState = {
-        validators: fetched.validators,
+        ...(parsed.late === 0 && { validators: fetched.validators }),
+        render: renderVersion,
         address: feed.address,
         key: feed.key,
         ...(was.length > 0 && { was }),
@@ -355,6 +394,9 @@ const connector = defineConnector({
         ...(fetched.moved && { moved: true as const }),
         ...(parsed.unkeyed > 0 && { unkeyed: parsed.unkeyed }),
         ...(parsed.dropped > 0 && { dropped: parsed.dropped }),
+        ...(parsed.unconverted > 0 && { unconverted: parsed.unconverted }),
+        ...(parsed.substituted > 0 && { substituted: parsed.substituted }),
+        ...(parsed.late > 0 && { late: parsed.late }),
         ...(parsed.declared !== undefined && { declared: parsed.declared }),
       };
       read += 1;
@@ -376,6 +418,7 @@ const connector = defineConnector({
       const progress = await checkpointed(feed, id, now);
       if (!progress.committed) {
         kept[feed.key] = carried;
+        if (parsed.late > 0) Reflect.deleteProperty(carried, "validators");
         log.condition(
           `progress:${feed.key}`,
           `${name} is read again next run, since its reading progress was not saved (${progress.reason})`,

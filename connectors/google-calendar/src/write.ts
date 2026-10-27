@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { NotConvertible } from "@withmarfa/connector/markdown";
 import {
   Declined,
   LinkTaken,
@@ -30,12 +31,14 @@ import {
 } from "./config.js";
 import {
   calendarOf,
+  descriptionToGoogle,
   eventEntry,
   eventOf,
   linkOf,
   makingOf,
   owned,
   replacingOf,
+  sameDescription,
   splitLink,
   uneditable,
   zoneOf,
@@ -337,6 +340,30 @@ const timeFields = [
   "end_timezone",
 ] as const;
 
+/** The row's description as Google is sent it, or `undefined` where the row
+ *  has none. */
+function descriptionOf(item: Item): string | undefined {
+  const markdown = textOf(item, "description");
+  if (markdown === undefined) return undefined;
+  try {
+    return descriptionToGoogle(markdown);
+  } catch (error) {
+    if (error instanceof NotConvertible) {
+      const why = {
+        length: "is too long",
+        elements: "has too many parts",
+        depth: "is nested too deeply",
+        complexity: "has too many emphasis marks in one paragraph",
+        unreadable: "cannot be read",
+      }[error.reason];
+      throw new Refused(
+        `${named(item)}'s description ${why} to send to Google Calendar`,
+      );
+    }
+    throw error;
+  }
+}
+
 function statusOf(item: Item): string {
   const status = textOf(item, "status");
   if (status === undefined || status === "confirmed") return "confirmed";
@@ -352,7 +379,7 @@ function whole(item: Item, calendar: CalendarInfo): Fields {
   const times = timesOf(item, calendar);
   return {
     summary: textOf(item, "title") ?? "",
-    description: textOf(item, "description") ?? null,
+    description: descriptionOf(item) ?? null,
     location: textOf(item, "place") ?? null,
     status: statusOf(item),
     start: times.start,
@@ -380,9 +407,10 @@ function patchOf(
     if (!same(title, text(raw, "summary") ?? "")) out["summary"] = title;
   }
   if (changed.has("description")) {
-    const value = textOf(item, "description");
-    if (!same(value, text(raw, "description")))
-      out["description"] = value ?? null;
+    const sent = descriptionOf(item);
+    const held = text(raw, "description");
+    if (sent === undefined ? held !== undefined : !sameDescription(sent, held))
+      out["description"] = sent ?? null;
   }
   if (changed.has("place")) {
     const value = textOf(item, "place");
@@ -436,8 +464,11 @@ function occurrencePatch(
   if (title !== undefined && title !== (text(raw, "summary") ?? "")) {
     out["summary"] = title;
   }
-  const description = textOf(item, "description");
-  if (description !== undefined && description !== text(raw, "description")) {
+  const description = descriptionOf(item);
+  if (
+    description !== undefined &&
+    !sameDescription(description, text(raw, "description"))
+  ) {
     out["description"] = description;
   }
   const place = textOf(item, "place");

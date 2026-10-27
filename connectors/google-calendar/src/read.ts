@@ -49,7 +49,7 @@ type Scoped = ScopedRunContext<typeof env>;
 
 /** Bumped when the way events are read changes, so that every calendar is
  *  read whole once more. */
-const version = 1;
+const version = 2;
 const day = 86_400_000;
 const horizonYears = 5;
 

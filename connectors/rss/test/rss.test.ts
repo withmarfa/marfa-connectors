@@ -18,6 +18,7 @@ import {
   maxFeedEntries,
   maxFieldLength,
   readFeed,
+  renderVersion,
   TooManyElements,
   TooManyEntries,
 } from "../src/feeds.js";
@@ -146,7 +147,7 @@ describe("reading a feed", () => {
           url: "https://example.com/posts/1",
           title: "First entry",
           description: "The first summary.",
-          body: "<p>The first body.</p>",
+          body: "The first body.",
           author: "A. Writer",
           published_at: "2026-09-18T09:00:00.000Z",
           image_url: undefined,
@@ -194,7 +195,7 @@ describe("reading a feed", () => {
     expect(entries[0]?.properties).toMatchObject({
       title: "Alpha",
       description: "Alpha summary.",
-      body: "<p>Alpha body.</p>",
+      body: "Alpha body.",
       author: "B. Writer",
       language: "en-GB",
       source_url: "https://example.org/",
@@ -701,7 +702,7 @@ describe("an entry's content and image", () => {
         ),
       ),
     ).toMatchObject({
-      body: `<p>Fish &amp; <a href="/c">chips</a></p><p>Peas.</p>`,
+      body: "Fish & [chips](https://example.org/c)\n\nPeas.",
       description: "Fish & chips Peas.",
     });
     const summary = readFeed(
@@ -712,8 +713,8 @@ describe("an entry's content and image", () => {
       ),
     ).entries;
     expect(summary.map((entry) => entry.properties["body"])).toEqual([
-      "<p>One <b>bold</b>.</p>",
-      "<p>Two <i>italic</i>.</p>",
+      "One **bold**.",
+      "Two *italic*.",
     ]);
     expect(summary.map((entry) => entry.properties["description"])).toEqual([
       "One bold.",
@@ -728,7 +729,7 @@ describe("an entry's content and image", () => {
           `<item><guid>a</guid><description>&lt;p&gt;Short.&lt;/p&gt;</description><content:encoded><![CDATA[<p>Long.</p>]]></content:encoded></item>`,
         ),
       ),
-    ).toMatchObject({ body: "<p>Long.</p>", description: "Short." });
+    ).toMatchObject({ body: "Long.", description: "Short." });
     const plain = readFeed(
       at("https://example.org/rss.xml"),
       rss(
@@ -755,7 +756,7 @@ describe("an entry's content and image", () => {
       ),
     );
     expect(entry).toMatchObject({
-      body: `<img src="https://imgs.example.org/comics/compiling.png" title="Hover caption &amp; joke" alt="Compiling" />`,
+      body: "![Compiling](https://imgs.example.org/comics/compiling.png)",
       description: "Hover caption & joke",
       image_url: "https://imgs.example.org/comics/compiling.png",
     });
@@ -844,7 +845,7 @@ describe("an entry's content and image", () => {
     }
   });
 
-  it("keeps the markup of a summary that shows something even where no picture of it counts", () => {
+  it("writes no body for a summary whose markup converts to nothing, such as a frame, a video or a data: picture, and a Markdown picture for a relative one the feed's address resolves", () => {
     const kept = readFeed(
       at("https://example.org/rss.xml"),
       rss(
@@ -858,11 +859,11 @@ describe("an entry's content and image", () => {
       ),
     ).entries;
     expect(kept.map((entry) => entry.properties["body"] !== undefined)).toEqual(
-      [true, true, true, true, false],
+      [false, false, false, true, false],
     );
   });
 
-  it("reads content nested deeper than the call stack, and a text content that only holds picture-like text", () => {
+  it("reads content nested deeper than the converter takes, leaving its body out and counting it, and a text content that only holds picture-like text", () => {
     const depth = 12_000;
     const nested = `${"<i>".repeat(depth)}deep${"</i>".repeat(depth)}`;
     const deep = only(
@@ -870,7 +871,7 @@ describe("an entry's content and image", () => {
         `<item><guid>a</guid><description>one</description><content:encoded><![CDATA[${nested}]]></content:encoded></item>`,
       ),
     );
-    expect(deep?.["body"]).toBe(nested);
+    expect(deep).not.toHaveProperty("body", expect.anything());
     const described = only(
       rss(
         `<item><guid>b</guid><description><![CDATA[${nested}]]></description></item>`,
@@ -893,6 +894,323 @@ describe("an entry's content and image", () => {
     );
     expect(entries[0]?.occurred_at).toBeUndefined();
     expect(entries[0]?.properties["published_at"]).toBeUndefined();
+  });
+  describe("Markdown bodies", () => {
+    const atomOf = (content: string): string =>
+      atom(`<entry><id>a</id><title>A</title>${content}</entry>`);
+    const bodyOf = (document: string): unknown =>
+      readFeed(at("https://example.org/feed.xml"), document).entries[0]
+        ?.properties["body"];
+
+    it("passes plain text through unchanged: an RSS description, an Atom text content and a JSON Feed content_text", () => {
+      const text = "Costs 5 * 3 = 15, see _notes_ # 1 and a_b.";
+      expect(
+        bodyOf(
+          rss(
+            `<item><guid>a</guid><content:encoded>${text}</content:encoded></item>`,
+          ),
+        ),
+      ).toBe(text);
+      expect(bodyOf(atomOf(`<content type="text">${text}</content>`))).toBe(
+        text,
+      );
+      expect(
+        bodyOf(
+          JSON.stringify({
+            version: "https://jsonfeed.org/version/1.1",
+            title: "T",
+            items: [{ id: "a", content_text: text }],
+          }),
+        ),
+      ).toBe(text);
+    });
+
+    it("leaves a text content that only looks like markup as it is", () => {
+      const text = "Use <b>bold</b> in HTML; 1 < 2.";
+      expect(
+        bodyOf(
+          atomOf(
+            `<content type="text">Use &lt;b&gt;bold&lt;/b&gt; in HTML; 1 &lt; 2.</content>`,
+          ),
+        ),
+      ).toBe(text);
+      expect(
+        bodyOf(
+          JSON.stringify({
+            version: "https://jsonfeed.org/version/1.1",
+            items: [{ id: "a", content_text: text }],
+          }),
+        ),
+      ).toBe(text);
+    });
+
+    it("converts HTML content from CDATA and from entity-encoded text alike", () => {
+      const expected = "Hello **world**, a [link](https://example.org/x).";
+      expect(
+        bodyOf(
+          rss(
+            `<item><guid>a</guid><content:encoded><![CDATA[<p>Hello <b>world</b>, a <a href="https://example.org/x">link</a>.</p>]]></content:encoded></item>`,
+          ),
+        ),
+      ).toBe(expected);
+      expect(
+        bodyOf(
+          rss(
+            `<item><guid>a</guid><description>&lt;p&gt;Hello &lt;b&gt;world&lt;/b&gt;, a &lt;a href="https://example.org/x"&gt;link&lt;/a&gt;.&lt;/p&gt;</description></item>`,
+          ),
+        ),
+      ).toBe(expected);
+    });
+
+    it("drops a script, a style, a frame and tracking pictures, and keeps the rest", () => {
+      expect(
+        bodyOf(
+          rss(
+            `<item><guid>a</guid><content:encoded><![CDATA[<p>Kept.</p><script>alert(1)</script><style>p{}</style><iframe src="https://example.org/e"></iframe>
+              <img src="https://example.org/t.gif" width="1" height="1"><img src="https://feeds.feedburner.com/~r/blog/~4/x"><img src="https://pixel.wp.com/b.gif?v=wpcom">
+              <p><img src="https://example.org/real.png" alt="Real" width="600"></p>]]></content:encoded></item>`,
+          ),
+        ),
+      ).toBe("Kept.\n\n![Real](https://example.org/real.png)");
+    });
+
+    it("resolves a relative link against the entry's base, and leaves out one that would carry the fetch path", () => {
+      const read = readFeed(
+        at("https://example.org/feeds/secret-path/feed.xml?token=secret"),
+        atom(
+          `<entry xml:base="https://cdn.example.net/posts/"><id>a</id><title>A</title>
+            <content type="html">&lt;p&gt;&lt;a href="x/y"&gt;one&lt;/a&gt; &lt;a href="/top"&gt;two&lt;/a&gt; &lt;img src="i.png" alt="p"&gt;&lt;/p&gt;</content></entry>
+          <entry><id>b</id><title>B</title>
+            <content type="html">&lt;p&gt;&lt;a href="sub/page"&gt;three&lt;/a&gt; &lt;a href="//cdn.example.net/z"&gt;four&lt;/a&gt;&lt;/p&gt;</content></entry>`,
+        ),
+      ).entries;
+      expect(read.map((entry) => entry.properties["body"])).toEqual([
+        "[one](https://cdn.example.net/posts/x/y) [two](https://cdn.example.net/top) ![p](https://cdn.example.net/posts/i.png)",
+        "three [four](https://cdn.example.net/z)",
+      ]);
+      expect(JSON.stringify(read)).not.toContain("secret");
+    });
+
+    it("reads an Atom content of type html, xhtml and text for what each is", () => {
+      const bodies = readFeed(
+        at("https://example.org/feed.xml"),
+        atom(
+          `<entry><id>h</id><title>H</title><content type="html">&lt;p&gt;An &lt;em&gt;html&lt;/em&gt; entry.&lt;/p&gt;</content></entry>
+           <entry><id>x</id><title>X</title><content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>An <em>xhtml</em> entry with <a href="https://example.org/q">a link</a>.</p></div></content></entry>
+           <entry><id>t</id><title>T</title><content type="text">A *text* entry &amp; more.</content></entry>`,
+        ),
+      ).entries.map((entry) => entry.properties["body"]);
+      expect(bodies).toEqual([
+        "An *html* entry.",
+        "An *xhtml* entry with [a link](https://example.org/q).",
+        "A *text* entry & more.",
+      ]);
+    });
+
+    it("converts a JSON Feed's content_html, which wins when both exist, and keeps its content_text", () => {
+      const bodies = readFeed(
+        at("https://example.org/feed.json"),
+        JSON.stringify({
+          version: "https://jsonfeed.org/version/1.1",
+          title: "T",
+          items: [
+            { id: "h", content_html: "<p>Some <b>html</b>.</p>" },
+            { id: "t", content_text: "Some <b>text</b>, kept." },
+            {
+              id: "both",
+              content_html: "<p>The <i>html</i>.</p>",
+              content_text: "The text.",
+            },
+          ],
+        }),
+      ).entries.map((entry) => entry.properties["body"]);
+      expect(bodies).toEqual([
+        "Some **html**.",
+        "Some <b>text</b>, kept.",
+        "The *html*.",
+      ]);
+    });
+
+    it("leaves out the body of markup nested too deeply, counts it, and still writes the entry", () => {
+      const deep = "<div>".repeat(500) + "x";
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          `<item><guid>a</guid><title>A</title><content:encoded><![CDATA[${deep}]]></content:encoded></item>`,
+        ),
+      );
+      expect(read.unconverted).toBe(1);
+      expect(read.entries[0]?.properties).toMatchObject({ title: "A" });
+      expect(read.entries[0]?.properties["body"]).toBeUndefined();
+    });
+
+    it("counts a JSON Feed entry that falls back to content_text apart from one whose body is left out", () => {
+      const read = (items: unknown[]) =>
+        readFeed(
+          at("https://example.org/feed.json"),
+          JSON.stringify({
+            version: "https://jsonfeed.org/version/1.1",
+            title: "T",
+            items,
+          }),
+        );
+      const deep = "<div>".repeat(500);
+      const counted = read([
+        { id: "a", content_html: deep, content_text: "Text form" },
+        { id: "b", content_html: deep },
+        { id: "c", content_html: "<p>Fine</p>" },
+      ]);
+      expect(counted.entries.map((e) => e.properties["body"])).toEqual([
+        "Text form",
+        undefined,
+        "Fine",
+      ]);
+      expect(counted.substituted).toBe(1);
+      expect(counted.unconverted).toBe(1);
+    });
+
+    it("reads a JSON Feed entry's content_text when its content_html is refused or converts to nothing", () => {
+      const jsonOf = (html: string): unknown[] =>
+        readFeed(
+          at("https://example.org/feed.json"),
+          JSON.stringify({
+            version: "https://jsonfeed.org/version/1.1",
+            title: "T",
+            items: [
+              { id: "a", content_html: html, content_text: "The *text* form." },
+              { id: "b", content_html: "<p>Fine</p>", content_text: "Other" },
+            ],
+          }),
+        ).entries.map((entry) => entry.properties["body"]);
+      expect(jsonOf("<div>".repeat(500))).toEqual(["The *text* form.", "Fine"]);
+      expect(
+        jsonOf('<img src="https://x.test/p.gif" width="1" height="1">'),
+      ).toEqual(["The *text* form.", "Fine"]);
+    });
+
+    it("holds back an entry whose markup comes after the conversion budget is spent, counts it apart from a refusal, and still reads the rest", () => {
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          `<item><guid>a</guid><content:encoded><![CDATA[<p>one</p>]]></content:encoded></item>` +
+            `<item><guid>b</guid><content:encoded><![CDATA[plain *text*]]></content:encoded></item>` +
+            `<item><guid>c</guid><content:encoded><![CDATA[<p>three</p>]]></content:encoded></item>`,
+        ),
+        undefined,
+        { budgetMs: 0 },
+      );
+      expect(read.entries.map((entry) => entry.properties["entry_id"])).toEqual(
+        ["b"],
+      );
+      expect(read.entries[0]?.properties["body"]).toBe("plain *text*");
+      expect(read.late).toBe(2);
+      expect(read.unconverted).toBe(0);
+    });
+
+    it("converts every entry while the budget lasts", () => {
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          `<item><guid>a</guid><content:encoded><![CDATA[<p>one</p>]]></content:encoded></item>`,
+        ),
+      );
+      expect(read.late).toBe(0);
+      expect(read.entries).toHaveLength(1);
+    });
+  });
+
+  describe("hostile bodies", () => {
+    /** An item whose content is built to cost the converter the most. */
+    const item = (id: string, content: string): string =>
+      `<item><guid>${id}</guid><title>${id}</title><content:encoded><![CDATA[${content}]]></content:encoded></item>`;
+    const good = "<p>A <b>good</b> body.</p>";
+    const hostile = {
+      "a 12,000-row table": `<table>${"<tr><td>a</td><td>b</td></tr>".repeat(12_000)}</table>`,
+      "a 3.6 MB article":
+        "<p>Some <b>bold</b> and <i>words</i> to read.</p>\n".repeat(75_000),
+      "unmatched closes": "<div></b>".repeat(1200),
+    };
+
+    for (const [name, content] of Object.entries(hostile)) {
+      it(`reads a feed whose entries carry ${name}, and keeps the other bodies`, () => {
+        const entries = Array.from({ length: 100 }, (_, at) =>
+          item(
+            `h${String(at)}`,
+            name === "a 3.6 MB article" && at > 2 ? "<p>x</p>" : content,
+          ),
+        ).join("");
+        const started = performance.now();
+        const read = readFeed(
+          at("https://example.org/rss.xml"),
+          rss(item("before", good) + entries + item("after", good)),
+        );
+        // Time is judged by what it would have cost: an entry past the
+        // 12 s conversion budget is held back, and that fails the counts
+        // below. This bound only stops a slowdown at any speed; a shared CI
+        // runner reads this feed in about three seconds.
+        expect(performance.now() - started).toBeLessThan(30_000);
+        expect(read.late).toBe(0);
+        const bodies = read.entries.map((entry) => entry.properties["body"]);
+        expect(bodies).toHaveLength(102);
+        expect(bodies[0]).toBe("A **good** body.");
+        expect(bodies[101]).toBe("A **good** body.");
+        expect(
+          bodies.slice(1, 101).filter((body) => body === undefined).length,
+        ).toBe(name === "a 3.6 MB article" ? 3 : 100);
+        expect(read.unconverted).toBe(name === "a 3.6 MB article" ? 3 : 100);
+      });
+    }
+
+    it("builds no tree for markup the converter refused, so takes its picture from nowhere", () => {
+      const read = readFeed(
+        at("https://example.org/rss.xml"),
+        rss(
+          item(
+            "big",
+            `<img src="https://example.org/p.png">${"<span>a</span>".repeat(25_001)}`,
+          ) + item("small", `<img src="https://example.org/q.png"><p>x</p>`),
+        ),
+      );
+      const [big, small] = read.entries;
+      expect(big?.properties["body"]).toBeUndefined();
+      expect(big?.properties["image_url"]).toBeUndefined();
+      expect(small?.properties["image_url"]).toBe("https://example.org/q.png");
+      expect(read.unconverted).toBe(1);
+    });
+
+    it("reads the same feeds in the worker that bounds a read, within its time and memory", async () => {
+      const { readBounded } = (await import(
+        resolve(import.meta.dirname, "../dist/parse.js")
+      )) as typeof import("../src/parse.js");
+      const document = rss(
+        item("before", good) +
+          [
+            ...Array.from({ length: 30 }, () => hostile["a 12,000-row table"]),
+            ...Array.from({ length: 3 }, () => hostile["a 3.6 MB article"]),
+            ...Array.from({ length: 60 }, () => hostile["unmatched closes"]),
+          ]
+            .map((content, at) => item(`h${String(at)}`, content))
+            .join("") +
+          item("after", good),
+      );
+      const started = performance.now();
+      const read = await readBounded(
+        {
+          feed: at("https://example.org/rss.xml"),
+          bytes: new TextEncoder().encode(document),
+          contentType: null,
+          documentUrl: "https://example.org/rss.xml",
+        },
+        AbortSignal.timeout(60_000),
+      );
+      // The worker ends after 30 s, so a read this close to that has
+      // failed anyway; a shared CI runner reads this feed in about two.
+      expect(performance.now() - started).toBeLessThan(25_000);
+      const bodies = read.entries.map((entry) => entry.properties["body"]);
+      expect(bodies[0]).toBe("A **good** body.");
+      expect(bodies.at(-1)).toBe("A **good** body.");
+      expect(read.entries).toHaveLength(95);
+    }, 60_000);
   });
 });
 
@@ -934,7 +1252,7 @@ describe("RSS 1.0 and JSON Feed", () => {
         url: "https://example.org/a",
         title: "Fish & chips",
         description: "Short.",
-        body: `<p>Long <img src="https://example.org/inline.png" alt="x"/></p>`,
+        body: "Long ![x](https://example.org/inline.png)",
         author: "A. Writer",
         published_at: "2026-09-18T08:00:00.000Z",
         image_url: "https://example.org/inline.png",
@@ -1000,7 +1318,7 @@ describe("RSS 1.0 and JSON Feed", () => {
         url: "https://example.org/1",
         title: "One & two",
         description: "Short.",
-        body: `<p>Hello <img src="https://example.org/inline.png"/></p>`,
+        body: "Hello ![](https://example.org/inline.png)",
         author: "Item Author",
         published_at: "2026-09-18T09:00:00.000Z",
         image_url: "https://example.org/hero.png",
@@ -1201,8 +1519,8 @@ describe("feeds as they are found in the wild", () => {
       "Fans get extra excited.",
       undefined,
     ]);
-    expect(property(entries[0], "body")).toMatch(
-      /^<img src="https:\/\/imgs\.example\.org\/comics\/spectrum_allocation\.png" title="/,
+    expect(property(entries[0], "body")).toBe(
+      "![A comic about auctions.](https://imgs.example.org/comics/spectrum_allocation.png)",
     );
     expect(entries.map((entry) => entry.occurred_at)).toEqual([
       "2026-10-05T00:00:00.000Z",
@@ -1235,10 +1553,12 @@ describe("feeds as they are found in the wild", () => {
         source_url: "https://blog.example.org/",
       },
     });
-    expect(property(entries[0], "body")).toContain("<figure>");
+    expect(property(entries[0], "body")).toBe(
+      "Manuals are long.\n\n![A manual](https://blog.example.org/media/manual.jpg)\n\nRead the [post](https://blog.example.org/manual).",
+    );
     // A tracking pixel is not the entry's image, and an xhtml content is kept as the body.
     expect(property(entries[1], "image_url")).toBeUndefined();
-    expect(property(entries[1], "body")).toContain("<em>xhtml</em>");
+    expect(property(entries[1], "body")).toContain("*xhtml*");
     expect(property(entries[1], "author")).toBe("Guest Writer");
     expect(property(entries[2], "description")).toBe(
       "Just text, with <angle brackets> kept as text.",
@@ -1257,7 +1577,7 @@ describe("feeds as they are found in the wild", () => {
       "Episode 12: Fixtures & Friends",
     );
     expect(property(entries[0], "body")).toBe(
-      "<h2>Show notes</h2><ul><li>Fixtures</li><li>Friends</li></ul>",
+      "## Show notes\n\n- Fixtures\n- Friends",
     );
     expect(property(entries[0], "description")).toBe(
       "Pat and Sam talk about fixtures. Show notes: notes",
@@ -1323,9 +1643,7 @@ describe("feeds as they are found in the wild", () => {
       },
     });
     expect(property(entries[1], "title")).toBe("Old hearts & young bodies");
-    expect(property(entries[1], "body")).toBe(
-      "<p>A study found <em>something</em>.</p>",
-    );
+    expect(property(entries[1], "body")).toBe("A study found *something*.");
   });
 
   it("reads a JSON Feed with content_html, content_text, a summary, an image and a banner", () => {
@@ -1348,7 +1666,7 @@ describe("feeds as they are found in the wild", () => {
       "2026-10-04T12:00:00.000Z",
       "2026-10-03T10:00:00.000Z",
     ]);
-    expect(property(entries[0], "body")).toContain("<em>the book</em>");
+    expect(property(entries[0], "body")).toContain("*the book*");
     expect(property(entries[2], "body")).toBe(
       "Plain text,\nwith a line break.",
     );
@@ -1793,6 +2111,7 @@ describe("the connector, run as a process", () => {
     expect((await once()).code).toBe(0);
     const registered = marfa.types.get("rss.entry");
     expect(registered?.["parent"]).toBe("core.bookmark");
+    expect(registered?.["label"]).toBe("RSS Entry");
     expect(registered).not.toHaveProperty("compatible_with");
     expect(Object.keys(registered?.["fields"] as object)).toEqual([
       "entry_id",
@@ -1845,6 +2164,75 @@ describe("the connector, run as a process", () => {
       "created 0, updated 0, archived 0, unchanged 0, skipped 0",
     );
     expect(marfa.rows.every((candidate) => candidate.version === 1)).toBe(true);
+  });
+
+  it("writes no entry past the conversion budget and keeps no validators, so the next run reads the feed again and fills the bodies in", async () => {
+    const items = ["one", "two", "three"]
+      .map(
+        (name) =>
+          `<item><guid>${name}</guid><title>${name}</title><content:encoded><![CDATA[<p>The <b>${name}</b> body.</p>]]></content:encoded></item>`,
+      )
+      .join("");
+    served["/slow.xml"] = {
+      body: `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>T</title><link>https://example.org/</link>${items}</channel></rss>`,
+      etag: '"slow-1"',
+    };
+    const slow = resolve(import.meta.dirname, "fixtures/slow-clock.js");
+
+    const first = await once(["/slow.xml"], ["--once"], undefined, {
+      NODE_OPTIONS: `--import=${slow}`,
+    });
+    expect(first.code, first.output).toBe(0);
+    expect(marfa.rows.map((r) => r.properties["entry_id"])).toEqual(["one"]);
+    expect(marfa.rows[0]?.properties["body"]).toBe("The **one** body.");
+    expect(marfa.runs.at(-1)?.summary).toContain("ran out of time");
+    expect(marfa.runs.at(-1)?.summary).not.toContain("too large");
+    const kept = Object.values(
+      (marfa.connectorState?.["state"] as { feeds: Record<string, object> })
+        .feeds,
+    );
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).not.toHaveProperty("validators");
+
+    expect((await once(["/slow.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([200, 200]);
+    expect(asked[1]?.headers["if-none-match"]).toBeUndefined();
+    expect(
+      marfa.rows.map((r) => [r.properties["entry_id"], r.properties["body"]]),
+    ).toEqual([
+      ["one", "The **one** body."],
+      ["two", "The **two** body."],
+      ["three", "The **three** body."],
+    ]);
+    expect((await once(["/slow.xml"])).code).toBe(0);
+    expect(asked.map((request) => request.answered)).toEqual([200, 200, 304]);
+  });
+
+  it("reads whole, once, a feed stored before the body was Markdown, though its server says it has not changed, and rewrites its entry", async () => {
+    expect((await once()).code).toBe(0);
+    const target = row("tag:example.com,2026:entry:1");
+    const markdown = target.properties["body"];
+    target.properties["body"] = "<p>The first body.</p>";
+    const kept = marfa.states.get("rss") as {
+      state: { feeds: Record<string, Record<string, unknown>> };
+    };
+    for (const feed of Object.values(kept.state.feeds)) {
+      expect(feed["render"]).toBe(renderVersion);
+      Reflect.deleteProperty(feed, "render");
+    }
+    expect((await once()).code).toBe(0);
+    expect(asked.slice(2).map((request) => request.answered)).toEqual([
+      200, 200,
+    ]);
+    expect(row("tag:example.com,2026:entry:1").properties["body"]).toBe(
+      markdown,
+    );
+    expect(row("tag:example.com,2026:entry:1").version).toBe(2);
+    expect(row("1").version).toBe(1);
+    expect((await once()).code).toBe(0);
+    expect(asked.slice(4).map((request) => request.answered)).toEqual([
+      304, 304,
+    ]);
   });
 
   it("moves exactly the entry that changed, and clears a summary the feed dropped", async () => {
