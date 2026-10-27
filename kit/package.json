@@ -13,6 +13,14 @@
     "./markdown": {
       "types": "./dist/markdown.d.ts",
       "import": "./dist/markdown.js"
+    },
+    "./network": {
+      "types": "./dist/network.d.ts",
+      "import": "./dist/network.js"
+    },
+    "./pictures": {
+      "types": "./dist/pictures.d.ts",
+      "import": "./dist/pictures.js"
     }
   },
   "dependencies": {

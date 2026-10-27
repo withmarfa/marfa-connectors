@@ -312,6 +312,8 @@ export interface NewRow {
   source_id: string;
   properties: Record<string, unknown>;
   occurred_at?: string;
+  /** Defaults to the feed tier. */
+  tier?: "feed" | "library";
 }
 
 /** The longest a run's report is given to land, which no fence cuts short. */
@@ -675,6 +677,7 @@ export class Marfa {
   async ownRows(
     type: string,
     state: "any" | "active" = "any",
+    tier: "feed" | "library" | "all" = "all",
   ): Promise<Item[]> {
     const rows: Item[] = [];
     const walk = pages(async (cursor) => {
@@ -683,6 +686,7 @@ export class Marfa {
           query: {
             type,
             state,
+            ...(tier !== "all" && { tier }),
             limit: 200,
             ...(cursor !== undefined && { cursor }),
           },
@@ -879,7 +883,7 @@ export class Marfa {
           ...(row.occurred_at !== undefined && {
             occurred_at: row.occurred_at,
           }),
-          tier: "feed" as const,
+          tier: row.tier ?? ("feed" as const),
           version: 0,
         })),
         atomic: false,

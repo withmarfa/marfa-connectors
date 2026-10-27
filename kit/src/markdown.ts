@@ -6,6 +6,7 @@ import {
   strikethrough,
   taskListItems,
 } from "@joplin/turndown-plugin-gfm";
+import { isTracker } from "./trackers.js";
 
 /** An item's body is Markdown. A connector that receives HTML for a field
  *  a type names as its body converts it here before it writes, and one that
@@ -154,29 +155,6 @@ const voids = new Set(
  *  `a<b and c>d`. */
 export function isHtml(text: string): boolean {
   return scan(text).html;
-}
-
-/** Hosts and paths that serve a counting pixel, which is no picture. */
-const trackers: readonly RegExp[] = [
-  /^([a-z0-9-]+\.)*feedburner\.com\/~(ff|r)\//i,
-  /^([a-z0-9-]+\.)*feedsportal\.com\//i,
-  /^([a-z0-9-]+\.)*feedblitz\.com\//i,
-  /^([a-z0-9-]+\.)*feedpress\.(it|me)\/.*\/(i|pixel)/i,
-  /^(pixel|stats)\.wp\.com\//i,
-  /^stats\.wordpress\.com\//i,
-  /^medium\.com\/_\/stat/i,
-  /^([a-z0-9-]+\.)*google-analytics\.com\//i,
-  /^([a-z0-9-]+\.)*doubleclick\.net\//i,
-  /^([a-z0-9-]+\.)*scorecardresearch\.com\//i,
-  /^([a-z0-9-]+\.)*quantserve\.com\//i,
-  /^([a-z0-9-]+\.)*list-manage\.com\/track\//i,
-];
-
-function isTracker(address: string): boolean {
-  const url = URL.parse(address);
-  if (url === null) return false;
-  const where = `${url.host}${url.pathname}`;
-  return trackers.some((tracker) => tracker.test(where));
 }
 
 function isPixel(width: string | null, height: string | null): boolean {

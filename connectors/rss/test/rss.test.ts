@@ -22,7 +22,8 @@ import {
   TooManyElements,
   TooManyEntries,
 } from "../src/feeds.js";
-import { getFeed, isPrivate, maxFeedBytes, TooLarge } from "../src/fetch.js";
+import { isPrivate } from "@withmarfa/connector/network";
+import { getFeed, maxFeedBytes, TooLarge } from "../src/fetch.js";
 
 /** Few elements, each with thousands of attributes: under every count, and
  *  far over what any real feed takes to parse. */

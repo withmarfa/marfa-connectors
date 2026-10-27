@@ -1951,6 +1951,7 @@ export class ScriptedServer {
         this.ofType(row, type) &&
         (query.get("source") === null || row.source === query.get("source")) &&
         (state === "any" || row.state === state) &&
+        (query.get("tier") === null || row.tier === query.get("tier")) &&
         (filter === null ||
           this.edges.some((edge) =>
             filter[1] === "edge"

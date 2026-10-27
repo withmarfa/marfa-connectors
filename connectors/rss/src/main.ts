@@ -3,6 +3,7 @@ import {
   main,
   type TypeDefinition,
 } from "@withmarfa/connector";
+import { RefusedAddress } from "@withmarfa/connector/network";
 import {
   entryFields,
   feedList,
@@ -22,7 +23,6 @@ import {
   failureOf,
   maxFeedBytes,
   maxRedirects,
-  RefusedAddress,
   TooLarge,
   TooManyRedirects,
 } from "./fetch.js";
