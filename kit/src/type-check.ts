@@ -42,6 +42,10 @@ export interface TypeDifferences {
    *  difference a connector puts right itself: a type gaining a field
    *  leaves the rows it holds as they are. */
   readonly missing: readonly string[];
+  /** Of `label`, `description` and `display_hints`, those the connector
+   *  carries and the type holds differently itself, not by inheritance. A
+   *  connector puts these right itself: they change no stored item. */
+  readonly presentation: readonly string[];
   /** Every other difference, which only an operator may put right. */
   readonly other: readonly string[];
 }
@@ -114,7 +118,14 @@ export function typeDifferences(
       `link_field is ${show(carried.link_field)} here and ${show(linkThere)} on the server`,
     );
   }
-  return { missing, other };
+  const presentation = (["label", "description", "display_hints"] as const)
+    .filter(
+      (name) =>
+        carried[name] !== undefined &&
+        !isDeepStrictEqual(carried[name], declared[name]),
+    )
+    .map(String);
+  return { missing, presentation, other };
 }
 
 export function edgeTypeDifferences(

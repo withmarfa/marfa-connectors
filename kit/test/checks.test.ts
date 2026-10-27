@@ -13,9 +13,11 @@ function compare(carried: TypeDefinition, served: Record<string, unknown>) {
 }
 
 describe("the type check", () => {
-  const none = { missing: [], other: [] };
+  const none = { missing: [], presentation: [], other: [] };
   const served = {
     id: "test.entry",
+    label: testType.label,
+    description: testType.description,
     fields: {
       title: { type: "string", required: true },
       note: { type: "string" },
@@ -105,6 +107,7 @@ describe("the type check", () => {
       compare(testType, extra({ type: "string", required: true })),
     ).toEqual({
       missing: [],
+      presentation: [],
       other: ['field "extra" is required on the server and not here'],
     });
   });
@@ -115,6 +118,7 @@ describe("the type check", () => {
       compare(testType, { ...served, fields: { title, vendor_id } }),
     ).toEqual({
       missing: ["link", "note"],
+      presentation: [],
       other: [],
     });
     const { note, link } = served.fields;
@@ -125,6 +129,7 @@ describe("the type check", () => {
       }),
     ).toEqual({
       missing: [],
+      presentation: [],
       other: ['field "title" is required here and missing on the server'],
     });
   });
