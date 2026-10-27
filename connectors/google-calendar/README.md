@@ -124,7 +124,7 @@ When an event moves between two calendars of the account, the connector keeps it
 
 - `organizer` is an object with `email` and `name`.
 - `guests` is a list of objects with `email`, `name`, `response`, and `optional`, `self`, `organizer` or `resource` where true.
-- `description` is Markdown, the body of the row. Google lets a description hold HTML, and the connector converts it as it reads, keeping links, lists and emphasis and dropping scripts and styles. A description that is text is kept as it is. A change to `description` made in Marfa is converted to HTML (bold, italic, links, lists, quotes, code and line breaks) and sent to Google; a heading becomes bold, since Google has no headings, and text that looks like a tag stays text. A description over 600,000 characters or 25,000 elements is refused.
+- `description` is Markdown, the body of the row. Google lets a description hold HTML, and the connector converts it as it reads, keeping links, lists and emphasis and dropping scripts and styles. A description that is text is kept as it is. A change to `description` made in Marfa is converted to HTML (bold, italic, links, lists, quotes, code and line breaks) and sent to Google; a heading becomes bold, since Google has no headings, and text that looks like a tag stays text. A description Google holds that is longer than 600,000 characters, has more than 25,000 elements or nests more than 200 levels deep is left out of the row. A description in Marfa nested too deeply to convert is refused.
 - `changed_at` is Google's `updated` time. `occurred_at` is the event's start.
 - An event without a title is named `(No title)`.
 
