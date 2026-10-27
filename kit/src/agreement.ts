@@ -40,6 +40,16 @@ function at(side: Readonly<Record<string, string>>, key: string): string {
   return Object.hasOwn(side, key) ? (side[key] ?? "") : "";
 }
 
+/** Whether the properties hold the value of the field that Marfa's side of
+ *  the agreement last held. */
+export function holdsAgreed(
+  agreement: Agreement,
+  properties: Readonly<Record<string, unknown>>,
+  field: string,
+): boolean {
+  return at(agreement.marfa, field) === mark(held(properties, field));
+}
+
 export function held(
   properties: Readonly<Record<string, unknown>>,
   field: string,

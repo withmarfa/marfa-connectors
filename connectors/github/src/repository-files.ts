@@ -617,17 +617,17 @@ function pairDirectoryMoves(
   return pairs;
 }
 
-/** Archives a repository's files and directories, as a repository taken out
- *  of the sync. */
+/** Archives a repository's files and directories that are as this process
+ *  last left them, as a repository taken out of the sync. */
 export async function takeOutFiles(
   context: Pick<Context, "linked" | "archive">,
   node: string,
 ): Promise<void> {
   const under = { type: repositoryType, id: node };
   for (const type of [repositoryFileType, directoryType]) {
-    const keys = (await context.linked(type, inRepository, under)).flatMap(
-      (row) => (row.source_id === undefined ? [] : [row.source_id]),
-    );
+    const keys = (
+      await context.linked(type, inRepository, under, { rows: "unchanged" })
+    ).flatMap((row) => (row.source_id === undefined ? [] : [row.source_id]));
     if (keys.length > 0) await context.archive(type, keys);
   }
 }

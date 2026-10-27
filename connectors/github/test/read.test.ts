@@ -61,7 +61,7 @@ afterEach(async () => {
 });
 
 async function once(
-  env: Record<string, string> = {},
+  env: Record<string, string | undefined> = {},
 ): Promise<{ code: number; output: string }> {
   try {
     const { stderr } = await run("node", [built, "--once"], {
@@ -1106,6 +1106,144 @@ describe("a repository", () => {
     expect(row(repository.node).state).toBe("active");
     expect(row(issue.node).state).toBe("active");
     expect(row(comment.node).state).toBe("active");
+  });
+
+  describe("shared with a second process", () => {
+    const peerToken = "github_pat_peer_12345678";
+    const grants = {
+      metadata_permissions: { types: "write", edge_types: "write" },
+    };
+
+    /** A second process: its own key, which claims the source `github`, and
+     *  its own personal token, so it keeps its own agreements. */
+    async function asPeer(): Promise<void> {
+      const app = github.personalToken;
+      const reached = github.personalRepositories;
+      marfa.keySource = "github-peer";
+      marfa.grants = { ...grants, sources: ["github"] };
+      github.personalToken = peerToken;
+      github.personalRepositories = new Set(
+        github.repositories.map((one) => one.node),
+      );
+      try {
+        const { code, output } = await once({
+          GITHUB_PERSONAL_TOKEN: peerToken,
+          GITHUB_APP_ID: undefined,
+          GITHUB_PRIVATE_KEY: undefined,
+          GITHUB_WEBHOOK_SECRET: undefined,
+          GITHUB_STARS: "false",
+        });
+        if (code !== 0)
+          throw new Error(`the peer exited ${String(code)}: ${output}`);
+      } finally {
+        marfa.keySource = "github";
+        marfa.grants = grants;
+        github.personalToken = app;
+        github.personalRepositories = reached;
+      }
+    }
+
+    /** Both processes have read the repository; then the second goes on to
+     *  write an issue and a comment of its own. */
+    async function shared() {
+      const repository = github.addRepository("someone/tracker");
+      const own = github.addIssue(repository);
+      const mine = github.addComment(own, "Mine");
+      await ok();
+      const theirs = github.addIssue(repository);
+      const reply = github.addComment(theirs, "Theirs");
+      await asPeer();
+      return { repository, own, mine, theirs, reply };
+    }
+
+    it(
+      "leaves the rows the other process wrote and the repository row they sit under, and archives the rows it wrote",
+      { timeout: 60_000 },
+      async () => {
+        const { repository, own, mine, theirs, reply } = await shared();
+        repository.installation = 2;
+        const output = await ok();
+        expect(output).toContain("was taken out of the App's installation");
+        expect(output).toContain("another process wrote or changed");
+        expect(row(own.node).state).toBe("archived");
+        expect(row(mine.node).state).toBe("archived");
+        expect(row(theirs.node).state).toBe("active");
+        expect(row(reply.node).state).toBe("active");
+        expect(row(repository.node).state).toBe("active");
+      },
+    );
+
+    it(
+      "archives the same rows and the repository row where no other process has written under it",
+      { timeout: 60_000 },
+      async () => {
+        const repository = github.addRepository("someone/tracker");
+        const own = github.addIssue(repository);
+        const mine = github.addComment(own, "Mine");
+        await ok();
+        await asPeer();
+        repository.installation = 2;
+        await ok();
+        expect(row(own.node).state).toBe("archived");
+        expect(row(mine.node).state).toBe("archived");
+        expect(row(repository.node).state).toBe("archived");
+      },
+    );
+
+    it(
+      "leaves a row the other process has changed since this one agreed it",
+      { timeout: 60_000 },
+      async () => {
+        const repository = github.addRepository("someone/tracker");
+        const own = github.addIssue(repository);
+        const changed = github.addIssue(repository);
+        const mine = github.addComment(own, "Mine");
+        await ok();
+        github.edit(changed, { title: "Retitled by the other process" });
+        await asPeer();
+        repository.installation = 2;
+        await ok();
+        expect(row(changed.node).state).toBe("active");
+        expect(row(changed.node).properties["title"]).toBe(
+          "Retitled by the other process",
+        );
+        expect(row(own.node).state).toBe("archived");
+        expect(row(mine.node).state).toBe("archived");
+        expect(row(repository.node).state).toBe("active");
+      },
+    );
+
+    it(
+      "leaves a row it wrote but holds no agreement for",
+      { timeout: 60_000 },
+      async () => {
+        const repository = github.addRepository("someone/tracker");
+        const lost = github.addIssue(repository);
+        const kept = github.addIssue(repository);
+        await ok();
+        marfa.agreements.delete(row(lost.node).id);
+        repository.installation = 2;
+        await ok();
+        expect(row(lost.node).state).toBe("active");
+        expect(row(kept.node).state).toBe("archived");
+        expect(row(repository.node).state).toBe("active");
+      },
+    );
+
+    it("changes nothing when it runs again", { timeout: 60_000 }, async () => {
+      const { repository, theirs, reply } = await shared();
+      repository.installation = 2;
+      await ok();
+      const before = marfa.log.length;
+      await ok();
+      await ok();
+      expect(marfa.log.slice(before).map((one) => one.event)).not.toContain(
+        "item.state_changed",
+      );
+      expect(row(theirs.node).state).toBe("active");
+      expect(row(reply.node).state).toBe("active");
+      expect(row(repository.node).state).toBe("active");
+    });
   });
 
   it("whose installation refuses the App changes nothing and says so", async () => {

@@ -902,6 +902,10 @@ async function readAll(
   }
 }
 
+/** Takes a repository out of this process: archives the rows it holds under
+ *  the repository only as this process last left them, since a row another
+ *  process wrote or changed since is one that process still syncs. The
+ *  repository's own row then stays while any row under it is still active. */
 async function takeOut(
   context: Context,
   node: string,
@@ -913,25 +917,30 @@ async function takeOut(
   const under = { type: repositoryType, id: node };
   const links = (rows: Item[]): string[] =>
     rows.flatMap((row) => linkOf(row) ?? []);
-  await archive(
-    commentType,
-    links(await linked(commentType, inRepository, under)),
-  );
-  await archive(issueType, links(await linked(issueType, inRepository, under)));
-  await archive(
-    discussionType,
-    links(await linked(discussionType, inRepository, under)),
-  );
-  await archive(
-    pullRequestType,
-    links(await linked(pullRequestType, inRepository, under)),
-  );
+  const unchanged = { rows: "unchanged" } as const;
+  for (const type of [commentType, issueType, discussionType, pullRequestType])
+    await archive(
+      type,
+      links(await linked(type, inRepository, under, unchanged)),
+    );
   await takeOutFiles(context, node);
+  let shared = false;
+  for (const type of [
+    commentType,
+    issueType,
+    discussionType,
+    pullRequestType,
+    repositoryFileType,
+    directoryType,
+  ]) {
+    const rows = await linked(type, inRepository, under, { rows: "all" });
+    shared = shared || rows.some((row) => row.state === "active");
+  }
   // A starred repository keeps its row and its `synced`, since another
   // process may still sync it: a lost star then only unmarks it.
-  if (!starred) await archive(repositoryType, [node]);
+  if (!starred && !shared) await archive(repositoryType, [node]);
   log.info(
-    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : ""}`,
+    `${name} ${personal ? "is no longer listed for the personal token" : "was taken out of the App's installation"}, and its rows archived${starred ? ", bar its repository row, which its star keeps" : shared ? ", bar its repository row and the rows that another process wrote or changed since, which that process may still sync" : ""}`,
   );
 }
 

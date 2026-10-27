@@ -150,7 +150,13 @@ export interface Vendor {
   readOnly?: string[];
   derived?: string[];
   derive?: { keys: string[]; values: Record<string, unknown> };
-  ask?: { connection: string; target: Target } | undefined;
+  ask?:
+    | {
+        connection: string;
+        target: Target;
+        rows?: "told" | "unchanged" | "all";
+      }
+    | undefined;
   answers?: string[][];
   askHeld?: boolean;
   heldAnswers?: string[][];
@@ -229,6 +235,7 @@ function twoWayConnector(held: Vendor) {
           testType.id,
           held.ask.connection,
           held.ask.target,
+          held.ask.rows === undefined ? undefined : { rows: held.ask.rows },
         );
         (held.answers ??= []).push(
           rows.map((row) => String(row.properties["vendor_id"])),

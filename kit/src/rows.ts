@@ -1,6 +1,7 @@
 import {
   agreedState,
   held,
+  holdsAgreed,
   laterThan,
   mark,
   merge,
@@ -1115,7 +1116,7 @@ export class Rows {
         const agreement = this.store.get(row.id);
         return (
           agreement !== undefined &&
-          (agreement.marfa[field] ?? "") === mark(held(row.properties, field))
+          holdsAgreed(agreement, row.properties, field)
         );
       },
     };
@@ -1237,7 +1238,7 @@ export class Rows {
   /** The vendor has been told about a row once the connector agreed on it
    *  with the vendor, under the link it carries: a row made by hand with a
    *  link's value has not. */
-  async told(items: readonly Item[]): Promise<Set<string>> {
+  async told(items: readonly Item[], unchanged = false): Promise<Set<string>> {
     const own = items.filter((item) => item.type === this.kind.type);
     await this.store.fetch(own.map((item) => item.id));
     return new Set(
@@ -1248,7 +1249,11 @@ export class Rows {
             agreement !== undefined &&
             (this.kind.link === undefined ||
               (agreement.link !== undefined &&
-                agreement.link === this.linkOf(item.properties)))
+                agreement.link === this.linkOf(item.properties))) &&
+            (!unchanged ||
+              this.kind.fields.every((field) =>
+                holdsAgreed(agreement, item.properties, field),
+              ))
           );
         })
         .map((item) => item.id),
