@@ -47,6 +47,7 @@ export interface ReadContext extends SharedContext {
   log: RunContext<typeof env>["log"];
   written: RunContext<typeof env>["written"];
   known?: RunContext<typeof env>["known"];
+  linked?: RunContext<typeof env>["linked"];
   forScope: (
     name: string,
     options?: { retry: { mode: "refetch"; context: string } },

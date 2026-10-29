@@ -423,11 +423,6 @@ export interface ContentJob {
   noteIds?: string[];
   attempts?: number;
   due?: number;
-  /** For each picture of this revision not yet kept, by the first 16 hex
-   *  digits of its address's hash: how many runs a fetch that may pass has
-   *  failed in, or the refusal it was given up with, such as `svg` or
-   *  `bad_status:404`, so that a retry of the job does not ask again. */
-  pictureOutcomes?: Record<string, number | string>;
 }
 export const contentQueueKey = "content-queue";
 export function contentQueue(
@@ -460,21 +455,7 @@ export function contentQueue(
           (typeof row["due"] !== "number" || !Number.isFinite(row["due"]))) ||
         (row["attempts"] !== undefined &&
           (!Number.isSafeInteger(row["attempts"]) ||
-            (row["attempts"] as number) < 0)) ||
-        (row["pictureOutcomes"] !== undefined &&
-          (typeof row["pictureOutcomes"] !== "object" ||
-            row["pictureOutcomes"] === null ||
-            Array.isArray(row["pictureOutcomes"]) ||
-            Object.entries(row["pictureOutcomes"]).length >
-              maxPicturesPerDocument ||
-            Object.entries(row["pictureOutcomes"]).some(
-              ([key, outcome]) =>
-                !/^[0-9a-f]{16}$/.test(key) ||
-                (typeof outcome === "number"
-                  ? !Number.isSafeInteger(outcome) || outcome < 1
-                  : typeof outcome !== "string" ||
-                    !/^[a-z_]{1,32}(?::\d{3})?$/.test(outcome)),
-            )))
+            (row["attempts"] as number) < 0))
       );
     })
   )

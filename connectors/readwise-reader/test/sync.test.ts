@@ -255,28 +255,22 @@ describe("Reader durable metadata", () => {
     await f.run();
     expect(f.requests.at(-1)?.updatedAfter).toBe("2026-10-14T23:55:00.000Z");
   });
-  it("walks the whole listing again, resumably, when the picture setting changes", async () => {
+  it("keeps its place in the listing when the picture setting changes", async () => {
     const f = fixture();
-    f.setPages([
-      [{ id: "a", category: "article", updated_at: stamp }],
-      [{ id: "b", category: "article", updated_at: stamp }],
-    ]);
+    f.setPages([[{ id: "a", category: "article", updated_at: stamp }]]);
     await f.run();
     await f.run();
-    expect(f.requests.at(-1)?.updatedAfter).toBeDefined();
     const before = f.requests.length;
-    f.jobs.length = 0;
     (
       f.context.env as { READWISE_READER_PICTURES?: string }
     ).READWISE_READER_PICTURES = "save";
-    await f.run(1);
-    expect(f.requests.slice(before)).toEqual([{}]);
-    expect(f.states.get("reader-list")?.get("listing")).toMatchObject({
-      walk: { full: true, cursor: "1" },
-    });
     await f.run();
-    expect(f.requests.at(-1)).toEqual({ cursor: "1" });
-    expect(f.jobs.map((job) => (job as { id: string }).id)).toEqual(["a", "b"]);
+    expect(f.requests.slice(before)).toEqual([
+      { updatedAfter: expect.any(String) as string },
+    ]);
+    expect(f.states.get("reader-list")?.get("listing")).not.toHaveProperty(
+      "walk",
+    );
   });
   it("keeps failed writes from committing page progress", async () => {
     const f = fixture();
