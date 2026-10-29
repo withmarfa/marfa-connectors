@@ -13,8 +13,6 @@ import {
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
-// These lifecycle cases repeat full reads through Octokit's real request spacing.
-const multiRunTimeout = 60_000;
 
 let key: string;
 let marfa: ScriptedServer;
@@ -301,64 +299,56 @@ describe("an issue changed in Marfa", () => {
 });
 
 describe("a trash", () => {
-  it(
-    "leaves an issue closed as a duplicate a duplicate through a trash and a restore",
-    async () => {
-      const issue = github.addIssue(repository, {
-        title: "Twice",
-        state: "closed",
-        state_reason: "duplicate",
-        closed_at: github.ago(1),
-        updated_at: github.ago(1),
-      });
-      await ok();
-      expect(row(issue.node).properties["status"]).toBe("canceled");
-      marfa.trash(row(issue.node).id);
-      await settled();
-      marfa.restore(row(issue.node).id);
-      await settled();
-      expect(issue).toMatchObject({
-        state: "closed",
-        state_reason: "duplicate",
-      });
-      expect(written()).toEqual([]);
-    },
-    multiRunTimeout,
-  );
+  it("leaves an issue closed as a duplicate a duplicate through a trash and a restore", async () => {
+    const issue = github.addIssue(repository, {
+      title: "Twice",
+      state: "closed",
+      state_reason: "duplicate",
+      closed_at: github.ago(1),
+      updated_at: github.ago(1),
+    });
+    await ok();
+    expect(row(issue.node).properties["status"]).toBe("canceled");
+    marfa.trash(row(issue.node).id);
+    await settled();
+    marfa.restore(row(issue.node).id);
+    await settled();
+    expect(issue).toMatchObject({
+      state: "closed",
+      state_reason: "duplicate",
+    });
+    expect(written()).toEqual([]);
+  });
 
-  it(
-    "closes the issue as not planned, stays, comes back on GitHub's activity, and a restore reopens it",
-    async () => {
-      const issue = github.addIssue(repository, { title: "Maybe" });
-      await ok();
-      marfa.trash(row(issue.node).id);
-      await settled();
-      expect(issue).toMatchObject({
-        state: "closed",
-        state_reason: "not_planned",
-      });
-      expect(row(issue.node).state).toBe("trashed");
-      github.addComment(issue, "Actually, still wanted");
-      const output = await ok();
-      expect(row(issue.node).state).toBe("active");
-      expect(output).toContain("brought back");
-      expect(row(issue.node).properties["status"]).toBe("canceled");
+  it("closes the issue as not planned, stays, comes back on GitHub's activity, and a restore reopens it", async () => {
+    const issue = github.addIssue(repository, { title: "Maybe" });
+    await ok();
+    marfa.trash(row(issue.node).id);
+    await settled();
+    expect(issue).toMatchObject({
+      state: "closed",
+      state_reason: "not_planned",
+    });
+    expect(row(issue.node).state).toBe("trashed");
+    github.addComment(issue, "Actually, still wanted");
+    const output = await ok();
+    expect(row(issue.node).state).toBe("active");
+    expect(output).toContain("brought back");
+    expect(row(issue.node).properties["status"]).toBe("canceled");
 
-      marfa.edit(row(issue.node).id, { status: "pending" });
-      await ok();
-      expect(issue.state).toBe("open");
-      marfa.trash(row(issue.node).id);
-      await ok();
-      expect(issue).toMatchObject({
-        state: "closed",
-        state_reason: "not_planned",
-      });
-      marfa.restore(row(issue.node).id);
-      await settled();
-      expect(issue).toMatchObject({ state: "open", state_reason: "reopened" });
-    },
-    multiRunTimeout,
-  );
+    marfa.edit(row(issue.node).id, { status: "pending" });
+    await ok();
+    expect(issue.state).toBe("open");
+    marfa.trash(row(issue.node).id);
+    await ok();
+    expect(issue).toMatchObject({
+      state: "closed",
+      state_reason: "not_planned",
+    });
+    marfa.restore(row(issue.node).id);
+    await settled();
+    expect(issue).toMatchObject({ state: "open", state_reason: "reopened" });
+  });
 
   it("of a comment the App wrote deletes it on GitHub, and a restore makes it again in its issue's thread", async () => {
     const issue = github.addIssue(repository);
@@ -437,30 +427,26 @@ describe("a row made in Marfa", () => {
     expect(marfa.byId(made.id).properties["number"]).toBe(issue?.number);
   });
 
-  it(
-    "as a conflicted copy of an issue is not sent, and stays in Marfa with a condition",
-    async () => {
-      const issue = github.addIssue(repository, {
-        title: "Before",
-        body: "Mine",
-      });
-      await ok();
-      const original = row(issue.node);
-      // Marfa copies the original's repository edge to the copy it writes.
-      const copy = marfa.conflictedCopy(original.id, { body: "Theirs" });
-      marfa.drawEdge(copy.id, row(repository.node).id, "github.in-repository");
+  it("as a conflicted copy of an issue is not sent, and stays in Marfa with a condition", async () => {
+    const issue = github.addIssue(repository, {
+      title: "Before",
+      body: "Mine",
+    });
+    await ok();
+    const original = row(issue.node);
+    // Marfa copies the original's repository edge to the copy it writes.
+    const copy = marfa.conflictedCopy(original.id, { body: "Theirs" });
+    marfa.drawEdge(copy.id, row(repository.node).id, "github.in-repository");
 
-      const output = await ok();
-      await ok();
-      expect(github.writes()).toEqual([]);
-      expect(github.issues).toHaveLength(1);
-      expect(output).toContain(`${copy.id} is tagged conflicted-copy`);
-      expect(marfa.byId(copy.id).state).toBe("active");
-      expect(marfa.byId(copy.id).properties["body"]).toBe("Theirs");
-      expect(marfa.byId(copy.id).properties["github_id"]).toBeUndefined();
-    },
-    multiRunTimeout,
-  );
+    const output = await ok();
+    await ok();
+    expect(github.writes()).toEqual([]);
+    expect(github.issues).toHaveLength(1);
+    expect(output).toContain(`${copy.id} is tagged conflicted-copy`);
+    expect(marfa.byId(copy.id).state).toBe("active");
+    expect(marfa.byId(copy.id).properties["body"]).toBe("Theirs");
+    expect(marfa.byId(copy.id).properties["github_id"]).toBeUndefined();
+  });
 
   it("naming no repository is not sent, and the run says why; drawing one sends it", async () => {
     await ok();
@@ -536,35 +522,30 @@ describe("relations drawn in Marfa", () => {
     child = github.addIssue(repository, { title: "Child" });
   });
 
-  it(
-    "reach GitHub, and their removal too",
-    async () => {
-      await ok();
-      marfa.drawEdge(
-        row(child.node).id,
-        row(parent.node).id,
-        "github.sub-issue-of",
-      );
-      marfa.drawEdge(
-        row(child.node).id,
-        row(parent.node).id,
-        "github.blocked-by",
-      );
-      await settled();
-      expect(child.parent).toBe(parent.node);
-      expect(child.blocked_by).toEqual([parent.node]);
-      for (const edge of marfa.edges.filter(
-        (one) => one.source_id === row(child.node).id,
-      )) {
-        if (edge.edge_type !== "github.in-repository")
-          marfa.removeEdge(edge.id);
-      }
-      await settled();
-      expect(child.parent).toBeNull();
-      expect(child.blocked_by).toEqual([]);
-    },
-    multiRunTimeout,
-  );
+  it("reach GitHub, and their removal too", async () => {
+    await ok();
+    marfa.drawEdge(
+      row(child.node).id,
+      row(parent.node).id,
+      "github.sub-issue-of",
+    );
+    marfa.drawEdge(
+      row(child.node).id,
+      row(parent.node).id,
+      "github.blocked-by",
+    );
+    await settled();
+    expect(child.parent).toBe(parent.node);
+    expect(child.blocked_by).toEqual([parent.node]);
+    for (const edge of marfa.edges.filter(
+      (one) => one.source_id === row(child.node).id,
+    )) {
+      if (edge.edge_type !== "github.in-repository") marfa.removeEdge(edge.id);
+    }
+    await settled();
+    expect(child.parent).toBeNull();
+    expect(child.blocked_by).toEqual([]);
+  });
 
   it("that GitHub refuses are taken back in Marfa, and the run says why", async () => {
     const other = github.addRepository("another/elsewhere");
@@ -736,41 +717,37 @@ describe("what the write review found", () => {
 
 describe("what the adversarial review found", () => {
   for (const how of ["uninstalled", "refused", "hidden"] as const) {
-    it(
-      `keeps an edit made while the App's access is ${how} waiting, runs on, and carries it once access is back`,
-      async () => {
-        const issue = github.addIssue(repository, { title: "Before" });
-        const comment = ours(issue, "Said");
-        const other = github.addRepository("someone/elsewhere", {
-          installation: 2,
-        });
-        github.installations.push({ id: 2, login: "someone-else" });
-        const beside = github.addIssue(other, { title: "Beside" });
-        await ok();
-        const installations = github.installations;
-        if (how === "uninstalled") {
-          github.installations = installations.filter((one) => one.id !== 1);
-        }
-        const [first] = installations;
-        if (how === "refused" && first !== undefined) first.lost = true;
-        if (how === "hidden") repository.hidden = true;
-        marfa.edit(row(issue.node).id, { title: "Edited in Marfa" });
-        marfa.edit(row(comment.node).id, { body: "Said, edited" });
-        marfa.edit(row(beside.node).id, { title: "Beside, edited" });
-        const output = await ok();
-        expect(output).toMatch(/changes? waits?/);
-        expect(beside.title).toBe("Beside, edited");
-        github.installations = installations;
-        if (first !== undefined) first.lost = false;
-        repository.hidden = false;
-        await ok();
-        expect([issue.title, comment.body]).toEqual([
-          "Edited in Marfa",
-          "Said, edited",
-        ]);
-      },
-      multiRunTimeout,
-    );
+    it(`keeps an edit made while the App's access is ${how} waiting, runs on, and carries it once access is back`, async () => {
+      const issue = github.addIssue(repository, { title: "Before" });
+      const comment = ours(issue, "Said");
+      const other = github.addRepository("someone/elsewhere", {
+        installation: 2,
+      });
+      github.installations.push({ id: 2, login: "someone-else" });
+      const beside = github.addIssue(other, { title: "Beside" });
+      await ok();
+      const installations = github.installations;
+      if (how === "uninstalled") {
+        github.installations = installations.filter((one) => one.id !== 1);
+      }
+      const [first] = installations;
+      if (how === "refused" && first !== undefined) first.lost = true;
+      if (how === "hidden") repository.hidden = true;
+      marfa.edit(row(issue.node).id, { title: "Edited in Marfa" });
+      marfa.edit(row(comment.node).id, { body: "Said, edited" });
+      marfa.edit(row(beside.node).id, { title: "Beside, edited" });
+      const output = await ok();
+      expect(output).toMatch(/changes? waits?/);
+      expect(beside.title).toBe("Beside, edited");
+      github.installations = installations;
+      if (first !== undefined) first.lost = false;
+      repository.hidden = false;
+      await ok();
+      expect([issue.title, comment.body]).toEqual([
+        "Edited in Marfa",
+        "Said, edited",
+      ]);
+    });
   }
 
   it("names a create whose answer was lost and whose row was trashed before the retry, and a trash of what GitHub made closes it", async () => {
@@ -936,30 +913,26 @@ describe("what the adversarial review found", () => {
 });
 
 describe("what the fix review found", () => {
-  it(
-    "keeps a create and an edit waiting through GitHub's secondary limit, and carries them after",
-    async () => {
-      const issue = github.addIssue(repository, { title: "Before" });
-      await ok();
-      const made = marfa.insert(
-        undefined,
-        { title: "Made in Marfa" },
-        "github.issue",
-        "person",
-      );
-      marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
-      marfa.edit(row(issue.node).id, { title: "After" });
-      github.writesLimited = { left: 100, status: 403 };
-      expect(await ok()).toContain("waits");
-      github.writesLimited = undefined;
-      await ok();
-      expect(issue.title).toBe("After");
-      expect(
-        github.issues.filter((one) => one.title === "Made in Marfa"),
-      ).toHaveLength(1);
-    },
-    multiRunTimeout,
-  );
+  it("keeps a create and an edit waiting through GitHub's secondary limit, and carries them after", async () => {
+    const issue = github.addIssue(repository, { title: "Before" });
+    await ok();
+    const made = marfa.insert(
+      undefined,
+      { title: "Made in Marfa" },
+      "github.issue",
+      "person",
+    );
+    marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
+    marfa.edit(row(issue.node).id, { title: "After" });
+    github.writesLimited = { left: 100, status: 403 };
+    expect(await ok()).toContain("waits");
+    github.writesLimited = undefined;
+    await ok();
+    expect(issue.title).toBe("After");
+    expect(
+      github.issues.filter((one) => one.title === "Made in Marfa"),
+    ).toHaveLength(1);
+  });
 
   it("keeps a relation waiting through GitHub's GraphQL limit, and the run goes on", async () => {
     const child = github.addIssue(repository, { title: "Child" });
@@ -1025,32 +998,28 @@ describe("what the fix review found", () => {
     ]);
   });
 
-  it(
-    "does not ask GitHub again for a comment's remake it refused, and makes it once the row changes",
-    async () => {
-      const issue = github.addIssue(repository);
-      const comment = ours(issue, "Keep this");
-      await ok();
-      const id = row(comment.node).id;
-      marfa.trash(id);
-      await ok();
-      repository.archived = true;
-      marfa.restore(id);
-      expect(await ok()).toContain("Repository was archived");
-      repository.archived = false;
-      const before = github.writes().length;
-      await ok();
-      expect(github.writes().slice(before)).toEqual([]);
-      marfa.edit(id, { body: "Keep this, again" });
-      await ok();
-      expect(
-        github.comments.filter(
-          (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
-        ),
-      ).toHaveLength(1);
-    },
-    multiRunTimeout,
-  );
+  it("does not ask GitHub again for a comment's remake it refused, and makes it once the row changes", async () => {
+    const issue = github.addIssue(repository);
+    const comment = ours(issue, "Keep this");
+    await ok();
+    const id = row(comment.node).id;
+    marfa.trash(id);
+    await ok();
+    repository.archived = true;
+    marfa.restore(id);
+    expect(await ok()).toContain("Repository was archived");
+    repository.archived = false;
+    const before = github.writes().length;
+    await ok();
+    expect(github.writes().slice(before)).toEqual([]);
+    marfa.edit(id, { body: "Keep this, again" });
+    await ok();
+    expect(
+      github.comments.filter(
+        (one) => !one.deleted && unmarked(one.body) === "Keep this, again",
+      ),
+    ).toHaveLength(1);
+  });
 });
 
 describe("a repository GITHUB_REPOSITORIES leaves out", () => {
@@ -1110,34 +1079,30 @@ describe("a repository GITHUB_REPOSITORIES leaves out", () => {
 });
 
 describe("a repository left out and then renamed on GitHub", () => {
-  it(
-    "still holds a change made in Marfa to its rows, and takes no relation to them",
-    async () => {
-      const elsewhere = github.addRepository("someone/elsewhere");
-      const issue = github.addIssue(elsewhere, { title: "Before" });
-      const child = github.addIssue(repository, { title: "Child" });
-      await ok();
-      const only = { GITHUB_REPOSITORIES: "someone/tracker" };
-      await ok(only);
-      elsewhere.name = "renamed";
-      await ok(only);
-      marfa.edit(row(issue.node).id, { title: "Edited while left out" });
-      marfa.drawEdge(
-        row(child.node).id,
-        row(issue.node).id,
-        "github.sub-issue-of",
-      );
-      const output = await ok(only);
-      expect(output).toContain(
-        "1 change waits: someone/elsewhere is left out by GITHUB_REPOSITORIES",
-      );
-      expect(issue.title).toBe("Before");
-      expect(child.parent).toBeNull();
-      await ok({ GITHUB_REPOSITORIES: "someone/tracker someone/renamed" });
-      expect(issue.title).toBe("Edited while left out");
-    },
-    multiRunTimeout,
-  );
+  it("still holds a change made in Marfa to its rows, and takes no relation to them", async () => {
+    const elsewhere = github.addRepository("someone/elsewhere");
+    const issue = github.addIssue(elsewhere, { title: "Before" });
+    const child = github.addIssue(repository, { title: "Child" });
+    await ok();
+    const only = { GITHUB_REPOSITORIES: "someone/tracker" };
+    await ok(only);
+    elsewhere.name = "renamed";
+    await ok(only);
+    marfa.edit(row(issue.node).id, { title: "Edited while left out" });
+    marfa.drawEdge(
+      row(child.node).id,
+      row(issue.node).id,
+      "github.sub-issue-of",
+    );
+    const output = await ok(only);
+    expect(output).toContain(
+      "1 change waits: someone/elsewhere is left out by GITHUB_REPOSITORIES",
+    );
+    expect(issue.title).toBe("Before");
+    expect(child.parent).toBeNull();
+    await ok({ GITHUB_REPOSITORIES: "someone/tracker someone/renamed" });
+    expect(issue.title).toBe("Edited while left out");
+  });
 });
 
 describe("where a write lands", () => {
@@ -1191,35 +1156,31 @@ describe("where a write lands", () => {
     expect(output).toContain(`${said.id} is not sent to the vendor until`);
   });
 
-  it(
-    "is the issue the row was agreed for when its number and repository are edited before a trash",
-    async () => {
-      const kept = github.addIssue(repository, { title: "Kept" });
-      const binned = github.addIssue(repository, { title: "Binned" });
-      const elsewhere = github.addRepository("someone/elsewhere");
-      const far = github.addIssue(elsewhere, { title: "Far" });
-      await ok();
-      const id = row(binned.node).id;
-      marfa.edit(id, { number: kept.number });
-      marfa.trash(id);
-      await ok();
-      expect(kept.state).toBe("open");
-      expect([binned.state, binned.state_reason]).toEqual([
-        "closed",
-        "not_planned",
-      ]);
-      const other = row(kept.node).id;
-      marfa.edit(other, {
-        repository: "someone/elsewhere",
-        number: far.number,
-      });
-      marfa.trash(other);
-      await ok();
-      expect(far.state).toBe("open");
-      expect(kept.state).toBe("closed");
-    },
-    multiRunTimeout,
-  );
+  it("is the issue the row was agreed for when its number and repository are edited before a trash", async () => {
+    const kept = github.addIssue(repository, { title: "Kept" });
+    const binned = github.addIssue(repository, { title: "Binned" });
+    const elsewhere = github.addRepository("someone/elsewhere");
+    const far = github.addIssue(elsewhere, { title: "Far" });
+    await ok();
+    const id = row(binned.node).id;
+    marfa.edit(id, { number: kept.number });
+    marfa.trash(id);
+    await ok();
+    expect(kept.state).toBe("open");
+    expect([binned.state, binned.state_reason]).toEqual([
+      "closed",
+      "not_planned",
+    ]);
+    const other = row(kept.node).id;
+    marfa.edit(other, {
+      repository: "someone/elsewhere",
+      number: far.number,
+    });
+    marfa.trash(other);
+    await ok();
+    expect(far.state).toBe("open");
+    expect(kept.state).toBe("closed");
+  });
 
   function quiet(issue: Issue): void {
     Object.assign(issue, {
@@ -1432,30 +1393,26 @@ describe("a create GitHub made but answered with a server error", () => {
 });
 
 describe("a change GitHub does not take", () => {
-  it(
-    "is not taken as agreed when refused: it is not asked again as it stands, and lands whole once the row changes",
-    async () => {
-      const archived = github.addRepository("someone/old", { archived: true });
-      const stuck = github.addIssue(archived, { title: "Stuck" });
-      await ok();
-      const id = row(stuck.node).id;
-      marfa.edit(id, { title: "Stuck, edited" });
-      const output = await ok();
-      expect(output).toContain("Repository was archived");
-      const before = github.writes().length;
-      await ok();
-      expect(github.writes().slice(before)).toEqual([]);
-      expect(marfa.byId(id).properties["title"]).toBe("Stuck, edited");
-      archived.archived = false;
-      marfa.edit(id, { body: "Now with a body" });
-      await ok();
-      expect([stuck.title, stuck.body]).toEqual([
-        "Stuck, edited",
-        "Now with a body",
-      ]);
-    },
-    multiRunTimeout,
-  );
+  it("is not taken as agreed when refused: it is not asked again as it stands, and lands whole once the row changes", async () => {
+    const archived = github.addRepository("someone/old", { archived: true });
+    const stuck = github.addIssue(archived, { title: "Stuck" });
+    await ok();
+    const id = row(stuck.node).id;
+    marfa.edit(id, { title: "Stuck, edited" });
+    const output = await ok();
+    expect(output).toContain("Repository was archived");
+    const before = github.writes().length;
+    await ok();
+    expect(github.writes().slice(before)).toEqual([]);
+    expect(marfa.byId(id).properties["title"]).toBe("Stuck, edited");
+    archived.archived = false;
+    marfa.edit(id, { body: "Now with a body" });
+    await ok();
+    expect([stuck.title, stuck.body]).toEqual([
+      "Stuck, edited",
+      "Now with a body",
+    ]);
+  });
 
   it("waits, rather than settling as gone, where the repository turned issues off", async () => {
     const issue = github.addIssue(repository, { title: "Before" });

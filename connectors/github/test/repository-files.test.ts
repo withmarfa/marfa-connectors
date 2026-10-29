@@ -141,7 +141,7 @@ function files(): Map<string, string | Buffer> {
   return held;
 }
 
-describe("repository files", { timeout: 60_000 }, () => {
+describe("repository files", () => {
   it("mirrors the Markdown files under each path as notes, in nested directory collections", async () => {
     await sync();
     expect(

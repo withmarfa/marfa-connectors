@@ -621,7 +621,7 @@ describe("a comment on a discussion", () => {
       "UpdateDiscussionComment",
       "DeleteDiscussionComment",
     ]);
-  }, 60_000);
+  });
 
   // Each write waits a second behind the one before it, as in the test above.
   it("trashed with replies sends one delete, and the replies the bin took with it send none", async () => {
@@ -681,7 +681,7 @@ describe("a comment on a discussion", () => {
     await settled();
     expect(written().slice(3)).toEqual(["DeleteDiscussionComment"]);
     expect(ours?.deleted).toBe(true);
-  }, 90_000);
+  });
 
   it("trashed with replies, but written by someone else, stays on GitHub with its replies, and sends nothing", async () => {
     const theirs = github.addDiscussionComment(discussion, "Theirs");
@@ -708,7 +708,7 @@ describe("a comment on a discussion", () => {
     await settled();
     expect(marfa.byId(reply.id).state).toBe("active");
     expect(written()).toEqual(["AddDiscussionComment"]);
-  }, 60_000);
+  });
 
   it("made in Marfa is posted once where a lost answer hides it from the next listing", async () => {
     await ok();
