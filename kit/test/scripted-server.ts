@@ -1679,6 +1679,8 @@ export class ScriptedServer {
       );
       this.rows.push(row);
       this.announce("item.created", row);
+      // A real create also writes the edges in `body.edges` and returns them;
+      // this one models a create with no edges only.
       send(201, {
         item: { ...this.wire(row), edges: {} },
         metadata: this.metadata(row),
@@ -1818,8 +1820,17 @@ export class ScriptedServer {
       (parts[2] === "edges" || parts[2] === "backrefs") &&
       parts[1] !== undefined
     ) {
-      // The anchor is read as `requireReadableRow` reads it, the bin included:
-      // one the key may not read answers as a missing one.
+      // `readsSomeType` refuses a key that reaches no type before the anchor
+      // is looked at. The anchor is then read as `requireReadableRow` reads
+      // it, the bin included: one the key may not read answers as a missing one.
+      if (this.reachesNoType()) {
+        refuse(
+          403,
+          "type_not_permitted",
+          "This credential's type permissions reach no type, so there is nothing on the data plane it may read.",
+        );
+        return;
+      }
       const anchor = this.rows.find((candidate) => candidate.id === parts[1]);
       if (anchor === undefined || this.permission(anchor.type) === "none") {
         refuse(404, "item_not_found");
@@ -2437,6 +2448,14 @@ export class ScriptedServer {
       type,
     );
     return level === "read" || level === "write" ? level : "none";
+  }
+
+  /** Whether no type pattern grants read or write, as marfa's
+   *  `refuseReachingNoType` (packages/server/src/middleware/auth.ts) asks. */
+  private reachesNoType(): boolean {
+    return !Object.values(
+      this.grants.type_permissions ?? this.minted.type_permissions,
+    ).some((level) => level === "read" || level === "write");
   }
 
   private bulk(input: Record<string, unknown>): unknown {

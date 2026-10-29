@@ -532,6 +532,27 @@ describe("an edge the key may not read", () => {
       expect(read.status).toBe(200);
       expect(kinds(read.body["data"])).toEqual(["test.blocks"]);
     });
+
+    it(`refuses GET /items/{id}/${door} 403 for a key that reaches no type, before the anchor is looked at`, async () => {
+      const anchor = server.insert("b:1", {}, "test.entry").id;
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "none" },
+      };
+      for (const id of [anchor, "0190a000-0000-7000-8000-ffffffffffff"]) {
+        const refused = await call("GET", `/items/${id}/${door}`);
+        expect(refused.status).toBe(403);
+        expect(refused.body["error"]).toMatchObject({
+          code: "type_not_permitted",
+        });
+      }
+
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "read" },
+      };
+      expect((await call("GET", `/items/${anchor}/${door}`)).status).toBe(200);
+    });
   }
 
   it("is left out of a GET /edges page after the page is cut, so the page is short and its cursor goes on", async () => {
