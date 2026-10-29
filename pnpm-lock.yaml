@@ -186,6 +186,9 @@ importers:
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../../kit
+      marked:
+        specifier: 18.1.1
+        version: 18.1.1
       parse5:
         specifier: 8.0.1
         version: 8.0.1

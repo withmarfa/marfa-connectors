@@ -36,18 +36,22 @@
     },
     "source_url": {
       "type": "string",
+      "format": "url",
       "description": "The source URL as Readwise supplied it."
     },
     "cover_image_url": {
       "type": "string",
+      "format": "url",
       "description": "The cover URL as Readwise supplied it."
     },
     "unique_url": {
       "type": "string",
+      "format": "url",
       "description": "The upstream unique URL."
     },
     "readwise_url": {
       "type": "string",
+      "format": "url",
       "description": "The source page in Readwise."
     },
     "asin": {
@@ -105,30 +109,37 @@
     },
     "reader_published_date": {
       "type": "string",
+      "format": "date",
       "description": "The original Reader published date."
     },
     "reader_created_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader created at."
     },
     "reader_updated_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader updated at."
     },
     "reader_first_opened_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader first opened at."
     },
     "reader_last_opened_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader last opened at."
     },
     "reader_saved_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader saved at."
     },
     "reader_last_moved_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader last moved at."
     },
     "reader_highlight_location": {
@@ -137,14 +148,17 @@
     },
     "reader_url": {
       "type": "string",
+      "format": "url",
       "description": "The original Reader url."
     },
     "reader_source_url": {
       "type": "string",
+      "format": "url",
       "description": "The original Reader source url."
     },
     "reader_image_url": {
       "type": "string",
+      "format": "url",
       "description": "The original Reader image url."
     },
     "reader_language": {
@@ -166,6 +180,10 @@
     "reader_create": {
       "type": "boolean",
       "description": "Explicit intent to create this local item in Reader; cleared after its Reader identity is confirmed."
+    },
+    "original_values": {
+      "type": "object",
+      "description": "Values Readwise sent in a shape their field's kind refuses, kept as sent, by field name."
     }
   },
   "display_hints": {

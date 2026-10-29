@@ -149,13 +149,17 @@ describe("Readwise mapping", () => {
       readwise_color: "red",
       location_type: "kindle",
       location: 23,
-      highlighted_at: "not a date",
+      original_values: { highlighted_at: "not a date" },
     });
+    expect(entry.properties["highlighted_at"]).toBeUndefined();
     expect(entry.properties["color"]).toBeUndefined();
     expect(entry.properties["locator_type"]).toBeUndefined();
     expect(entry.occurred_at).toBeUndefined();
     expect(mapSource("one", parsed).properties["url"]).toBeUndefined();
-    expect(mapSource("one", parsed).properties["source_url"]).toBe("bad URL");
+    expect(mapSource("one", parsed).properties).toMatchObject({
+      original_values: { source_url: "bad URL" },
+    });
+    expect(mapSource("one", parsed).properties["source_url"]).toBeUndefined();
   });
 });
 

@@ -6,9 +6,20 @@ Import sources, complete highlights, annotations, and tags from one Readwise acc
 
 `readwise.source` inherits `core.media`. It represents a book, article, tweet, podcast, or another source exported by Readwise. `readwise.highlight` inherits `core.highlight` and keeps the complete passage and annotation. Each highlight declares a `references` edge to its source, which expresses a reference rather than containment.
 
-Source notes map to `notes`, summaries to `description`, and valid source and cover URLs to `url` and `image_url`. Readwise's original URLs are retained separately even when they cannot populate a core URL field. A blank title falls back to `readable_title`, then `Readwise source <ID>`.
+Source notes map to `notes`, summaries to `description`, and valid web source and cover URLs to `url` and `image_url`. Readwise's original addresses, such as `source_url` and `readwise_url`, are kept in their own fields, which accept any absolute URL. A blank title falls back to `readable_title`, then `Readwise source <ID>`.
 
-A valid highlighting time supplies the item's `occurred_at`; a valid update time supplies the kit's conflict-resolution timestamp. Original timestamp strings remain available in properties. `time_offset` maps to the core `time` locator; page, offset, order, none, and cfi retain their meaning. Original location kinds, numeric locations, and colors are retained even when core enums cannot represent them. Text and annotations are never truncated. Tags from strings or named objects are trimmed and deduplicated without changing case or Unicode.
+A valid highlighting time supplies the item's `occurred_at`; a valid update time supplies the kit's conflict-resolution timestamp. The original timestamps remain available in properties. `time_offset` maps to the core `time` locator; page, offset, order, none, and cfi retain their meaning. Original location kinds, numeric locations, and colors are retained even when core enums cannot represent them. Text and annotations are never truncated. Tags from strings or named objects are trimmed and deduplicated without changing case or Unicode.
+
+### Highlight titles
+
+A highlight shows its `title` and `body`, which both connectors write the same way. `body` is the whole passage as Markdown, pictures included, exactly as Readwise gives it. `title` is the passage's first paragraph as plain text, without Markdown, cut at a word boundary to at most 80 characters with an ellipsis. A blank line ends a paragraph, and a Markdown heading is a paragraph of its own; a single line break, such as one Reader puts around a link or a soft wrap, reads as a space. The title leaves out list and quotation markers at its start, a heading's permalink mark such as `#`, and any space before a closing punctuation mark or bracket. On a row both connectors share, the title comes from the export passage, which keeps the paragraph breaks that Reader's plain passage loses, or from Reader's passage when the export has no words. A heading in either passage ends the title, because the export can join a heading to the text after it. A passage with only a picture is titled `Picture from <document title>`, or `Picture` when the document's title is unknown. `text` keeps the passage as before, and `note` stays the separate annotation.
+
+### Field kinds
+
+Every timestamp field, such as `highlighted_at`, `readwise_created_at` and `reader_saved_at`, is a `datetime` field. `reader_published_date` is a `date` field. Every address field, such as `source_url`, `readwise_url` and `reader_image_url`, is a `url` field; an address is stored as Marfa stores any URL, trimmed and without tabs or line breaks. A value Readwise sends in another shape never stops a row from being written:
+
+- A blank value is left out.
+- Any other value the field refuses is left out of its field and kept, exactly as sent, in `original_values` under the field's name. It leaves `original_values` once Readwise sends a value the field accepts or no longer sends the field.
 
 Both types retain available export IDs and external IDs. A Reader-only row has no fabricated export ID. Verified Reader identities share the same rows through `canonical_key`; managed Reader content uses the shared preservation implementation.
 
@@ -103,3 +114,20 @@ Adding the canonical link and making export IDs optional are structural changes.
 5. Install builds using the same shared definitions in both connectors before restarting either. Existing canonical links are resolved before further imports; identity conflicts must be investigated without merging or deleting rows automatically.
 
 This operation changes schemas only. It does not migrate item identities, erase stored content, or authorize provider writes.
+
+### Upgrade to highlight titles and field kinds
+
+The release that adds highlight titles and field kinds changes the kind of existing fields, which only an operator can do. Until you replace the types, each connector stops at startup and names the `marfa types replace` command to run. Follow the steps above, replacing both types with a credential that holds `schema.write`:
+
+```bash
+marfa types replace readwise.source --file shared/readwise/src/readwise.source.json
+marfa types replace readwise.highlight --file shared/readwise/src/readwise.highlight.json
+```
+
+The replacement adds `title`, `body` and `original_values`, sets the highlight's display fields, and changes no stored item. Restart the connectors straight afterward. Because their types changed, the first run of each connector reads the whole account again and rewrites each row in place, under the same natural key:
+
+- Every highlight gains its `title` and `body`.
+- A row holding a blank address or date loses that blank value, and a value its field's kind refuses moves to `original_values`. Until then, an edit to that row in Marfa is refused, because Marfa checks the whole row on each write.
+- A source whose values already fit is left unchanged.
+
+No item is created, duplicated or deleted. With outbound edits on, `title` and `body` are read only and are never sent to Readwise; `note` and the other editable fields carry edits as before.

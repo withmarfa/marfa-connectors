@@ -404,11 +404,16 @@ export async function sync(
           pending.delete(document.id);
           continue;
         }
+        const parent =
+          document.category === "highlight" && document.parent_id
+            ? await get(document.parent_id)
+            : undefined;
         const enrichment = {
           ...resolved.enrichment,
           ...(notes.has(document.id)
             ? { notes: notes.get(document.id) ?? [] }
             : {}),
+          documentTitle: parent?.title,
         };
         if ((notes.get(document.id)?.length ?? 0) > 256)
           throw new Error(
@@ -437,7 +442,6 @@ export async function sync(
             "Existing Marfa values differ from Reader. First adoption preserves them without sending an edit upstream; a subsequent local edit creates a new intent.",
           );
         if (document.category === "highlight" && document.parent_id) {
-          const parent = await get(document.parent_id);
           if (parent === undefined) {
             mapped.entry.connections = { references: [] };
             mapped.conditions.push("unresolved-parent");

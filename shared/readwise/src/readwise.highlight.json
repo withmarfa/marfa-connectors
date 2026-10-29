@@ -36,22 +36,27 @@
     },
     "highlighted_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original highlighting timestamp."
     },
     "readwise_created_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original creation timestamp."
     },
     "readwise_updated_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original update timestamp."
     },
     "url": {
       "type": "string",
+      "format": "url",
       "description": "The highlight URL as Readwise supplied it."
     },
     "readwise_url": {
       "type": "string",
+      "format": "url",
       "description": "The highlight page in Readwise."
     },
     "location": {
@@ -117,30 +122,37 @@
     },
     "reader_published_date": {
       "type": "string",
+      "format": "date",
       "description": "The original Reader published date."
     },
     "reader_created_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader created at."
     },
     "reader_updated_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader updated at."
     },
     "reader_first_opened_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader first opened at."
     },
     "reader_last_opened_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader last opened at."
     },
     "reader_saved_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader saved at."
     },
     "reader_last_moved_at": {
       "type": "string",
+      "format": "datetime",
       "description": "The original Reader last moved at."
     },
     "reader_highlight_location": {
@@ -149,14 +161,17 @@
     },
     "reader_url": {
       "type": "string",
+      "format": "url",
       "description": "The original Reader url."
     },
     "reader_source_url": {
       "type": "string",
+      "format": "url",
       "description": "The original Reader source url."
     },
     "reader_image_url": {
       "type": "string",
+      "format": "url",
       "description": "The original Reader image url."
     },
     "reader_language": {
@@ -177,7 +192,7 @@
     },
     "readwise_text": {
       "type": "string",
-      "description": "Export passage when it differs from the canonical Reader passage."
+      "description": "The export passage as Markdown, when it differs from the canonical Reader passage."
     },
     "category": {
       "type": "string",
@@ -186,11 +201,23 @@
     "reader_create": {
       "type": "boolean",
       "description": "Explicit intent to create this local item in Reader; cleared after its Reader identity is confirmed."
+    },
+    "title": {
+      "type": "string",
+      "description": "The passage's first paragraph or heading as plain text, at most 80 characters, or what the passage pictures when it has no words."
+    },
+    "body": {
+      "type": "string",
+      "description": "The whole passage as Markdown, pictures included."
+    },
+    "original_values": {
+      "type": "object",
+      "description": "Values Readwise sent in a shape their field's kind refuses, kept as sent, by field name."
     }
   },
   "display_hints": {
-    "title_field": "text",
-    "body_field": "note"
+    "title_field": "title",
+    "body_field": "body"
   },
   "link_field": "canonical_key"
 }

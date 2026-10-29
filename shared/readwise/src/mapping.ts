@@ -1,5 +1,23 @@
 import type { Entry } from "@withmarfa/connector";
+import { highlightDisplay } from "./display.js";
 import type { Highlight, Source, Tag } from "./export.js";
+import { fitKinds, kindsOf } from "./kinds.js";
+import { highlightType, sourceType } from "./types.js";
+
+export const sourceKinds = kindsOf(sourceType, {
+  url: "url",
+  image_url: "url",
+  published_at: "datetime",
+});
+export const highlightKinds = kindsOf(highlightType);
+/** The title a source carries in the export, when it has one. */
+export function sourceTitle(source: Source): string | undefined {
+  return source.title?.trim()
+    ? source.title
+    : source.readable_title?.trim()
+      ? source.readable_title
+      : undefined;
+}
 
 export function identity(
   account: string,
@@ -51,33 +69,32 @@ export function date(value: string | null | undefined): string | undefined {
 export function mapSource(account: string, source: Source): Entry {
   if (source.is_deleted === true)
     throw new Error("Readwise source tombstones must be archived, not mapped");
+  const values: Record<string, unknown> = {
+    canonical_key: identity(account, "source", source.user_book_id),
+    readwise_id: String(source.user_book_id),
+    account,
+    title:
+      sourceTitle(source) ?? `Readwise source ${String(source.user_book_id)}`,
+    readable_title: source.readable_title,
+    author: source.author,
+    description: source.summary,
+    notes: source.document_note,
+    url: webUrl(source.source_url) ?? webUrl(source.readwise_url),
+    image_url: webUrl(source.cover_image_url),
+    category: source.category,
+    readwise_source: source.source,
+    source_url: source.source_url,
+    cover_image_url: source.cover_image_url,
+    unique_url: source.unique_url,
+    readwise_url: source.readwise_url,
+    external_id: source.external_id,
+    asin: source.asin,
+    tags: normalizedTags(source.book_tags),
+  };
+  fitKinds(values, sourceKinds);
   return {
     source_id: identity(account, "source", source.user_book_id),
-    properties: properties({
-      canonical_key: identity(account, "source", source.user_book_id),
-      readwise_id: String(source.user_book_id),
-      account,
-      title: source.title?.trim()
-        ? source.title
-        : source.readable_title?.trim()
-          ? source.readable_title
-          : `Readwise source ${String(source.user_book_id)}`,
-      readable_title: source.readable_title,
-      author: source.author,
-      description: source.summary,
-      notes: source.document_note,
-      url: webUrl(source.source_url) ?? webUrl(source.readwise_url),
-      image_url: webUrl(source.cover_image_url),
-      category: source.category,
-      readwise_source: source.source,
-      source_url: source.source_url,
-      cover_image_url: source.cover_image_url,
-      unique_url: source.unique_url,
-      readwise_url: source.readwise_url,
-      external_id: source.external_id,
-      asin: source.asin,
-      tags: normalizedTags(source.book_tags),
-    }),
+    properties: properties(values),
   };
 }
 const colors = new Set(["yellow", "blue", "green", "pink", "orange", "purple"]);
@@ -93,48 +110,52 @@ export function mapHighlight(
   account: string,
   sourceId: number,
   highlight: Highlight,
+  documentTitle?: string,
 ): Entry {
   if (highlight.is_deleted === true || typeof highlight.text !== "string")
     throw new Error(
       "Readwise highlight tombstones must be archived, not mapped",
     );
+  const values: Record<string, unknown> = {
+    canonical_key: identity(account, "highlight", highlight.id),
+    readwise_id: String(highlight.id),
+    account,
+    readwise_source_id: String(sourceId),
+    text: highlight.text,
+    ...highlightDisplay(highlight.text, undefined, documentTitle),
+    note: highlight.note,
+    color:
+      highlight.color && colors.has(highlight.color)
+        ? highlight.color
+        : undefined,
+    readwise_color: highlight.color,
+    locator_type: highlight.location_type
+      ? locators.get(highlight.location_type)
+      : undefined,
+    start_location:
+      highlight.location == null ? undefined : String(highlight.location),
+    end_location:
+      highlight.end_location == null
+        ? undefined
+        : String(highlight.end_location),
+    location: highlight.location,
+    location_type: highlight.location_type,
+    highlighted_at: highlight.highlighted_at,
+    readwise_created_at: highlight.created_at,
+    readwise_updated_at: highlight.updated_at,
+    external_id: highlight.external_id,
+    url: highlight.url,
+    readwise_url: highlight.readwise_url,
+    tags: normalizedTags(highlight.tags),
+    is_favorite: highlight.is_favorite,
+    is_discard: highlight.is_discard,
+  };
+  fitKinds(values, highlightKinds);
   return {
     source_id: identity(account, "highlight", highlight.id),
     occurred_at: date(highlight.highlighted_at),
     changed_at: date(highlight.updated_at),
-    properties: properties({
-      canonical_key: identity(account, "highlight", highlight.id),
-      readwise_id: String(highlight.id),
-      account,
-      readwise_source_id: String(sourceId),
-      text: highlight.text,
-      note: highlight.note,
-      color:
-        highlight.color && colors.has(highlight.color)
-          ? highlight.color
-          : undefined,
-      readwise_color: highlight.color,
-      locator_type: highlight.location_type
-        ? locators.get(highlight.location_type)
-        : undefined,
-      start_location:
-        highlight.location == null ? undefined : String(highlight.location),
-      end_location:
-        highlight.end_location == null
-          ? undefined
-          : String(highlight.end_location),
-      location: highlight.location,
-      location_type: highlight.location_type,
-      highlighted_at: highlight.highlighted_at,
-      readwise_created_at: highlight.created_at,
-      readwise_updated_at: highlight.updated_at,
-      external_id: highlight.external_id,
-      url: highlight.url,
-      readwise_url: highlight.readwise_url,
-      tags: normalizedTags(highlight.tags),
-      is_favorite: highlight.is_favorite,
-      is_discard: highlight.is_discard,
-    }),
+    properties: properties(values),
     connections: {
       references: [
         { type: "readwise.source", id: identity(account, "source", sourceId) },

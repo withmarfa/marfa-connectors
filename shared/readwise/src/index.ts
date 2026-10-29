@@ -1,4 +1,6 @@
 export * from "./export.js";
+export * from "./display.js";
+export * from "./kinds.js";
 export * from "./mapping.js";
 export * from "./types.js";
 export * from "./reader.js";

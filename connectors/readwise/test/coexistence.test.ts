@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Item, Entry } from "@withmarfa/connector";
 import {
+  mapReaderHighlight,
   mapSource,
   readerIdentity,
   type ReaderReader,
@@ -283,5 +284,118 @@ describe("Highlights coexistence", () => {
         properties: held.properties,
       }).fields?.["notes"],
     ).toBe("observe");
+  });
+  describe("a Reader-managed picture highlight", () => {
+    const picture =
+      "![](https://readwise-assets.s3.amazonaws.com/media/picture.png)";
+    const document = {
+      id: "hi",
+      category: "highlight",
+      parent_id: "doc",
+      content: "",
+      notes: "",
+    };
+    function managedRow(properties: Record<string, unknown> = {}): Item {
+      return {
+        ...row("one:reader-highlight:hi"),
+        type: "readwise.highlight",
+        properties: {
+          account: "one",
+          canonical_key: readerIdentity("one", "highlight", "hi"),
+          reader_id: "hi",
+          reader_managed: true,
+          reader_parent_id: "doc",
+          category: "highlight",
+          text: "",
+          note: "",
+          readwise_id: "42",
+          readwise_source_id: "7",
+          readwise_text: picture,
+          external_id: "hi",
+          ...properties,
+        },
+      };
+    }
+    // Each run reads the row the last run wrote, as each connector does.
+    function runs(exportTitle: string | undefined) {
+      const held = managedRow();
+      const f = setup([held]);
+      f.reader.document = (id) =>
+        Promise.resolve(id === "hi" ? document : undefined);
+      return {
+        reader() {
+          held.properties = mapReaderHighlight("one", document, {
+            properties: held.properties,
+            sourceId: held.source_id ?? "",
+            documentTitle: "Reader Title",
+          }).entry.properties;
+          return held.properties;
+        },
+        async highlights() {
+          const entry = await f.shared.highlight(
+            {
+              user_book_id: 7,
+              ...(exportTitle !== undefined && { title: exportTitle }),
+              external_id: "doc",
+              source: "reader",
+              highlights: [],
+            },
+            { id: 42, text: picture, external_id: "hi" },
+          );
+          if (entry === undefined) throw new Error("No entry");
+          held.properties = entry.properties;
+          return held.properties;
+        },
+      };
+    }
+    it.each(["Export Title", undefined])(
+      "keeps Reader's title when the Reader connector runs first, export title %s",
+      async (exportTitle) => {
+        const run = runs(exportTitle);
+        const written = { ...run.reader() };
+        expect(written).toMatchObject({
+          title: "Picture from Reader Title",
+          body: picture,
+        });
+        expect(await run.highlights()).toEqual(written);
+        expect(run.reader()).toEqual(written);
+        expect(await run.highlights()).toEqual(written);
+      },
+    );
+    it.each(["Export Title", undefined])(
+      "settles on Reader's title when the Highlights connector runs first, export title %s",
+      async (exportTitle) => {
+        const run = runs(exportTitle);
+        expect((await run.highlights())["title"]).toBe(
+          exportTitle === undefined ? "Picture" : `Picture from ${exportTitle}`,
+        );
+        const written = { ...run.reader() };
+        expect(written).toMatchObject({
+          title: "Picture from Reader Title",
+          body: picture,
+        });
+        expect(await run.highlights()).toEqual(written);
+        expect(run.reader()).toEqual(written);
+      },
+    );
+    it("takes a date the export refuses out of the field it held", async () => {
+      const held = managedRow({ highlighted_at: "2025-01-01T00:00:00Z" });
+      const f = setup([held]);
+      f.reader.document = (id) =>
+        Promise.resolve(id === "hi" ? document : undefined);
+      const entry = await f.shared.highlight(
+        {
+          user_book_id: 7,
+          external_id: "doc",
+          source: "reader",
+          highlights: [],
+        },
+        { id: 42, text: picture, external_id: "hi", highlighted_at: "soon" },
+      );
+      expect(entry?.properties["highlighted_at"]).toBeUndefined();
+      expect(entry?.properties["original_values"]).toEqual({
+        highlighted_at: "soon",
+      });
+    });
   });
 });
