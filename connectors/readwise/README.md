@@ -126,8 +126,8 @@ marfa types replace readwise.highlight --file shared/readwise/src/readwise.highl
 
 The replacement adds `title`, `body` and `original_values`, sets the highlight's display fields, and changes no stored item. Restart the connectors straight afterward. Because their types changed, the first run of each connector reads the whole account again and rewrites each row in place, under the same natural key:
 
-- Every highlight gains its `title` and `body`. No other value changes.
-- A row holding a blank address or date loses that blank value. Until then, an edit to that row in Marfa is refused, because Marfa checks the whole row on each write.
-- Rows that already fit are left unchanged.
+- Every highlight gains its `title` and `body`.
+- A row holding a blank address or date loses that blank value, and a value its field's kind refuses moves to `original_values`. Until then, an edit to that row in Marfa is refused, because Marfa checks the whole row on each write.
+- A source whose values already fit is left unchanged.
 
 No item is created, duplicated or deleted. With outbound edits on, `title` and `body` are read only and are never sent to Readwise; `note` and the other editable fields carry edits as before.
