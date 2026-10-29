@@ -12,7 +12,7 @@ A valid highlighting time supplies the item's `occurred_at`; a valid update time
 
 ### Highlight titles
 
-A highlight shows its `title` and `body`, which both connectors write the same way. `body` is the whole passage as Markdown, pictures included, exactly as Readwise gives it. `title` is the passage's first line as plain text, without Markdown, cut at a word boundary to at most 80 characters with an ellipsis. A passage with only a picture is titled `Picture from <document title>`, or `Picture` when the document's title is unknown. `text` keeps the passage as before, and `note` stays the separate annotation.
+A highlight shows its `title` and `body`, which both connectors write the same way. `body` is the whole passage as Markdown, pictures included, exactly as Readwise gives it. `title` is the passage's first paragraph as plain text, without Markdown, cut at a word boundary to at most 80 characters with an ellipsis. Only a blank line ends a paragraph, so a single line break, such as one Reader puts around a link or a soft wrap, reads as a space. The Readwise Reader connector takes the title from Reader's passage, or from the export passage when Reader's has no words. A passage with only a picture is titled `Picture from <document title>`, or `Picture` when the document's title is unknown. `text` keeps the passage as before, and `note` stays the separate annotation.
 
 ### Field kinds
 

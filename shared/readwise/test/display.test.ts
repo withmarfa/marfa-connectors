@@ -32,7 +32,7 @@ function reader(content: string, extra: Record<string, unknown> = {}) {
 }
 
 describe("highlight title and body", () => {
-  it("names a highlight by the first line of its passage as plain text", () => {
+  it("names a highlight by the first paragraph of its passage as plain text", () => {
     expect(
       highlightDisplay("# 9:06 PM\n\nJesse asks", undefined, "Doc"),
     ).toEqual({
@@ -45,12 +45,42 @@ describe("highlight title and body", () => {
         undefined,
         undefined,
       ).title,
-    ).toBe("Bold and a link & code");
+    ).toBe("Bold and a link & code second line");
     expect(
       highlightDisplay("- first item\n- second", undefined, undefined).title,
-    ).toBe("first item");
+    ).toBe("first item second");
   });
-  it("cuts a long first line at a word boundary to 80 characters with an ellipsis", () => {
+  it("joins a paragraph Reader broke around a link or a soft wrap", () => {
+    expect(
+      highlightDisplay(
+        "It may be a\nfeature request\n that never ships.\n \t\nNext paragraph",
+        undefined,
+        undefined,
+      ).title,
+    ).toBe("It may be a feature request that never ships.");
+    expect(
+      highlightDisplay("First\r\n\r\nSecond", undefined, undefined).title,
+    ).toBe("First");
+    expect(
+      highlightDisplay("Line one<br>line two", undefined, undefined).title,
+    ).toBe("Line one line two");
+    expect(
+      highlightDisplay(
+        "We recently introduced\nMarfa, a store\nfor one person.",
+        undefined,
+        undefined,
+      ).title,
+    ).toBe("We recently introduced Marfa, a store for one person.");
+  });
+  it("takes the title from the export passage only when Reader's has no words", () => {
+    expect(
+      highlightDisplay("Plain words", "*Export* words", undefined).title,
+    ).toBe("Plain words");
+    expect(
+      highlightDisplay("", `${picture}\n\n*Export*\nwords`, undefined).title,
+    ).toBe("Export words");
+  });
+  it("cuts a long title at a word boundary to 80 characters with an ellipsis", () => {
     const line =
       "Compared with bleeding-edge models released just months ago, it feels incremental. And more.";
     const title = shortened(line);
@@ -133,7 +163,7 @@ describe("highlight title and body", () => {
       },
     );
     expect(exported.properties["title"]).toBe(
-      "Strategy is a coherent response",
+      "Strategy is a coherent response to a challenge",
     );
     expect(read.entry.properties["title"]).toBe(exported.properties["title"]);
     expect(read.entry.properties["body"]).toBe(exported.properties["body"]);
@@ -146,7 +176,7 @@ describe("highlight title and body", () => {
     });
   });
   it("keeps the whole passage beside a placeholder body when it exceeds a property", () => {
-    const passage = `Opening line\n${"x".repeat(100_001)}`;
+    const passage = `Opening line\n\n${"x".repeat(100_001)}`;
     const mapped = mapReaderHighlight("one", reader(passage));
     expect(mapped.entry.properties).toMatchObject({
       title: "Opening line",

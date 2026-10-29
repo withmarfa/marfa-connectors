@@ -52,6 +52,7 @@ function inline(
         break;
       case "html":
         if (/<img\b/i.test((token as Tokens.HTML).text)) reading.picture = true;
+        if (/^<br\b/i.test((token as Tokens.HTML).text)) text += "\n";
         break;
       case "br":
         text += "\n";
@@ -124,6 +125,21 @@ function read(markdown: string): Reading {
   return reading;
 }
 
+/**
+ * The first paragraph that has words, as one line of plain text. Only a blank
+ * line ends a paragraph: Reader breaks a passage's lines around inline links
+ * and soft wraps, so a single line break is a space.
+ */
+function firstParagraph(markdown: string): string | undefined {
+  for (const paragraph of markdown
+    .replace(/\r\n?/g, "\n")
+    .split(/\n[^\S\n]*\n/)) {
+    const words = read(paragraph).lines.join(" ");
+    if (words !== "") return words;
+  }
+  return undefined;
+}
+
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 /** At most 80 characters, cut back to a word boundary, with an ellipsis. */
 export function shortened(text: string): string {
@@ -145,8 +161,8 @@ export interface HighlightDisplay {
  * The title and body a highlight shows. The body is the passage as Markdown,
  * whole: the export passage keeps pictures and formatting that Reader's plain
  * passage drops, unless Readwise cut it at its limit. The title is the first
- * line of the plain passage, or names the picture or highlight when the
- * passage has no words.
+ * paragraph of Reader's plain passage, or of the export passage when Reader's
+ * has no words, or names the picture or highlight when neither has words.
  */
 export function highlightDisplay(
   text: string,
@@ -161,11 +177,14 @@ export function highlightDisplay(
       ? exportText
       : text;
   const body = marked.trim() === "" ? undefined : marked;
-  const plain = read(text);
-  const rich = body === undefined || body === text ? plain : read(body);
-  const first = plain.lines[0] ?? rich.lines[0];
+  const first =
+    firstParagraph(text) ??
+    (body === undefined || body === text ? undefined : firstParagraph(body));
   if (first !== undefined) return { title: shortened(first), body };
-  const word = plain.picture || rich.picture ? "Picture" : "Highlight";
+  const word =
+    read(text).picture || (body !== undefined && read(body).picture)
+      ? "Picture"
+      : "Highlight";
   const named = documentTitle?.replace(/\s+/g, " ").trim();
   if (named) return { title: shortened(`${word} from ${named}`), body };
   // Without the document's title, a caller keeps the one a fuller caller set.

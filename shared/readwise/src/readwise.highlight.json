@@ -204,7 +204,7 @@
     },
     "title": {
       "type": "string",
-      "description": "The passage's first line as plain text, at most 80 characters, or what the passage pictures when it has no words."
+      "description": "The passage's first paragraph as plain text, at most 80 characters, or what the passage pictures when it has no words."
     },
     "body": {
       "type": "string",
