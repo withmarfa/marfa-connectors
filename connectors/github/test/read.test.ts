@@ -1884,6 +1884,17 @@ describe("a personal access token run", () => {
     expect(JSON.stringify(marfa.runs)).toContain("[redacted]");
   });
 
+  it.each(["soon", "-1", "1.5"])(
+    "refuses a GITHUB_REQUEST_SPACING_MS of %j, which is not a whole number of milliseconds",
+    async (spacing) => {
+      const result = await once({ GITHUB_REQUEST_SPACING_MS: spacing });
+      expect(result.code).toBe(2);
+      expect(result.output).toContain(
+        "GITHUB_REQUEST_SPACING_MS must be a whole number of milliseconds",
+      );
+    },
+  );
+
   it("refuses to start when both App settings and token are set", async () => {
     const result = await once({
       GITHUB_PERSONAL_TOKEN: personalToken,
