@@ -276,10 +276,31 @@ export class SharedRows {
           );
         notes.push(note);
       }
+    const properties = { ...current.properties };
+    if (exportEntry !== undefined) {
+      const {
+        title,
+        body,
+        original_values: refused,
+        ...exported
+      } = exportEntry.properties;
+      Object.assign(properties, exported);
+      // Reader's title and body stand; the export's fill only a row without them.
+      if (title !== undefined) properties["title"] ??= title;
+      if (body !== undefined) properties["body"] ??= body;
+      // The export's refused values replace its earlier ones, and a field it
+      // now refuses no longer holds the value it sent before. Reader's own
+      // refused values are found again when its row is mapped.
+      if (typeof refused === "object" && refused !== null) {
+        for (const field of Object.keys(refused))
+          Reflect.deleteProperty(properties, field);
+        properties["original_values"] = refused;
+      } else delete properties["original_values"];
+    }
     const enrichment = {
       notes,
       ...(current.source_id ? { sourceId: current.source_id } : {}),
-      properties: { ...current.properties, ...exportEntry?.properties },
+      properties,
     };
     // An export key and passage never replace Reader's established canonical fields.
     if (type === "readwise.highlight" && exportEntry !== undefined)
