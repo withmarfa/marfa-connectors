@@ -312,3 +312,316 @@ describe("the bulk door", () => {
     expect(server.rows).toHaveLength(1);
   });
 });
+
+// `edges/read-hydrated-withheld`, `edges/read-item-withheld` and
+// `edges/read-list-withheld`: a read leaves out an edge whose edge type the key
+// may not read, or whose source item's type it may not read. Each read is
+// shown beside the same read with the grant, so a read that leaves an edge
+// out cannot be one that never returned it.
+describe("an edge the key may not read", () => {
+  let source: string;
+  let target: string;
+
+  beforeEach(() => {
+    server.types.set(...typed("test.entry"));
+    source = server.insert("a:1", {}, "test.entry").id;
+    target = server.insert("a:2", {}, "test.entry").id;
+    server.drawEdge(source, target, "test.blocks");
+    server.drawEdge(source, target, "test.secret");
+  });
+
+  const kinds = (edges: unknown): string[] =>
+    (edges as { edge_type: string }[]).map((edge) => edge.edge_type).sort();
+
+  const blocks = (item: unknown): string[] =>
+    Object.keys((item as { edges: Record<string, unknown> }).edges).sort();
+
+  async function stream(): Promise<string[]> {
+    const abort = new AbortController();
+    const response = await fetch(`${server.url}/events`, {
+      headers: {
+        Authorization: `Bearer ${server.key}`,
+        "Last-Event-ID": "0",
+      },
+      signal: abort.signal,
+    });
+    const decoder = new TextDecoder();
+    let text = "";
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      text += decoder.decode(chunk, { stream: true });
+      if (text.includes("event: stream_live")) break;
+    }
+    abort.abort();
+    return [...text.matchAll(/"edge_type":"(test\.[a-z]+)"/g)]
+      .map((match) => match[1] ?? "")
+      .sort();
+  }
+
+  const reads: {
+    name: string;
+    read: () => Promise<string[]>;
+  }[] = [
+    {
+      name: "POST /items/lookup",
+      read: async () =>
+        blocks(
+          (
+            (
+              await call("POST", "/items/lookup", {
+                type: "test.entry",
+                ids: [source],
+                include: ["edges"],
+              })
+            ).body["data"] as unknown[]
+          )[0],
+        ),
+    },
+    {
+      name: "GET /items/{id}",
+      read: async () =>
+        blocks((await call("GET", `/items/${source}`)).body["item"]),
+    },
+    {
+      name: "GET /items with the edges included",
+      read: async () =>
+        blocks(
+          (
+            (await call("GET", "/items?include=edges")).body[
+              "data"
+            ] as unknown[]
+          ).find((row) => (row as { id: string }).id === source),
+        ),
+    },
+    {
+      name: "GET /items/{id}/edges",
+      read: async () =>
+        kinds((await call("GET", `/items/${source}/edges`)).body["data"]),
+    },
+    {
+      name: "GET /items/{id}/backrefs",
+      read: async () =>
+        kinds((await call("GET", `/items/${target}/backrefs`)).body["data"]),
+    },
+    {
+      name: "GET /edges",
+      read: async () => kinds((await call("GET", "/edges")).body["data"]),
+    },
+    { name: "GET /events", read: stream },
+  ];
+
+  for (const { name, read } of reads) {
+    it(`is left out of ${name}, and carried once the key holds the grant`, async () => {
+      server.grants = { edge_permissions: { "test.blocks": "read" } };
+      expect(await read()).toEqual(["test.blocks"]);
+
+      server.grants = {
+        edge_permissions: { "test.blocks": "read", "test.secret": "read" },
+      };
+      expect(await read()).toEqual(["test.blocks", "test.secret"]);
+    });
+  }
+
+  it("is read by a write grant, a namespace wildcard and the global wildcard, and by nothing else", async () => {
+    const held = async (edge_permissions: Record<string, string>) => {
+      server.grants = { edge_permissions };
+      return blocks(
+        (
+          (
+            await call("POST", "/items/lookup", {
+              type: "test.entry",
+              ids: [source],
+              include: ["edges"],
+            })
+          ).body["data"] as unknown[]
+        )[0],
+      );
+    };
+    expect(await held({ "test.blocks": "write" })).toEqual(["test.blocks"]);
+    expect(await held({ "test.*": "read" })).toEqual([
+      "test.blocks",
+      "test.secret",
+    ]);
+    expect(await held({ "*": "read" })).toEqual(["test.blocks", "test.secret"]);
+    expect(await held({ "tes.*": "read", "test.blocksmith": "read" })).toEqual(
+      [],
+    );
+    expect(await held({})).toEqual([]);
+  });
+
+  it("leaves no empty block behind where every edge of a type is withheld", async () => {
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const { body } = await call("GET", `/items/${source}`);
+    expect(body["item"]).toHaveProperty("edges", {
+      "test.blocks": {
+        data: [expect.objectContaining({ edge_type: "test.blocks" })],
+        next_cursor: null,
+      },
+    });
+  });
+
+  it("is left out where the key may not read the type of its source, and carried where it may", async () => {
+    server.types.set(...typed("test.other"));
+    const foreign = server.insert("b:1", {}, "test.other").id;
+    server.drawEdge(foreign, target, "test.refers");
+    const backrefs = async () =>
+      kinds((await call("GET", `/items/${target}/backrefs`)).body["data"]);
+
+    // The anchor's type is read, the source's is not.
+    server.grants = {
+      edge_permissions: { "test.refers": "read" },
+      type_permissions: { "test.entry": "read" },
+    };
+    expect(await backrefs()).toEqual([]);
+
+    server.grants = {
+      edge_permissions: { "test.refers": "read" },
+      type_permissions: { "test.entry": "read", "test.other": "read" },
+    };
+    expect(await backrefs()).toEqual(["test.refers"]);
+  });
+
+  it("is read as one with no type to refuse where its source row cannot be found", async () => {
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    server.edges = server.edges.map((edge) => ({
+      ...edge,
+      source_id: "gone",
+    }));
+    expect(kinds((await call("GET", "/edges")).body["data"])).toEqual([
+      "test.blocks",
+    ]);
+  });
+
+  it("is not read where an exact none shadows a broader read", async () => {
+    server.grants = {
+      edge_permissions: { "test.blocks": "none", "test.*": "read" },
+    };
+    expect(kinds((await call("GET", "/edges")).body["data"])).toEqual([
+      "test.secret",
+    ]);
+    server.grants = { edge_permissions: { "test.*": "read" } };
+    expect(kinds((await call("GET", "/edges")).body["data"])).toEqual([
+      "test.blocks",
+      "test.secret",
+    ]);
+  });
+
+  for (const door of ["edges", "backrefs"]) {
+    it(`is not listed by GET /items/{id}/${door} for an anchor the key may not read, which answers as a missing item`, async () => {
+      server.types.set(...typed("test.other"));
+      const anchor = server.insert("b:1", {}, "test.other").id;
+      server.drawEdge(anchor, anchor, "test.blocks");
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "read" },
+      };
+      const refused = await call("GET", `/items/${anchor}/${door}`);
+      expect(refused.status).toBe(404);
+      expect(refused.body["error"]).toMatchObject({ code: "item_not_found" });
+      const absent = await call(
+        "GET",
+        `/items/0190a000-0000-7000-8000-ffffffffffff/${door}`,
+      );
+      expect(absent.status).toBe(404);
+      expect(absent.body["error"]).toMatchObject({ code: "item_not_found" });
+
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "read", "test.other": "read" },
+      };
+      const read = await call("GET", `/items/${anchor}/${door}`);
+      expect(read.status).toBe(200);
+      expect(kinds(read.body["data"])).toEqual(["test.blocks"]);
+    });
+
+    it(`refuses GET /items/{id}/${door} 403 for a key that reaches no type, before the anchor is looked at`, async () => {
+      const anchor = server.insert("b:1", {}, "test.entry").id;
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "none" },
+      };
+      for (const id of [anchor, "0190a000-0000-7000-8000-ffffffffffff"]) {
+        const refused = await call("GET", `/items/${id}/${door}`);
+        expect(refused.status).toBe(403);
+        expect(refused.body["error"]).toMatchObject({
+          code: "type_not_permitted",
+        });
+      }
+
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "read" },
+      };
+      expect((await call("GET", `/items/${anchor}/${door}`)).status).toBe(200);
+    });
+  }
+
+  it("is left out of a GET /edges page after the page is cut, so the page is short and its cursor goes on", async () => {
+    // Newest first: test.secret (withheld) heads the listing, test.blocks
+    // follows. Filtering before the cut would put test.blocks on the first
+    // page and end the listing there.
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const first = await call("GET", "/edges?limit=1");
+    expect(first.body["data"]).toEqual([]);
+    expect(first.body["next_cursor"]).toBe("1");
+    const second = await call("GET", "/edges?limit=1&cursor=1");
+    expect(kinds(second.body["data"])).toEqual(["test.blocks"]);
+    expect(second.body["next_cursor"]).toBeNull();
+  });
+
+  it("is carried by a write, as a read carries it, and by no move between states", async () => {
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const answers = [
+      await call("DELETE", `/items/${source}`),
+      await call("POST", `/items/${source}/restore`),
+      await call("POST", `/items/${source}/transition`, { state: "archived" }),
+    ];
+    expect(answers[0]?.status).toBe(200);
+    for (const answer of answers.slice(1)) {
+      expect(answer.status).toBe(200);
+      expect(answer.body["item"]).not.toHaveProperty("edges");
+    }
+    const written = await call("PATCH", `/items/${source}`, {
+      version: (answers[2]?.body["item"] as { version: number }).version,
+      properties: {},
+    });
+    expect(written.status).toBe(200);
+    expect(blocks(written.body["item"])).toEqual(["test.blocks"]);
+  });
+
+  it("is left out of a page cut before it, which keeps the cursor of the whole listing", async () => {
+    const [readable] = server.edges.filter(
+      (edge) => edge.edge_type === "test.blocks",
+    );
+    if (readable === undefined) throw new Error("no readable edge");
+    server.removeEdge(readable.id);
+    server.drawEdge(source, target, "test.blocks");
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const first = await call("GET", `/items/${source}/edges?limit=1`);
+    expect(first.body["data"]).toEqual([]);
+    expect(first.body["next_cursor"]).toBe("1");
+    const second = await call("GET", `/items/${source}/edges?limit=1&cursor=1`);
+    expect(kinds(second.body["data"])).toEqual(["test.blocks"]);
+    expect(second.body["next_cursor"]).toBeNull();
+  });
+
+  it("keeps the cursor of a hydrated block cut at its cap", async () => {
+    server.edgePageCap = 1;
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const third = server.insert("a:3", {}, "test.entry").id;
+    server.drawEdge(source, third, "test.blocks");
+    const { body } = await call("GET", `/items/${source}`);
+    const block = (
+      body["item"] as {
+        edges: Record<string, { data: unknown[]; next_cursor: string | null }>;
+      }
+    ).edges["test.blocks"];
+    expect(block?.data).toHaveLength(1);
+    expect(block?.next_cursor).toBe("1");
+  });
+
+  it("is still announced as removed on the stream where its source was purged, for a key that reads its kind and type", async () => {
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    server.purge("a:1");
+    expect(await stream()).toEqual(["test.blocks", "test.blocks"]);
+  });
+});
