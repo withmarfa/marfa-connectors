@@ -401,7 +401,7 @@ describe("the spacing between writes", () => {
     return (arrived[1] ?? 0) - (arrived[0] ?? 0);
   }
 
-  it("is the throttling library's second where no setting changes it", async () => {
+  it("keeps the throttling library's spacing where no setting changes it", async () => {
     expect(await between(0)).toBeLessThan(500);
     expect(await between(undefined)).toBeGreaterThanOrEqual(900);
   });
