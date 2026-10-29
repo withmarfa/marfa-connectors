@@ -1680,7 +1680,7 @@ export class ScriptedServer {
       this.rows.push(row);
       this.announce("item.created", row);
       send(201, {
-        item: this.wire(row),
+        item: { ...this.wire(row), edges: {} },
         metadata: this.metadata(row),
       });
       return;
@@ -1818,6 +1818,13 @@ export class ScriptedServer {
       (parts[2] === "edges" || parts[2] === "backrefs") &&
       parts[1] !== undefined
     ) {
+      // The anchor is read as `requireReadableRow` reads it, the bin included:
+      // one the key may not read answers as a missing one.
+      const anchor = this.rows.find((candidate) => candidate.id === parts[1]);
+      if (anchor === undefined || this.permission(anchor.type) === "none") {
+        refuse(404, "item_not_found");
+        return;
+      }
       const type = url.searchParams.get("edge_type");
       const from = Number(url.searchParams.get("cursor") ?? "0");
       const limit = Number(url.searchParams.get("limit") ?? "50");
@@ -1919,7 +1926,7 @@ export class ScriptedServer {
         }
         this.restore(id);
         send(200, {
-          item: { ...this.wire(row), edges: this.hydrated(row.id) },
+          item: this.wire(row),
           metadata: this.metadata(row),
         });
         return;
@@ -1956,7 +1963,7 @@ export class ScriptedServer {
         }
         this.transition(id, state);
         send(200, {
-          item: { ...this.wire(row), edges: this.hydrated(row.id) },
+          item: this.wire(row),
           metadata: this.metadata(row),
         });
         return;
@@ -2411,22 +2418,25 @@ export class ScriptedServer {
 
   private readsEdgeType(edgeType: string): boolean {
     const held = this.grants.edge_permissions ?? this.minted.edge_permissions;
-    return resolve(held, edgeType) !== undefined;
+    const level = resolve(held, edgeType);
+    return level === "read" || level === "write";
   }
 
+  /** A source the store cannot find is read as one with no type to refuse,
+   *  as `sourceTypeReadable` reads it. */
   private readsSourceOf(edge: EdgeRow): boolean {
-    return this.permission(this.byId(edge.source_id).type) !== "none";
+    const source = this.rows.find((row) => row.id === edge.source_id);
+    return source === undefined || this.permission(source.type) !== "none";
   }
 
   /** What the key holds on a type, as marfa's `resolveTypePermission`
    *  (packages/shared/src/validation.ts) resolves it. */
   private permission(type: string): string {
-    return (
-      resolve(
-        this.grants.type_permissions ?? this.minted.type_permissions,
-        type,
-      ) ?? "none"
+    const level = resolve(
+      this.grants.type_permissions ?? this.minted.type_permissions,
+      type,
     );
+    return level === "read" || level === "write" ? level : "none";
   }
 
   private bulk(input: Record<string, unknown>): unknown {
@@ -2688,7 +2698,7 @@ export class ScriptedServer {
       );
     }
     send(200, {
-      item: this.wire(row),
+      item: { ...this.wire(row), edges: this.hydrated(row.id) },
       metadata: this.metadata(row),
     });
   }

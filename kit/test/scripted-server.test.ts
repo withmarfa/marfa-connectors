@@ -460,21 +460,106 @@ describe("an edge the key may not read", () => {
   });
 
   it("is left out where the key may not read the type of its source, and carried where it may", async () => {
-    server.grants = {
-      edge_permissions: { "test.blocks": "read" },
-      type_permissions: { "test.other": "read" },
-    };
-    expect(
-      kinds((await call("GET", `/items/${target}/backrefs`)).body["data"]),
-    ).toEqual([]);
+    server.types.set(...typed("test.other"));
+    const foreign = server.insert("b:1", {}, "test.other").id;
+    server.drawEdge(foreign, target, "test.refers");
+    const backrefs = async () =>
+      kinds((await call("GET", `/items/${target}/backrefs`)).body["data"]);
 
+    // The anchor's type is read, the source's is not.
     server.grants = {
-      edge_permissions: { "test.blocks": "read" },
+      edge_permissions: { "test.refers": "read" },
       type_permissions: { "test.entry": "read" },
     };
-    expect(
-      kinds((await call("GET", `/items/${target}/backrefs`)).body["data"]),
-    ).toEqual(["test.blocks"]);
+    expect(await backrefs()).toEqual([]);
+
+    server.grants = {
+      edge_permissions: { "test.refers": "read" },
+      type_permissions: { "test.entry": "read", "test.other": "read" },
+    };
+    expect(await backrefs()).toEqual(["test.refers"]);
+  });
+
+  it("is read as one with no type to refuse where its source row cannot be found", async () => {
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    server.edges = server.edges.map((edge) => ({
+      ...edge,
+      source_id: "gone",
+    }));
+    expect(kinds((await call("GET", "/edges")).body["data"])).toEqual([
+      "test.blocks",
+    ]);
+  });
+
+  it("is not read where an exact none shadows a broader read", async () => {
+    server.grants = {
+      edge_permissions: { "test.blocks": "none", "test.*": "read" },
+    };
+    expect(kinds((await call("GET", "/edges")).body["data"])).toEqual([
+      "test.secret",
+    ]);
+    server.grants = { edge_permissions: { "test.*": "read" } };
+    expect(kinds((await call("GET", "/edges")).body["data"])).toEqual([
+      "test.blocks",
+      "test.secret",
+    ]);
+  });
+
+  for (const door of ["edges", "backrefs"]) {
+    it(`is not listed by GET /items/{id}/${door} for an anchor the key may not read, which answers as a missing item`, async () => {
+      server.types.set(...typed("test.other"));
+      const anchor = server.insert("b:1", {}, "test.other").id;
+      server.drawEdge(anchor, anchor, "test.blocks");
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "read" },
+      };
+      const refused = await call("GET", `/items/${anchor}/${door}`);
+      expect(refused.status).toBe(404);
+      expect(refused.body["error"]).toMatchObject({ code: "item_not_found" });
+      expect((await call("GET", `/items/nothing/${door}`)).status).toBe(404);
+
+      server.grants = {
+        edge_permissions: { "*": "read" },
+        type_permissions: { "test.entry": "read", "test.other": "read" },
+      };
+      const read = await call("GET", `/items/${anchor}/${door}`);
+      expect(read.status).toBe(200);
+      expect(kinds(read.body["data"])).toEqual(["test.blocks"]);
+    });
+  }
+
+  it("is left out of a GET /edges page after the page is cut, so the page is short and its cursor goes on", async () => {
+    // Newest first: test.secret (withheld) heads the listing, test.blocks
+    // follows. Filtering before the cut would put test.blocks on the first
+    // page and end the listing there.
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const first = await call("GET", "/edges?limit=1");
+    expect(first.body["data"]).toEqual([]);
+    expect(first.body["next_cursor"]).toBe("1");
+    const second = await call("GET", "/edges?limit=1&cursor=1");
+    expect(kinds(second.body["data"])).toEqual(["test.blocks"]);
+    expect(second.body["next_cursor"]).toBeNull();
+  });
+
+  it("is carried by a write, as a read carries it, and by no move between states", async () => {
+    server.grants = { edge_permissions: { "test.blocks": "read" } };
+    const answers = [
+      await call("DELETE", `/items/${source}`),
+      await call("POST", `/items/${source}/restore`),
+      await call("POST", `/items/${source}/transition`, { state: "archived" }),
+    ];
+    expect(answers[0]?.status).toBe(200);
+    for (const answer of answers.slice(1)) {
+      expect(answer.status).toBe(200);
+      expect(answer.body["item"]).not.toHaveProperty("edges");
+    }
+    const written = await call("PATCH", `/items/${source}`, {
+      version: (answers[2]?.body["item"] as { version: number }).version,
+      properties: {},
+    });
+    expect(written.status).toBe(200);
+    expect(blocks(written.body["item"])).toEqual(["test.blocks"]);
   });
 
   it("is left out of a page cut before it, which keeps the cursor of the whole listing", async () => {
