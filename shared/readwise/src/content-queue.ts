@@ -51,6 +51,11 @@ export type Context = Pick<
     name: string,
   ): Pick<ScopedRunContext<EnvDeclaration>, "upsert" | "state">;
 };
+/** How long work that failed `attempts` runs in a row waits before it is
+ *  tried again: doubling from two minutes, at most a day. */
+export const retryDelay = (attempts: number): number =>
+  Math.min(24 * 60 * 60_000, 60_000 * 2 ** Math.min(attempts, 10));
+
 export async function document(
   client: ReaderReader,
   id: string,
@@ -598,9 +603,7 @@ export async function drainContent(
       queue.push({
         ...job,
         attempts,
-        due:
-          now() +
-          Math.min(24 * 60 * 60_000, 60_000 * 2 ** Math.min(attempts, 10)),
+        due: now() + retryDelay(attempts),
       });
     }
     await saveContentQueue(state, queue);

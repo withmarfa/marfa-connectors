@@ -24,6 +24,7 @@ import {
   holds,
   isAccountedContent,
   listPictures,
+  retryDelay,
   type Context,
   type PictureListing,
 } from "./content-queue.js";
@@ -54,7 +55,9 @@ export const maxPictureJobs = 256;
 export const maxPictureDocumentsPerRun = 25;
 /** At most this many refused pictures are remembered; the oldest go first. */
 export const maxPictureRefusals = 1024;
-const maxJobFailures = 3;
+/** A saved picture that lacks its connection is written again in at most
+ *  this many runs in a row, then left. */
+export const maxPictureRepairs = 5;
 const stateKey = "pictures";
 
 /** One run's share of picture fetches. Its time starts at the first fetch,
@@ -119,7 +122,10 @@ interface PictureJob {
   /** Pictures were saved or repaired in an earlier run, and are listed as
    *  kept only once Marfa shows them attached. */
   saved?: true;
+  /** Runs in a row that failed, waited or repaired a connection. */
   failures?: number;
+  /** Not tried again before this time, in milliseconds. */
+  due?: number;
 }
 interface PictureState {
   setting: PicturesSetting;
@@ -134,12 +140,21 @@ interface PictureState {
 const pictureKeyOf = (address: string): string => digest(address).slice(0, 24);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+const emptyState = (): PictureState => ({
+  setting: "addresses",
+  queue: [],
+  refused: {},
+});
 
+class InvalidPictureState extends Error {
+  constructor() {
+    super("Reader picture progress is invalid");
+  }
+}
 function pictureState(state: Pick<CheckpointState, "get">): PictureState {
   const value = state.get(stateKey);
-  if (value === undefined)
-    return { setting: "addresses", queue: [], refused: {} };
-  const invalid = () => new Error("Reader picture progress is invalid");
+  if (value === undefined) return emptyState();
+  const invalid = () => new InvalidPictureState();
   if (!isRecord(value)) throw invalid();
   const { setting, queue, refused, backfill } = value;
   if (
@@ -155,6 +170,11 @@ function pictureState(state: Pick<CheckpointState, "get">): PictureState {
         ["id", "canonical", "type"].some(
           (field) => typeof job[field] !== "string",
         ) ||
+        ["failures", "due"].some(
+          (field) =>
+            job[field] !== undefined && !Number.isSafeInteger(job[field]),
+        ) ||
+        (job["saved"] !== undefined && job["saved"] !== true) ||
         (job["attempts"] !== undefined &&
           (!isRecord(job["attempts"]) ||
             Object.values(job["attempts"]).some(
@@ -164,6 +184,25 @@ function pictureState(state: Pick<CheckpointState, "get">): PictureState {
   )
     throw invalid();
   return value as unknown as PictureState;
+}
+/** The saved picture state, or, when it cannot be read, an empty queue
+ *  saved in its place, so that picture work starts again. */
+async function loadPictureState(
+  state: CheckpointState,
+  log: Pick<RunContext<EnvDeclaration>["log"], "condition">,
+): Promise<PictureState> {
+  try {
+    return pictureState(state);
+  } catch (error) {
+    if (!(error instanceof InvalidPictureState)) throw error;
+    log.condition(
+      "readwise:reader-pictures-invalid",
+      "Reader picture progress could not be read; picture work starts again from an empty queue",
+    );
+    const fresh = emptyState();
+    await savePictureState(state, fresh);
+    return fresh;
+  }
 }
 async function savePictureState(
   state: Pick<CheckpointState, "checkpoint">,
@@ -184,7 +223,14 @@ export function pictureListing(
 ): PictureListing {
   return {
     setting,
-    refused: (address) => pictureState(state).refused[pictureKeyOf(address)],
+    refused: (address) => {
+      try {
+        return pictureState(state).refused[pictureKeyOf(address)];
+      } catch (error) {
+        if (error instanceof InvalidPictureState) return undefined;
+        throw error;
+      }
+    },
   };
 }
 
@@ -198,7 +244,7 @@ export async function admitPictures(
   jobs: readonly ContentJob[],
   log: Pick<RunContext<EnvDeclaration>["log"], "condition">,
 ): Promise<void> {
-  const saved = pictureState(state);
+  const saved = await loadPictureState(state, log);
   let changed = false;
   for (const job of jobs) {
     if (job.type !== "readwise.source") continue;
@@ -221,17 +267,20 @@ export async function admitPictures(
 /**
  * Records that the setting is off, so that turning it on again goes over
  * the documents kept meanwhile. Writes nothing where picture work never
- * ran.
+ * ran, and clears progress that cannot be read.
  */
 export async function pausePictures(state: CheckpointState): Promise<void> {
   if (state.get(stateKey) === undefined) return;
-  const saved = pictureState(state);
+  let saved: PictureState;
+  try {
+    saved = pictureState(state);
+  } catch (error) {
+    if (!(error instanceof InvalidPictureState)) throw error;
+    await savePictureState(state, emptyState());
+    return;
+  }
   if (saved.setting === "addresses") return;
-  await savePictureState(state, {
-    setting: "addresses",
-    queue: [],
-    refused: saved.refused,
-  });
+  await savePictureState(state, { ...emptyState(), refused: saved.refused });
 }
 
 type PictureContext = Pick<
@@ -262,8 +311,9 @@ export async function drainPictures(
     budget?: PictureBudget;
   },
 ): Promise<void> {
-  const budget = options.budget ?? new PictureBudget(options.now);
-  const saved = pictureState(state);
+  const now = options.now ?? Date.now;
+  const budget = options.budget ?? new PictureBudget(now);
+  const saved = await loadPictureState(state, context.log);
   if (saved.setting !== options.setting) {
     saved.setting = options.setting;
     saved.backfill = "";
@@ -300,6 +350,7 @@ export async function drainPictures(
     if (budget.reached() !== undefined) break;
     if (read >= maxPictureDocumentsPerRun) break;
     if (waiting.has(job.id)) continue;
+    if (job.due !== undefined && job.due > now()) continue;
     context.signal.throwIfAborted();
     let next: PictureJob | undefined;
     try {
@@ -307,6 +358,7 @@ export async function drainPictures(
         setting: options.setting,
         account: options.account,
         fetch: options.fetch ?? fetchPicture,
+        now,
       });
       if (outcome.read) read++;
       left += outcome.left;
@@ -319,14 +371,11 @@ export async function drainPictures(
         throw error;
       context.signal.throwIfAborted();
       read++;
-      const failures = (job.failures ?? 0) + 1;
       context.log.condition(
         `readwise:pictures:${digest(job.canonical)}`,
-        failures < maxJobFailures
-          ? "Reader picture work for a document failed; it is retried in the next run"
-          : "Reader picture work for a document failed three times; its pictures are left",
+        "Reader picture work for a document failed; it is tried again in a later run",
       );
-      next = failures < maxJobFailures ? { ...job, failures } : undefined;
+      next = backedOff(job, now);
     }
     saved.queue = saved.queue.filter((one) => one.id !== job.id);
     if (next !== undefined) saved.queue.push(next);
@@ -339,12 +388,11 @@ export async function drainPictures(
     );
 }
 
-/** A document outside the content queue whose content is still not
- *  accounted for is waited on for three runs, then left. */
-const waited = (job: PictureJob): PictureJob | undefined =>
-  (job.failures ?? 0) + 1 < maxJobFailures
-    ? { ...job, failures: (job.failures ?? 0) + 1 }
-    : undefined;
+/** The job, tried again later, as the content queue does. */
+function backedOff(job: PictureJob, now: () => number): PictureJob {
+  const failures = (job.failures ?? 0) + 1;
+  return { ...job, failures, due: now() + retryDelay(failures) };
+}
 
 async function picturesOf(
   context: PictureContext,
@@ -356,6 +404,7 @@ async function picturesOf(
     setting: Exclude<PicturesSetting, "addresses">;
     account: string;
     fetch: typeof fetchPicture;
+    now: () => number;
   },
 ): Promise<{ job: PictureJob | undefined; read: boolean; left: number }> {
   const manifestKey = `${job.canonical}:content:manifest`;
@@ -371,13 +420,13 @@ async function picturesOf(
     typeof revision !== "string" ||
     !isAccountedContent(manifest, { canonical: job.canonical, revision })
   )
-    return { job: waited(job), read: false, left: 0 };
+    return { job: backedOff(job, options.now), read: false, left: 0 };
   const target = await context.inspect(job.type, { links: [job.canonical] });
   const parent = target.items[0];
   if (target.tombstones.length || parent?.state === "trashed")
     return { job: undefined, read: false, left: 0 };
   if (target.items.length !== 1 || parent === undefined)
-    return { job: waited(job), read: false, left: 0 };
+    return { job: backedOff(job, options.now), read: false, left: 0 };
   if (options.setting === "save-in-library" && parent.tier !== "library")
     return { job: undefined, read: false, left: 0 };
   const row = await document(client, job.id);
@@ -412,14 +461,23 @@ async function picturesOf(
   const held = await heldPictures(context, job, plan, evidence);
   const refused = (address: string) => saved.refused[pictureKeyOf(address)];
   const open = listPictures(plan, held, { fetching: true, refused });
-  const next: PictureJob = {
+  let next: PictureJob = {
     id: job.id,
     canonical: job.canonical,
     type: job.type,
   };
   const attempts: Record<string, number> = {};
   let left = 0;
-  for (const [key, row] of held.unattached) {
+  const repairing =
+    held.unattached.size > 0 && (job.failures ?? 0) < maxPictureRepairs;
+  if (held.unattached.size > 0 && !repairing)
+    context.log.condition(
+      `readwise:pictures-repair:${digest(job.canonical)}`,
+      `A saved Reader picture still lacks its connection to its document after ${String(maxPictureRepairs)} repairs; it is listed as not kept`,
+    );
+  if (repairing)
+    next = backedOff({ ...next, failures: job.failures ?? 0 }, options.now);
+  for (const [key, row] of repairing ? held.unattached : []) {
     // The row as it is, written again with its connection.
     const repair = entry(job, key, "picture", revision);
     repair.properties = Object.fromEntries(

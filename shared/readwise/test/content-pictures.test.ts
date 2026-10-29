@@ -5,6 +5,7 @@ import { drainContent } from "../src/content-queue.js";
 import {
   admitPictures,
   drainPictures,
+  pausePictures,
   PictureBudget,
   pictureListing,
 } from "../src/content-pictures.js";
@@ -55,6 +56,8 @@ function marfa(documents: ReaderDocument[], tier: "feed" | "library" = "feed") {
   const named = new Map<string, string[]>();
   const agreed = { reader: new Set<string>(), highlights: new Set<string>() };
   const uploads: string[] = [];
+  const writes: string[] = [];
+  const conditions: string[] = [];
   const manifests = new Map<string, Resource[]>();
   const states = {
     reader: new Map<string, unknown>(),
@@ -73,8 +76,13 @@ function marfa(documents: ReaderDocument[], tier: "feed" | "library" = "feed") {
     } as unknown as Item);
   const reader = {
     calls: 0,
+    failures: 0,
     page: ({ id }: { id?: string }) => {
       reader.calls++;
+      if (reader.failures > 0) {
+        reader.failures--;
+        return Promise.reject(new Error("Reader is unavailable"));
+      }
       const row = documents.find((one) => one.id === id);
       return Promise.resolve({
         results: row ? [row] : [],
@@ -97,7 +105,7 @@ function marfa(documents: ReaderDocument[], tier: "feed" | "library" = "feed") {
     log: {
       info: vi.fn(),
       warn: vi.fn(),
-      condition: vi.fn(),
+      condition: vi.fn((key: string) => conditions.push(key)),
       unreached: vi.fn(),
     },
     known: (_type: string, keys: readonly string[]) =>
@@ -126,6 +134,7 @@ function marfa(documents: ReaderDocument[], tier: "feed" | "library" = "feed") {
       async upsert(type: string, entries: readonly Entry[]) {
         for (const value of entries) {
           const prior = rows.get(value.source_id);
+          writes.push(value.source_id);
           let blob = prior?.properties["blob_ref"];
           if (value.file && value.file.key !== prior?.properties["file_key"]) {
             const loaded = await value.file.load(new AbortController().signal);
@@ -206,6 +215,8 @@ function marfa(documents: ReaderDocument[], tier: "feed" | "library" = "feed") {
   return {
     rows,
     uploads,
+    writes,
+    conditions,
     manifests,
     states,
     fetch,
@@ -220,6 +231,7 @@ function marfa(documents: ReaderDocument[], tier: "feed" | "library" = "feed") {
 }
 
 const a = "https://cdn.example.com/a.png?w=1&h=2";
+const day = 24 * 60 * 60_000;
 const thirdParty = doc(
   "one",
   '<p><img src="https://cdn.example.com/a.png?w=1&amp;h=2"></p>',
@@ -330,6 +342,7 @@ describe("Reader pictures on other websites", () => {
     await m.run("reader", [job("one")], { setting: "save", land: false });
     await m.run("reader", [], { setting: "save" });
     expect(m.picture("one", a)?.status).not.toBe("kept");
+    m.tick(day);
     await m.run("reader", [], { setting: "save" });
     expect(m.picture("one", a)?.status).toBe("kept");
     expect(m.fetch).toHaveBeenCalledTimes(1);
@@ -428,5 +441,61 @@ describe("Reader pictures on other websites", () => {
       status: "deliberately-unkept",
       reason: "not_https",
     });
+  });
+
+  it("backs off a document whose picture work fails and saves its pictures once it passes", async () => {
+    const m = marfa([thirdParty]);
+    await m.run("reader", [job("one")]);
+    m.reader.failures = 3;
+    await m.run("reader", [], { setting: "save" });
+    await m.run("reader", [], { setting: "save" });
+    expect(m.reader.failures).toBe(2);
+    for (let run = 0; run < 3; run++) {
+      m.tick(day);
+      await m.run("reader", [], { setting: "save" });
+    }
+    expect(m.reader.failures).toBe(0);
+    m.tick(day);
+    await m.run("reader", [], { setting: "save" });
+    expect(m.picture("one", a)?.status).toBe("kept");
+  });
+
+  it("stops repairing a picture whose link never lands, saying why", async () => {
+    const m = marfa([thirdParty]);
+    const repairs = () =>
+      m.writes.filter((one) => one === pictureKey("one", a)).length;
+    await m.run("reader", [job("one")], { setting: "save", land: false });
+    for (let run = 0; run < 10; run++) {
+      m.tick(day);
+      await m.run("reader", [], { setting: "save", land: false });
+    }
+    expect(repairs()).toBe(1 + 5);
+    expect(m.conditions).toContain(
+      `readwise:pictures-repair:${digest(key("one"))}`,
+    );
+    expect(m.picture("one", a)?.status).toBe("deliberately-unkept");
+    expect(m.checkpoint("reader").get("pictures")).toMatchObject({
+      queue: [],
+    });
+  });
+
+  it("clears unreadable picture progress while the setting is off", async () => {
+    const m = marfa([thirdParty]);
+    m.states.reader.set("pictures", { setting: "save", queue: "garbage" });
+    await pausePictures(m.checkpoint("reader"));
+    expect(m.states.reader.get("pictures")).toEqual({
+      setting: "addresses",
+      queue: [],
+      refused: {},
+    });
+  });
+
+  it("starts again from an empty queue when picture progress is unreadable, so the listing goes on", async () => {
+    const m = marfa([thirdParty]);
+    m.states.reader.set("pictures", "garbage");
+    await m.run("reader", [job("one")], { setting: "save" });
+    expect(m.conditions).toContain("readwise:reader-pictures-invalid");
+    await m.run("reader", [], { setting: "save" });
+    expect(m.picture("one", a)?.status).toBe("kept");
   });
 });
