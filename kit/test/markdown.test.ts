@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import {
   htmlToMarkdown,
@@ -217,19 +218,22 @@ describe("htmlToMarkdown", () => {
     });
 
     // A time bound fails on a slow or busy machine, and a ratio of two
-    // timings fails under load too, so these count work and not time: the
-    // characters a conversion hands to the string methods that read their
-    // whole text (replace, split, match, search, indexOf and includes). The
-    // count depends only on the input. Linear work grows with the input, so
-    // doubling it doubles the count, and a conversion that scans the whole
-    // output again for every element grows four times. The inputs are a
-    // quarter and a half of the limit, and each character may be read a
-    // fixed number of times at most: the largest input measured about 14
-    // reads a character, and quadratic work reads one many thousands of times.
-    // What this does not count is copying inside the engine, such as turndown
-    // joining a list's items, which grows faster than its input near the limit
-    // (an ordered list of 24,000 items takes six times what 12,000 do); the
-    // limit bounds it and it is not ours to fix here.
+    // timings fails under load too, so these count work and not time. They
+    // count two kinds, both of which depend only on the input: the characters
+    // a conversion hands to the string methods that read their whole text
+    // (replace, split, match, search, indexOf and includes), and the steps it
+    // takes through the parsed tree (the sibling, child and list getters of
+    // the DOM turndown parses with). Linear work grows with the input, so
+    // doubling it doubles the count; a conversion that scans the whole output
+    // again for every element, or walks back over the earlier siblings of
+    // every item, grows four times. The inputs are a quarter and a half of the
+    // limit, and each character or node may be read a fixed number of times at
+    // most: the largest input measured about 14 reads a character and about
+    // 17 steps an element, and quadratic work does either many thousands of
+    // times. What this does not count is copying inside the engine, such as
+    // turndown joining a list's items, which grows faster than its input near
+    // the limit (an ordered list of 24,000 items takes six times what 12,000
+    // do); the limit bounds it and it is not ours to fix here.
     const scans = [
       "replace",
       "replaceAll",
@@ -241,30 +245,117 @@ describe("htmlToMarkdown", () => {
       "lastIndexOf",
       "includes",
     ] as const;
-    const charactersScanned = (run: () => void): number => {
+    const steps = [
+      "nextSibling",
+      "previousSibling",
+      "firstChild",
+      "lastChild",
+      "childNodes",
+      "children",
+      "firstElementChild",
+      "lastElementChild",
+      "nextElementSibling",
+      "previousElementSibling",
+    ] as const;
+
+    // The DOM package's getters cannot be redefined (it makes them
+    // non-configurable), so the steps are counted on the nodes themselves:
+    // while `run` is going, `createDocument` hands back a tree whose every
+    // node has a prototype of its own that counts and then calls the getter it
+    // sits in front of. Turndown parses through this same module, and the
+    // nodes are discarded with the conversion.
+    const domino = createRequire(
+      createRequire(import.meta.url).resolve("turndown"),
+    )("@mixmark-io/domino") as {
+      createDocument: (html: string, force?: boolean) => Node;
+    };
+    interface Node {
+      firstChild: Node | null;
+      nextSibling: Node | null;
+    }
+    const countingPrototypes = (count: {
+      steps: number;
+    }): ((node: Node) => void) => {
+      const made = new Map<object, object>();
+      const counting = (original: object): object => {
+        let prototype = made.get(original);
+        if (prototype === undefined) {
+          prototype = Object.create(original) as object;
+          for (const name of steps) {
+            for (
+              let holder: object | null = original;
+              holder !== null;
+              holder = Object.getPrototypeOf(holder) as object | null
+            ) {
+              const found = Object.getOwnPropertyDescriptor(holder, name);
+              if (found === undefined) continue;
+              const get = Reflect.get(found, "get") as
+                ((this: unknown) => unknown) | undefined;
+              if (get !== undefined)
+                Object.defineProperty(prototype, name, {
+                  get(this: unknown) {
+                    count.steps += 1;
+                    return get.call(this);
+                  },
+                });
+              break;
+            }
+          }
+          made.set(original, prototype);
+        }
+        return prototype;
+      };
+      return (root) => {
+        const pending = [root];
+        for (let node = pending.pop(); node; node = pending.pop()) {
+          for (let kid = node.firstChild; kid; kid = kid.nextSibling)
+            pending.push(kid);
+          Object.setPrototypeOf(
+            node,
+            counting(Object.getPrototypeOf(node) as object),
+          );
+        }
+      };
+    };
+
+    // Patches the string prototype and the parser only while `run` is going,
+    // which is synchronous, and puts both back in `finally`, so nothing
+    // leaks into another test.
+    const measure = (
+      run: () => void,
+    ): { characters: number; steps: number } => {
       const proto = String.prototype as unknown as Record<
         string,
         (...args: unknown[]) => unknown
       >;
       const originals = scans.map((name) => proto[name]);
-      let total = 0;
-      scans.forEach((name, at) => {
-        const original = originals[at];
-        proto[name] = function (this: unknown, ...args: unknown[]) {
-          if (typeof this === "string") total += this.length;
-          return original?.apply(this, args);
-        };
-      });
+      const parse = domino.createDocument;
+      const count = { characters: 0, steps: 0 };
+      const watch = countingPrototypes(count);
       try {
+        scans.forEach((name, at) => {
+          const original = originals[at];
+          proto[name] = function (this: unknown, ...args: unknown[]) {
+            if (typeof this === "string") count.characters += this.length;
+            return original?.apply(this, args);
+          };
+        });
+        domino.createDocument = (html, force) => {
+          const document = parse(html, force);
+          watch(document);
+          return document;
+        };
         run();
       } finally {
         scans.forEach((name, at) => {
           proto[name] = originals[at] as (...args: unknown[]) => unknown;
         });
+        domino.createDocument = parse;
       }
-      return total;
+      return count;
     };
     const mostReadsPerCharacter = 30;
+    const mostStepsPerElement = 30;
 
     const shapes: Record<string, (size: number) => string> = {
       "a table of rows": (size) =>
@@ -282,11 +373,15 @@ describe("htmlToMarkdown", () => {
         const largest = build(maxHtmlElements);
         const quarter = build(maxHtmlElements / 4);
         const half = build(maxHtmlElements / 2);
-        const small = charactersScanned(() => htmlToMarkdown(quarter));
-        const medium = charactersScanned(() => htmlToMarkdown(half));
-        const large = charactersScanned(() => htmlToMarkdown(largest));
-        expect(large / largest.length).toBeLessThan(mostReadsPerCharacter);
-        expect(medium / small).toBeLessThan(2.5);
+        const small = measure(() => htmlToMarkdown(quarter));
+        const medium = measure(() => htmlToMarkdown(half));
+        const large = measure(() => htmlToMarkdown(largest));
+        expect(large.characters / largest.length).toBeLessThan(
+          mostReadsPerCharacter,
+        );
+        expect(medium.characters / small.characters).toBeLessThan(2.5);
+        expect(large.steps / maxHtmlElements).toBeLessThan(mostStepsPerElement);
+        expect(medium.steps / small.steps).toBeLessThan(2.5);
       });
     }
 
