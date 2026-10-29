@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
-import { date, identity, properties, webUrl } from "./mapping.js";
+import { highlightDisplay } from "./display.js";
+import { fitKinds } from "./kinds.js";
+import {
+  date,
+  highlightKinds,
+  identity,
+  properties,
+  sourceKinds,
+  webUrl,
+} from "./mapping.js";
 
 export interface ReaderDocument {
   id: string;
@@ -162,6 +171,8 @@ export interface ReaderEnrichment {
   sourceId?: string;
   properties?: Readonly<Record<string, unknown>>;
   notes?: readonly ReaderDocument[];
+  /** The title of the document a highlight belongs to, for a passage with no words. */
+  documentTitle?: string | null | undefined;
 }
 export interface TextFilePlan {
   key: string;
@@ -277,6 +288,7 @@ function mapped(
     Object.entries(old).filter(
       ([key]) =>
         !key.startsWith("reader_") &&
+        !(kind === "highlight" && key === "body") &&
         ![
           "canonical_key",
           "text",
@@ -365,6 +377,15 @@ function mapped(
             : undefined,
     });
     if (values["readwise_text"] === row.content) delete values["readwise_text"];
+    Object.assign(
+      values,
+      highlightDisplay(
+        row.content,
+        values["readwise_text"],
+        enrichment.documentTitle,
+        old,
+      ),
+    );
     if (folded.differs) result.conditions.push("note-snapshot-differs");
     if (row.highlight_offset != null)
       Object.assign(values, {
@@ -384,7 +405,14 @@ function mapped(
     };
     if (!row.parent_id) result.conditions.push("unresolved-parent");
   }
+  const originals = old["original_values"];
+  if (typeof originals === "object" && originals !== null)
+    values["original_values"] = Object.fromEntries(
+      Object.entries(originals).filter(([key]) => !key.startsWith("reader_")),
+    );
+  fitKinds(values, kind === "document" ? sourceKinds : highlightKinds);
   for (const [field, value] of Object.entries(values)) {
+    if (kind === "highlight" && field === "body") continue;
     const text =
       typeof value === "string"
         ? value
@@ -400,6 +428,12 @@ function mapped(
         ? `Complete ${field} is preserved in the attached text file.`
         : undefined;
   }
+  if (
+    kind === "highlight" &&
+    typeof values["body"] === "string" &&
+    values["body"].length > 100_000
+  )
+    values["body"] = "Complete passage is preserved in the attached text file.";
   if (result.textFiles.length)
     values["reader_text_files"] = result.textFiles.map(({ key }) => key);
   result.entry.properties = properties(values);

@@ -372,6 +372,96 @@ function stored(id: string, extra: Record<string, unknown> = {}): Item {
     },
   };
 }
+describe("Reader upgrade to display fields and kinds", () => {
+  it("rewrites every held row once in place on the first run after the types change", async () => {
+    const f = fixture();
+    const picture = "![](https://readwise-assets.s3.amazonaws.com/p.png)";
+    f.setPages([
+      [
+        {
+          id: "doc",
+          category: "article",
+          title: "A long read",
+          image_url: "",
+          saved_at: "2025-08-18T14:18:02.114000+00:00",
+          updated_at: stamp,
+        },
+        {
+          id: "hi",
+          category: "highlight",
+          parent_id: "doc",
+          content: "",
+          notes: "kept note",
+          updated_at: stamp,
+        },
+      ],
+    ]);
+    await f.run();
+    const listing = f.states.get("reader-list")?.get("listing") as Record<
+      string,
+      unknown
+    >;
+    expect(listing["completed"]).toBeDefined();
+    // The checkpoint and rows an earlier release left: its types hashed differently.
+    f.states.get("reader-list")?.set("listing", {
+      ...listing,
+      fingerprint: "an earlier release",
+    });
+    f.rows.push(
+      stored("doc", {
+        title: "A long read",
+        category: "article",
+        reader_image_url: "",
+        reader_saved_at: "2025-08-18T14:18:02.114000+00:00",
+      }),
+      {
+        ...stored("hi"),
+        type: "readwise.highlight",
+        source_id: "one:reader-highlight:hi",
+        properties: {
+          account: "one",
+          canonical_key: "one:reader-highlight:hi",
+          reader_id: "hi",
+          reader_managed: true,
+          reader_parent_id: "doc",
+          category: "highlight",
+          text: "",
+          note: "kept note",
+          readwise_id: "42",
+          readwise_text: picture,
+        },
+      },
+    );
+    f.writes.length = 0;
+    const before = f.requests.length;
+    await f.run();
+    expect(f.requests[before]?.updatedAfter).toBeUndefined();
+    const written = new Map(
+      f.writes.map(({ entry }) => [entry.source_id, entry.properties]),
+    );
+    expect([...written.keys()].sort()).toEqual([
+      "one:reader-document:doc",
+      "one:reader-highlight:hi",
+    ]);
+    expect(written.get("one:reader-highlight:hi")).toMatchObject({
+      title: "Picture from A long read",
+      body: picture,
+      text: "",
+      note: "kept note",
+      readwise_id: "42",
+      readwise_text: picture,
+    });
+    expect(written.get("one:reader-document:doc")).toMatchObject({
+      reader_saved_at: "2025-08-18T14:18:02.114000+00:00",
+    });
+    expect(written.get("one:reader-document:doc")).not.toHaveProperty(
+      "reader_image_url",
+    );
+    // Without a type change, the next run reads only what changed.
+    await f.run();
+    expect(f.requests.at(-1)?.updatedAfter).toBeDefined();
+  });
+});
 describe("Reader upstream disappearance", () => {
   it("preflights the entire confirmed set before archiving any row", async () => {
     const f = fixture();

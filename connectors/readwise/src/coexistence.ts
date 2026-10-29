@@ -3,6 +3,7 @@ import {
   isReaderManaged,
   mapSource,
   mapHighlight,
+  sourceTitle,
   mapReaderSource,
   mapReaderHighlight,
   readerIdentity,
@@ -341,7 +342,12 @@ export class SharedRows {
     source: Source,
     highlight: Highlight,
   ): Promise<Entry | undefined> {
-    const entry = mapHighlight(this.account, source.user_book_id, highlight);
+    const entry = mapHighlight(
+      this.account,
+      source.user_book_id,
+      highlight,
+      sourceTitle(source),
+    );
     const held = await this.locate(
       "readwise.highlight",
       entry,

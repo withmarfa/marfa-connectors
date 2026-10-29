@@ -36,7 +36,7 @@ node connectors/readwise-reader/dist/main.js --once
 node connectors/readwise-reader/dist/main.js --every 15m
 ```
 
-For an existing Highlights installation, follow [Replace existing schemas](../readwise/README.md#replace-existing-schemas) first. Install both updated binaries and their required key permissions before restarting either connector. Scoped startup deliberately refuses the structural schema replacement.
+For an existing Highlights installation, follow [Replace existing schemas](../readwise/README.md#replace-existing-schemas) first. An installation from before highlight titles and field kinds follows [Upgrade to highlight titles and field kinds](../readwise/README.md#upgrade-to-highlight-titles-and-field-kinds). Install both updated binaries and their required key permissions before restarting either connector. Scoped startup deliberately refuses the structural schema replacement.
 
 ## Identity and shared rows
 
@@ -48,7 +48,7 @@ The identity catalog first completes the account-wide export, including deleted 
 
 The identity index inspects retained states and known purge tombstones before admission. Conflicting holders or contradictory export evidence produce a condition and retain the pending identity for investigation. The connector never merges or deletes conflicting rows automatically. A local explicit create that may be recovering a request blocks matching inbound admission until its journal settles.
 
-Reader supplies the canonical highlight passage. A differing export passage remains in `readwise_text`. Note records retain their identities and metadata while their text is folded into the annotation. Unknown categories remain available. Reader's archive location is a reading location, not Marfa's archive state.
+Reader supplies the canonical highlight passage in `text`. A differing export passage, which is Markdown and keeps pictures, remains in `readwise_text`. A highlight shows its `title` and `body`, as [Highlight titles](../readwise/README.md#highlight-titles) describes: `body` is the export passage when there is one, and Reader's passage when Readwise cut the export at its 8,191-character limit. A picture-only passage is titled after its Reader document. Timestamps, dates and addresses follow [Field kinds](../readwise/README.md#field-kinds). Note records retain their identities and metadata while their text is folded into the annotation. Unknown categories remain available. Reader's archive location is a reading location, not Marfa's archive state.
 
 Reader owns verified Reader rows and explicit Reader creates, not every row of the shared types. Highlights refreshes managed rows directly from Reader and observes shared fields without sending local edits or putting them back. On first adoption, differing existing mutable values are held as a separate Marfa baseline and reported. Adoption alone never invents an outbound edit; a subsequent local edit does. Reader metadata and unsupported fields remain inbound-only.
 
@@ -94,7 +94,7 @@ Turning the setting on doesn't walk the Reader listing again. Picture work goes 
 
 ## Edit and create
 
-Supported document edits are title, author, summary (`description`), notes, tags, reading location (`reader_location`), and supported category values. Highlights support annotation (`note`) and tags. Empty notes and empty tag arrays are explicit clears. Only changed supported fields are sent. Body replacement, passage edits, progress writes, and original-file upload remain read-only.
+Supported document edits are title, author, summary (`description`), notes, tags, reading location (`reader_location`), and supported category values. Highlights support annotation (`note`) and tags; `title` and `body` are read only. Empty notes and empty tag arrays are explicit clears. Only changed supported fields are sent. Body replacement, passage edits, progress writes, and original-file upload remain read-only.
 
 To request a local create, use the shared type and matching `account`, and explicitly set `reader_create: true`. A source needs a stable HTTP URL. A highlight needs `reader_parent_id` and passage text. Do not invent a Reader ID or export ID. Ordinary local rows without this explicit intent are not created upstream.
 
