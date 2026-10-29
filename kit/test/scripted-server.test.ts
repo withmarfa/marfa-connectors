@@ -314,7 +314,7 @@ describe("the bulk door", () => {
 });
 
 // `edges/read-hydrated-withheld`, `edges/read-item-withheld` and
-// `edges/read-list-short`: a read leaves out an edge whose edge type the key
+// `edges/read-list-withheld`: a read leaves out an edge whose edge type the key
 // may not read, or whose source item's type it may not read. Each read is
 // shown beside the same read with the grant, so a read that leaves an edge
 // out cannot be one that never returned it.
@@ -493,7 +493,7 @@ describe("an edge the key may not read", () => {
     expect(second.body["next_cursor"]).toBeNull();
   });
 
-  it("is left out of a hydrated block cut at its cap, which keeps the cursor", async () => {
+  it("keeps the cursor of a hydrated block cut at its cap", async () => {
     server.edgePageCap = 1;
     server.grants = { edge_permissions: { "test.blocks": "read" } };
     const third = server.insert("a:3", {}, "test.entry").id;

@@ -1797,8 +1797,9 @@ export class ScriptedServer {
         return;
       }
       // Newest first. Pages are cut from every edge of the type, and then an
-      // edge whose source the key may not read is left out, whatever its
-      // target, so a page can be short or empty with a cursor to follow.
+      // edge the key may not read is left out, whatever its target, so a
+      // page can be short or empty with a cursor to follow
+      // (`edges/read-list-withheld`, `edges/read-list-short`).
       const all = this.edges
         .filter((edge) => types.length === 0 || types.includes(edge.edge_type))
         .reverse();
@@ -1822,7 +1823,7 @@ export class ScriptedServer {
       const limit = Number(url.searchParams.get("limit") ?? "50");
       // The page is cut from every edge of the anchor, and then what the
       // key may not read is left out, so a page can be short or empty with a
-      // cursor to follow (`edges/read-list-short`).
+      // cursor to follow (`edges/read-item-withheld`).
       const all = this.edges.filter(
         (edge) =>
           (parts[2] === "edges"
