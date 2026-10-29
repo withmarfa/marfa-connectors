@@ -17,6 +17,7 @@
     "@octokit/plugin-throttling": "^11.0.5",
     "@octokit/request-error": "^7.1.2",
     "@withmarfa/connector": "workspace:*",
+    "bottleneck": "^2.19.5",
     "parse5": "8.0.1",
     "universal-github-app-jwt": "^2.2.2"
   }

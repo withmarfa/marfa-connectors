@@ -59,6 +59,9 @@ importers:
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../../kit
+      bottleneck:
+        specifier: ^2.19.5
+        version: 2.19.5
       parse5:
         specifier: 8.0.1
         version: 8.0.1

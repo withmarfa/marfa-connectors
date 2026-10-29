@@ -12,6 +12,7 @@ import {
   rateLimited,
   status,
   type Client,
+  type Origin,
 } from "./github.js";
 import type { Scope } from "./scope.js";
 
@@ -69,10 +70,9 @@ export interface RestThread {
 
 type RootContext = RunContext<EnvDeclaration>;
 
-export interface Options {
+export interface Options extends Origin {
   /** Absent, nothing is read and nothing is reported. */
   readonly token: string | undefined;
-  readonly base: string;
   readonly scope: Scope | undefined;
   /** `GITHUB_REPOSITORIES` as set; a change to it forces a whole read. */
   readonly scopeText: string | undefined;
@@ -329,13 +329,7 @@ export async function readNotifications(
     now - checked < checkEvery
       ? kept.modified
       : undefined;
-  const octokit = asPersonalToken(
-    token,
-    options.base,
-    secret,
-    signal,
-    tokenName,
-  );
+  const octokit = asPersonalToken(token, options, secret, signal, tokenName);
   const polled = new Date(now).toISOString();
   let listing: Listing;
   try {

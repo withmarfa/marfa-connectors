@@ -210,6 +210,7 @@ Without a public address the App's webhook is off, and the connector notices cha
 - `GITHUB_FILES`: the repositories and paths whose Markdown files to mirror, as `owner/repo:path`, with paths set apart by commas and entries by spaces or semicolons; optional, no files otherwise. A malformed entry stops the start. See Repository files.
 - `GITHUB_PUBLIC_URL`, `GITHUB_ORGANIZATION`, `GITHUB_APP_NAME`: for the setup, optional. The public address's own path, where the instance sits behind a prefix, is kept before the webhook's.
 - `GITHUB_API_URL`: optional, for a stub of the API; GitHub's otherwise. GitHub Enterprise Server is not tested.
+- `GITHUB_REQUEST_SPACING_MS`: optional, for a stub of the API only: the least time between two writes or GraphQL requests, in milliseconds, as a whole number from 0 to 60000. Startup refuses any other value, and refuses this setting unless `GITHUB_API_URL` is also set, so a run against GitHub keeps the throttling library's spacing: one second, and three seconds for a write that notifies someone. GitHub asks for at least a second between writes.
 
 The key and the run are as `template/README.md` says.
 

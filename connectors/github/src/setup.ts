@@ -1,6 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { EnvDeclaration, SetupContext } from "@withmarfa/connector";
-import { anonymous, asApp, defaultBase, type App } from "./github.js";
+import {
+  anonymous,
+  asApp,
+  defaultBase,
+  spacingOf,
+  type App,
+} from "./github.js";
 
 export interface SetupEnv {
   readonly GITHUB_PERSONAL_TOKEN?: string | undefined;
@@ -8,6 +14,7 @@ export interface SetupEnv {
   readonly GITHUB_PRIVATE_KEY?: string | undefined;
   readonly GITHUB_WEBHOOK_SECRET?: string | undefined;
   readonly GITHUB_API_URL?: string | undefined;
+  readonly GITHUB_REQUEST_SPACING_MS?: string | undefined;
   readonly GITHUB_PUBLIC_URL?: string | undefined;
   readonly GITHUB_ORGANIZATION?: string | undefined;
   readonly GITHUB_READ_ONLY?: string | undefined;
@@ -179,6 +186,7 @@ export async function setUp<E extends EnvDeclaration>(
     return {};
   }
   const base = env.GITHUB_API_URL ?? defaultBase;
+  const spacingMs = spacingOf(env);
   const made = await endpoint({
     label: "github",
     duplicateHeader: "X-GitHub-Delivery",
@@ -198,6 +206,7 @@ export async function setUp<E extends EnvDeclaration>(
       appId: env.GITHUB_APP_ID,
       privateKey: env.GITHUB_PRIVATE_KEY,
       base,
+      spacingMs,
     };
     const webhookSecret = await repoint(app, hook, signal, secret);
     log.info(
@@ -238,7 +247,7 @@ export async function setUp<E extends EnvDeclaration>(
     throw new Error("GitHub's redirect carried no code");
   }
   const conversion = (
-    await anonymous(base, signal).request(
+    await anonymous({ base, spacingMs }, signal).request(
       "POST /app-manifests/{code}/conversions",
       // Good once: a retry after GitHub made the App would lose its key.
       { code, request: { retries: 0 } },

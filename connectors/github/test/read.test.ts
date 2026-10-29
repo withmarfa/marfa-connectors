@@ -72,7 +72,7 @@ async function once(
         GITHUB_APP_ID: "12345",
         GITHUB_PRIVATE_KEY: key,
         GITHUB_WEBHOOK_SECRET: "github-test-webhook-secret",
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         ...env,
       },
     });
@@ -1156,160 +1156,124 @@ describe("a repository", () => {
       return { repository, own, mine, theirs, reply };
     }
 
-    it(
-      "leaves the rows it did not write and the repository row they sit under, and archives the rows it wrote",
-      { timeout: 60_000 },
-      async () => {
-        const { repository, own, mine, theirs, reply } = await shared();
-        repository.installation = 2;
-        const output = await ok();
-        expect(output).toContain("was taken out of the App's installation");
-        expect(output).toContain("that this process did not archive");
-        expect(row(own.node).state).toBe("archived");
-        expect(row(mine.node).state).toBe("archived");
-        expect(row(theirs.node).state).toBe("active");
-        expect(row(reply.node).state).toBe("active");
-        expect(row(repository.node).state).toBe("active");
-      },
-    );
+    it("leaves the rows it did not write and the repository row they sit under, and archives the rows it wrote", async () => {
+      const { repository, own, mine, theirs, reply } = await shared();
+      repository.installation = 2;
+      const output = await ok();
+      expect(output).toContain("was taken out of the App's installation");
+      expect(output).toContain("that this process did not archive");
+      expect(row(own.node).state).toBe("archived");
+      expect(row(mine.node).state).toBe("archived");
+      expect(row(theirs.node).state).toBe("active");
+      expect(row(reply.node).state).toBe("active");
+      expect(row(repository.node).state).toBe("active");
+    });
 
-    it(
-      "archives the same rows and the repository row where no other process has written under it",
-      { timeout: 60_000 },
-      async () => {
-        const repository = github.addRepository("someone/tracker");
-        const own = github.addIssue(repository);
-        const mine = github.addComment(own, "Mine");
-        await ok();
-        await asPeer();
-        repository.installation = 2;
-        await ok();
-        expect(row(own.node).state).toBe("archived");
-        expect(row(mine.node).state).toBe("archived");
-        expect(row(repository.node).state).toBe("archived");
-      },
-    );
+    it("archives the same rows and the repository row where no other process has written under it", async () => {
+      const repository = github.addRepository("someone/tracker");
+      const own = github.addIssue(repository);
+      const mine = github.addComment(own, "Mine");
+      await ok();
+      await asPeer();
+      repository.installation = 2;
+      await ok();
+      expect(row(own.node).state).toBe("archived");
+      expect(row(mine.node).state).toBe("archived");
+      expect(row(repository.node).state).toBe("archived");
+    });
 
-    it(
-      "leaves a row it wrote but holds no agreement for",
-      { timeout: 60_000 },
-      async () => {
-        const repository = github.addRepository("someone/tracker");
-        const lost = github.addIssue(repository);
-        const kept = github.addIssue(repository);
-        await ok();
-        marfa.agreements.delete(row(lost.node).id);
-        repository.installation = 2;
-        await ok();
-        expect(row(lost.node).state).toBe("active");
-        expect(row(kept.node).state).toBe("archived");
-        expect(row(repository.node).state).toBe("active");
-      },
-    );
+    it("leaves a row it wrote but holds no agreement for", async () => {
+      const repository = github.addRepository("someone/tracker");
+      const lost = github.addIssue(repository);
+      const kept = github.addIssue(repository);
+      await ok();
+      marfa.agreements.delete(row(lost.node).id);
+      repository.installation = 2;
+      await ok();
+      expect(row(lost.node).state).toBe("active");
+      expect(row(kept.node).state).toBe("archived");
+      expect(row(repository.node).state).toBe("active");
+    });
 
-    it(
-      "leaves a row a person linked to the repository by hand",
-      { timeout: 60_000 },
-      async () => {
-        const repository = github.addRepository("someone/tracker");
-        const own = github.addIssue(repository);
-        await ok();
-        const made = marfa.insert(
-          undefined,
-          { title: "By hand" },
-          "github.issue",
-          "person",
-        );
-        marfa.drawEdge(
-          made.id,
-          row(repository.node).id,
-          "github.in-repository",
-        );
-        repository.installation = 2;
-        await ok();
-        expect(row(own.node).state).toBe("archived");
-        expect(marfa.rows.find((one) => one.id === made.id)?.state).toBe(
-          "active",
-        );
-        expect(row(repository.node).state).toBe("active");
-      },
-    );
+    it("leaves a row a person linked to the repository by hand", async () => {
+      const repository = github.addRepository("someone/tracker");
+      const own = github.addIssue(repository);
+      await ok();
+      const made = marfa.insert(
+        undefined,
+        { title: "By hand" },
+        "github.issue",
+        "person",
+      );
+      marfa.drawEdge(made.id, row(repository.node).id, "github.in-repository");
+      repository.installation = 2;
+      await ok();
+      expect(row(own.node).state).toBe("archived");
+      expect(marfa.rows.find((one) => one.id === made.id)?.state).toBe(
+        "active",
+      );
+      expect(row(repository.node).state).toBe("active");
+    });
 
-    it(
-      "keeps the repository's progress while a row under it is active, and archives its row on a later run once none is",
-      { timeout: 90_000 },
-      async () => {
-        const { repository, theirs, reply } = await shared();
-        repository.installation = 2;
-        await ok();
-        expect(row(repository.node).state).toBe("active");
-        expect(kept()[repository.node]?.["leaving"]).toBe(true);
-        await ok();
-        expect(row(repository.node).state).toBe("active");
-        expect(kept()[repository.node]?.["leaving"]).toBe(true);
+    it("keeps the repository's progress while a row under it is active, and archives its row on a later run once none is", async () => {
+      const { repository, theirs, reply } = await shared();
+      repository.installation = 2;
+      await ok();
+      expect(row(repository.node).state).toBe("active");
+      expect(kept()[repository.node]?.["leaving"]).toBe(true);
+      await ok();
+      expect(row(repository.node).state).toBe("active");
+      expect(kept()[repository.node]?.["leaving"]).toBe(true);
 
-        marfa.transition(row(reply.node).id, "archived");
-        marfa.transition(row(theirs.node).id, "archived");
-        const output = await ok();
-        expect(output).toContain("was taken out of the App's installation");
-        expect(row(repository.node).state).toBe("archived");
-        expect(kept()[repository.node]).toBeUndefined();
+      marfa.transition(row(reply.node).id, "archived");
+      marfa.transition(row(theirs.node).id, "archived");
+      const output = await ok();
+      expect(output).toContain("was taken out of the App's installation");
+      expect(row(repository.node).state).toBe("archived");
+      expect(kept()[repository.node]).toBeUndefined();
 
-        const before = marfa.log.length;
-        await ok();
-        expect(marfa.log.slice(before).map((one) => one.event)).not.toContain(
-          "item.state_changed",
-        );
-        expect(row(repository.node).state).toBe("archived");
-      },
-    );
+      const before = marfa.log.length;
+      await ok();
+      expect(marfa.log.slice(before).map((one) => one.event)).not.toContain(
+        "item.state_changed",
+      );
+      expect(row(repository.node).state).toBe("archived");
+    });
 
-    it(
-      "does not hold back a purge in a repository the App still reads while it keeps the one taken out",
-      { timeout: 90_000 },
-      async () => {
-        const other = github.addRepository("someone/other");
-        const issue = github.addIssue(other);
-        const comment = github.addComment(
-          issue,
-          "Said",
-          "marfa-connectors[bot]",
-        );
-        comment.app = true;
-        const { repository } = await shared();
-        repository.installation = 2;
-        await ok();
-        expect(kept()[repository.node]).toBeDefined();
+    it("does not hold back a purge in a repository the App still reads while it keeps the one taken out", async () => {
+      const other = github.addRepository("someone/other");
+      const issue = github.addIssue(other);
+      const comment = github.addComment(issue, "Said", "marfa-connectors[bot]");
+      comment.app = true;
+      const { repository } = await shared();
+      repository.installation = 2;
+      await ok();
+      expect(kept()[repository.node]).toBeDefined();
 
-        const id = row(comment.node).id;
-        comment.deleted = true;
-        marfa.purgeById(id);
-        const output = await ok();
-        expect(output).toContain("GitHub no longer shows what");
-        expect(output).not.toContain("is out of the App's reach");
-        expect(row(repository.node).state).toBe("active");
-        expect(kept()[repository.node]).toBeDefined();
-        expect(await ok()).not.toContain("is out of the App's reach");
-      },
-    );
+      const id = row(comment.node).id;
+      comment.deleted = true;
+      marfa.purgeById(id);
+      const output = await ok();
+      expect(output).toContain("GitHub no longer shows what");
+      expect(output).not.toContain("is out of the App's reach");
+      expect(row(repository.node).state).toBe("active");
+      expect(kept()[repository.node]).toBeDefined();
+      expect(await ok()).not.toContain("is out of the App's reach");
+    });
 
-    it(
-      "reads the repository again, and no longer as leaving, when it is added back",
-      { timeout: 90_000 },
-      async () => {
-        const { repository } = await shared();
-        repository.installation = 2;
-        await ok();
-        expect(kept()[repository.node]?.["leaving"]).toBe(true);
-        repository.installation = 1;
-        await ok();
-        expect(kept()[repository.node]).toBeDefined();
-        expect(kept()[repository.node]?.["leaving"]).toBeUndefined();
-        expect(row(repository.node).state).toBe("active");
-      },
-    );
+    it("reads the repository again, and no longer as leaving, when it is added back", async () => {
+      const { repository } = await shared();
+      repository.installation = 2;
+      await ok();
+      expect(kept()[repository.node]?.["leaving"]).toBe(true);
+      repository.installation = 1;
+      await ok();
+      expect(kept()[repository.node]).toBeDefined();
+      expect(kept()[repository.node]?.["leaving"]).toBeUndefined();
+      expect(row(repository.node).state).toBe("active");
+    });
 
-    it("changes nothing when it runs again", { timeout: 60_000 }, async () => {
+    it("changes nothing when it runs again", async () => {
       const { repository, theirs, reply } = await shared();
       repository.installation = 2;
       await ok();
@@ -1812,7 +1776,7 @@ describe("a relation to an issue in a repository left out", () => {
     expect(marfa.targetsOf(row(child.node).id, "github.sub-issue-of")).toEqual([
       parentRow,
     ]);
-  }, 60_000);
+  });
 });
 
 // Helper: run the connector with a personal token instead of App credentials.
@@ -1827,7 +1791,7 @@ async function onceWithToken(
         MARFA_API_URL: marfa.url,
         MARFA_API_KEY: marfa.key,
         GITHUB_PERSONAL_TOKEN: token,
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         ...extra,
       },
     });
@@ -1884,6 +1848,39 @@ describe("a personal access token run", () => {
     expect(JSON.stringify(marfa.runs)).toContain("[redacted]");
   });
 
+  it.each(["soon", "-1", "1.5", "60001", "99999999999"])(
+    "refuses a GITHUB_REQUEST_SPACING_MS of %j, which is not a whole number of milliseconds up to 60000",
+    async (spacing) => {
+      const result = await once({ GITHUB_REQUEST_SPACING_MS: spacing });
+      expect(result.code).toBe(2);
+      expect(result.output).toContain(
+        "GITHUB_REQUEST_SPACING_MS must be a whole number of milliseconds, at most 60000",
+      );
+    },
+  );
+
+  it("refuses a GITHUB_REQUEST_SPACING_MS against GitHub's own address", async () => {
+    const result = await once({
+      GITHUB_API_URL: undefined,
+      GITHUB_REQUEST_SPACING_MS: "0",
+    });
+    expect(result.code).toBe(2);
+    expect(result.output).toContain(
+      "GITHUB_REQUEST_SPACING_MS is for a stub of the API, so it needs GITHUB_API_URL",
+    );
+  });
+
+  // The kit trims every optional setting and takes an empty one as unset.
+  it.each(["", " 0 ", "\t0"])(
+    "starts and runs with a GITHUB_REQUEST_SPACING_MS of %j",
+    async (spacing) => {
+      github.addIssue(github.addRepository("someone/tracker"));
+      const result = await once({ GITHUB_REQUEST_SPACING_MS: spacing });
+      expect(result.code).toBe(0);
+      expect(marfa.rows.some((one) => one.type === "github.issue")).toBe(true);
+    },
+  );
+
   it("refuses to start when both App settings and token are set", async () => {
     const result = await once({
       GITHUB_PERSONAL_TOKEN: personalToken,
@@ -1900,7 +1897,7 @@ describe("a personal access token run", () => {
           PATH: process.env["PATH"],
           MARFA_API_URL: marfa.url,
           MARFA_API_KEY: marfa.key,
-          GITHUB_API_URL: github.url,
+          ...github.settings,
         },
       });
       throw new Error(`expected exit 2 but exited 0: ${stderr}`);

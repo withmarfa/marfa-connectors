@@ -79,7 +79,7 @@ async function exec(
         PATH: process.env["PATH"],
         MARFA_API_URL: marfa.url,
         MARFA_API_KEY: marfa.key,
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         ...env,
       },
     });
@@ -159,7 +159,7 @@ function changes(since: number): string[] {
   return marfa.log.slice(since).map((one) => one.event);
 }
 
-describe("starred repositories", { timeout: 60_000 }, () => {
+describe("starred repositories", () => {
   it("leaves every mark and row alone, and asks for no star, where GITHUB_STARS is false", async () => {
     const starred = starOnly("someone/starred");
     const tracker = listed("someone/tracker");
@@ -330,7 +330,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
         `${repository.owner}/${repository.name}`,
       );
     }
-  }, 60_000);
+  });
 
   it("brings in a star-only repository as a repository row only", async () => {
     const repository = starOnly("someone/starred");
@@ -514,7 +514,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
         (one) => one.type === "github.repository" && one.state === "archived",
       ),
     ).toHaveLength(1);
-  }, 90_000);
+  });
 
   it("keeps a star missed once, and forgets the miss when the star is listed again", async () => {
     const repository = starOnly("someone/starred");
@@ -542,7 +542,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(repositoryRow(repository).state).toBe("archived");
     expect(repositoryRow(tracker).state).toBe("active");
     expect(repositoryRow(tracker).properties["starred"]).toBe(false);
-  }, 90_000);
+  });
 
   it("reads the repository before it archives a star, and archives on a 404 or a 200", async () => {
     const hidden = starOnly("someone/hidden");
@@ -587,7 +587,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(checks("someone/refusing")).toBe(2);
     expect(repositoryRow(refusing).state).toBe("archived");
     expect(conditions()).not.toHaveProperty("stars-kept");
-  }, 90_000);
+  });
 
   it("keeps a star-only row on any other answer to the read, and names it", async () => {
     const repository = starOnly("someone/starred");
@@ -694,7 +694,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
     expect(repositoryRow(tracker).state).toBe("active");
     expect(repositoryRow(tracker).properties["starred"]).toBe(false);
     expect(repositoryRow(tracker).properties["starred_at"] ?? null).toBeNull();
-  }, 90_000);
+  });
 
   it("archives an unstarred repository that leaves the listing", async () => {
     const tracker = listed("someone/tracker", { private: false });
@@ -803,7 +803,7 @@ describe("starred repositories", { timeout: 60_000 }, () => {
   });
 });
 
-describe("stars read with the notifications token", { timeout: 90_000 }, () => {
+describe("stars read with the notifications token", () => {
   const classic = "ghp_classic_notifications_12345678";
   /** No installation of the App reaches it, so it is a star and nothing else. */
   const elsewhere = { installation: 99 };

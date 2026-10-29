@@ -72,7 +72,7 @@ function env(
     GITHUB_APP_ID: "12345",
     GITHUB_PRIVATE_KEY: key,
     GITHUB_WEBHOOK_SECRET: secret,
-    GITHUB_API_URL: github.url,
+    ...github.settings,
   };
 }
 
@@ -1146,7 +1146,7 @@ describe("a run for deliveries", () => {
         ),
       ).toEqual([]);
     });
-  }, 30_000);
+  });
 
   it("carries a change between scheduled runs though another repository was taken from the installation meanwhile", async () => {
     const repository = github.addRepository("someone/tracker");
@@ -1354,7 +1354,6 @@ it.each(["held", "current"])(
     expect(marfa.edges.map((edge) => edge.id)).toEqual(edgeIds);
     expect(github.writes()).toEqual([]);
   },
-  60_000,
 );
 
 it.each(["scheduled", "named"])(

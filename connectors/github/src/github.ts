@@ -7,6 +7,7 @@ import { retry } from "@octokit/plugin-retry";
 import { throttling } from "@octokit/plugin-throttling";
 import { RequestError } from "@octokit/request-error";
 import type { Secret } from "@withmarfa/connector";
+import Bottleneck from "bottleneck";
 import githubAppJwt from "universal-github-app-jwt";
 
 export const defaultBase = "https://api.github.com";
@@ -16,27 +17,76 @@ export const apiVersion = "2026-03-10";
 const Client = Octokit.plugin(paginateRest, throttling, retry);
 export type Client = InstanceType<typeof Client>;
 
-export interface App {
-  readonly appId: string;
-  readonly privateKey: string;
+/** Where a client sends its requests, and the least time it leaves between
+ *  two writes; absent, the throttling library's own spacing applies. */
+export interface Origin {
   readonly base: string;
+  readonly spacingMs?: number | undefined;
 }
 
-export interface Personal {
+export interface App extends Origin {
+  readonly appId: string;
+  readonly privateKey: string;
+}
+
+export interface Personal extends Origin {
   readonly token: string;
-  readonly base: string;
 }
 
 export class PermissionRequired extends Error {
   override name = "PermissionRequired";
 }
 
-function client(base: string, signal: AbortSignal, auth?: object): Client {
+const longestSpacing = 60_000;
+
+/** Reads `GITHUB_REQUEST_SPACING_MS` from the environment the kit has
+ *  trimmed, where an empty value is unset. It is for a stub of the API: against
+ *  GitHub's own address a spacing below GitHub's minimum would be accepted. */
+export function spacingOf(values: {
+  readonly GITHUB_REQUEST_SPACING_MS?: string | undefined;
+  readonly GITHUB_API_URL?: string | undefined;
+}): number | undefined {
+  const value = values.GITHUB_REQUEST_SPACING_MS;
+  if (value === undefined) return undefined;
+  if (values.GITHUB_API_URL === undefined)
+    throw new Error(
+      "GITHUB_REQUEST_SPACING_MS is for a stub of the API, so it needs GITHUB_API_URL",
+    );
+  if (!/^\d+$/.test(value) || Number(value) > longestSpacing)
+    throw new Error(
+      `GITHUB_REQUEST_SPACING_MS must be a whole number of milliseconds, at most ${String(longestSpacing)}`,
+    );
+  return Number(value);
+}
+
+let spaced:
+  | { ms: number; write: Bottleneck.Group; notifications: Bottleneck.Group }
+  | undefined;
+
+// The throttle plugin spaces writes, GraphQL requests and the writes that
+// notify someone by whole seconds, through limiters it shares across clients.
+// A setting replaces them with limiters of its own, shared the same way.
+function spacing(ms: number | undefined) {
+  if (ms === undefined) return {};
+  if (spaced?.ms !== ms) {
+    const limiter = (id: string) =>
+      new Bottleneck.Group({ id, maxConcurrent: 1, minTime: ms });
+    spaced = {
+      ms,
+      write: limiter("octokit-write"),
+      notifications: limiter("octokit-notifications"),
+    };
+  }
+  return { write: spaced.write, notifications: spaced.notifications };
+}
+
+function client(origin: Origin, signal: AbortSignal, auth?: object): Client {
   const octokit = new Client({
-    baseUrl: base,
+    baseUrl: origin.base,
     request: { signal },
     ...auth,
     throttle: {
+      ...spacing(origin.spacingMs),
       onRateLimit: (
         after: number,
         _options: unknown,
@@ -262,7 +312,7 @@ function minterOf(app: App, signal: AbortSignal) {
   return createAppAuth({
     appId: app.appId,
     createJwt: jwtOf(app, () => signer),
-    request: client(app.base, signal).request,
+    request: client(app, signal).request,
     cache: signer.cache,
   });
 }
@@ -343,13 +393,13 @@ async function tokenFor(
   }
 }
 
-export function anonymous(base: string, signal: AbortSignal): Client {
-  return client(base, signal);
+export function anonymous(origin: Origin, signal: AbortSignal): Client {
+  return client(origin, signal);
 }
 
 export function asPersonalToken(
   token: string,
-  base: string,
+  origin: Origin,
   secret: Secret,
   signal: AbortSignal,
   name = "GITHUB_PERSONAL_TOKEN",
@@ -357,8 +407,8 @@ export function asPersonalToken(
   secret(token);
   const fingerprint = createHash("sha256").update(token).digest("hex");
   const octokit = counted(
-    client(base, signal),
-    `${base} personal ${fingerprint}`,
+    client(origin, signal),
+    `${origin.base} personal ${fingerprint}`,
     true,
   );
   octokit.hook.before("request", (options) => {
@@ -395,7 +445,7 @@ export function asPersonalToken(
 
 export function asApp(app: App, signal: AbortSignal): Client {
   const signer = signerOf(app);
-  return client(app.base, signal, {
+  return client(app, signal, {
     authStrategy: createAppAuth,
     auth: { appId: app.appId, createJwt: jwtOf(app, () => signer) },
   });
@@ -413,7 +463,7 @@ export function asInstallation(
   signal: AbortSignal,
 ): Client {
   const octokit = counted(
-    client(app.base, signal),
+    client(app, signal),
     `${app.base} ${app.appId} ${String(installationId)}`,
     reach.access !== "write" && reach.access !== "discussions-write",
   );
