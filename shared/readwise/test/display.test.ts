@@ -72,13 +72,124 @@ describe("highlight title and body", () => {
       ).title,
     ).toBe("We recently introduced Marfa, a store for one person.");
   });
-  it("takes the title from the export passage only when Reader's has no words", () => {
+  it("takes the title from the export passage, and Reader's when the export has no words", () => {
     expect(
       highlightDisplay("Plain words", "*Export* words", undefined).title,
-    ).toBe("Plain words");
+    ).toBe("Export words");
     expect(
       highlightDisplay("", `${picture}\n\n*Export*\nwords`, undefined).title,
     ).toBe("Export words");
+    expect(highlightDisplay("Plain words", picture, undefined).title).toBe(
+      "Plain words",
+    );
+    expect(highlightDisplay("Plain words", "  ", undefined).title).toBe(
+      "Plain words",
+    );
+  });
+  // Passages from a real Reader library.
+  it("joins a passage Reader broke around its links", () => {
+    expect(
+      highlightDisplay(
+        "We recently introduced\n   \n    claimable sandboxes\n   \n   , which let you start using Stripe directly",
+        "We recently introduced [claimable sandboxes](https://docs.stripe.com/sandboxes/claimable-sandboxes) , which let you start using Stripe directly from your AI coding tools",
+        undefined,
+      ).title,
+    ).toBe(
+      "We recently introduced claimable sandboxes, which let you start using Stripe…",
+    );
+  });
+  it("keeps a lead line the export sets apart as its own paragraph", () => {
+    expect(
+      highlightDisplay(
+        "Feature Specification\nThe ability for a PM to gather requirements",
+        "Feature Specification\n\n> The ability for a PM to gather requirements",
+        undefined,
+      ).title,
+    ).toBe("Feature Specification");
+  });
+  it("separates blocks Reader glued together with no space", () => {
+    expect(
+      highlightDisplay(
+        "Principles for agent-scale source controlWith agentic coding, many common assumptions",
+        "Principles for agent-scale source control\n\nWith agentic coding, many common assumptions",
+        undefined,
+      ).title,
+    ).toBe("Principles for agent-scale source control");
+  });
+  it("ends the title at a heading in either passage", () => {
+    expect(
+      highlightDisplay(
+        "# 9:06:16 PM - May 27, 2025\n\nJesse is asking me how I feel",
+        "# 9:06:16 PM - May 27, 2025 Jesse is asking me how I feel",
+        undefined,
+      ).title,
+    ).toBe("9:06:16 PM - May 27, 2025");
+    expect(
+      highlightDisplay("Lead in\n## Section\nBody text", undefined, undefined)
+        .title,
+    ).toBe("Lead in");
+    expect(
+      highlightDisplay("## Section\nBody text", undefined, undefined).title,
+    ).toBe("Section");
+  });
+  it("leaves list and quotation markers out of the title", () => {
+    expect(
+      highlightDisplay(
+        "When somebody decides to build an AI data center",
+        "•   When somebody decides to build an AI data center",
+        undefined,
+      ).title,
+    ).toBe("When somebody decides to build an AI data center");
+    for (const marked of [
+      "\\- Item",
+      "\\* Item",
+      "\\+ Item",
+      "1\\. Item",
+      "\\> Item",
+    ])
+      expect(highlightDisplay("", marked, undefined).title, marked).toBe(
+        "Item",
+      );
+    expect(highlightDisplay("Plain words", "•", undefined).title).toBe(
+      "Plain words",
+    );
+    expect(highlightDisplay("•", undefined, "Doc").title).toBe(
+      "Highlight from Doc",
+    );
+  });
+  it("closes up the space before punctuation", () => {
+    expect(
+      highlightDisplay(
+        "Recent Works by Wang Yidong\n   \n   , Schoeni Art Gallery",
+        "*Recent Works by Wang Yidong* , Schoeni Art Gallery ( Hong Kong ) ; 1993 !",
+        undefined,
+      ).title,
+    ).toBe(
+      "Recent Works by Wang Yidong, Schoeni Art Gallery ( Hong Kong); 1993!",
+    );
+    expect(
+      highlightDisplay(
+        "If backlinks were steaks, .edu and .gov domains would be",
+        undefined,
+        undefined,
+      ).title,
+    ).toBe("If backlinks were steaks, .edu and .gov domains would be");
+  });
+  it("leaves a heading's permalink out of the title", () => {
+    expect(
+      highlightDisplay(
+        "The best part is it doesn’t use more AI #\nMost of the proposed solutions",
+        "The best part is it doesn’t use more AI [#](https://simonwillison.net/2025/Apr/11/camel/#the-best-part)\n\nMost of the proposed solutions",
+        undefined,
+      ).title,
+    ).toBe("The best part is it doesn’t use more AI");
+    expect(
+      highlightDisplay(
+        "[#hashtag](https://example.com) words",
+        undefined,
+        undefined,
+      ).title,
+    ).toBe("#hashtag words");
   });
   it("cuts a long title at a word boundary to 80 characters with an ellipsis", () => {
     const line =

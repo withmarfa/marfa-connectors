@@ -57,6 +57,11 @@ function inline(
       case "br":
         text += "\n";
         break;
+      case "link":
+        // A heading's permalink, which a page shows as a mark beside it.
+        if (/^\s*[#¶§]\s*$/u.test((token as Tokens.Link).text)) break;
+        text += inline((token as Tokens.Link).tokens, reading);
+        break;
       case "codespan":
       case "escape":
         text += decoded((token as Tokens.Codespan).text);
@@ -115,27 +120,74 @@ function blocks(tokens: readonly Token[], reading: Reading): void {
     }
   }
 }
-function read(markdown: string): Reading {
+function read(tokens: readonly Token[]): Reading {
   const reading: Reading = { lines: [], picture: false };
-  blocks(Lexer.lex(markdown, { gfm: true }), reading);
+  blocks(tokens, reading);
   reading.lines = reading.lines
     .flatMap((text) => text.split("\n"))
     .map((text) => text.replace(/\s+/g, " ").trim())
     .filter(Boolean);
   return reading;
 }
+function lexed(markdown: string): Token[] {
+  return Lexer.lex(markdown, { gfm: true });
+}
 
 /**
- * The first paragraph that has words, as one line of plain text. Only a blank
- * line ends a paragraph: Reader breaks a passage's lines around inline links
- * and soft wraps, so a single line break is a space.
+ * The passage's paragraphs as Markdown tokens. A blank line ends a paragraph,
+ * and a heading is a paragraph of its own; a single line break is not a
+ * paragraph break, since Reader breaks a passage's lines around inline links
+ * and soft wraps.
  */
-function firstParagraph(markdown: string): string | undefined {
-  for (const paragraph of markdown
-    .replace(/\r\n?/g, "\n")
-    .split(/\n[^\S\n]*\n/)) {
-    const words = read(paragraph).lines.join(" ");
-    if (words !== "") return words;
+function paragraphs(markdown: string): Token[][] {
+  const found: Token[][] = [];
+  for (const chunk of markdown.replace(/\r\n?/g, "\n").split(/\n[^\S\n]*\n/)) {
+    let current: Token[] = [];
+    for (const token of lexed(chunk)) {
+      if (token.type !== "heading") {
+        current.push(token);
+        continue;
+      }
+      if (current.length > 0) found.push(current);
+      found.push([token]);
+      current = [];
+    }
+    if (current.length > 0) found.push(current);
+  }
+  return found;
+}
+function tidied(text: string): string {
+  return (
+    text
+      .replace(/^(?:(?:•|[-*+>]|\d+[.)])(?:\s+|$)|•)+/u, "")
+      // Only before punctuation that ends a word: ".edu" keeps its space.
+      .replace(/\s+(?=[,.;:!?)\]}]+(?:\s|$))/gu, "")
+      .trim()
+  );
+}
+/** The headings of a passage, as the plain text a title compares. */
+function headings(markdown: string): string[] {
+  return paragraphs(markdown)
+    .filter(([token]) => token?.type === "heading")
+    .map((tokens) => tidied(read(tokens).lines.join(" ")))
+    .filter(Boolean);
+}
+/**
+ * The first paragraph that has words, as one line of plain text. It ends at
+ * the end of any heading it starts with, from either passage: Readwise's
+ * export joins a heading to the lines after it.
+ */
+function firstParagraph(
+  markdown: string,
+  ends: readonly string[],
+): string | undefined {
+  for (const tokens of paragraphs(markdown)) {
+    const words = tidied(read(tokens).lines.join(" "));
+    if (words === "") continue;
+    const heading = ends
+      .filter((end) => words.length > end.length && words.startsWith(`${end} `))
+      .sort((a, b) => a.length - b.length)[0];
+    return heading ?? words;
   }
   return undefined;
 }
@@ -161,8 +213,9 @@ export interface HighlightDisplay {
  * The title and body a highlight shows. The body is the passage as Markdown,
  * whole: the export passage keeps pictures and formatting that Reader's plain
  * passage drops, unless Readwise cut it at its limit. The title is the first
- * paragraph of Reader's plain passage, or of the export passage when Reader's
- * has no words, or names the picture or highlight when neither has words.
+ * paragraph of the export passage, which keeps the paragraph breaks Reader's
+ * plain passage loses, or of Reader's passage when the export has no words,
+ * or names the picture or highlight when neither has words.
  */
 export function highlightDisplay(
   text: string,
@@ -177,12 +230,15 @@ export function highlightDisplay(
       ? exportText
       : text;
   const body = marked.trim() === "" ? undefined : marked;
+  const exported = typeof exportText === "string" ? exportText : undefined;
+  const ends = [...headings(text), ...headings(exported ?? "")];
   const first =
-    firstParagraph(text) ??
-    (body === undefined || body === text ? undefined : firstParagraph(body));
+    (exported === undefined ? undefined : firstParagraph(exported, ends)) ??
+    firstParagraph(text, ends);
   if (first !== undefined) return { title: shortened(first), body };
   const word =
-    read(text).picture || (body !== undefined && read(body).picture)
+    read(lexed(text)).picture ||
+    (body !== undefined && read(lexed(body)).picture)
       ? "Picture"
       : "Highlight";
   const named = documentTitle?.replace(/\s+/g, " ").trim();
