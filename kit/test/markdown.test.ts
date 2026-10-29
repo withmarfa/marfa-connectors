@@ -216,27 +216,55 @@ describe("htmlToMarkdown", () => {
       ).toBe(maxHtmlElements - 10);
     });
 
-    // A time bound tuned to one machine fails on a slower one, so these
-    // compare a conversion with one of half the input: linear work takes about
-    // twice as long and quadratic work four times. The inputs are a quarter
-    // and a half of the limit, because turndown's own joining of a list's
-    // items grows faster than its input near the limit (an ordered list of
-    // 24,000 items takes six times what 12,000 do), which is bounded by the
-    // limit and not ours to fix here. Each takes the fastest of several runs,
-    // so a pause from another process does not count. The absolute bound,
-    // for the largest input, stops a regression slow at any speed: the
-    // quadratic cases measured on a fast machine took tens of seconds, and a
-    // shared CI runner converts the largest input in about three.
-    const fastest = (run: () => void, times = 5): number => {
-      let best = Infinity;
-      for (let each = 0; each < times; each += 1) {
-        const started = performance.now();
+    // A time bound fails on a slow or busy machine, and a ratio of two
+    // timings fails under load too, so these count work and not time: the
+    // characters a conversion hands to the string methods that read their
+    // whole text (replace, split, match, search, indexOf and includes). The
+    // count depends only on the input. Linear work grows with the input, so
+    // doubling it doubles the count, and a conversion that scans the whole
+    // output again for every element grows four times. The inputs are a
+    // quarter and a half of the limit, and each character may be read a
+    // fixed number of times at most: the largest input measured about 14
+    // reads a character, and quadratic work reads one many thousands of times.
+    // What this does not count is copying inside the engine, such as turndown
+    // joining a list's items, which grows faster than its input near the limit
+    // (an ordered list of 24,000 items takes six times what 12,000 do); the
+    // limit bounds it and it is not ours to fix here.
+    const scans = [
+      "replace",
+      "replaceAll",
+      "split",
+      "match",
+      "matchAll",
+      "search",
+      "indexOf",
+      "lastIndexOf",
+      "includes",
+    ] as const;
+    const charactersScanned = (run: () => void): number => {
+      const proto = String.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+      >;
+      const originals = scans.map((name) => proto[name]);
+      let total = 0;
+      scans.forEach((name, at) => {
+        const original = originals[at];
+        proto[name] = function (this: unknown, ...args: unknown[]) {
+          if (typeof this === "string") total += this.length;
+          return original?.apply(this, args);
+        };
+      });
+      try {
         run();
-        best = Math.min(best, performance.now() - started);
+      } finally {
+        scans.forEach((name, at) => {
+          proto[name] = originals[at] as (...args: unknown[]) => unknown;
+        });
       }
-      return best;
+      return total;
     };
-    const slowestAllowed = 10_000;
+    const mostReadsPerCharacter = 30;
 
     const shapes: Record<string, (size: number) => string> = {
       "a table of rows": (size) =>
@@ -250,16 +278,15 @@ describe("htmlToMarkdown", () => {
     };
 
     for (const [name, build] of Object.entries(shapes)) {
-      it(`converts ${name} in time that grows with its size`, () => {
+      it(`converts ${name} in work that grows with its size`, () => {
         const largest = build(maxHtmlElements);
         const quarter = build(maxHtmlElements / 4);
         const half = build(maxHtmlElements / 2);
-        htmlToMarkdown(quarter);
-        const small = fastest(() => htmlToMarkdown(quarter));
-        const medium = fastest(() => htmlToMarkdown(half));
-        const large = fastest(() => htmlToMarkdown(largest), 2);
-        expect(large).toBeLessThan(slowestAllowed);
-        expect(medium / small).toBeLessThan(3.5);
+        const small = charactersScanned(() => htmlToMarkdown(quarter));
+        const medium = charactersScanned(() => htmlToMarkdown(half));
+        const large = charactersScanned(() => htmlToMarkdown(largest));
+        expect(large / largest.length).toBeLessThan(mostReadsPerCharacter);
+        expect(medium / small).toBeLessThan(2.5);
       });
     }
 
