@@ -7,6 +7,7 @@ import { retry } from "@octokit/plugin-retry";
 import { throttling } from "@octokit/plugin-throttling";
 import { RequestError } from "@octokit/request-error";
 import type { Secret } from "@withmarfa/connector";
+import Bottleneck from "bottleneck";
 import githubAppJwt from "universal-github-app-jwt";
 
 export const defaultBase = "https://api.github.com";
@@ -31,12 +32,44 @@ export class PermissionRequired extends Error {
   override name = "PermissionRequired";
 }
 
+/** Reads `GITHUB_REQUEST_SPACING_MS`: the least time between two writes. */
+export function spacingOf(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value))
+    throw new Error(
+      "GITHUB_REQUEST_SPACING_MS must be a whole number of milliseconds",
+    );
+  return Number(value);
+}
+
+let spaced:
+  | { ms: number; write: Bottleneck.Group; notifications: Bottleneck.Group }
+  | undefined;
+
+// The throttle plugin spaces writes, GraphQL requests and the writes that
+// notify someone by whole seconds, through limiters it shares across clients.
+// A setting replaces them with limiters of its own, shared the same way.
+function spacing(ms: number | undefined) {
+  if (ms === undefined) return {};
+  if (spaced?.ms !== ms) {
+    const limiter = (id: string) =>
+      new Bottleneck.Group({ id, maxConcurrent: 1, minTime: ms });
+    spaced = {
+      ms,
+      write: limiter("octokit-write"),
+      notifications: limiter("octokit-notifications"),
+    };
+  }
+  return { write: spaced.write, notifications: spaced.notifications };
+}
+
 function client(base: string, signal: AbortSignal, auth?: object): Client {
   const octokit = new Client({
     baseUrl: base,
     request: { signal },
     ...auth,
     throttle: {
+      ...spacing(spacingOf(process.env["GITHUB_REQUEST_SPACING_MS"])),
       onRateLimit: (
         after: number,
         _options: unknown,

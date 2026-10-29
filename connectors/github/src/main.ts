@@ -22,7 +22,7 @@ import {
   subIssueOf,
 } from "./entries.js";
 import { carryDiscussions, remakeDiscussions } from "./discussion-write.js";
-import { defaultBase, type App } from "./github.js";
+import { defaultBase, spacingOf, type App } from "./github.js";
 import { hints } from "./hooks.js";
 import { notificationType } from "./notifications.js";
 import { read } from "./read.js";
@@ -54,6 +54,7 @@ const env = {
   GITHUB_READ_ONLY: "optional",
   GITHUB_STARS: "optional",
   GITHUB_API_URL: "optional",
+  GITHUB_REQUEST_SPACING_MS: "optional",
   GITHUB_PUBLIC_URL: "optional",
   GITHUB_ORGANIZATION: "optional",
   GITHUB_APP_NAME: "optional",
@@ -444,6 +445,7 @@ const connector = defineConnector<typeof env>({
     filesOf(values.GITHUB_FILES);
     readOnly(values.GITHUB_READ_ONLY);
     starsOn(values.GITHUB_STARS);
+    spacingOf(values.GITHUB_REQUEST_SPACING_MS);
     const app = [
       values.GITHUB_APP_ID,
       values.GITHUB_PRIVATE_KEY,
