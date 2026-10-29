@@ -7,6 +7,7 @@ const values = (maximum: string | undefined) => ({
   READWISE_API_URL: undefined,
   READWISE_READER_API_URL: undefined,
   READWISE_READER_INCLUDE_FEED: undefined,
+  READWISE_READER_PICTURES: undefined,
   READWISE_READER_INBOUND_ONLY: undefined,
   READWISE_READER_PROPAGATE_PURGE: undefined,
   READWISE_CONTENT_MAX_BYTES: maximum,
@@ -39,3 +40,23 @@ it.each([
     "READWISE_CONTENT_MAX_BYTES",
   );
 });
+it.each([
+  [undefined, "addresses"],
+  ["addresses", "addresses"],
+  ["save", "save"],
+  ["save-in-library", "save-in-library"],
+] as const)("reads READWISE_READER_PICTURES %s", (input, expected) => {
+  expect(
+    parseConfig({ ...values(undefined), READWISE_READER_PICTURES: input }),
+  ).toMatchObject({ pictures: expected });
+});
+it.each(["", "true", "Save", "library"])(
+  "refuses READWISE_READER_PICTURES %s at start",
+  (input) => {
+    expect(() =>
+      parseConfig({ ...values(undefined), READWISE_READER_PICTURES: input }),
+    ).toThrow(
+      "READWISE_READER_PICTURES must be addresses, save or save-in-library",
+    );
+  },
+);

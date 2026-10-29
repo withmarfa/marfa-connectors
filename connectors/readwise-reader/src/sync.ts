@@ -24,12 +24,14 @@ import {
   type ReaderDocument,
   enqueueContent,
   drainContent,
+  PictureBudget,
   sourceType,
   highlightType,
   readerFileType,
   readerMutableSourceFields,
   readerMutableHighlightFields,
   type ContentJob,
+  type PictureWork,
 } from "@withmarfa/readwise";
 import { env, parseConfig } from "./config.js";
 import { ReaderIdentities } from "./identity.js";
@@ -225,13 +227,18 @@ export async function sync(
     exportClient?: ExportClient;
     now?: () => number;
     maxPages?: number;
+    /** The picture fetch; for tests. */
+    fetchPicture?: PictureWork["fetch"];
   } = {},
 ): Promise<void> {
   const config = parseConfig(context.env);
   const now = options.now ?? Date.now;
   const maxPages = options.maxPages ?? 15;
+  // A change of the picture setting walks the whole listing again, which
+  // plans again each document accounted for under the other setting.
   const fingerprint = hash([
     config.includeFeed,
+    config.pictures,
     sourceType,
     highlightType,
     readerFileType,
@@ -278,6 +285,14 @@ export async function sync(
       context.signal,
       { now, waitUntil: (until) => context.waitUntil(until) },
     );
+  const pictures: PictureWork | undefined =
+    config.pictures === "addresses"
+      ? undefined
+      : {
+          setting: config.pictures,
+          budget: new PictureBudget(now),
+          ...(options.fetchPicture && { fetch: options.fetchPicture }),
+        };
   const content: ContentWork = options.content ?? {
     enqueue: enqueueContent,
     drain: (ctx, client, state) =>
@@ -285,6 +300,7 @@ export async function sync(
         now,
         exportClient,
         maxBytes: config.contentMaxBytes,
+        ...(pictures && { pictures }),
       }),
   };
   const cached = new Map<string, ReaderDocument | undefined>();

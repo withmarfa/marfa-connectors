@@ -15,18 +15,19 @@ Create a connector key with source `readwise-reader`, claimed item source `readw
 
 Reader and Highlights must use different key sources. Two keys under the same key source would share a registration and its saved state. Highlights uses key source `readwise`; both definitions write item source `readwise` and use the same stable account label.
 
-| Variable                          | Meaning                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `MARFA_API_URL`                   | Marfa instance address.                                                                          |
-| `MARFA_API_KEY`                   | The Reader connector key.                                                                        |
-| `READWISE_ACCESS_TOKEN`           | Readwise access token, supplied through the process environment or secret manager.               |
-| `READWISE_ACCOUNT`                | Required stable nonsecret label, such as `primary`; use the same value in Highlights.            |
-| `READWISE_READER_INCLUDE_FEED`    | `true` includes feed documents. Default: `false`, saved library only.                            |
-| `READWISE_READER_INBOUND_ONLY`    | `true` disables outbound edits. Default: `false`.                                                |
-| `READWISE_READER_PROPAGATE_PURGE` | `true` allows permanent Marfa purges to delete Reader records. Default: `false`.                 |
-| `READWISE_READER_API_URL`         | Optional controlled-test API base. Default: `https://readwise.io/api/v3/`.                       |
-| `READWISE_CONTENT_MAX_BYTES`      | Remote resource limit in bytes, from 1 through 1073741824 (1 GiB). Default: 268435456 (256 MiB). |
-| `READWISE_API_URL`                | Optional export API base. Default: `https://readwise.io/api/v2/`.                                |
+| Variable                          | Meaning                                                                                                                                                                                                                                                                    |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MARFA_API_URL`                   | Marfa instance address.                                                                                                                                                                                                                                                    |
+| `MARFA_API_KEY`                   | The Reader connector key.                                                                                                                                                                                                                                                  |
+| `READWISE_ACCESS_TOKEN`           | Readwise access token, supplied through the process environment or secret manager.                                                                                                                                                                                         |
+| `READWISE_ACCOUNT`                | Required stable nonsecret label, such as `primary`; use the same value in Highlights.                                                                                                                                                                                      |
+| `READWISE_READER_INCLUDE_FEED`    | `true` includes feed documents. Default: `false`, saved library only.                                                                                                                                                                                                      |
+| `READWISE_READER_INBOUND_ONLY`    | `true` disables outbound edits. Default: `false`.                                                                                                                                                                                                                          |
+| `READWISE_READER_PROPAGATE_PURGE` | `true` allows permanent Marfa purges to delete Reader records. Default: `false`.                                                                                                                                                                                           |
+| `READWISE_READER_PICTURES`        | Pictures hosted on other websites: `addresses` lists them in the manifest only, `save` saves them, and `save-in-library` saves them only for documents in the Marfa library tier. Default: `addresses`. See [Pictures from other websites](#pictures-from-other-websites). |
+| `READWISE_READER_API_URL`         | Optional controlled-test API base. Default: `https://readwise.io/api/v3/`.                                                                                                                                                                                                 |
+| `READWISE_CONTENT_MAX_BYTES`      | Remote resource limit in bytes, from 1 through 1073741824 (1 GiB). Default: 268435456 (256 MiB).                                                                                                                                                                           |
+| `READWISE_API_URL`                | Optional export API base. Default: `https://readwise.io/api/v2/`.                                                                                                                                                                                                          |
 
 Boolean values must be `true` or `false`. API overrides require HTTPS, except HTTP on loopback; credentials, query strings, and fragments are rejected. API credentials go only to the configured API base. Account labels are never derived from a token. Do not change an account label or endpoint against saved state.
 
@@ -57,7 +58,7 @@ Listing and preservation have independent scopes. A page acknowledges its bounde
 
 Each retained HTML document, available original, Readwise-hosted image, overflow text, and resource manifest has its own `readwise.file` item with a `blob_ref`. Every file has an `attached-to` edge to its source or highlight. Highlights reference their source through `references`. Original HTML bytes are retained without rewriting links.
 
-The manifest distinguishes kept, pending, unavailable, and deliberately unkept resources. A completed empty HTTP 200 download is recorded as unavailable without replacing any retained bytes; failed or incomplete downloads remain pending. Downloads accept only the verified HTTPS `readwise-assets.s3.amazonaws.com` host and validate each redirect. They never send API credentials to storage or fetch third-party images, tracking pixels, or linked websites. Transient signed URLs are excluded from checkpoint and manifest metadata; original HTML remains exact. A changed or expired source link is refreshed through Reader. Failed downloads retain the last acknowledged bytes.
+The manifest distinguishes kept, pending, unavailable, and deliberately unkept resources. A completed empty HTTP 200 download is recorded as unavailable without replacing any retained bytes; failed or incomplete downloads remain pending. Downloads accept only the verified HTTPS `readwise-assets.s3.amazonaws.com` host and validate each redirect. They never send API credentials to storage or fetch linked websites. Pictures hosted on other websites are fetched only when `READWISE_READER_PICTURES` asks for them. Transient signed URLs are excluded from checkpoint and manifest metadata; original HTML remains exact. A changed or expired source link is refreshed through Reader. Failed downloads retain the last acknowledged bytes.
 
 Downloaded resources have a default 256 MiB limit and a bounded timeout. Set `READWISE_CONTENT_MAX_BYTES` to a positive decimal byte count up to 1073741824 (1 GiB).
 
@@ -66,6 +67,28 @@ Downloads stream through a private temporary file so upload retries can reopen a
 Each content pass handles a bounded number of documents and resources; later runs resume pending work. A productive pass that stops at its resource budget remains ready for the next pass. Failed or stalled work keeps its retry delay. Stable resource keys and acknowledged manifests avoid repeat uploads and unchanged downloads. Text that exceeds the item field limit is retained in a referenced text blob before its final metadata is acknowledged. A purged content item is not silently recreated.
 
 Both binaries use the same preservation implementation for already managed Reader rows. Stopping Reader does not make Highlights substitute stale export text or discard retained content.
+
+## Pictures from other websites
+
+A document's HTML often shows pictures hosted on other websites. Pictures on Readwise storage keep their own download path, whatever the setting. For a document that saves pictures, a picture is the absolute address in an `img` element's `src`, or in its `data-src` when it has no `src`, or the document's cover `image_url`. Each whole address is one picture, so two addresses that differ only in the query are two pictures. Other image references, such as `srcset` candidates and relative or `data:` addresses, stay listed as deliberately unkept, reason `third-party`, and are never fetched.
+
+`READWISE_READER_PICTURES` decides what happens to them:
+
+- `addresses` (the default): nothing from another website is fetched. The manifest lists each image on another website as deliberately unkept, reason `third-party`, one resource for each origin and path.
+- `save`: each HTTPS picture is fetched and saved.
+- `save-in-library`: pictures are saved only for documents whose `readwise.source` row is in the Marfa library tier. Feed documents keep the `addresses` behavior.
+
+Any other value stops the connector at start.
+
+A saved picture is a `readwise.file` item with `resource_kind` `picture`, its bytes, `mime_type`, and `source_url` set to the picture's address. It has an `attached-to` edge to its source and takes the source's tier when it is created. The HTML is never rewritten: it keeps the original addresses. The manifest lists each picture with its saved file, and that file's `source_url` holds the address.
+
+Pictures are fetched through the kit's picture fetcher. It refuses addresses that are not HTTPS (reason `not_https`), private network addresses, known trackers, SVG, one-pixel images, and responses that are not pictures or are too large. A refused picture is recorded as unavailable with the refusal reason, and HTTP status when there is one, and is not fetched again. A timeout, a failed connection, or an HTTP 408, 425, 429, or 5xx response is retried on later runs, up to 3 attempts in all. One failed picture never fails its document or the run.
+
+Each document saves at most 50 pictures; the rest are listed as deliberately unkept, reason `over-document-limit`. Each run fetches at most 100 pictures and 200 MiB, and spends at most 10 minutes on pictures. When a run reaches a limit, the remaining pictures stay pending with reason `run-limit`, the run reports the condition `readwise:content:pictures-limit`, and the next run continues.
+
+A picture already held in Marfa is listed as kept, whichever connector wrote it and whatever the setting. A picture that was trashed or purged in Marfa is listed as deliberately unkept, reason `removed`, and is not fetched again.
+
+Changing the setting makes the next listing walk cover the whole Reader listing again, resumably, so documents that were already kept get their pictures too. That walk queues content work the normal way and respects the content queue's limits and Reader's rate limits. It uploads nothing that is already kept and changes no existing item except to add pictures and update the manifest.
 
 ## Edit and create
 
