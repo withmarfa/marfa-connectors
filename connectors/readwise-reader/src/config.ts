@@ -1,4 +1,9 @@
-import { contentMaxBytes, endpoint, identity } from "@withmarfa/readwise";
+import {
+  contentMaxBytes,
+  endpoint,
+  identity,
+  type PicturesSetting,
+} from "@withmarfa/readwise";
 import type { EnvValues } from "@withmarfa/connector";
 export const env = {
   READWISE_ACCOUNT: "required",
@@ -7,6 +12,7 @@ export const env = {
   READWISE_CONTENT_MAX_BYTES: "optional",
   READWISE_READER_API_URL: "optional",
   READWISE_READER_INCLUDE_FEED: "optional",
+  READWISE_READER_PICTURES: "optional",
   READWISE_READER_INBOUND_ONLY: "optional",
   READWISE_READER_PROPAGATE_PURGE: "optional",
 } as const;
@@ -18,11 +24,25 @@ export interface ReaderConfig {
   inboundOnly: boolean;
   propagatePurge: boolean;
   contentMaxBytes: number;
+  pictures: PicturesSetting;
 }
 function flag(value: string | undefined, name: string): boolean {
   if (value === undefined || value === "false") return false;
   if (value === "true") return true;
   throw new Error(`${name} must be true or false`);
+}
+/**
+ * What the connector does with the pictures a document's HTML draws from
+ * other websites: `addresses` keeps only the addresses, in the HTML; `save`
+ * saves each document's pictures as files attached to it; `save-in-library`
+ * does so only for documents in the library.
+ */
+export function picturesSetting(value: string | undefined): PicturesSetting {
+  if (value === undefined || value === "addresses") return "addresses";
+  if (value === "save" || value === "save-in-library") return value;
+  throw new Error(
+    "READWISE_READER_PICTURES must be addresses, save or save-in-library",
+  );
 }
 export function parseConfig(values: EnvValues<typeof env>): ReaderConfig {
   identity(values.READWISE_ACCOUNT, "source", 1);
@@ -41,6 +61,7 @@ export function parseConfig(values: EnvValues<typeof env>): ReaderConfig {
       values.READWISE_READER_INBOUND_ONLY,
       "READWISE_READER_INBOUND_ONLY",
     ),
+    pictures: picturesSetting(values.READWISE_READER_PICTURES),
     propagatePurge: flag(
       values.READWISE_READER_PROPAGATE_PURGE,
       "READWISE_READER_PROPAGATE_PURGE",

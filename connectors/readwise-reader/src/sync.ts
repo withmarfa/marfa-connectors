@@ -24,6 +24,10 @@ import {
   type ReaderDocument,
   enqueueContent,
   drainContent,
+  admitPictures,
+  drainPictures,
+  pausePictures,
+  pictureListing,
   sourceType,
   highlightType,
   readerFileType,
@@ -51,6 +55,7 @@ export interface ReaderContext extends Pick<
   | "log"
   | "pendingOutbound"
 > {
+  linked?: RunContext<typeof env>["linked"];
   forScope(
     name: string,
     options?: { retry: { mode: "refetch"; context: string } },
@@ -225,6 +230,8 @@ export async function sync(
     exportClient?: ExportClient;
     now?: () => number;
     maxPages?: number;
+    /** Picture work's fetch and clock; for tests. */
+    pictures?: Pick<Parameters<typeof drainPictures>[3], "fetch" | "budget">;
   } = {},
 ): Promise<void> {
   const config = parseConfig(context.env);
@@ -248,6 +255,7 @@ export async function sync(
     },
   });
   const queueScope = context.forScope("reader-content-queue");
+  const pictureScope = context.forScope("reader-pictures");
   let saved = progress(
     scope.state.get("listing"),
     config.account,
@@ -278,6 +286,7 @@ export async function sync(
       context.signal,
       { now, waitUntil: (until) => context.waitUntil(until) },
     );
+  const setting = config.pictures;
   const content: ContentWork = options.content ?? {
     enqueue: enqueueContent,
     drain: (ctx, client, state) =>
@@ -285,6 +294,9 @@ export async function sync(
         now,
         exportClient,
         maxBytes: config.contentMaxBytes,
+        ...(setting !== "addresses" && {
+          pictures: pictureListing(pictureScope.state, setting),
+        }),
       }),
   };
   const cached = new Map<string, ReaderDocument | undefined>();
@@ -561,6 +573,8 @@ export async function sync(
       );
       return false;
     }
+    if (setting !== "addresses")
+      await admitPictures(pictureScope.state, jobs, context.log);
     for (const { type, entry } of entries) await scope.upsert(type, [entry]);
     saved.pending = [...pending];
     return true;
@@ -626,7 +640,7 @@ export async function sync(
     delete saved.reconcile;
     await checkpoint(scope, saved);
   };
-  try {
+  const list = async (): Promise<void> => {
     if (saved.retryUntil !== undefined) {
       delete saved.retryUntil;
       await checkpoint(scope, saved);
@@ -861,6 +875,20 @@ export async function sync(
       "readwise:reader-unfinished",
       "Reader listing has more pages; the next run resumes its saved cursor",
     );
+  };
+  try {
+    await list();
+    // Picture work has its own queue and limits, after the listing and
+    // content work, and leaves a run that a hint started to that hint.
+    if (setting !== "addresses" && context.hints === undefined)
+      await drainPictures(context, reader, pictureScope.state, {
+        setting,
+        account: config.account,
+        contentState: queueScope.state,
+        now,
+        ...options.pictures,
+      });
+    else if (setting === "addresses") await pausePictures(pictureScope.state);
   } catch (error) {
     if (!(error instanceof RateLimited)) throw error;
     const acknowledged = progress(

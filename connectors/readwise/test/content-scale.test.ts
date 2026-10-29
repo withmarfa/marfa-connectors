@@ -464,6 +464,7 @@ async function readerPendingFixture(size: number) {
     env: {
       ...f.context.env,
       READWISE_READER_INCLUDE_FEED: undefined,
+      READWISE_READER_PICTURES: undefined,
       READWISE_READER_INBOUND_ONLY: undefined,
       READWISE_READER_PROPAGATE_PURGE: undefined,
       READWISE_CONTENT_MAX_BYTES: undefined,

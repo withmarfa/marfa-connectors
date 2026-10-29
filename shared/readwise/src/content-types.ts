@@ -19,6 +19,11 @@ export const readerFileType: TypeDefinition = {
     content_key: { type: "string" },
     reader_revision: { type: "string" },
     preservation: { type: "string" },
+    source_url: {
+      type: "url",
+      description:
+        "Where a picture the document's HTML draws was fetched from, as the URL parser writes the address, so that a reader of the HTML finds the picture by its attachment and this address.",
+    },
   },
 };
 export const readerFileFields = [
@@ -32,6 +37,7 @@ export const readerFileFields = [
   "content_key",
   "reader_revision",
   "preservation",
+  "source_url",
 ] as const;
 
 /** File writes remain inside the explicitly configured Readwise account. */

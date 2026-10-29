@@ -67,6 +67,7 @@ function fixture(capacity = false, hints?: ReaderContext["hints"]) {
       READWISE_API_URL: undefined,
       READWISE_READER_API_URL: undefined,
       READWISE_READER_INCLUDE_FEED: undefined,
+      READWISE_READER_PICTURES: undefined,
       READWISE_READER_INBOUND_ONLY: undefined,
       READWISE_READER_PROPAGATE_PURGE: undefined,
       READWISE_CONTENT_MAX_BYTES: undefined,
@@ -253,6 +254,23 @@ describe("Reader durable metadata", () => {
     expect(f.requests[1]?.cursor).toBe("1");
     await f.run();
     expect(f.requests.at(-1)?.updatedAfter).toBe("2026-10-14T23:55:00.000Z");
+  });
+  it("keeps its place in the listing when the picture setting changes", async () => {
+    const f = fixture();
+    f.setPages([[{ id: "a", category: "article", updated_at: stamp }]]);
+    await f.run();
+    await f.run();
+    const before = f.requests.length;
+    (
+      f.context.env as { READWISE_READER_PICTURES?: string }
+    ).READWISE_READER_PICTURES = "save";
+    await f.run();
+    expect(f.requests.slice(before)).toEqual([
+      { updatedAfter: expect.any(String) as string },
+    ]);
+    expect(f.states.get("reader-list")?.get("listing")).not.toHaveProperty(
+      "walk",
+    );
   });
   it("keeps failed writes from committing page progress", async () => {
     const f = fixture();

@@ -206,12 +206,14 @@ export async function download(
   });
   return { bytes, mime_type: contentType };
 }
-export type ResourceKind = "html" | "original" | "image" | "text";
+export type ResourceKind = "html" | "original" | "image" | "text" | "picture";
 export interface Resource {
   id: string;
   kind: ResourceKind;
   status: "kept" | "pending" | "unavailable" | "deliberately-unkept";
   reason?: string;
+  /** The HTTP status of a picture's refused answer, beside `bad_status`. */
+  httpStatus?: number;
   fileKey?: string;
   maxBytes?: number;
 }
@@ -227,6 +229,51 @@ export interface ContentPlan {
   resources: Resource[];
   files: ContentFile[];
 }
+/** At most this many picture addresses of one document are fetched, in the
+ *  order they come; the rest are counted and not fetched. */
+export const maxPicturesPerDocument = 50;
+/** A longer picture address is not read from a document. */
+const maxPictureAddressLength = 2048;
+/**
+ * The web addresses of the pictures a document's HTML draws, then its
+ * `image_url`, each once in the URL parser's standard form: an `img`'s `src`,
+ * or its `data-src` where it has no `src`. `srcset` candidates are not
+ * pictures to save, since a reader draws `src`. Only `https` and `http`
+ * addresses count, and an image on Readwise storage keeps its own path.
+ */
+export function pictureAddresses(
+  html: string,
+  image: string | null | undefined,
+): string[] {
+  const found = new Set<string>();
+  const take = (raw: string | undefined): void => {
+    if (raw === undefined || raw.length > maxPictureAddressLength) return;
+    const url = URL.parse(raw);
+    if (url?.protocol !== "https:" && url?.protocol !== "http:") return;
+    try {
+      storageUrl(url.href);
+      return;
+    } catch {
+      found.add(url.href);
+    }
+  };
+  function visit(node: DefaultTreeAdapterTypes.Node): void {
+    if ("tagName" in node && node.tagName === "img") {
+      const attribute = (name: string) =>
+        node.attrs.find((attr) => attr.name === name)?.value;
+      take(attribute("src") ?? attribute("data-src"));
+    }
+    if ("childNodes" in node) for (const child of node.childNodes) visit(child);
+    if ("content" in node) visit(node.content);
+  }
+  if (html) visit(parse(html));
+  if (image) take(image);
+  return [...found];
+}
+/** The resource id of a picture: its whole address, so two addresses that
+ *  differ only in the query are two pictures. */
+export const pictureResourceId = (address: string): string =>
+  `picture:${digest(address)}`;
 function imageUrls(html: string): string[] {
   const found: string[] = [];
   function visit(node: DefaultTreeAdapterTypes.Node): void {
@@ -252,10 +299,17 @@ function imageUrls(html: string): string[] {
   visit(parse(html));
   return found;
 }
+/**
+ * With `pictures`, each picture address of the document is a resource of its
+ * own, an `https` one a file to keep and an `http` one not kept; without it,
+ * a picture on another website is one deliberately unkept image resource per
+ * origin and path.
+ */
 export function contentPlan(
   canonical: string,
   row: ReaderDocument,
   texts: readonly TextFilePlan[] = [],
+  options: { pictures?: boolean } = {},
 ): ContentPlan {
   const resources: Resource[] = [];
   const files: ContentFile[] = [];
@@ -289,10 +343,16 @@ export function contentPlan(
       status: "unavailable",
       reason: "not-provided",
     });
+  const pictures = options.pictures
+    ? pictureAddresses(row.html_content ?? "", row.image_url)
+    : [];
+  const asPicture = new Set(pictures);
   for (const value of [
     ...imageUrls(row.html_content ?? ""),
     ...(row.image_url ? [row.image_url] : []),
   ]) {
+    const parsed = URL.parse(value);
+    if (parsed !== null && asPicture.has(parsed.href)) continue;
     let identity = value;
     try {
       const url = new URL(value);
@@ -324,6 +384,32 @@ export function contentPlan(
       url: url.href,
     });
     resources.push({ id, kind, status: "pending", fileKey: sourceId });
+  }
+  for (const address of pictures) {
+    const id = pictureResourceId(address);
+    if (!address.startsWith("https:")) {
+      resources.push({
+        id,
+        kind: "picture",
+        status: "deliberately-unkept",
+        reason: "not_https",
+      });
+      continue;
+    }
+    const sourceId = `${canonical}:content:${id}`;
+    files.push({
+      id,
+      kind: "picture",
+      sourceId,
+      key: digest(["picture", address].join("\n")),
+      url: address,
+    });
+    resources.push({
+      id,
+      kind: "picture",
+      status: "pending",
+      fileKey: sourceId,
+    });
   }
   return { resources, files };
 }

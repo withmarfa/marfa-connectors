@@ -9,3 +9,4 @@ export * from "./reader-client.js";
 export * from "./content.js";
 export * from "./content-types.js";
 export * from "./content-queue.js";
+export * from "./content-pictures.js";
