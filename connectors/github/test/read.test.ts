@@ -72,7 +72,7 @@ async function once(
         GITHUB_APP_ID: "12345",
         GITHUB_PRIVATE_KEY: key,
         GITHUB_WEBHOOK_SECRET: "github-test-webhook-secret",
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         ...env,
       },
     });
@@ -1827,7 +1827,7 @@ async function onceWithToken(
         MARFA_API_URL: marfa.url,
         MARFA_API_KEY: marfa.key,
         GITHUB_PERSONAL_TOKEN: token,
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         ...extra,
       },
     });
@@ -1900,7 +1900,7 @@ describe("a personal access token run", () => {
           PATH: process.env["PATH"],
           MARFA_API_URL: marfa.url,
           MARFA_API_KEY: marfa.key,
-          GITHUB_API_URL: github.url,
+          ...github.settings,
         },
       });
       throw new Error(`expected exit 2 but exited 0: ${stderr}`);

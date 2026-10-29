@@ -80,7 +80,7 @@ async function exec(
         PATH: process.env["PATH"],
         MARFA_API_URL: marfa.url,
         MARFA_API_KEY: marfa.key,
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         GITHUB_PERSONAL_TOKEN: token,
         GITHUB_FILES: setting,
         ...env,

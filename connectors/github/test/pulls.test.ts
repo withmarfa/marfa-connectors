@@ -59,7 +59,7 @@ async function once(env: Record<string, string | undefined> = {}) {
           GITHUB_APP_ID: "12345",
           GITHUB_PRIVATE_KEY: key,
           GITHUB_WEBHOOK_SECRET: "test-secret",
-          GITHUB_API_URL: github.url,
+          ...github.settings,
           ...env,
         },
       },

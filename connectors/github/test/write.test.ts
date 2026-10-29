@@ -77,7 +77,7 @@ async function ok(env: Record<string, string> = {}): Promise<string> {
         GITHUB_APP_ID: String(github.appId),
         GITHUB_PRIVATE_KEY: key,
         GITHUB_WEBHOOK_SECRET: "github-test-webhook-secret",
-        GITHUB_API_URL: github.url,
+        ...github.settings,
         ...env,
       },
     });

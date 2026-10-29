@@ -72,7 +72,7 @@ function env(
     GITHUB_APP_ID: "12345",
     GITHUB_PRIVATE_KEY: key,
     GITHUB_WEBHOOK_SECRET: secret,
-    GITHUB_API_URL: github.url,
+    ...github.settings,
   };
 }
 
