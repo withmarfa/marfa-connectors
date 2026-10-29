@@ -517,7 +517,12 @@ describe("an edge the key may not read", () => {
       const refused = await call("GET", `/items/${anchor}/${door}`);
       expect(refused.status).toBe(404);
       expect(refused.body["error"]).toMatchObject({ code: "item_not_found" });
-      expect((await call("GET", `/items/nothing/${door}`)).status).toBe(404);
+      const absent = await call(
+        "GET",
+        `/items/0190a000-0000-7000-8000-ffffffffffff/${door}`,
+      );
+      expect(absent.status).toBe(404);
+      expect(absent.body["error"]).toMatchObject({ code: "item_not_found" });
 
       server.grants = {
         edge_permissions: { "*": "read" },
