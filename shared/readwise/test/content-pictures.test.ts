@@ -12,6 +12,7 @@ import {
   contentQueue,
   digest,
   enqueueContent,
+  pictureAddresses,
   pictureResourceId,
   type ContentJob,
   type Resource,
@@ -395,5 +396,37 @@ describe("Reader pictures on other websites", () => {
     await library.run("reader", [job("one")], { setting: "save-in-library" });
     expect(library.fetch).toHaveBeenCalledTimes(1);
     expect(library.rows.get(pictureKey("one", a))?.tier).toBe("library");
+  });
+
+  it("takes each img address once and saves at most 50 pictures of a document", async () => {
+    const html = [
+      '<img src="https://p.test/a.png?x=1&amp;y=2"><img src="https://p.test/a.png?x=1&y=2">',
+      '<img src="https://p.test/a.png?x=2"><img data-src="https://p.test/lazy.png">',
+      '<img srcset="https://p.test/s.png 2x"><img src="/relative.png">',
+      '<img src="data:image/png;base64,AA"><img src="http://p.test/plain.png">',
+      '<img src="https://readwise-assets.s3.amazonaws.com/own.png">',
+    ].join("");
+    expect(pictureAddresses(html, "https://p.test/cover.png")).toEqual([
+      "https://p.test/a.png?x=1&y=2",
+      "https://p.test/a.png?x=2",
+      "https://p.test/lazy.png",
+      "http://p.test/plain.png",
+      "https://p.test/cover.png",
+    ]);
+    const many = Array.from(
+      { length: 51 },
+      (_, at) => `<img src="https://p.test/${String(at)}.png">`,
+    ).join("");
+    const m = marfa([doc("one", `${many}<img src="http://p.test/plain.png">`)]);
+    await m.run("reader", [job("one")], { setting: "save" });
+    expect(m.fetch).toHaveBeenCalledTimes(50);
+    expect(m.picture("one", "https://p.test/50.png")).toMatchObject({
+      status: "deliberately-unkept",
+      reason: "over-document-limit",
+    });
+    expect(m.picture("one", "http://p.test/plain.png")).toMatchObject({
+      status: "deliberately-unkept",
+      reason: "not_https",
+    });
   });
 });
