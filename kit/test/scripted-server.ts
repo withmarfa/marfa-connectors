@@ -85,7 +85,15 @@ export interface EdgeRow {
 
 export type Event =
   | { id: number; event: string; item: Row }
-  | { id: number; event: string; edge: EdgeRow; purged_with?: string };
+  | {
+      id: number;
+      event: string;
+      edge: EdgeRow;
+      /** The type of the edge's source item when it was announced, which a
+       *  purge has taken by the time the event is read. */
+      source_type: string | undefined;
+      purged_with?: string;
+    };
 
 interface Refusal {
   status: number;
@@ -216,6 +224,33 @@ function evolutionOf(
     }
   }
   return { needsSchemaWrite, additions };
+}
+
+/** What a permission map holds on a name, as marfa resolves it for a type
+ *  or an edge type: an exact entry first, then the wildcard with the
+ *  longest root, `*` last. */
+function resolve(
+  held: Record<string, string>,
+  name: string,
+): string | undefined {
+  const exact = Object.hasOwn(held, name) ? held[name] : undefined;
+  if (exact !== undefined) return exact;
+  let best: string | undefined;
+  let length = 0;
+  for (const [pattern, access] of Object.entries(held)) {
+    if (pattern === "*") {
+      if (length === 0) best = access;
+      continue;
+    }
+    if (!pattern.endsWith(".*")) continue;
+    const root = pattern.slice(0, -2);
+    if (name !== root && !name.startsWith(`${root}.`)) continue;
+    if (root.length > length) {
+      best = access;
+      length = root.length;
+    }
+  }
+  return best;
 }
 
 export class ScriptedServer {
@@ -706,7 +741,7 @@ export class ScriptedServer {
     for (const edge of this.edges.filter(
       (candidate) => candidate.source_id === id || candidate.target_id === id,
     )) {
-      this.announceEdge("edge.deleted", edge, id);
+      this.announceEdge("edge.deleted", edge, id, row);
     }
     this.edges = this.edges.filter(
       (edge) => edge.source_id !== id && edge.target_id !== id,
@@ -802,11 +837,15 @@ export class ScriptedServer {
     event: string,
     edge: EdgeRow,
     purgedWith?: string,
+    taken?: Row,
   ): void {
     this.log.push({
       id: this.log.length + 1,
       event,
       edge: { ...edge },
+      source_type: [...this.rows, ...(taken === undefined ? [] : [taken])].find(
+        (row) => row.id === edge.source_id,
+      )?.type,
       ...(purgedWith !== undefined && { purged_with: purgedWith }),
     });
   }
@@ -1767,7 +1806,7 @@ export class ScriptedServer {
       send(200, {
         data: all
           .slice(from, from + size)
-          .filter((edge) => this.readsSourceOf(edge)),
+          .filter((edge) => this.mayReadEdge(edge)),
         next_cursor: from + size < all.length ? String(from + size) : null,
       });
       return;
@@ -1781,15 +1820,20 @@ export class ScriptedServer {
       const type = url.searchParams.get("edge_type");
       const from = Number(url.searchParams.get("cursor") ?? "0");
       const limit = Number(url.searchParams.get("limit") ?? "50");
+      // The page is cut from every edge of the anchor, and then what the
+      // key may not read is left out, so a page can be short or empty with a
+      // cursor to follow (`edges/read-list-short`).
       const all = this.edges.filter(
         (edge) =>
           (parts[2] === "edges"
             ? edge.source_id === parts[1]
-            : edge.target_id === parts[1] && this.readsSourceOf(edge)) &&
+            : edge.target_id === parts[1]) &&
           (type === null || edge.edge_type === type),
       );
       send(200, {
-        data: all.slice(from, from + limit),
+        data: all
+          .slice(from, from + limit)
+          .filter((edge) => this.mayReadEdge(edge)),
         next_cursor: from + limit < all.length ? String(from + limit) : null,
       });
       return;
@@ -1830,7 +1874,7 @@ export class ScriptedServer {
           return;
         }
         send(200, {
-          item: this.wire(row),
+          item: { ...this.wire(row), edges: this.hydrated(row.id) },
           metadata: this.metadata(row),
         });
         return;
@@ -1874,7 +1918,7 @@ export class ScriptedServer {
         }
         this.restore(id);
         send(200, {
-          item: this.wire(row),
+          item: { ...this.wire(row), edges: this.hydrated(row.id) },
           metadata: this.metadata(row),
         });
         return;
@@ -1911,7 +1955,7 @@ export class ScriptedServer {
         }
         this.transition(id, state);
         send(200, {
-          item: this.wire(row),
+          item: { ...this.wire(row), edges: this.hydrated(row.id) },
           metadata: this.metadata(row),
         });
         return;
@@ -2059,7 +2103,16 @@ export class ScriptedServer {
     for (const event of this.log) {
       if (cursor === undefined || event.id <= cursor) continue;
       if ("edge" in event) {
-        if (!edges) continue;
+        // As `announcedEdgeReadable` asks it: an event that carries no
+        // source type is withheld.
+        if (
+          !edges ||
+          !this.readsEdgeType(event.edge.edge_type) ||
+          event.source_type === undefined ||
+          this.permission(event.source_type) === "none"
+        ) {
+          continue;
+        }
       } else if (!types.some((type) => this.ofType(event.item, type))) {
         continue;
       }
@@ -2203,20 +2256,35 @@ export class ScriptedServer {
     return { index, outcome: "created", id: made.id };
   }
 
+  /** An item's outbound edges by edge type, as the server hydrates them:
+   *  each block is cut at the cap, then what the key may not read is left
+   *  out, so a block can be short with a cursor to follow, and a block left
+   *  with nothing is removed (`edges/read-hydrated-block`). */
   private hydrated(id: string): Record<string, unknown> {
     const byType = new Map<string, EdgeRow[]>();
     for (const edge of this.edges.filter((edge) => edge.source_id === id)) {
       byType.set(edge.edge_type, [...(byType.get(edge.edge_type) ?? []), edge]);
     }
     return Object.fromEntries(
-      [...byType].map(([type, edges]) => [
-        type,
-        {
-          data: edges.slice(0, this.edgePageCap),
-          next_cursor:
-            edges.length > this.edgePageCap ? String(this.edgePageCap) : null,
-        },
-      ]),
+      [...byType].flatMap(([type, edges]) => {
+        const data = edges
+          .slice(0, this.edgePageCap)
+          .filter((edge) => this.mayReadEdge(edge));
+        return data.length === 0
+          ? []
+          : [
+              [
+                type,
+                {
+                  data,
+                  next_cursor:
+                    edges.length > this.edgePageCap
+                      ? String(this.edgePageCap)
+                      : null,
+                },
+              ],
+            ];
+      }),
     );
   }
 
@@ -2331,33 +2399,33 @@ export class ScriptedServer {
     );
   }
 
+  /** As `edgeKindReadable` and `sourceTypeReadable`
+   *  (packages/server/src/routes/_edge-visibility.ts) ask it: the key reads
+   *  an edge only if its edge type is one it holds read or write on and the
+   *  type of the edge's source item is one it may read
+   *  (`edges/read-hydrated-withheld`). */
+  private mayReadEdge(edge: EdgeRow): boolean {
+    return this.readsEdgeType(edge.edge_type) && this.readsSourceOf(edge);
+  }
+
+  private readsEdgeType(edgeType: string): boolean {
+    const held = this.grants.edge_permissions ?? this.minted.edge_permissions;
+    return resolve(held, edgeType) !== undefined;
+  }
+
   private readsSourceOf(edge: EdgeRow): boolean {
     return this.permission(this.byId(edge.source_id).type) !== "none";
   }
 
   /** What the key holds on a type, as marfa's `resolveTypePermission`
-   *  (packages/shared/src/validation.ts) resolves it: an exact entry first,
-   *  then the wildcard with the longest root, `*` last. */
+   *  (packages/shared/src/validation.ts) resolves it. */
   private permission(type: string): string {
-    const held = this.grants.type_permissions ?? this.minted.type_permissions;
-    const exact = held[type];
-    if (exact !== undefined) return exact;
-    let best: string | undefined;
-    let length = 0;
-    for (const [pattern, access] of Object.entries(held)) {
-      if (pattern === "*") {
-        if (length === 0) best = access;
-        continue;
-      }
-      if (!pattern.endsWith(".*")) continue;
-      const root = pattern.slice(0, -2);
-      if (type !== root && !type.startsWith(`${root}.`)) continue;
-      if (root.length > length) {
-        best = access;
-        length = root.length;
-      }
-    }
-    return best ?? "none";
+    return (
+      resolve(
+        this.grants.type_permissions ?? this.minted.type_permissions,
+        type,
+      ) ?? "none"
+    );
   }
 
   private bulk(input: Record<string, unknown>): unknown {
