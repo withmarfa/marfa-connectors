@@ -66,6 +66,7 @@ function appOf(values: {
   GITHUB_APP_ID: string | undefined;
   GITHUB_PRIVATE_KEY: string | undefined;
   GITHUB_API_URL: string | undefined;
+  GITHUB_REQUEST_SPACING_MS: string | undefined;
 }): App {
   if (
     values.GITHUB_APP_ID === undefined ||
@@ -78,6 +79,7 @@ function appOf(values: {
     appId: values.GITHUB_APP_ID,
     privateKey: values.GITHUB_PRIVATE_KEY,
     base: values.GITHUB_API_URL ?? defaultBase,
+    spacingMs: spacingOf(values),
   };
 }
 
@@ -445,7 +447,7 @@ const connector = defineConnector<typeof env>({
     filesOf(values.GITHUB_FILES);
     readOnly(values.GITHUB_READ_ONLY);
     starsOn(values.GITHUB_STARS);
-    spacingOf(values.GITHUB_REQUEST_SPACING_MS);
+    spacingOf(values);
     const app = [
       values.GITHUB_APP_ID,
       values.GITHUB_PRIVATE_KEY,
@@ -473,6 +475,7 @@ const connector = defineConnector<typeof env>({
         : {
             token: context.env.GITHUB_PERSONAL_TOKEN,
             base: context.env.GITHUB_API_URL ?? defaultBase,
+            spacingMs: spacingOf(context.env),
           },
       scopeOf(context.env.GITHUB_REPOSITORIES),
       {

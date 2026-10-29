@@ -4,6 +4,7 @@ import {
   asApp,
   asInstallation,
   asPersonalToken,
+  anonymous,
   ClockSkew,
   RateLimitWaiting,
   rateLimited,
@@ -215,7 +216,7 @@ describe("a personal access token", () => {
     github.addIssue(repository);
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -229,7 +230,7 @@ describe("a personal access token", () => {
   it("returns 401 with GitHub's body when the token is wrong", async () => {
     const octokit = asPersonalToken(
       "wrong_token_12345678",
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -246,7 +247,7 @@ describe("a personal access token", () => {
     const seen: string[] = [];
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       (v) => seen.push(v),
       new AbortController().signal,
     );
@@ -265,7 +266,7 @@ describe("a personal access token", () => {
     github.addRepository("someone/tracker");
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -286,7 +287,7 @@ describe("a personal access token", () => {
     github.addRepository("someone/tracker");
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -308,7 +309,7 @@ describe("a personal access token", () => {
     const issue = github.addIssue(repository);
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -323,7 +324,7 @@ describe("a personal access token", () => {
     const make = (token: string) =>
       asPersonalToken(
         token,
-        github.url,
+        { base: github.url },
         () => undefined,
         new AbortController().signal,
       );
@@ -342,7 +343,7 @@ describe("a personal access token", () => {
   it("blocks REST writes and GraphQL mutations before GitHub receives them", async () => {
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -362,7 +363,7 @@ describe("a personal access token", () => {
     const issue = github.addIssue(repository);
     const octokit = asPersonalToken(
       personalToken,
-      github.url,
+      { base: github.url },
       () => undefined,
       new AbortController().signal,
     );
@@ -377,5 +378,31 @@ describe("a personal access token", () => {
     await expect(octokit.request("GET /user/repos")).rejects.toBeInstanceOf(
       RateLimitWaiting,
     );
+  });
+});
+
+describe("the spacing between writes", () => {
+  // A write the stub refuses still passes through the throttle first.
+  async function between(spacingMs: number | undefined): Promise<number> {
+    const arrived: number[] = [];
+    github.onAsked = () => arrived.push(Date.now());
+    const octokit = anonymous(
+      { base: github.url, spacingMs },
+      new AbortController().signal,
+    );
+    for (let write = 0; write < 2; write++)
+      await octokit
+        .request("POST /repos/{owner}/{repo}/issues", {
+          owner: "someone",
+          repo: "tracker",
+          title: "A title",
+        })
+        .catch(() => undefined);
+    return (arrived[1] ?? 0) - (arrived[0] ?? 0);
+  }
+
+  it("is the throttling library's second where no setting changes it", async () => {
+    expect(await between(0)).toBeLessThan(500);
+    expect(await between(undefined)).toBeGreaterThanOrEqual(900);
   });
 });

@@ -259,7 +259,7 @@ function starReader(
   return {
     octokit: asPersonalToken(
       notificationsToken,
-      app.base,
+      app,
       secret,
       signal,
       tokenName,
@@ -310,7 +310,7 @@ export async function read(
     if (context.hints === undefined)
       await readNotifications(
         context,
-        { ...notifications, base: app.base, scope },
+        { ...notifications, base: app.base, spacingMs: app.spacingMs, scope },
         (...keys) => {
           coverage.reached(...keys);
         },
@@ -342,7 +342,7 @@ async function readAll(
   const kept = keptOf(state.get("repositories"));
   const personal =
     "token" in app
-      ? asPersonalToken(app.token, app.base, secret, signal)
+      ? asPersonalToken(app.token, app, secret, signal)
       : undefined;
   // Zero groups the personal token's repositories in the shared read plan;
   // it is never sent to GitHub as an installation id.
