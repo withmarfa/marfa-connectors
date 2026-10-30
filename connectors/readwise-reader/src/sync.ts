@@ -38,6 +38,9 @@ import {
 import { env, parseConfig } from "./config.js";
 import { ReaderIdentities } from "./identity.js";
 import { packIdentities, unpackIdentities } from "./checkpoint.js";
+export const readerArchived = (
+  properties: Readonly<Record<string, unknown>>,
+): boolean => properties["reader_location"] === "archive";
 export type ReaderScope = Pick<
   ScopedRunContext<typeof env>,
   "state" | "upsert" | "archive" | "refusals"
@@ -579,7 +582,13 @@ export async function sync(
     }
     if (setting !== "addresses")
       await admitPictures(pictureScope.state, jobs, context.log);
-    for (const { type, entry } of entries) await scope.upsert(type, [entry]);
+    for (const { type, entry } of entries) {
+      await scope.upsert(type, [entry]);
+      // Reader's archive is Marfa's archived state. Highlights and pictures
+      // keep their own state, and the missing-document guard never sees it.
+      if (type === sourceType.id && readerArchived(entry.properties))
+        await scope.archive(type, [String(entry.properties["canonical_key"])]);
+    }
     saved.pending = [...pending];
     return true;
   };

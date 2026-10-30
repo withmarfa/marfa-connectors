@@ -125,6 +125,7 @@ export interface Spec {
   readonly derived: ReadonlySet<string>;
   readonly twoWay: boolean;
   readonly revive: boolean;
+  readonly archived?: import("./define.js").Kind["archived"];
   readonly connections: ReadonlySet<string>;
 }
 
@@ -624,7 +625,7 @@ export class Rows {
     let moved = false;
     if (
       found.state === "trashed" ||
-      (found.state === "archived" && agreement?.stateBy === "vendor")
+      (found.state === "archived" && this.reopens(entry, found, agreement))
     ) {
       this.checkStopped();
       this.batch.tried += 1;
@@ -752,6 +753,19 @@ export class Rows {
         return;
       }
     }
+  }
+
+  /** An archived row comes back when the vendor sends it again, or moves it out of its own archive. */
+  private reopens(
+    entry: Entry,
+    found: Item,
+    agreement: Agreement | undefined,
+  ): boolean {
+    const archived = this.kind.archived;
+    if (archived?.(entry.properties) === true) return false;
+    return (
+      agreement?.stateBy === "vendor" || archived?.(found.properties) === true
+    );
   }
 
   private revives(entry: Entry, agreement: Agreement | undefined): boolean {

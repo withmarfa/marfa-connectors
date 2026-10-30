@@ -48,7 +48,7 @@ The identity catalog first completes the account-wide export, including deleted 
 
 The identity index inspects retained states and known purge tombstones before admission. Conflicting holders or contradictory export evidence produce a condition and retain the pending identity for investigation. The connector never merges or deletes conflicting rows automatically. A local explicit create that may be recovering a request blocks matching inbound admission until its journal settles.
 
-Reader supplies the canonical highlight passage in `text`. A differing export passage, which is Markdown and keeps pictures, remains in `readwise_text`. A highlight shows its `title` and `body`, as [Highlight titles](../readwise/README.md#highlight-titles) describes: `body` is the export passage when there is one, and Reader's passage when Readwise cut the export at its 8,191-character limit. A picture-only passage is titled after its Reader document. Timestamps, dates and addresses follow [Field kinds](../readwise/README.md#field-kinds). Note records retain their identities and metadata while their text is folded into the annotation. Unknown categories remain available. Reader's archive location is a reading location, not Marfa's archive state.
+Reader supplies the canonical highlight passage in `text`. A differing export passage, which is Markdown and keeps pictures, remains in `readwise_text`. A highlight shows its `title` and `body`, as [Highlight titles](../readwise/README.md#highlight-titles) describes: `body` is the export passage when there is one, and Reader's passage when Readwise cut the export at its 8,191-character limit. A picture-only passage is titled after its Reader document. Timestamps, dates and addresses follow [Field kinds](../readwise/README.md#field-kinds). Note records retain their identities and metadata while their text is folded into the annotation. Unknown categories remain available.
 
 Reader owns verified Reader rows and explicit Reader creates, not every row of the shared types. Highlights refreshes managed rows directly from Reader and observes shared fields without sending local edits or putting them back. On first adoption, differing existing mutable values are held as a separate Marfa baseline and reported. Adoption alone never invents an outbound edit; a subsequent local edit does. Reader metadata and unsupported fields remain inbound-only.
 
@@ -92,6 +92,18 @@ A picture is listed as kept only when Marfa holds it: an active `readwise.file` 
 
 Turning the setting on doesn't walk the Reader listing again. Picture work goes over the documents already kept in Marfa instead, a bounded batch at a time, with one Reader request for each document. It uploads nothing that is already kept and changes no existing item except to add pictures and update the manifest. Turning the setting off stops picture work; turning it on again goes over the kept documents again.
 
+## Archive and restore
+
+Reader's archive and Marfa's `archived` state mean the same thing: finished with, but kept. The connector keeps the two in step for documents (`readwise.source`).
+
+- After a run, a document whose `reader_location` is `archive` is `archived` in Marfa. One that has moved out of Reader's archive, to `new`, `later` or `feed`, is `active` again.
+- Archiving a document's item in Marfa moves the document to Reader's archive. Restoring it to `active` moves the document to `later`. The connector stores no earlier location. If the document has already left Reader's archive, a restore changes nothing in Reader. `READWISE_READER_INBOUND_ONLY` turns this off, with the other edits to Reader.
+- Highlights keep their own state. Archiving a document leaves its highlights active, as Readwise does: its documentation says to keep annotated documents in the Reader archive to preserve their highlights. Saved pictures stay active too, and are never listed as deliberately unkept because their document was archived.
+- When both sides change in one run, the later change wins, as it does for other fields. A restore in Marfa is carried to Reader unless Reader changed the document after the restore, in which case Reader's change stands and the item is archived again.
+- Archiving many documents in Reader at once is not a deletion. Only a document confirmed missing counts toward the limit of 20 described under [Deletion and reconciliation](#deletion-and-reconciliation).
+
+A document that disappeared from Reader is archived too, but its `reader_location` is whatever Reader last reported, which is not `archive`. An archived item whose `reader_location` is `archive` is in Reader's archive, whichever side archived it; any other archived item is missing from Reader or, with `READWISE_READER_INBOUND_ONLY` on, was archived in Marfa only.
+
 ## Edit and create
 
 Supported document edits are title, author, summary (`description`), notes, tags, reading location (`reader_location`), and supported category values. Highlights support annotation (`note`) and tags; `title` and `body` are read only. Empty notes and empty tag arrays are explicit clears. Only changed supported fields are sent. Body replacement, passage edits, progress writes, and original-file upload remain read-only.
@@ -106,7 +118,7 @@ After an uncertain highlight create, recovery accepts exactly one new matching o
 
 Trash never changes Reader. Purge propagation is off unless explicitly enabled. Before any vendor mutation, the connector checks the complete pending purge set, including retries and provider cascades. More than 20 intended deletions fails the whole run before Reader is read: no change of any kind is carried to Reader and nothing is read from it. Each later run fails the same way until the count is 20 or fewer or purge propagation is turned off.
 
-An upstream disappearance requires a completed inventory and a successful empty direct lookup. A failed request, incomplete inventory, or excluded feed record does not establish deletion. More than 20 confirmed disappearances blocks archival of the whole set. Confirmed missing documents and their dependent highlights are archived explicitly, while content remains retained. Returning records reuse their existing identities.
+An upstream disappearance requires a completed inventory and a successful empty direct lookup. A failed request, incomplete inventory, or excluded feed record does not establish deletion. More than 20 confirmed disappearances blocks archival of the whole set. Confirmed missing documents and their dependent highlights are archived explicitly, while content remains retained. A document in Reader's archive is not missing; see [Archive and restore](#archive-and-restore). Returning records reuse their existing identities.
 
 ## Progress and verification
 

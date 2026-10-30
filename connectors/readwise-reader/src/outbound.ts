@@ -401,6 +401,14 @@ async function performChange(
     throw new Refused("unsupported Reader row type");
   const create = change.kind === "created";
   const props = change.item.properties;
+  // Reader's archive is Marfa's archived state; highlights have no state in
+  // Reader, and a restore from the bin is not an archive move.
+  if (
+    (change.kind === "archived" || change.kind === "restored") &&
+    (change.item.type !== "readwise.source" ||
+      (change.kind === "restored" && change.was !== "archived"))
+  )
+    return;
   if (
     create
       ? props["reader_create"] !== true ||
@@ -423,6 +431,12 @@ async function performChange(
   const recovered = held !== undefined;
   if (held === undefined) {
     const updates = change.kind === "purged" ? {} : body(change);
+    if (change.kind === "archived") updates["location"] = "archive";
+    else if (
+      change.kind === "restored" &&
+      (updates["location"] === undefined || updates["location"] === "archive")
+    )
+      updates["location"] = "later";
     let operation: Plan;
     let baseline: JsonValue;
     if (create) {
@@ -482,6 +496,13 @@ async function performChange(
           "Reader update target is missing; it is never recreated",
         );
       if (before !== undefined) assertKind(change, before);
+      // A document already moved out of Reader's archive stays where it is.
+      if (
+        change.kind === "restored" &&
+        before !== undefined &&
+        before.location !== "archive"
+      )
+        return;
       if (change.kind !== "purged" && Object.keys(updates).length === 0) return;
       baseline =
         before === undefined
