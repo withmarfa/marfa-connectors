@@ -493,6 +493,48 @@ describe("Reader upstream disappearance", () => {
     await g.run();
     expect(g.archives).toEqual([]);
   });
+  it("archives documents in Reader's archive, and no highlight, without treating them as deletions", async () => {
+    const f = fixture();
+    const documents: ReaderDocument[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `d${String(i)}`,
+      category: "article",
+      title: "Done",
+      updated_at: stamp,
+      location: "archive",
+    }));
+    f.setPages([
+      [
+        ...documents,
+        {
+          id: "open",
+          category: "article",
+          updated_at: stamp,
+          location: "later",
+        },
+        {
+          id: "mark",
+          category: "highlight",
+          parent_id: "d0",
+          content: "Kept",
+          updated_at: stamp,
+          location: "archive",
+        },
+      ],
+    ]);
+    await f.run();
+    expect(f.archives).toEqual(
+      documents.map((document) => `one:reader-document:${document.id}`),
+    );
+    expect(f.conditions.has("readwise:reader-delete-limit")).toBe(false);
+  });
+  it("archives nothing for a document that has moved out of Reader's archive", async () => {
+    const f = fixture();
+    f.setPages([[{ id: "doc", category: "article", location: "later" }]]);
+    f.rows.push(stored("doc", { reader_location: "archive" }));
+    await f.run();
+    expect(f.archives).toEqual([]);
+    expect(f.writes[0]?.entry.properties["reader_location"]).toBe("later");
+  });
   it("adopts archived legacy natural keys without inventing export IDs", async () => {
     const f = fixture();
     const old = stored("doc", {

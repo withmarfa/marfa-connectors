@@ -146,6 +146,9 @@ export interface Vendor {
   remakes?: { change: Change; runsBefore: number }[];
   hints?: (ReadonlySet<string> | undefined)[];
   revive?: boolean;
+  /** Whether the vendor holds a row archived, as its properties say. */
+  archivedWhen?:
+    ((properties: Readonly<Record<string, unknown>>) => boolean) | undefined;
   connections?: ConnectionDefinition[];
   readOnly?: string[];
   derived?: string[];
@@ -166,7 +169,13 @@ export function testConnector(held: Vendor) {
     name: "test",
     description: "A connector the kit's tests drive.",
     source: "test",
-    types: [{ type: testType, fields: testFields }],
+    types: [
+      {
+        type: testType,
+        fields: testFields,
+        ...(held.archivedWhen !== undefined && { archived: held.archivedWhen }),
+      },
+    ],
     ...(held.connections !== undefined && { connections: held.connections }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
@@ -201,6 +210,7 @@ function twoWayConnector(held: Vendor) {
         type: linkedType,
         fields: testFields,
         revive: held.revive === true,
+        ...(held.archivedWhen !== undefined && { archived: held.archivedWhen }),
         ...(held.readOnly !== undefined && { readOnly: held.readOnly }),
         ...(held.derived !== undefined && { derived: held.derived }),
       },

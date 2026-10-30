@@ -294,6 +294,54 @@ it("never mutates before durable request storage or without preflight", async ()
   await expect(onChange(change(), c.value)).rejects.toThrow("storage refused");
   expect(writes).toHaveLength(0);
 });
+it("moves a document to Reader's archive when archived in Marfa, and to later when restored", async () => {
+  const c = context();
+  await preflight({ purges: [] }, c.value);
+  const archived = { ...change("archived"), changed: new Set<string>() };
+  await onChange(archived, c.value);
+  expect(rows.get("doc")?.location).toBe("archive");
+  expect(c.answer()?.properties["reader_location"]).toBe("archive");
+  const restored = {
+    ...change("restored"),
+    changed: new Set<string>(),
+    was: "archived" as const,
+  };
+  const again = context();
+  await preflight({ purges: [] }, again.value);
+  await onChange(restored, again.value);
+  expect(writes.map((write) => write.body)).toEqual([
+    { location: "archive" },
+    { location: "later" },
+  ]);
+  expect(rows.get("doc")?.location).toBe("later");
+});
+it("leaves Reader alone for a restore it already moved, a restore from the bin and a highlight", async () => {
+  const c = context();
+  await preflight({ purges: [] }, c.value);
+  const restored = {
+    ...change("restored"),
+    changed: new Set<string>(),
+    was: "archived" as const,
+  };
+  await onChange(restored, c.value);
+  await onChange({ ...restored, was: "trashed" }, c.value);
+  rows.set("highlight", { id: "highlight", category: "highlight" });
+  await onChange(
+    {
+      ...change(
+        "archived",
+        {
+          reader_id: "highlight",
+          canonical_key: readerIdentity("primary", "highlight", "highlight"),
+        },
+        "readwise.highlight",
+      ),
+      changed: new Set<string>(),
+    },
+    c.value,
+  );
+  expect(writes).toHaveLength(0);
+});
 it("does not recreate a missing update, and trash is local", async () => {
   const c = context();
   await preflight({ purges: [] }, c.value);

@@ -11,7 +11,7 @@ import {
   readerFilePolicy,
 } from "@withmarfa/readwise";
 import { env, parseConfig } from "./config.js";
-import { sync } from "./sync.js";
+import { sync, readerArchived } from "./sync.js";
 import { onChange, preflight } from "./outbound.js";
 import { readerPolicy } from "./policy.js";
 export function readerConnector() {
@@ -39,6 +39,7 @@ export function readerConnector() {
         ),
         policy: (item, entry) =>
           readerPolicy(sourceType.id, account, item, entry, inboundOnly),
+        archived: readerArchived,
       },
       {
         type: highlightType,

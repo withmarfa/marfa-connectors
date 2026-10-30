@@ -607,6 +607,16 @@ export interface Kind {
    * entry, or the vendor's own close reads as a change.
    */
   readonly revive?: boolean;
+  /**
+   * Whether the vendor holds a row archived, kept and not gone, as its
+   * properties say. An entry that says so leaves an archived row archived,
+   * where any other entry brings back a row the connector archived; so does
+   * one whose row said so before, since the vendor has moved it out of its
+   * archive. It archives nothing: follow the upsert with `archive`.
+   */
+  readonly archived?: (
+    properties: Readonly<Record<string, unknown>>,
+  ) => boolean;
 }
 
 export interface Connector<E extends EnvDeclaration = EnvDeclaration> {

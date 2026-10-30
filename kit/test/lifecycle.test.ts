@@ -416,6 +416,95 @@ describe("a row the connector archived", () => {
   });
 });
 
+describe("a row the vendor holds archived", () => {
+  const kept = {
+    source_id: "a:1",
+    properties: { title: "One", note: "archive" },
+  };
+  const moves = () =>
+    harness.server.requestsTo(
+      "POST",
+      `/items/${harness.server.row("a:1").id}/transition`,
+    ).length;
+
+  it("stays archived while sent again, and comes back when moved out of the vendor's archive", async () => {
+    const held = vendor([kept]);
+    held.archived = ["a:1"];
+    held.archivedWhen = (properties) => properties["note"] === "archive";
+    await harness.once(held);
+    expect(harness.server.row("a:1").state).toBe("archived");
+    const before = moves();
+    held.entries = [
+      { ...kept, properties: { ...kept.properties, title: "One, renamed" } },
+    ];
+    await harness.once(held);
+    expect(harness.server.row("a:1").state).toBe("archived");
+    expect(harness.server.row("a:1").properties["title"]).toBe("One, renamed");
+    expect(moves()).toBe(before);
+
+    held.entries = [{ ...kept, properties: { title: "One", note: "later" } }];
+    held.archived = [];
+    await harness.once(held);
+    expect(harness.server.row("a:1").state).toBe("active");
+  });
+
+  it("comes back from an archive a person made too, once the vendor moves it out", async () => {
+    const held = vendor([plain]);
+    held.archivedWhen = (properties) => properties["note"] === "archive";
+    await harness.once(held);
+    const row = harness.server.row("a:1");
+    harness.server.transition(row.id, "archived");
+    held.entries = [
+      { ...plain, properties: { title: "One", note: "archive" } },
+    ];
+    await harness.once(held);
+    expect(harness.server.row("a:1").state).toBe("archived");
+    held.entries = [{ ...plain, properties: { title: "One", note: "later" } }];
+    await harness.once(held);
+    expect(harness.server.row("a:1").state).toBe("active");
+  });
+});
+
+describe("a row restored in Marfa while the vendor holds it archived", () => {
+  const archivedOne = {
+    source_id: "a:1",
+    properties: { title: "One", vendor_id: "v1", note: "archive" },
+    changed_at: "2026-10-01T00:00:00.000Z",
+  };
+  async function restored() {
+    const held = vendor([archivedOne]);
+    held.archived = ["v1"];
+    held.archivedWhen = (properties) => properties["note"] === "archive";
+    await harness.twoWay(held);
+    expect(harness.server.row("a:1").state).toBe("archived");
+    harness.server.transition(harness.server.row("a:1").id, "active");
+    return held;
+  }
+
+  it("is carried to the vendor when the vendor has not changed it since", async () => {
+    const held = await restored();
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(kinds(held.changes)).toEqual(["restored a:1"]);
+    expect(harness.server.row("a:1").state).toBe("active");
+  });
+
+  it("loses to the vendor's later change, which puts the row away again", async () => {
+    const held = await restored();
+    held.entries = [
+      {
+        ...archivedOne,
+        properties: { ...archivedOne.properties, title: "One, edited" },
+        changed_at: "2026-10-03T00:00:00.000Z",
+      },
+    ];
+    held.changes.length = 0;
+    await harness.twoWay(held);
+    expect(kinds(held.changes)).toEqual([]);
+    expect(harness.server.row("a:1").state).toBe("archived");
+  });
+});
+
 function relinkedRows(kept: Record<string, unknown>): string[] {
   const held = kept["relinked"] as { rows?: object } | undefined;
   return Object.keys(held?.rows ?? {});
