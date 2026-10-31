@@ -13,8 +13,38 @@ import {
   rowsOf,
   type Item,
 } from "./connector.js";
-import type { ProofServer } from "./server.js";
+import { enrichmentIntervalMs, type ProofServer } from "./server.js";
 import { readerVendor } from "./readwise-reader-stub.js";
+
+/**
+ * The file rows once the server's enrichment sweep has finished with them.
+ * The sweep writes extracted text onto a file row some time after the
+ * connector wrote it, which moves the row's version, and nothing the server
+ * serves says when it is done. Done is taken as no file row changing for
+ * three sweep intervals, so a snapshot compares what the connector owns and
+ * a version that still moves afterward is the connector's own write.
+ */
+async function settledFiles(admin: MarfaClient): Promise<Map<string, Item>> {
+  const key = (rows: Map<string, Item>) =>
+    JSON.stringify([...rows].map(([id, row]) => [id, row.version]));
+  const quiet = 3 * enrichmentIntervalMs;
+  const deadline = Date.now() + 10 * quiet;
+  let rows = await rowsOf(admin, "readwise.file", "readwise");
+  let seen = key(rows);
+  let since = Date.now();
+  while (Date.now() - since < quiet) {
+    if (Date.now() > deadline)
+      throw new Error("file rows were still changing after enrichment");
+    await new Promise((done) => setTimeout(done, enrichmentIntervalMs / 4));
+    rows = await rowsOf(admin, "readwise.file", "readwise");
+    const now = key(rows);
+    if (now !== seen) {
+      seen = now;
+      since = Date.now();
+    }
+  }
+  return rows;
+}
 
 export async function proveReadwiseReader(
   admin: MarfaClient,
@@ -261,10 +291,10 @@ export async function proveReadwiseReader(
         await once(highlights);
         await once(reader);
         const snapshot = async () => {
-          const items = [
-            ...(await all()).values(),
-            ...(await rowsOf(admin, "readwise.file", "readwise")).values(),
-          ].sort((a, b) => a.id.localeCompare(b.id));
+          const files = await settledFiles(admin);
+          const items = [...(await all()).values(), ...files.values()].sort(
+            (a, b) => a.id.localeCompare(b.id),
+          );
           const edges = [];
           for (const item of items) {
             const result = await admin.GET("/items/{id}/edges", {
@@ -707,12 +737,15 @@ export async function proveReadwiseReader(
           assert.equal(item.source_id, natural);
           assert.equal(item.properties["reader_managed"], true);
         }
-        const snapshot = async () => ({
-          items: await freshRows(),
-          files: [...(await rowsOf(admin, "readwise.file", "readwise"))].filter(
-            ([, item]) => item.properties["account"] === "fresh",
-          ),
-        });
+        const snapshot = async () => {
+          const files = await settledFiles(admin);
+          return {
+            items: await freshRows(),
+            files: [...files].filter(
+              ([, item]) => item.properties["account"] === "fresh",
+            ),
+          };
+        };
         const retained = await snapshot();
         const file = retained.files.find(
           ([, item]) => item.properties["resource_kind"] === "html",
@@ -806,14 +839,17 @@ export async function proveReadwiseReader(
         );
         assert.equal(adopted.properties["text"], "Current Reader passage");
         assert.equal(adopted.properties["readwise_text"], "Active passage");
-        const snapshot = async () => ({
-          items: [...(await all())].filter(
-            ([, item]) => item.properties["account"] === "lifecycle",
-          ),
-          files: [...(await rowsOf(admin, "readwise.file", "readwise"))].filter(
-            ([, item]) => item.properties["account"] === "lifecycle",
-          ),
-        });
+        const snapshot = async () => {
+          const files = await settledFiles(admin);
+          return {
+            items: [...(await all())].filter(
+              ([, item]) => item.properties["account"] === "lifecycle",
+            ),
+            files: [...files].filter(
+              ([, item]) => item.properties["account"] === "lifecycle",
+            ),
+          };
+        };
         const retained = await snapshot();
         assert.equal(retained.items.length, 3);
         const file = retained.files.find(
