@@ -358,6 +358,48 @@ describe("carried", () => {
   });
 });
 
+describe("a field the type no longer declares", () => {
+  it("is taken off a row the next time it is written, and a row without it is left alone", () => {
+    const held = { ...base, pr_state: "open", draft: false };
+    const merged = merge({
+      fields,
+      readOnly: never,
+      retired: ["pr_state", "draft"],
+      agreement: agreed(base),
+      row: row(held),
+      entry: { source_id: "a:1", properties: base },
+    });
+    expect(merged.properties).toEqual(base);
+    expect(merged.write).toBe(true);
+    const clean = merge({
+      fields,
+      readOnly: never,
+      retired: ["pr_state", "draft"],
+      agreement: agreed(base),
+      row: row(base),
+      entry: { source_id: "a:1", properties: base },
+    });
+    expect(clean.write).toBe(false);
+  });
+
+  it("gives way to the vendor's new shape of a field whose old shape both sides agreed on", () => {
+    const old = { ...base, labels: ["someone"] };
+    const merged = merge({
+      fields,
+      readOnly: never,
+      agreement: agreed(old),
+      row: row(old),
+      entry: {
+        source_id: "a:1",
+        properties: { ...base, labels: [{ name: "someone" }] },
+      },
+    });
+    expect(merged.properties["labels"]).toEqual([{ name: "someone" }]);
+    expect(merged.write).toBe(true);
+    expect(merged.lost).toEqual([]);
+  });
+});
+
 describe("noteWaiting", () => {
   it("keeps the first sighting of a field and lets go of one back where it was agreed", () => {
     const agreement = { ...agreed(base), waiting: { title: "first" } };

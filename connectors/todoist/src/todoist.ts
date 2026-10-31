@@ -1,3 +1,4 @@
+import { recurrenceRules } from "./recurrence.js";
 import { createHash } from "node:crypto";
 import type { Entry } from "@withmarfa/connector";
 
@@ -582,7 +583,7 @@ export function langOf(user: SyncAnswer["user"]): string | undefined {
  * A recurring due's own words. Todoist words a one-off's date too, and keeps
  * text it could not read as a recurrence on a one-off.
  */
-export function recurrenceOf(due: TodoistItem["due"]): string | undefined {
+export function recurrenceTextOf(due: TodoistItem["due"]): string | undefined {
   return due?.is_recurring === true &&
     typeof due.string === "string" &&
     due.string !== ""
@@ -742,6 +743,7 @@ export const taskFields = [
   "labels",
   "child_order",
   "recurrence",
+  "recurrence_text",
 ] as const;
 
 /**
@@ -775,7 +777,7 @@ export function entryOf(
         item.priority === undefined ? undefined : priorities[item.priority],
       due_at: due?.due_at,
       precision: due?.precision,
-      status: completed ? "completed" : "pending",
+      status: completed ? "completed" : "not_started",
       completed_at: completed ? instantOf(item.completed_at) : undefined,
       url: `https://app.todoist.com/app/task/${encodeURIComponent(item.id)}`,
       project_id: present(item.project_id),
@@ -786,7 +788,8 @@ export function entryOf(
           ? item.labels
           : undefined,
       child_order: item.child_order,
-      recurrence: recurrenceOf(item.due),
+      recurrence: recurrenceRules(item.due, due?.due_at, timeZone),
+      recurrence_text: recurrenceTextOf(item.due),
     },
     occurred_at: item.added_at,
     changed_at: instantOf(item.updated_at),

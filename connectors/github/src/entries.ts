@@ -206,11 +206,12 @@ export function issueOfRest(
   };
 }
 
+/** The status word of an issue: `open` while open, `duplicate` when closed as
+ *  a duplicate, `canceled` when closed as not planned, else `completed`. */
 export function statusOf(open: boolean, reason: string | null): string {
-  if (open) return "pending";
-  return reason === "not_planned" || reason === "duplicate"
-    ? "canceled"
-    : "completed";
+  if (open) return "open";
+  if (reason === "duplicate") return "duplicate";
+  return reason === "not_planned" ? "canceled" : "completed";
 }
 
 /** `synced` says whether the repository is read for its issues and the rest,
@@ -274,7 +275,7 @@ export function issueEntry(
       ...(hidden !== undefined && { private: hidden }),
       author: issue.author,
       labels: issue.labels,
-      assignees: issue.assignees,
+      assignees: issue.assignees.map((login) => ({ name: login })),
       state_reason: issue.reason,
       github_updated_at: issue.updatedAt,
       parent_url: parent === null || inside(parent) ? null : parent.url,
@@ -350,10 +351,14 @@ export interface PullRequest {
   closingIssues: { id: string; url: string; repository: { id: string } }[];
 }
 
-export function prStatusOf(prState: "open" | "closed" | "merged"): string {
-  if (prState === "open") return "pending";
-  if (prState === "merged") return "completed";
-  return "canceled";
+/** The status word of a pull request: its own state, with `draft` for an open
+ *  draft. */
+export function prStatusOf(
+  prState: "open" | "closed" | "merged",
+  draft: boolean,
+): string {
+  if (prState === "open") return draft ? "draft" : "open";
+  return prState;
 }
 
 /** A pull request whose check summary is known, as `withStoredChecks` makes
@@ -376,15 +381,13 @@ export function pullRequestEntry(
       github_id: pr.node,
       title: pr.title,
       body: pr.body,
-      status: prStatusOf(pr.prState),
+      status: prStatusOf(pr.prState, pr.draft),
       completed_at: completedAt,
       url: pr.url,
       number: pr.number,
       repository: pr.repository.name,
       private: hidden,
       author: pr.author,
-      pr_state: pr.prState,
-      draft: pr.draft,
       merged_at: pr.mergedAt,
       base_branch: pr.baseBranch,
       head_branch: pr.headBranch,

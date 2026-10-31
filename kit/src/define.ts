@@ -602,6 +602,13 @@ export interface Kind {
    */
   readonly derived?: readonly string[];
   /**
+   * Properties an earlier version of the connector wrote that the type no
+   * longer declares: the next write of a row it holds removes them. List a
+   * name for one release, then delete it, since a row the connector does not
+   * write keeps what it holds.
+   */
+  readonly retired?: readonly string[];
+  /**
    * A row in the bin comes back when the vendor changes it, once its trash
    * has reached the vendor. Carrying that trash must answer the vendor's
    * entry, or the vendor's own close reads as a change.

@@ -24,7 +24,7 @@
     "guests": {
       "type": "array",
       "items_type": "object",
-      "description": "The people invited, each with email, name where given, response (needsAction, declined, tentative or accepted), and optional, organizer, self and resource where true."
+      "description": "The people invited as Google gives them, each with email, name where given, response (needsAction, declined, tentative or accepted), and optional, organizer, self and resource where true. The core attendees field holds the same guests by name, email and response, without those flags."
     },
     "event_kind": {
       "type": "string",

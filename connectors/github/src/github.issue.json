@@ -1,7 +1,7 @@
 {
   "id": "github.issue",
   "label": "GitHub Issue",
-  "description": "An issue in a repository the GitHub connector syncs: a task whose title, body, status, labels and assignees travel both ways, open while its status is anything but completed or canceled.",
+  "description": "An issue in a repository the GitHub connector syncs: a task whose title, body, status, labels and assignees travel both ways. Its status is open until GitHub closes it as completed, canceled (not planned) or duplicate.",
   "parent": "core.task",
   "link_field": "github_id",
   "fields": {
@@ -30,10 +30,13 @@
       "items_type": "string",
       "description": "The issue's labels, by name."
     },
-    "assignees": {
-      "type": "array",
-      "items_type": "string",
-      "description": "The logins the issue is assigned to."
+    "status": {
+      "type": "status",
+      "description": "Where the issue stands on GitHub: open, closed as a duplicate, closed as not planned (canceled), or closed as completed.",
+      "status_values": [
+        { "value": "open", "group": "not_started" },
+        { "value": "duplicate", "group": "canceled" }
+      ]
     },
     "state_reason": {
       "type": "string",

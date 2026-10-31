@@ -108,7 +108,9 @@ export async function proveGitHubPullRequests(
         const held = await row("github.pull_request", pr.node);
         const closed = await row("github.issue", issue.node);
         if (
-          held.properties["status"] !== "completed" ||
+          held.properties["status"] !== "merged" ||
+          "pr_state" in held.properties ||
+          "draft" in held.properties ||
           (await targets(held, "github.closes")).join() !== closed.id ||
           (await targets(closed, "github.closed-by")).join() !== held.id
         )

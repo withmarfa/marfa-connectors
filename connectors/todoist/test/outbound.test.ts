@@ -30,7 +30,8 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
-    recurrence: { type: "string" },
+    recurrence: { type: "array", items_type: "string" },
+    recurrence_text: { type: "string" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };
@@ -209,9 +210,13 @@ describe("the mapping back", () => {
   });
 
   it("leaves a field the row did not change out of what is sent, so a task keeps what Todoist holds", () => {
-    const diff = { content: "Renamed", labels: ["Home"], recurrence: null };
+    const diff = {
+      content: "Renamed",
+      labels: ["Home"],
+      recurrence_text: null,
+    };
     expect(
-      onlyChanged(diff, new Set(["title", "labels", "recurrence"])),
+      onlyChanged(diff, new Set(["title", "labels", "recurrence_text"])),
     ).toEqual(diff);
     expect(onlyChanged(diff, new Set(["title"]))).toEqual({
       content: "Renamed",
@@ -229,7 +234,7 @@ describe("the mapping back", () => {
           title: "Water the plants",
           due_at: "2026-10-05T00:00:00.000Z",
           precision: "day",
-          ...(recurrence !== undefined && { recurrence }),
+          ...(recurrence !== undefined && { recurrence_text: recurrence }),
         },
       }) as unknown as Parameters<typeof argsOf>[0];
     const repeating = todoist.task("t", {
@@ -254,15 +259,17 @@ describe("the mapping back", () => {
       row: Parameters<typeof argsOf>[0],
       task: ReturnType<TodoistStub["task"]>,
     ): unknown => differing(argsOf(row, "UTC"), task, "UTC");
-    expect(argsOf(rowWith("every day"), "UTC").recurrence).toBe("every day");
-    expect(argsOf(rowWith(""), "UTC")).not.toHaveProperty("recurrence");
+    expect(argsOf(rowWith("every day"), "UTC").recurrence_text).toBe(
+      "every day",
+    );
+    expect(argsOf(rowWith(""), "UTC")).not.toHaveProperty("recurrence_text");
     expect(diffOf(rowWith("every day"), repeating)).toEqual({});
     expect(diffOf(rowWith("every week"), repeating)).toEqual({
-      recurrence: "every week",
+      recurrence_text: "every week",
     });
-    expect(diffOf(rowWith(), repeating)).toEqual({ recurrence: null });
+    expect(diffOf(rowWith(), repeating)).toEqual({ recurrence_text: null });
     expect(diffOf(rowWith("every day"), once)).toEqual({
-      recurrence: "every day",
+      recurrence_text: "every day",
     });
     expect(diffOf(rowWith(), once)).toEqual({});
   });
@@ -2298,14 +2305,14 @@ describe("labels, project and section changed in Marfa", () => {
       title: "Water the plants, done",
       due_at: "2026-10-05",
       precision: "date",
-      recurrence: "every day",
+      recurrence_text: "every day",
       status: "completed",
       completed_at: "2026-09-25T10:00:00.000Z",
     });
     todoist.answerNothing("item_close");
     await landed();
 
-    marfa.edit(row.id, { recurrence: "every week" });
+    marfa.edit(row.id, { recurrence_text: "every week" });
     await landed();
     expect(todoist.tasks.get("made-1")?.due).toMatchObject({
       string: "every week",
@@ -2367,12 +2374,12 @@ describe("a recurrence", () => {
 
   it("is read onto the row as Todoist words it, and cleared when the task stops repeating", async () => {
     const row = await placed("r", { due: daily });
-    expect(marfa.byId(row.id).properties["recurrence"]).toBe("every day");
+    expect(marfa.byId(row.id).properties["recurrence_text"]).toBe("every day");
     todoist.edit("r", {
       due: { ...daily, string: "2026-10-05", is_recurring: false },
     });
     await landed();
-    expect(marfa.byId(row.id).properties).not.toHaveProperty("recurrence");
+    expect(marfa.byId(row.id).properties).not.toHaveProperty("recurrence_text");
     expect(todoist.commands()).toEqual([]);
   });
 
@@ -2396,7 +2403,7 @@ describe("a recurrence", () => {
       is_recurring: true,
     });
     await landed();
-    expect(marfa.byId(row.id).properties["recurrence"]).toBe("every day");
+    expect(marfa.byId(row.id).properties["recurrence_text"]).toBe("every day");
     expect(summary()).toMatch(/conflicts 0/);
   });
 
@@ -2406,7 +2413,7 @@ describe("a recurrence", () => {
     const row = personsRow({
       title: "Stretch",
       status: "pending",
-      recurrence: "every day",
+      recurrence_text: "every day",
     });
     await landed();
     expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
@@ -2428,7 +2435,7 @@ describe("a recurrence", () => {
     const row = await placed("r", {
       due: { ...daily, string: "Oct 5", is_recurring: false },
     });
-    marfa.edit(row.id, { recurrence: "every week" });
+    marfa.edit(row.id, { recurrence_text: "every week" });
     await landed();
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       {
@@ -2448,7 +2455,7 @@ describe("a recurrence", () => {
       due: { ...daily, date: "2026-10-05T10:00:00", string: "every day at 10" },
     });
     marfa.edit(row.id, {
-      recurrence: "every weekday at 10",
+      recurrence_text: "every weekday at 10",
       due_at: "2026-10-07T09:00:00.000Z",
       precision: "time",
     });
@@ -2467,7 +2474,9 @@ describe("a recurrence", () => {
 
   it("ends when the row clears it, leaving a task due once on its current date", async () => {
     const row = await placed("r", { due: daily });
-    const { recurrence, ...cleared } = marfa.byId(row.id).properties;
+    const { recurrence_text: recurrence, ...cleared } = marfa.byId(
+      row.id,
+    ).properties;
     expect(recurrence).toBe("every day");
     marfa.rewrite(`${todoist.account}:r`, cleared);
     await landed();
@@ -2479,7 +2488,7 @@ describe("a recurrence", () => {
       is_recurring: false,
     });
     await landed();
-    expect(marfa.byId(row.id).properties).not.toHaveProperty("recurrence");
+    expect(marfa.byId(row.id).properties).not.toHaveProperty("recurrence_text");
     expect(todoist.commands("item_update")).toHaveLength(1);
   });
 
@@ -2506,7 +2515,10 @@ describe("a recurrence", () => {
     const row = await placed("r", {
       due: { ...daily, string: "Oct 5", is_recurring: false },
     });
-    marfa.edit(row.id, { title: "Water the ferns", recurrence: "zzqx blorp" });
+    marfa.edit(row.id, {
+      title: "Water the ferns",
+      recurrence_text: "zzqx blorp",
+    });
     await landed();
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       {
@@ -2536,7 +2548,7 @@ describe("a recurrence", () => {
     ]);
     expect(updates[1]?.uuid).toBe(updates[0]?.uuid);
     expect(summary()).toContain('could not read the recurrence "zzqx blorp"');
-    expect(marfa.byId(row.id).properties["recurrence"]).toBe("zzqx blorp");
+    expect(marfa.byId(row.id).properties["recurrence_text"]).toBe("zzqx blorp");
   });
 
   describe("in the language Todoist reads dates in", () => {
@@ -2550,7 +2562,7 @@ describe("a recurrence", () => {
       const row = await placed("r", {
         due: { ...daily, string: "Oct 5", is_recurring: false },
       });
-      marfa.edit(row.id, { recurrence: "every week" });
+      marfa.edit(row.id, { recurrence_text: "every week" });
       await landed();
       return todoist.commands("item_update").at(-1)?.args["due"];
     }
@@ -2604,7 +2616,7 @@ describe("a recurrence", () => {
         due: { ...daily, string: "Oct 5", is_recurring: false },
       });
       todoist.speak("tr");
-      marfa.edit(row.id, { recurrence: "every week" });
+      marfa.edit(row.id, { recurrence_text: "every week" });
       await landed();
       expect(todoist.commands("item_update").at(-1)?.args["due"]).toEqual({
         string: "every week",
@@ -2618,7 +2630,7 @@ describe("a recurrence", () => {
       personsRow({
         title: "Stretch",
         status: "pending",
-        recurrence: "every day",
+        recurrence_text: "every day",
       });
       await landed();
       expect(todoist.commands("item_add").at(-1)?.args["due"]).toEqual({
@@ -2638,7 +2650,7 @@ describe("a recurrence", () => {
       delete kept["lang"];
       delete kept["timezone"];
       marfa.states.set("todoist", stored);
-      marfa.edit(row.id, { recurrence: "every week" });
+      marfa.edit(row.id, { recurrence_text: "every week" });
       const before = todoist.received.length;
       await landed();
       const accounts = todoist.received
@@ -2655,7 +2667,7 @@ describe("a recurrence", () => {
 
   it("goes back to what the task held when Todoist cannot read the row's recurrence", async () => {
     const row = await placed("r", { due: daily });
-    marfa.edit(row.id, { recurrence: "zzqx blorp" });
+    marfa.edit(row.id, { recurrence_text: "zzqx blorp" });
     await landed();
     const updates = todoist.commands("item_update");
     expect(updates.map((c) => c.args)).toEqual([
@@ -2682,7 +2694,7 @@ describe("a recurrence", () => {
     await landed();
     await landed();
     expect(todoist.commands("item_update")).toHaveLength(2);
-    expect(marfa.byId(row.id).properties["recurrence"]).toBe("zzqx blorp");
+    expect(marfa.byId(row.id).properties["recurrence_text"]).toBe("zzqx blorp");
     expect(summary()).toContain('could not read the recurrence "zzqx blorp"');
   });
 
@@ -2694,7 +2706,7 @@ describe("a recurrence", () => {
       string: "every day at 2pm",
     };
     const row = await placed("r", { due: timed });
-    marfa.edit(row.id, { recurrence: "zzqx blorp" });
+    marfa.edit(row.id, { recurrence_text: "zzqx blorp" });
     await landed();
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       {
@@ -2725,7 +2737,7 @@ describe("a recurrence", () => {
   it("goes back to the recurrence on the date the row moved the task to", async () => {
     const row = await placed("r", { due: daily });
     marfa.edit(row.id, {
-      recurrence: "zzqx blorp",
+      recurrence_text: "zzqx blorp",
       due_at: "2026-10-09T00:00:00.000Z",
       precision: "day",
     });
@@ -2740,7 +2752,7 @@ describe("a recurrence", () => {
     const row = await placed("r", {
       due: { ...daily, string: "Oct 5", is_recurring: false },
     });
-    marfa.edit(row.id, { recurrence: "zzqx blorp" });
+    marfa.edit(row.id, { recurrence_text: "zzqx blorp" });
     await landed();
     expect(todoist.commands("item_update")).toHaveLength(1);
   });
@@ -2755,7 +2767,7 @@ describe("a recurrence", () => {
         is_recurring: false,
       },
     });
-    marfa.edit(row.id, { recurrence: "every day at 2pm" });
+    marfa.edit(row.id, { recurrence_text: "every day at 2pm" });
     await landed();
     expect(todoist.commands("item_update").map((c) => c.args)).toEqual([
       {
@@ -2783,7 +2795,7 @@ describe("a recurrence", () => {
     );
     expect(marfa.byId(row.id).properties).toMatchObject({
       due_at: "2026-10-04T23:00:00.000Z",
-      recurrence: "every day",
+      recurrence_text: "every day",
     });
   });
 
@@ -2802,15 +2814,18 @@ describe("a recurrence", () => {
     expect(todoist.tasks.get("r")?.due?.["is_recurring"]).toBe(true);
     expect(marfa.byId(row.id).properties).toMatchObject({
       title: "Water the plants",
-      recurrence: "every day",
+      recurrence_text: "every day",
     });
   });
 
   it("clears the date with the recurrence when the row clears both", async () => {
     const row = await placed("r", { due: daily });
-    const { due_at, precision, recurrence, ...cleared } = marfa.byId(
-      row.id,
-    ).properties;
+    const {
+      due_at,
+      precision,
+      recurrence_text: recurrence,
+      ...cleared
+    } = marfa.byId(row.id).properties;
     expect([due_at, precision, recurrence]).toEqual([
       "2026-10-04T23:00:00.000Z",
       "day",
@@ -2829,7 +2844,7 @@ describe("a recurrence", () => {
     const row = personsRow({
       title: "Stretch",
       status: "pending",
-      recurrence: "zzqx blorp",
+      recurrence_text: "zzqx blorp",
       due_at: "2026-10-07T00:00:00.000Z",
       precision: "day",
     });
@@ -2854,7 +2869,7 @@ describe("a recurrence", () => {
     const row = personsRow({
       title: "Stretch",
       status: "pending",
-      recurrence: "zzqx blorp",
+      recurrence_text: "zzqx blorp",
     });
     await landed();
     expect(todoist.commands("item_add")).toHaveLength(1);

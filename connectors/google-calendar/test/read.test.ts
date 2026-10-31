@@ -525,6 +525,10 @@ describe("a first read", () => {
           response: "needsAction",
         },
       ],
+      attendees: [
+        { email: me, response: "accepted" },
+        { email: "kim@example.com", name: "Kim", response: "needs_action" },
+      ],
       visibility: "private",
       ical_uid: "mine@example.com",
       etag: '"1"',
@@ -548,6 +552,45 @@ describe("a first read", () => {
       editable: false,
       uneditable_reason: "the event is locked",
     });
+  });
+
+  it("writes each guest as an attendee: name and email where Google gives them, the reply mapped, a guest with neither left out", async () => {
+    calendar.put(
+      me,
+      timed(
+        "odd",
+        "Odd guests",
+        "2026-11-02T09:00:00Z",
+        "2026-11-02T10:00:00Z",
+        london,
+        {
+          organizer: { email: me, self: true },
+          attendees: [
+            { email: "a@example.com", responseStatus: "declined" },
+            { displayName: "Room only", resource: true },
+            { email: "b@example.com", responseStatus: "tentative" },
+            { email: "not an address", displayName: "Typo" },
+            { responseStatus: "accepted" },
+            { email: "", displayName: "" },
+          ],
+        },
+      ),
+    );
+    expect(await once()).toBe(0);
+    const properties = row(`${me}/odd`).properties;
+    expect(properties["attendees"]).toEqual([
+      { email: "a@example.com", response: "declined" },
+      { name: "Room only" },
+      { email: "b@example.com", response: "tentative" },
+      { name: "Typo" },
+    ]);
+    // The guests keep what attendees has no place for.
+    expect(properties["guests"]).toMatchObject([
+      { email: "a@example.com" },
+      { name: "Room only", resource: true },
+      { email: "b@example.com" },
+      { email: "not an address", name: "Typo" },
+    ]);
   });
 
   it("reads every page, and saves the token only once the last page is written", async () => {

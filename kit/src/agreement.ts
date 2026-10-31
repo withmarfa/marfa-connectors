@@ -121,6 +121,7 @@ export interface MergeInput {
   readonly fields: readonly string[];
   readonly readOnly: (field: string) => boolean;
   readonly observe?: (field: string) => boolean;
+  readonly retired?: readonly string[];
   readonly preserveFirst?: boolean;
   readonly firstHold?: boolean;
   readonly agreement: Agreement | undefined;
@@ -239,6 +240,9 @@ export function merge(input: MergeInput): Merged {
   for (const [key, since] of Object.entries(agreement?.waiting ?? {})) {
     if (!fields.includes(key)) waiting[key] = since;
   }
+  for (const field of input.retired ?? []) {
+    Reflect.deleteProperty(properties, field);
+  }
 
   const occurredNow = instant(entry.occurred_at);
   const occurredMark = mark(occurredNow);
@@ -271,6 +275,9 @@ export function merge(input: MergeInput): Merged {
   };
   const write =
     occurredAt !== undefined ||
+    (input.retired ?? []).some((field) =>
+      Object.hasOwn(row.properties, field),
+    ) ||
     fields.some(
       (field) =>
         mark(held(properties, field)) !== mark(held(row.properties, field)),

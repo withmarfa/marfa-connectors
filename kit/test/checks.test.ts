@@ -26,6 +26,39 @@ describe("the type check", () => {
     },
   };
 
+  it("adds a status word the server lacks, and asks an operator where it holds the word in another group", () => {
+    const carried = (words: object[]): TypeDefinition => ({
+      ...testType,
+      fields: {
+        ...testType.fields,
+        status: { type: "status", status_values: words },
+      } as unknown as TypeDefinition["fields"],
+    });
+    const held = (words: object[]) => ({
+      ...served,
+      fields: {
+        ...served.fields,
+        status: { type: "status", status_values: words },
+      },
+    });
+    const inherited = { value: "completed", group: "completed" };
+    const open = { value: "open", group: "not_started" };
+    // The type gains words the server does not hold yet.
+    expect(compare(carried([open]), held([inherited]))).toMatchObject({
+      missing: ["status"],
+      other: [],
+    });
+    expect(compare(carried([open]), held([inherited, open])).other).toEqual([]);
+    expect(
+      compare(
+        carried([open]),
+        held([inherited, { ...open, group: "in_progress" }]),
+      ).other,
+    ).toEqual([
+      'field "status" has the status word "open" in group "not_started" here and "in_progress" on the server',
+    ]);
+  });
+
   it("compares canonical server answers for equivalent formats", () => {
     const withFormat = (link: object): TypeDefinition => ({
       ...testType,

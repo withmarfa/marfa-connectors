@@ -142,9 +142,7 @@ describe("pull request reading", () => {
     await ok();
     expect(row(pr.node).type).toBe("github.pull_request");
     expect(row(pr.node).properties).toMatchObject({
-      status: "completed",
-      pr_state: "merged",
-      draft: false,
+      status: "merged",
       base_branch: "main",
       head_branch: "change",
       checks: {
@@ -153,8 +151,8 @@ describe("pull request reading", () => {
         statuses: { SUCCESS: 1 },
       },
     });
-    expect(row(abandoned.node).properties["status"]).toBe("canceled");
-    expect(row(oldOpen.node).properties["status"]).toBe("pending");
+    expect(row(abandoned.node).properties["status"]).toBe("closed");
+    expect(row(oldOpen.node).properties["status"]).toBe("open");
     expect(
       marfa.rows.some((one) => one.properties["github_id"] === ancient.node),
     ).toBe(false);
@@ -162,6 +160,24 @@ describe("pull request reading", () => {
     expect(links(issue.node, "github.closed-by")).toEqual([pr.node]);
     expect(links(unrelated.node, "github.closed-by")).toEqual([]);
   });
+  it("words an open pull request as draft or open, and takes the retired state and draft fields off a row that holds them", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const drafted = github.addPullRequest(repo, { draft: true });
+    const ready = github.addPullRequest(repo);
+    await ok();
+    expect(row(drafted.node).properties["status"]).toBe("draft");
+    expect(row(ready.node).properties["status"]).toBe("open");
+    expect(row(ready.node).properties).not.toHaveProperty("pr_state");
+    expect(row(ready.node).properties).not.toHaveProperty("draft");
+    // A row from before the status carried both words.
+    marfa.edit(row(ready.node).id, { pr_state: "open", draft: false });
+    github.edit(ready, { title: "Touched" });
+    await ok();
+    expect(row(ready.node).properties["title"]).toBe("Touched");
+    expect(row(ready.node).properties).not.toHaveProperty("pr_state");
+    expect(row(ready.node).properties).not.toHaveProperty("draft");
+  });
+
   it("distinguishes a closing reference from the actual closer and keeps an external closer URL", async () => {
     const repo = github.addRepository("someone/tracker");
     const manual = github.addIssue(repo, { state: "closed" });
@@ -198,13 +214,11 @@ describe("pull request reading", () => {
     marfa.edit(row(pr.node).id, {
       title: "Edited",
       body: "Edited",
-      status: "completed",
+      status: "merged",
       number: 999,
       repository: "elsewhere/wrong",
       private: false,
       author: "wrong",
-      pr_state: "merged",
-      draft: true,
       merged_at: "2000-01-01T00:00:00Z",
       base_branch: "wrong",
       head_branch: "wrong",
@@ -221,13 +235,11 @@ describe("pull request reading", () => {
     await ok();
     expect(row(pr.node).properties).toMatchObject({
       title: pr.title,
-      status: "pending",
+      status: "open",
       number: pr.number,
       repository: "someone/tracker",
       private: true,
       author: "someone",
-      pr_state: "open",
-      draft: false,
       base_branch: "main",
       head_branch: "change",
       github_updated_at: pr.updated_at,
