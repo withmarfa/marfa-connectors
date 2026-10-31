@@ -65,7 +65,7 @@ describe("the job that reports a failed scheduled run", () => {
   it("covers every scheduled workflow but CodeQL's, and finds them rather than passing over none", () => {
     expect(scheduled.map(({ file }) => file).sort()).toEqual([
       "audit.yml",
-      "pin-drift.yml",
+      "follow-releases.yml",
     ]);
     // The witness: CodeQL is scheduled too, and is left out on purpose.
     expect(
@@ -123,7 +123,7 @@ describe("the job that reports a failed scheduled run", () => {
     });
   });
 
-  it("is, with the pin-drift job that opens its own issue, the only place any workflow can write an issue, and no workflow grants it for the whole run", () => {
+  it("is the only place any workflow can write an issue, and no workflow grants it for the whole run", () => {
     const holders = workflows.flatMap(({ file, workflow }) => [
       ...(workflow.permissions?.["issues"] === undefined
         ? []
@@ -133,10 +133,7 @@ describe("the job that reports a failed scheduled run", () => {
         .map(([id]) => `${file}: ${id}`),
     ]);
     expect(holders.sort()).toEqual(
-      [
-        ...scheduled.map(({ file }) => `${file}: ${REPORT}`),
-        "pin-drift.yml: drift",
-      ].sort(),
+      scheduled.map(({ file }) => `${file}: ${REPORT}`).sort(),
     );
   });
 });
@@ -183,7 +180,7 @@ describe("scripts/report-scheduled-failure.sh", () => {
 
   const JOBS = JSON.stringify({
     jobs: [
-      { name: "Distance from main", conclusion: "success" },
+      { name: "Move to the newest release", conclusion: "success" },
       { name: "Dependency audit", conclusion: "failure" },
       { name: "Second failing job", conclusion: "failure" },
       { name: "Skipped job", conclusion: "skipped" },
@@ -286,10 +283,14 @@ describe("scripts/report-scheduled-failure.sh", () => {
   });
 
   it("names the workflow whose run failed", () => {
-    const result = run("drift", {}, { GITHUB_WORKFLOW: "Pin drift" });
+    const result = run(
+      "other-workflow",
+      {},
+      { GITHUB_WORKFLOW: "Follow Marfa releases" },
+    );
     expect(result.status).toBe(0);
     expect(result.calls.find(isCall("issue create"))).toContain(
-      "--title Scheduled run failed: Pin drift",
+      "--title Scheduled run failed: Follow Marfa releases",
     );
   });
 
@@ -315,7 +316,7 @@ describe("scripts/report-scheduled-failure.sh", () => {
       FAKE_ISSUES: JSON.stringify([
         { number: 5, title: "Scheduled run failed: Audit (macOS)" },
         { number: 6, title: "Why Scheduled run failed: Audit is slow" },
-        { number: 7, title: "Scheduled run failed: Pin drift" },
+        { number: 7, title: "Scheduled run failed: Follow Marfa releases" },
       ]),
     });
     expect(result.status).toBe(0);
