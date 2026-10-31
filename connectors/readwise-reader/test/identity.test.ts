@@ -72,6 +72,7 @@ it("refines an existing highlight alias with verified export parent evidence for
     schema_version: 1,
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
+    trashed_at: null,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -221,6 +222,7 @@ it("accepts one export ID with a canonical natural key and retains its export lo
     schema_version: 1,
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
+    trashed_at: null,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -308,6 +310,7 @@ it.each([false, true])(
       schema_version: 1,
       created_at: "2026-10-15T00:00:00Z",
       updated_at: "2026-10-15T00:00:00Z",
+      trashed_at: null,
       occurred_at: "2026-10-15T00:00:00Z",
       properties: {
         account: "one",
@@ -473,6 +476,7 @@ it.each(["links", "source_ids"] as const)(
       schema_version: 1,
       created_at: "2026-10-15T00:00:00Z",
       updated_at: "2026-10-15T00:00:00Z",
+      trashed_at: null,
       occurred_at: "2026-10-15T00:00:00Z",
       properties: {
         account: "one",
@@ -635,6 +639,7 @@ function lifecycleFixture() {
     schema_version: 1,
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
+    trashed_at: null,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -834,6 +839,7 @@ it("enriches a Reader-only natural row without reassigning an existing export id
     schema_version: 1,
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
+    trashed_at: null,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -866,6 +872,7 @@ it("keeps a lone document holder unresolved when two export sources claim it", a
     schema_version: 1,
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
+    trashed_at: null,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",

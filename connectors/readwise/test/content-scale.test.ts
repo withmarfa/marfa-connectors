@@ -48,6 +48,7 @@ function fixture(size: number) {
     schema_version: 1,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+    trashed_at: null,
     occurred_at: "2026-01-01T00:00:00Z",
     properties: { ...entry.properties },
   });

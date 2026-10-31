@@ -384,6 +384,7 @@ it.each(["refresh", "source", "export"] as const)(
       occurred_at: "2026-01-01T00:00:00Z",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
+      trashed_at: null,
       properties: {
         account: "primary",
         canonical_key: "primary:reader-document:doc",
