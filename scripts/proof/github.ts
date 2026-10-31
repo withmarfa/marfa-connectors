@@ -218,7 +218,7 @@ export async function proveGitHub(
           subOf.join() !== top.id ||
           blockedBy.join() !== blockerRow.id ||
           thread.join() !== top.id ||
-          top.properties["status"] !== "pending" ||
+          top.properties["status"] !== "open" ||
           top.properties["private"] !== true ||
           said.properties["private"] !== true ||
           grown.includes(false) ||
@@ -387,7 +387,7 @@ export async function proveGitHub(
         const untouched = github.writes().length === writes;
         await restore(marfa, back.id);
         await runOnce();
-        await edit(marfa, await row(child.node), { status: "pending" });
+        await edit(marfa, await row(child.node), { status: "open" });
         await runOnce();
         await trash(marfa, back.id);
         await runOnce();
@@ -402,13 +402,13 @@ export async function proveGitHub(
           back.properties["status"] !== "canceled" ||
           !untouched ||
           reopened !== "open reopened" ||
-          after.properties["status"] !== "pending"
+          after.properties["status"] !== "open"
         ) {
           throw new Error(
             `closed ${closed}, then ${binned}, back ${back.state} ${String(back.properties["status"])}, ${untouched ? "untouched" : "written"} by the second trash, reopened ${reopened}, row ${String(after.properties["status"])}`,
           );
         }
-        return "closed as not planned; back, canceled, on GitHub's comment; a trash of it closed wrote nothing; reopened on the restore after it was reopened and trashed, the row pending";
+        return "closed as not planned; back, canceled, on GitHub's comment; a trash of it closed wrote nothing; reopened on the restore after it was reopened and trashed, the row open";
       },
     );
 

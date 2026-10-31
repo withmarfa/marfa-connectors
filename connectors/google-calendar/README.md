@@ -123,7 +123,8 @@ When an event moves between two calendars of the account, the connector keeps it
 ### Other fields
 
 - `organizer` is an object with `email` and `name`.
-- `guests` is a list of objects with `email`, `name`, `response`, and `optional`, `self`, `organizer` or `resource` where true.
+- `attendees`, the core field, lists each guest with `name` and `email` where Google gives them (an address Marfa cannot take as an email is left out), and `response` as `needs_action`, `accepted`, `declined` or `tentative`. A guest with neither a name nor an address is left out, and a guest Google gives no reply for has no `response`. It is read only, and no invitation is sent.
+- `guests` is a list of objects with `email`, `name`, `response`, and `optional`, `self`, `organizer` or `resource` where true. It stays beside `attendees` for the flags `attendees` has no place for.
 - `description` is Markdown, the body of the row. Google lets a description hold HTML, and the connector converts it as it reads, keeping links, lists and emphasis and dropping scripts and styles. A description that is text is kept as it is. A change to `description` made in Marfa is converted to HTML (bold, italic, links, lists, quotes, code and line breaks) and sent to Google; a heading becomes bold, since Google has no headings, a table becomes a line of text for each row, and text that looks like a tag stays text. Text that Markdown would show differently from how it is written, such as `\*not emphasis\*`, is sent so that Google shows the characters and the read gives the escapes back. A description Google holds that is longer than 600,000 characters, has more than 25,000 elements or nests more than 200 levels deep is left out of the row, and an edit to the description of such an event is still sent. A description in Marfa is refused, and the run names the event, when it is longer than 100,000 characters, nests more than the converter reads, or has a paragraph with so many emphasis marks (`*` and `_`) that converting it would take seconds; nothing is sent for it and the run carries on.
 - `changed_at` is Google's `updated` time. `occurred_at` is the event's start.
 - An event without a title is named `(No title)`.
@@ -143,7 +144,7 @@ Google is asked for the event before each change, and the change is decided on t
 | Restore the row.                                                 | Brings the event back. If Google no longer has it, makes it again.                                                                                                 |
 | Purge the row.                                                   | Deletes the event, if the trash before it didn't.                                                                                                                  |
 
-Fields Google holds and Marfa doesn't change, such as `organizer`, `guests`, `url` and `calendar_id`, are read only: a change to one in Marfa is put back.
+Fields Google holds and Marfa doesn't change, such as `organizer`, `attendees`, `guests`, `url` and `calendar_id`, are read only: a change to one in Marfa is put back.
 
 If one listing of the account's calendars leaves out the calendar a change needs, the connector asks Google about that calendar directly, as the read does. Only an answer that the calendar is gone or deleted counts as gone: a trash or purge of an event on it is then settled with nothing to delete, and other changes are refused. If Google still has the calendar, the change is carried as usual. If Google can't answer, the change waits for a later run.
 

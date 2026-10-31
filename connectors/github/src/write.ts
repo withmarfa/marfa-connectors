@@ -62,10 +62,7 @@ export type Context = WatchContext<EnvDeclaration>;
  *  be from ours, and a little more. */
 export const margin = (skewAtMost + 5 * 60) * 1000;
 
-function wanted(
-  value: unknown,
-  was?: unknown,
-): {
+function wanted(value: unknown): {
   state: "open" | "closed";
   state_reason: "completed" | "not_planned" | "duplicate" | "reopened";
 } {
@@ -73,11 +70,10 @@ function wanted(
     return { state: "closed", state_reason: "completed" };
   }
   if (value === "canceled") {
-    // Both read as canceled, so a close already stated stays as stated.
-    return {
-      state: "closed",
-      state_reason: was === "duplicate" ? "duplicate" : "not_planned",
-    };
+    return { state: "closed", state_reason: "not_planned" };
+  }
+  if (value === "duplicate") {
+    return { state: "closed", state_reason: "duplicate" };
   }
   return { state: "open", state_reason: "reopened" };
 }
@@ -92,6 +88,34 @@ function list(item: Item, field: string): string[] {
   return Array.isArray(value)
     ? value.filter((one): one is string => typeof one === "string")
     : [];
+}
+
+function entries(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (one): one is Record<string, unknown> =>
+          typeof one === "object" && one !== null && !Array.isArray(one),
+      )
+    : [];
+}
+
+/** The logins an item's `assignees` entries name. An entry with no `name` is
+ *  not one GitHub can be asked to assign, so it is said once and left out. */
+function logins(context: Context, item: Item, value: unknown): string[] {
+  const named: string[] = [];
+  let nameless = 0;
+  for (const one of entries(value)) {
+    const name = one["name"];
+    if (typeof name === "string" && name !== "") named.push(name);
+    else nameless += 1;
+  }
+  if (nameless > 0) {
+    context.log.condition(
+      `assignee-unnamed:${item.id}`,
+      `${String(nameless)} of the assignees of ${item.id} has no name, which GitHub needs, so ${nameless === 1 ? "it is" : "they are"} not sent`,
+    );
+  }
+  return named;
 }
 
 export function refusal(error: unknown): string | undefined {
@@ -675,8 +699,9 @@ function dropped(
   answer: Entry | undefined,
 ): void {
   if (sent === undefined || answer === undefined) return;
-  const held = answer.properties["assignees"];
-  const kept = new Set(Array.isArray(held) ? held : []);
+  const kept = new Set(
+    entries(answer.properties["assignees"]).map((one) => one["name"]),
+  );
   const missing = sent.filter((login) => !kept.has(login));
   if (missing.length > 0) {
     context.log.condition(
@@ -819,15 +844,16 @@ async function carryIssue(
   for (const field of ["title", "body"] as const) {
     if (change.changed.has(field)) patch[field] = text(item, field) ?? "";
   }
-  for (const field of ["labels", "assignees"] as const) {
-    if (change.changed.has(field)) patch[field] = list(item, field);
+  if (change.changed.has("labels")) patch["labels"] = list(item, "labels");
+  if (change.changed.has("assignees")) {
+    patch["assignees"] = logins(context, item, item.properties["assignees"]);
   }
   const binned = change.kind === "trashed" || change.kind === "purged";
   const fromBin = change.kind === "restored" && change.was === "trashed";
   if (change.changed.has("status") || fromBin) {
     const closed = !issue.open;
     const reason = issue.reason;
-    const state = wanted(item.properties["status"], reason);
+    const state = wanted(item.properties["status"]);
     const moving =
       (state.state === "closed") !== closed ||
       (state.state === "closed" && reason !== state.state_reason);
@@ -921,7 +947,7 @@ async function createIssue(
         title,
         body: marked(item),
         labels: list(item, "labels"),
-        assignees: list(item, "assignees"),
+        assignees: logins(context, item, item.properties["assignees"]),
       })
     ).data as RestIssue;
   } catch (error) {
@@ -971,9 +997,8 @@ async function placeIssue(
     if (!same(list(item, "labels"), held.labels)) {
       patch["labels"] = list(item, "labels");
     }
-    if (!same(list(item, "assignees"), held.assignees)) {
-      patch["assignees"] = list(item, "assignees");
-    }
+    const assignees = logins(context, item, item.properties["assignees"]);
+    if (!same(assignees, held.assignees)) patch["assignees"] = assignees;
   }
   const state = wanted(item.properties["status"]);
   if (state.state === "closed" || (found && made.state !== "open")) {
@@ -1003,7 +1028,12 @@ async function placeIssue(
     where,
   );
   const answer = await answerIssue(context, octokit, made.node_id, related);
-  dropped(context, item, list(item, "assignees"), answer);
+  dropped(
+    context,
+    item,
+    logins(context, item, item.properties["assignees"]),
+    answer,
+  );
   return answer;
 }
 

@@ -1553,7 +1553,7 @@ async function checkIssues(
       return false;
     const updated = row.properties["github_updated_at"];
     const quiet = typeof updated === "string" ? updated : "";
-    const closed = ["completed", "canceled"].includes(
+    const closed = ["completed", "canceled", "duplicate"].includes(
       String(row.properties["status"]),
     );
     return !closed || quiet >= where.windowStart;

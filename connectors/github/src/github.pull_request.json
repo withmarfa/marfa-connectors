@@ -1,7 +1,7 @@
 {
   "id": "github.pull_request",
   "label": "GitHub Pull Request",
-  "description": "A pull request in a repository the GitHub connector syncs: a read-only task whose title, body and status come from GitHub. Status is pending while open, completed when merged, and canceled when closed without merging.",
+  "description": "A pull request in a repository the GitHub connector syncs: a read-only task whose title, body and status come from GitHub. Its status is draft or open while the pull request is open, merged once merged, and closed when closed without merging.",
   "parent": "core.task",
   "link_field": "github_id",
   "fields": {
@@ -25,14 +25,15 @@
       "type": "string",
       "description": "The GitHub login that opened the pull request."
     },
-    "pr_state": {
-      "type": "enum",
-      "enum_values": ["open", "closed", "merged"],
-      "description": "The pull request's state on GitHub: open, merged, or closed without merging."
-    },
-    "draft": {
-      "type": "boolean",
-      "description": "Whether the pull request is a draft on GitHub."
+    "status": {
+      "type": "status",
+      "description": "The pull request's state on GitHub: draft or open while it is open, merged when merged, and closed when closed without merging.",
+      "status_values": [
+        { "value": "draft", "group": "in_progress" },
+        { "value": "open", "group": "in_progress" },
+        { "value": "merged", "group": "completed" },
+        { "value": "closed", "group": "canceled" }
+      ]
     },
     "merged_at": {
       "type": "string",

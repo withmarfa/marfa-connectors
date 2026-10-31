@@ -107,7 +107,7 @@ export async function proveTodoist(
           written.values(),
         );
         const expected =
-          "child_order,labels,parent_id,project_id,recurrence,section_id,todoist_id";
+          "child_order,labels,parent_id,project_id,recurrence_text,section_id,todoist_id";
         if (own.join() !== expected) {
           throw new Error(`own fields ${own.join(", ")}`);
         }
@@ -139,7 +139,7 @@ export async function proveTodoist(
           labels: ["Food", "Errands"],
           child_order: 2,
           parent_id: "a",
-          status: "pending",
+          status: "not_started",
           completed_at: undefined,
         };
         if (JSON.stringify(landed) !== JSON.stringify(wanted)) {
@@ -402,7 +402,7 @@ export async function proveTodoist(
           priority: "high",
           due_at: "2026-10-02T09:00:00.000Z",
           precision: "time",
-          status: "pending",
+          status: "not_started",
         });
         made = created;
         if (created.source === "todoist") {
@@ -653,7 +653,7 @@ export async function proveTodoist(
         const done = await row("l");
         const requests = todoist.received.slice(asked);
         if (
-          open.properties["status"] !== "pending" ||
+          open.properties["status"] !== "not_started" ||
           done.properties["status"] !== "completed" ||
           done.properties["completed_at"] !== at ||
           done.state !== "active" ||
@@ -875,7 +875,7 @@ export async function proveTodoist(
           project_id: "p-work",
           section_id: "s-later",
           labels: ["Home"],
-          status: "pending",
+          status: "not_started",
         });
         filed = created.id;
         await runOnce();

@@ -277,6 +277,32 @@ function guest(value: unknown): Json | undefined {
   return response === undefined ? base : { ...base, response };
 }
 
+const responses: ReadonlyMap<string, string> = new Map([
+  ["needsAction", "needs_action"],
+  ["accepted", "accepted"],
+  ["declined", "declined"],
+  ["tentative", "tentative"],
+]);
+
+// An address Marfa's `email` kind takes: one local part, one `@`, a dotted
+// domain, no spaces. A guest's other address-like text is left out, not sent.
+const address = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
+
+/** A guest as the core `attendees` field holds it: a name and an address
+ *  where Google gives them, and the reply. None where it has neither. */
+function attendee(value: unknown): Json | undefined {
+  if (!isJson(value)) return undefined;
+  const email = text(value, "email");
+  const name = text(value, "displayName");
+  const response = responses.get(text(value, "responseStatus") ?? "");
+  const out: Record<string, unknown> = {};
+  if (name !== undefined && name !== "") out["name"] = name;
+  if (email !== undefined && address.test(email)) out["email"] = email;
+  if (Object.keys(out).length === 0) return undefined;
+  if (response !== undefined) out["response"] = response;
+  return out;
+}
+
 /** The times of an event, in Marfa's terms; `undefined` where Google gave
  *  none that can be read. */
 function timesOf(event: GoogleEvent, calendar: CalendarInfo) {
@@ -369,6 +395,9 @@ export function eventEntry(
   const guests = list(raw, "attendees")
     .map(guest)
     .filter((one): one is Json => one !== undefined);
+  const attendees = list(raw, "attendees")
+    .map(attendee)
+    .filter((one): one is Json => one !== undefined);
   const status =
     text(raw, "status") === "tentative" ? "tentative" : "confirmed";
   const connections: Record<string, { type: string; id: string }[]> = {
@@ -404,6 +433,7 @@ export function eventEntry(
         calendar_id: calendar.id,
         recurring_event_id: event.recurringEventId,
         organizer: person(object(raw, "organizer")),
+        attendees: attendees.length === 0 ? undefined : attendees,
         guests: guests.length === 0 ? undefined : guests,
         event_kind: event.kind,
         visibility: text(raw, "visibility"),

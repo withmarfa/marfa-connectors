@@ -18,7 +18,7 @@ import {
   isGone,
   namedZoneOf,
   priorityFor,
-  recurrenceOf,
+  recurrenceTextOf,
   send,
   timezoneOf,
   Unanswered,
@@ -60,7 +60,7 @@ export interface TaskArgs {
   labels?: string[];
   // Absent where the row holds none; null in a diff where the row ended it.
   // Todoist takes it as the due's text, never as a field of its own.
-  recurrence?: string | null;
+  recurrence_text?: string | null;
 }
 
 interface Due {
@@ -87,8 +87,8 @@ export function argsOf(item: Item, timeZone: string): TaskArgs {
         (label): label is string => typeof label === "string",
       ),
     }),
-    ...(typeof p["recurrence"] === "string" &&
-      p["recurrence"] !== "" && { recurrence: p["recurrence"] }),
+    ...(typeof p["recurrence_text"] === "string" &&
+      p["recurrence_text"] !== "" && { recurrence_text: p["recurrence_text"] }),
   };
 }
 
@@ -98,7 +98,7 @@ export function argsOf(item: Item, timeZone: string): TaskArgs {
 // what Todoist holds.
 const whenChanged = {
   labels: "labels",
-  recurrence: "recurrence",
+  recurrence_text: "recurrence_text",
 } as const satisfies Partial<Record<keyof TaskArgs, string>>;
 
 export function onlyChanged(
@@ -133,8 +133,8 @@ export function differing(
   if (JSON.stringify(have) !== JSON.stringify(want)) out.due = wanted.due;
   const labels = wanted.labels ?? [];
   if (!sameSet(labels, task.labels ?? [])) out.labels = labels;
-  if (wanted.recurrence !== recurrenceOf(task.due)) {
-    out.recurrence = wanted.recurrence ?? null;
+  if (wanted.recurrence_text !== recurrenceTextOf(task.due)) {
+    out.recurrence_text = wanted.recurrence_text ?? null;
   }
   return out;
 }
@@ -154,16 +154,16 @@ function heldDue(due: TodoistItem["due"]): Due | null {
 // 2026), so an ended recurrence leaves the task due once on its date.
 function recurring(
   due: SentDue | null,
-  recurrence: string | null,
+  recurrence_text: string | null,
   lang: string | undefined,
 ): SentDue | null | undefined {
   const when: SentDue = {
     ...(due?.date !== undefined && { date: due.date }),
     ...(due?.timezone !== undefined && { timezone: due.timezone }),
   };
-  if (recurrence === null) return due === null ? undefined : when;
+  if (recurrence_text === null) return due === null ? undefined : when;
   return {
-    string: recurrence,
+    string: recurrence_text,
     ...(lang !== undefined && { lang }),
     ...when,
   };
@@ -172,14 +172,16 @@ function recurring(
 // What `item_add` and `item_update` take: the recurrence goes as the due's
 // text.
 function sendable(
-  { recurrence, ...args }: Partial<TaskArgs>,
+  { recurrence_text, ...args }: Partial<TaskArgs>,
   lang: string | undefined,
   held: Due | null,
-): Omit<Partial<TaskArgs>, "due" | "recurrence"> & { due?: SentDue | null } {
-  if (recurrence === undefined) return args;
+): Omit<Partial<TaskArgs>, "due" | "recurrence_text"> & {
+  due?: SentDue | null;
+} {
+  if (recurrence_text === undefined) return args;
   const due = recurring(
     args.due === undefined ? held : args.due,
-    recurrence,
+    recurrence_text,
     lang,
   );
   return { ...args, ...(due !== undefined && { due }) };
@@ -575,7 +577,7 @@ async function sync(
   // no date takes the one Todoist gives it, and one whose date alone a person
   // cleared is put back. With other edits, those are carried and the date
   // comes back with the next read.
-  if (changes.due === null && wanted.recurrence !== undefined) {
+  if (changes.due === null && wanted.recurrence_text !== undefined) {
     if (changed.has("due_at") && Object.keys(changes).length === 1) {
       throw new Declined(
         `A repeating task needs a date, so clearing the date of ${item.id} is not sent; clear its recurrence first`,
@@ -585,7 +587,7 @@ async function sync(
   }
   const diff = sendable(
     changes,
-    typeof changes.recurrence === "string" ? await lang() : undefined,
+    typeof changes.recurrence_text === "string" ? await lang() : undefined,
     heldDue(task.due),
   );
   if (Object.keys(diff).length > 0) {
@@ -635,15 +637,15 @@ async function readBack(
   timeZone: string,
   todoist: Door,
 ): Promise<void> {
-  const recurrence = argsOf(item, timeZone).recurrence;
-  if (typeof recurrence !== "string") return;
-  if (changed !== undefined && !changed.has("recurrence")) return;
+  const recurrence_text = argsOf(item, timeZone).recurrence_text;
+  if (typeof recurrence_text !== "string") return;
+  if (changed !== undefined && !changed.has("recurrence_text")) return;
   const task = await todoist.task(taskId);
   if (typeof task !== "object" || task.due?.is_recurring === true) return;
-  const kept = recurrenceOf(before);
+  const kept = recurrenceTextOf(before);
   if (kept === undefined) {
     throw new Refused(
-      `Todoist could not read the recurrence "${recurrence}", so task ${taskId} is due once`,
+      `Todoist could not read the recurrence "${recurrence_text}", so task ${taskId} is due once`,
     );
   }
   const answer = await todoist.one(
@@ -662,7 +664,7 @@ async function readBack(
     throw notTaken(answer, `putting back the recurrence of task ${taskId}`);
   }
   throw new Refused(
-    `Todoist could not read the recurrence "${recurrence}", so task ${taskId} keeps repeating "${kept}"`,
+    `Todoist could not read the recurrence "${recurrence_text}", so task ${taskId} keeps repeating "${kept}"`,
   );
 }
 
@@ -721,7 +723,7 @@ async function add(
   const wanted = argsOf(item, timeZone);
   const args = sendable(
     wanted,
-    wanted.recurrence === undefined ? undefined : await lang(),
+    wanted.recurrence_text === undefined ? undefined : await lang(),
     null,
   );
   const where = {

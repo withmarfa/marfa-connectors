@@ -41,7 +41,7 @@ const connector = defineConnector({
       // `string` here; the check on start holds the file to the server's.
       type: todoistTask as TypeDefinition,
       fields: taskFields,
-      readOnly: ["url", "parent_id", "child_order"],
+      readOnly: ["url", "parent_id", "child_order", "recurrence"],
     },
   ],
   env: outboundEnv,

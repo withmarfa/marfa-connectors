@@ -476,9 +476,9 @@ describe("a first sync", () => {
     expect(row(parent.node).properties).toMatchObject({
       title: "Parent",
       body: "The whole of it",
-      status: "pending",
+      status: "open",
       labels: ["bug", "p1"],
-      assignees: ["someone"],
+      assignees: [{ name: "someone" }],
       number: parent.number,
       repository: "someone/tracker",
       author: "someone",
@@ -770,7 +770,7 @@ describe("a run after", () => {
       closed_at: null,
     });
     await ok();
-    expect(row(old.node).properties["status"]).toBe("pending");
+    expect(row(old.node).properties["status"]).toBe("open");
     expect(row(early.node).properties["body"]).toBe("Long ago");
   });
 });

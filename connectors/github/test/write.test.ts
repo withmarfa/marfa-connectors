@@ -245,7 +245,7 @@ describe("an issue changed in Marfa", () => {
       title: "After",
       body: "Now with a body",
       labels: ["bug"],
-      assignees: ["someone"],
+      assignees: [{ name: "someone" }],
     });
     await settled();
     expect(issue).toMatchObject({
@@ -255,6 +255,26 @@ describe("an issue changed in Marfa", () => {
       assignees: ["someone"],
     });
     expect(written()).toEqual([`PATCH /issues/${String(issue.number)}`]);
+  });
+
+  it("sends an assignee by name, leaves one with no name out and says so", async () => {
+    const issue = github.addIssue(repository, { title: "Owned" });
+    await ok();
+    marfa.edit(row(issue.node).id, {
+      assignees: [{ name: "someone" }, { email: "x@example.com" }],
+    });
+    const output = await ok();
+    expect(issue.assignees).toEqual(["someone"]);
+    expect(output).toContain("has no name");
+  });
+
+  it("closes as a duplicate when its status says duplicate", async () => {
+    const issue = github.addIssue(repository, { title: "Twice" });
+    await ok();
+    marfa.edit(row(issue.node).id, { status: "duplicate" });
+    await settled();
+    expect(issue).toMatchObject({ state: "closed", state_reason: "duplicate" });
+    expect(row(issue.node).properties["status"]).toBe("duplicate");
   });
 
   it("closes as completed or not planned as its status says, and keeps a status GitHub cannot tell from open", async () => {
@@ -308,7 +328,7 @@ describe("a trash", () => {
       updated_at: github.ago(1),
     });
     await ok();
-    expect(row(issue.node).properties["status"]).toBe("canceled");
+    expect(row(issue.node).properties["status"]).toBe("duplicate");
     marfa.trash(row(issue.node).id);
     await settled();
     marfa.restore(row(issue.node).id);
@@ -336,7 +356,7 @@ describe("a trash", () => {
     expect(output).toContain("brought back");
     expect(row(issue.node).properties["status"]).toBe("canceled");
 
-    marfa.edit(row(issue.node).id, { status: "pending" });
+    marfa.edit(row(issue.node).id, { status: "open" });
     await ok();
     expect(issue.state).toBe("open");
     marfa.trash(row(issue.node).id);
@@ -708,7 +728,9 @@ describe("what the write review found", () => {
   it("names an assignee GitHub would not assign", async () => {
     const issue = github.addIssue(repository);
     await ok();
-    marfa.edit(row(issue.node).id, { assignees: ["someone", "nobody-here"] });
+    marfa.edit(row(issue.node).id, {
+      assignees: [{ name: "someone" }, { name: "nobody-here" }],
+    });
     const output = await ok();
     expect(issue.assignees).toEqual(["someone"]);
     expect(output).toContain("GitHub did not assign nobody-here");

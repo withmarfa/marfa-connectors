@@ -123,6 +123,7 @@ export interface Spec {
   readonly omitted: ReadonlySet<string>;
   readonly readOnly: ReadonlySet<string>;
   readonly derived: ReadonlySet<string>;
+  readonly retired: readonly string[];
   readonly twoWay: boolean;
   readonly revive: boolean;
   readonly archived?: import("./define.js").Kind["archived"];
@@ -794,6 +795,7 @@ export class Rows {
       fields: kind.fields,
       readOnly: (field) => kind.readOnly.has(field),
       observe: (field) => kind.observed?.has(field) === true,
+      retired: kind.retired,
       preserveFirst: kind.firstAgreement === "preserve",
       firstHold: kind.firstAgreement === "hold",
       agreement,

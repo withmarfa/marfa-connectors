@@ -36,7 +36,8 @@ const served = {
     parent_id: { type: "string" },
     labels: { type: "array", items_type: "string" },
     child_order: { type: "integer" },
-    recurrence: { type: "string" },
+    recurrence: { type: "array", items_type: "string" },
+    recurrence_text: { type: "string" },
   },
   display_hints: { title_field: "title", body_field: "description" },
 };
@@ -388,7 +389,7 @@ describe("the mapping", () => {
       "2026-09-02T08:30:00.000Z",
     ]);
     expect([open["status"], open["completed_at"]]).toEqual([
-      "pending",
+      "not_started",
       undefined,
     ]);
   });
@@ -450,13 +451,13 @@ describe("the mapping", () => {
       expect(set[field]).toBeDefined();
       expect(properties[field]).toBeUndefined();
     }
-    expect(properties["status"]).toBe("pending");
+    expect(properties["status"]).toBe("not_started");
     expect(properties["completed_at"]).toBeUndefined();
   });
 
   it("keeps a recurring task's recurrence as Todoist words it, and none for a one-off", () => {
     const recurrence = (due: NonNullable<TodoistItem["due"]> | null): unknown =>
-      entryOf("1", "UTC", task("a", { due })).properties["recurrence"];
+      entryOf("1", "UTC", task("a", { due })).properties["recurrence_text"];
     expect(recurrence(fixedSent)).toBe("every day at 2pm");
     expect(
       recurrence({
@@ -943,7 +944,9 @@ describe("the connector, run as a process", () => {
       };
     };
     expect((await once()).code).toBe(0);
-    expect(marfa.row("2671355:a").properties["recurrence"]).toBeUndefined();
+    expect(
+      marfa.row("2671355:a").properties["recurrence_text"],
+    ).toBeUndefined();
     const shape = readShape(taskFields);
     expect(state()["read_shape"]).toBe(shape);
     // As a connector that read fewer fields left it: the state names no
@@ -955,7 +958,7 @@ describe("the connector, run as a process", () => {
       else kept["read_shape"] = held;
       marfa.states.set("todoist", stored);
       expect((await once()).code).toBe(0);
-      expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+      expect(marfa.row("2671355:a").properties["recurrence_text"]).toBe(
         worded[fulls - 1],
       );
       expect(state()["read_shape"]).toBe(shape);
@@ -970,7 +973,7 @@ describe("the connector, run as a process", () => {
       "t-delta-2",
     ]);
     expect(fulls).toBe(3);
-    expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+    expect(marfa.row("2671355:a").properties["recurrence_text"]).toBe(
       "every weekday at 2pm",
     );
     // The delta's deletion and completion are kept beside the full sync, as
@@ -991,7 +994,9 @@ describe("the connector, run as a process", () => {
     marfa.types.set("todoist.task", {
       ...served,
       fields: Object.fromEntries(
-        Object.entries(served.fields).filter(([name]) => name !== "recurrence"),
+        Object.entries(served.fields).filter(
+          ([name]) => name !== "recurrence_text",
+        ),
       ),
     });
     let fulls = 0;
@@ -1011,7 +1016,9 @@ describe("the connector, run as a process", () => {
     };
     expect((await once()).code).toBe(0);
     expect(marfa.row("2671355:a").properties["title"]).toBe("Task a");
-    expect(marfa.row("2671355:a").properties["recurrence"]).toBeUndefined();
+    expect(
+      marfa.row("2671355:a").properties["recurrence_text"],
+    ).toBeUndefined();
     const narrowed = state()["read_shape"];
 
     // Still narrowed: nothing about what is written has changed.
@@ -1030,7 +1037,7 @@ describe("the connector, run as a process", () => {
       "t-delta-1",
       "*",
     ]);
-    expect(marfa.row("2671355:a").properties["recurrence"]).toBe(
+    expect(marfa.row("2671355:a").properties["recurrence_text"]).toBe(
       "every day at 2pm",
     );
     expect(state()["read_shape"]).not.toBe(narrowed);
@@ -1045,7 +1052,7 @@ describe("the connector, run as a process", () => {
   });
 
   it("reads a different shape for the fields it writes, whatever it declares", () => {
-    const narrowed = taskFields.filter((field) => field !== "recurrence");
+    const narrowed = taskFields.filter((field) => field !== "recurrence_text");
     expect(readShape(taskFields)).toBe(readShape([...taskFields]));
     expect(readShape(narrowed)).not.toBe(readShape(taskFields));
   });
@@ -1156,7 +1163,7 @@ describe("the connector, run as a process", () => {
     expect(until - since).toBe(84 * 86_400_000);
     expect(Math.abs(until - Date.now())).toBeLessThan(60_000);
     expect(first?.get("limit")).toBe("200");
-    expect(marfa.row("2671355:a").properties["status"]).toBe("pending");
+    expect(marfa.row("2671355:a").properties["status"]).toBe("not_started");
     expect(marfa.row("2671355:b").properties).toMatchObject({
       status: "completed",
       completed_at: "2026-09-28T10:00:00.000Z",
@@ -1174,7 +1181,7 @@ describe("the connector, run as a process", () => {
       user: { id: "2671355", tz_info: { timezone: "Europe/London" } },
     });
     expect((await once()).code).toBe(0);
-    expect(marfa.row("2671355:a").properties["status"]).toBe("pending");
+    expect(marfa.row("2671355:a").properties["status"]).toBe("not_started");
     marfa.states.delete("todoist");
     completed = true;
     completedAnswer = () => ({
@@ -1276,7 +1283,7 @@ describe("the connector, run as a process", () => {
     expect((await once()).code).toBe(0);
     expect(marfa.row("2671355:r").properties).toMatchObject({
       title: "Water the plants",
-      status: "pending",
+      status: "not_started",
     });
   });
 
@@ -1288,7 +1295,7 @@ describe("the connector, run as a process", () => {
     });
     completedAnswer = () => 403;
     expect((await once()).code).toBe(0);
-    expect(marfa.row("2671355:a").properties["status"]).toBe("pending");
+    expect(marfa.row("2671355:a").properties["status"]).toBe("not_started");
     expect(marfa.runs.at(-1)?.summary).toContain(
       "Todoist refused to list the account's completed tasks",
     );
