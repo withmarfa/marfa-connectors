@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@withmarfa/connector": "workspace:*",
-    "marked": "18.1.1",
+    "marked": "18.1.2",
     "parse5": "8.0.1"
   }
 }
