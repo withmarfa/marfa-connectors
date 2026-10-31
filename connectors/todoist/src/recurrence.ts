@@ -23,7 +23,9 @@ const dayNames: ReadonlyMap<string, number> = new Map([
   ["saturday", 6],
 ]);
 
-const dayList = "(?:[a-z]+)(?:(?:\\s*,\\s*|\\s+and\\s+|\\s*&\\s*)[a-z]+)*";
+/** Separates named weekdays in a due string whose whitespace is already one
+ *  space wide, so no alternative repeats and each position costs a constant. */
+const dayBreak = / ?, ?| and | ?& ?/;
 
 interface Wall {
   year: number;
@@ -99,8 +101,8 @@ function clock(
 
 function weekdays(list: string): number[] | undefined {
   const found: number[] = [];
-  for (const name of list.split(/\s*,\s*|\s+and\s+|\s*&\s*/)) {
-    const day = dayNames.get(name.trim());
+  for (const name of list.split(dayBreak)) {
+    const day = dayNames.get(name);
     if (day === undefined) return undefined;
     found.push(day);
   }
@@ -146,12 +148,18 @@ export function recurrenceRules(
   if (wall === undefined || utc === undefined || !steady(at, zone)) {
     return undefined;
   }
-  let words = due.string.trim().toLowerCase().replace(/\s+/g, " ");
-  const timed = /\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/.exec(words);
-  if (timed !== null) {
-    const named = clock(timed[1] ?? "", timed[2], timed[3]);
-    if (named === undefined || named !== wall.minutes) return undefined;
-    words = words.slice(0, timed.index);
+  // One space between words, so every later pattern sees single spaces.
+  let words = due.string.trim().toLowerCase().split(/\s+/).join(" ");
+  const atIndex = words.lastIndexOf(" at ");
+  if (atIndex >= 0) {
+    const timed = /^(\d{1,2})(?::(\d{2}))? ?(am|pm)?$/.exec(
+      words.slice(atIndex + 4),
+    );
+    if (timed !== null) {
+      const named = clock(timed[1] ?? "", timed[2], timed[3]);
+      if (named === undefined || named !== wall.minutes) return undefined;
+      words = words.slice(0, atIndex);
+    }
   }
   // The day a wall-clock day falls on in UTC: -1, 0 or 1 days earlier or later.
   const shift = Math.round(
@@ -180,8 +188,8 @@ export function recurrenceRules(
       ? line("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR")
       : undefined;
   }
-  if ((match = new RegExp(`^every (${dayList})$`).exec(words))) {
-    const listed = weekdays(match[1] ?? "");
+  if (words.startsWith("every ")) {
+    const listed = weekdays(words.slice(6));
     if (listed !== undefined) {
       if (!listed.includes(wall.weekday)) return undefined;
       const inUtc = listed.map((day) => (day + shift + 7) % 7);

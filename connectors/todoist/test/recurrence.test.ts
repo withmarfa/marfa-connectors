@@ -42,6 +42,27 @@ describe("a recurring due as RFC 5545 lines", () => {
     expect(rules("every year", at)).toEqual(["RRULE:FREQ=YEARLY"]);
   });
 
+  it("reads a hostile 100,000-character due string in linear time", () => {
+    const at = "2026-10-05T14:00:00.000Z";
+    const hostile = [
+      `every mon${" ".repeat(100_000)}!`,
+      `every day${" at".repeat(33_333)}`,
+      `every day${" at ".repeat(25_000)}x`,
+      `every ${"a,".repeat(50_000)}!`,
+      `every ${"a ,".repeat(33_333)}!`,
+      `every ${"a and ".repeat(16_666)}!`,
+      `every a${" & a".repeat(33_333)}!`,
+      `every day at ${"1".repeat(100_000)}`,
+      `every day${"\t ".repeat(50_000)}at`,
+    ];
+    const started = performance.now();
+    for (const text of hostile) {
+      expect(text.length).toBeGreaterThanOrEqual(99_999);
+      expect(rules(text, at)).toBeUndefined();
+    }
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("moves a weekday to the day it falls on in UTC", () => {
     // 07:00 on a Monday in Tokyo is 22:00 on the Sunday before, in UTC.
     expect(
