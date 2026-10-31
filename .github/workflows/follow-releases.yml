@@ -1,0 +1,263 @@
+name: Follow Marfa releases
+
+# Keeps the connectors on the newest published release of withmarfa/marfa: once
+# a day, and by hand right after a Marfa release. When they are not on it, the
+# run moves `scripts/monorepo.commit` to the release's commit and
+# `@withmarfa/client` to the release's version in both manifests, regenerates
+# the lockfile, and opens a pull request that merges when the repository's
+# checks, the proof included, pass. A pull request whose checks fail stays open
+# and stops a second one opening beside it. Running it twice opens one.
+#
+# The first job holds no secret and hands the change to the second as a patch.
+# The second refuses anything but the pin, the two manifests and the lockfile,
+# and opens the pull request as the WithMarfa Bot app. The checks on a pull
+# request that the GitHub token opens wait for someone with write access to
+# approve them, so it uses the app's token, limited to contents and pull
+# requests, and makes it only once nothing else in the job runs.
+#
+# A by-hand run is a dry run unless `dry_run` is turned off: it decides and
+# moves the files in the run and pushes nothing.
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Decide and move the files in this run, without pushing or opening a pull request
+        type: boolean
+        default: true
+
+concurrency:
+  group: follow-releases
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  BRANCH: automation/marfa-release
+  REAL_RUN: ${{ github.event_name == 'schedule' || !inputs.dry_run }}
+
+jobs:
+  bump:
+    name: Move to the newest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      bump: ${{ steps.decide.outputs.bump }}
+      tag: ${{ steps.decide.outputs.tag }}
+      version: ${{ steps.decide.outputs.version }}
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      # A dry run may come from any branch, since it pushes nothing.
+      - name: Refuse any branch but main
+        if: ${{ env.REAL_RUN == 'true' }}
+        run: |
+          if [[ "${GITHUB_REF}" != refs/heads/main ]]; then
+            echo "::error::The connectors follow a release from main only, and this run is on ${GITHUB_REF}."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pin="$(tr -d '[:space:]' < scripts/monorepo.commit)"
+          kit="$(jq -r '.dependencies["@withmarfa/client"]' kit/package.json)"
+          scripts_client="$(jq -r '.dependencies["@withmarfa/client"]' scripts/package.json)"
+          tag="$(gh api 'repos/withmarfa/marfa/releases?per_page=100' \
+            --jq '[.[] | select(.draft == false and .prerelease == false)] | sort_by(.published_at) | last | .tag_name // empty')"
+          if [[ -z "${tag}" ]]; then
+            echo "::error::withmarfa/marfa has no published release."
+            exit 1
+          fi
+          release="$(gh api "repos/withmarfa/marfa/commits/${tag}" --jq .sha)"
+          relation="$(gh api "repos/withmarfa/marfa/compare/${pin}...${release}" --jq .status)"
+          version="${tag#v}"
+          # npm answers E404 for a version it does not serve; any other failure
+          # is a failure of this run, not a "not published yet".
+          if npm view "@withmarfa/client@${version}" version > "${RUNNER_TEMP}/npm.out" 2> "${RUNNER_TEMP}/npm.err"; then
+            published=yes
+          elif grep -q E404 "${RUNNER_TEMP}/npm.err"; then
+            published=no
+          else
+            cat "${RUNNER_TEMP}/npm.err"
+            exit 1
+          fi
+          open="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 1000 --json files \
+            --jq '[.[] | select(any(.files[]; .path == "scripts/monorepo.commit"))] | length')"
+          result="$(scripts/follow-release.sh decide "pin=${pin}" "kit=${kit}" "scripts=${scripts_client}" \
+            "tag=${tag}" "release=${release}" "relation=${relation}" "published=${published}" "open=${open}")"
+          echo "${result}"
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "release=${release}"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "${result}" == bump ]]; then
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "${result}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: ${{ steps.decide.outputs.bump == 'true' }}
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ steps.decide.outputs.bump == 'true' }}
+        with:
+          node-version: 22
+
+      - name: Move the pin and the client
+        if: ${{ steps.decide.outputs.bump == 'true' }}
+        env:
+          RELEASE: ${{ steps.decide.outputs.release }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: scripts/follow-release.sh apply "${RELEASE}" "${VERSION}"
+
+      - name: Regenerate the lockfile
+        if: ${{ steps.decide.outputs.bump == 'true' }}
+        run: pnpm install --lockfile-only --ignore-scripts
+
+      - name: Hand over the change
+        if: ${{ steps.decide.outputs.bump == 'true' }}
+        run: |
+          git add -A -- scripts/monorepo.commit kit/package.json scripts/package.json pnpm-lock.yaml
+          git diff --cached --binary --no-renames > "${RUNNER_TEMP}/bump.patch"
+          git diff --cached --stat | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ steps.decide.outputs.bump == 'true' && env.REAL_RUN == 'true' }}
+        with:
+          name: bump
+          path: ${{ runner.temp }}/bump.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  open:
+    name: Open the pull request
+    needs: bump
+    if: ${{ needs.bump.outputs.bump == 'true' && (github.event_name == 'schedule' || !inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse any branch but main
+        run: |
+          if [[ "${GITHUB_REF}" != refs/heads/main ]]; then
+            echo "::error::The connectors follow a release from main only, and this run is on ${GITHUB_REF}."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bump
+          path: ${{ runner.temp }}/bump
+
+      # The patch came from a job that resolved packages from the registry, so
+      # it may change the pin, the two manifests and the lockfile and nothing
+      # else.
+      - name: Apply the patch
+        run: |
+          patch="${RUNNER_TEMP}/bump/bump.patch"
+          outside="$(git apply --numstat -z "${patch}" | tr '\0' '\n' | awk -F'\t' 'NF >= 3 { print $3 }' |
+            grep -Ev '^(scripts/monorepo\.commit|kit/package\.json|scripts/package\.json|pnpm-lock\.yaml)$' || true)"
+          if [[ -n "${outside}" ]]; then
+            echo "::error::The change touches paths other than the pin, the two manifests and the lockfile:"
+            echo "${outside}"
+            exit 1
+          fi
+          git apply --index "${patch}"
+
+      # Made only now. Contents write still reaches every branch and tag in
+      # this repository, and nothing else in this job runs code it does not
+      # control.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ needs.bump.outputs.tag }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          RELEASE: ${{ needs.bump.outputs.release }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          title="chore(marfa): follow marfa release ${TAG}"
+          user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git switch -c "${BRANCH}"
+          git commit -q -m "${title}"
+          # The decision found no open pull request that moves the pin, so a
+          # branch left by one closed by hand is nobody's.
+          header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
+          echo "::add-mask::${header}"
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${header}" \
+            git push -q --force origin "${BRANCH}"
+          {
+            echo "## Summary"
+            echo
+            echo "Moves the connectors to withmarfa/marfa ${TAG}, the newest published release: the proof server and the \`@withmarfa/client\` the connectors build on."
+            echo
+            echo "## Changes"
+            echo
+            echo "- \`scripts/monorepo.commit\` names \`${RELEASE}\`, the commit of ${TAG}."
+            echo "- \`@withmarfa/client\` is \`${VERSION}\` in \`kit/package.json\` and \`scripts/package.json\`, and \`pnpm-lock.yaml\` is regenerated for it."
+            echo
+            echo "## Testing"
+            echo
+            echo "The lockfile was regenerated in this run. The required checks run on this pull request in full, the proof against the ${TAG} server included, and it merges when they pass. It adds no behavior of its own, so it adds no test."
+            echo
+            echo "## Notes for reviewers"
+            echo
+            echo "Opened by the \`Follow Marfa releases\` workflow. A pull request whose checks fail stays open and no second one is opened beside it."
+            echo
+            echo "## Checklist"
+            echo
+            echo "- [x] The title is a scoped Conventional Commit."
+            echo "- [x] New behavior has a test that was seen failing first, or no test was needed and the reason is above."
+            echo "- [x] Docs, comments and the contract still say what is true after this change."
+          } > "${RUNNER_TEMP}/body.md"
+          url="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${BRANCH}" \
+            --title "${title}" --body-file "${RUNNER_TEMP}/body.md")"
+          gh pr merge "${url##*/}" --repo "${GITHUB_REPOSITORY}" --squash --auto --delete-branch
+
+  report-failure:
+    name: Report a failed scheduled run
+    needs: [bump, open]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/report-scheduled-failure.sh
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/report-scheduled-failure.sh
