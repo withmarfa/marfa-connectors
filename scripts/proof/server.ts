@@ -10,6 +10,9 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+/** How often the server's enrichment sweep runs in the proof. */
+export const enrichmentIntervalMs = 1000;
+
 export const monorepo = resolve(import.meta.dirname, "../../../vendor/marfa");
 
 // Choices the boot script reads on purpose; one inherited from the shell
@@ -189,7 +192,7 @@ export class ProofServer {
       MARFA_SERVER_REPO: monorepo,
       MARFA_SERVER_ENV: this.envFile(),
       // The tracker waits on the enrichment sweep, every 30 s by default.
-      MARFA_ENRICHMENT_INTERVAL_MS: "1000",
+      MARFA_ENRICHMENT_INTERVAL_MS: String(enrichmentIntervalMs),
     };
     for (const name of bootChoices) Reflect.deleteProperty(env, name);
     if (this.connectorHoldMs !== undefined)
