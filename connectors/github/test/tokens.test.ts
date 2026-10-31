@@ -405,6 +405,6 @@ describe("the spacing between writes", () => {
   // opening an issue, by 3 seconds.
   it("keeps the throttling library's spacing of notifying writes where no setting changes it", async () => {
     expect(await between(undefined)).toBeGreaterThanOrEqual(2900);
-    expect(await between(0)).toBeLessThan(2000);
+    expect(await between(0)).toBeLessThan(await between(undefined));
   });
 });

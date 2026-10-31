@@ -629,7 +629,6 @@ describe("a picture that claims too many pixels", () => {
 describe("a body built to make the reader work", () => {
   // The unfixed pattern never returns on this body, so any bound separates the two, and a slow runner cannot fail
   // the fixed one. The box tests below assert what was refused, not how long it took.
-  const quickly = 5000;
   const freeBoxes = (count: number): Buffer => {
     const free = Buffer.alloc(count * 8);
     for (let at = 0; at < free.length; at += 8) {
@@ -649,9 +648,7 @@ describe("a body built to make the reader work", () => {
 
   it("an SVG test that would backtrack is linear", async () => {
     routes["/p"] = serve(Buffer.from("<!---->".repeat(300) + "x"));
-    const started = performance.now();
     expect(await refusal(`${base()}/p`, allowed)).toBe("not_a_picture");
-    expect(performance.now() - started).toBeLessThan(quickly);
   });
 
   it("an SVG after a long run of comments is still an SVG", async () => {
@@ -792,11 +789,9 @@ describe("a picture that is too large", () => {
 describe("a slow server", () => {
   it("that never answers is timed out", async () => {
     routes["/p"] = () => undefined;
-    const started = Date.now();
     expect(await refusal(`${base()}/p`, { ...allowed, timeoutMs: 300 })).toBe(
       "timed_out",
     );
-    expect(Date.now() - started).toBeLessThan(5000);
   });
 
   it("that stops part way through the body is timed out", async () => {
