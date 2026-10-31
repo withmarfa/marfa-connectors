@@ -18,27 +18,38 @@ import { readerVendor } from "./readwise-reader-stub.js";
 
 /**
  * The file rows once the server's enrichment sweep has finished with them.
- * The sweep writes extracted text onto a file row some time after the
- * connector wrote it, which moves the row's version, and nothing the server
- * serves says when it is done. Done is taken as no file row changing for
- * three sweep intervals, so a snapshot compares what the connector owns and
- * a version that still moves afterward is the connector's own write.
+ * The sweep writes extracted text onto the file row of a page or a passage
+ * some time after the connector wrote it, which moves the row's version, and
+ * the sweep's own timing is not the proof's to fix. So the wait ends on what
+ * the sweep leaves behind: every row of text or HTML has its `extracted_text`.
+ * The sweep may also read the size of a picture, which says nothing so
+ * plain, so after that no file row may change for three sweep intervals. A
+ * snapshot then compares what the connector owns, and a version that still
+ * moves afterward is the connector's own write.
  */
 async function settledFiles(admin: MarfaClient): Promise<Map<string, Item>> {
   const key = (rows: Map<string, Item>) =>
     JSON.stringify([...rows].map(([id, row]) => [id, row.version]));
+  const waiting = (rows: Map<string, Item>) =>
+    [...rows.values()].some(
+      (row) =>
+        typeof row.properties["blob_ref"] === "string" &&
+        (row.properties["resource_kind"] === "html" ||
+          row.properties["resource_kind"] === "text") &&
+        typeof row.properties["extracted_text"] !== "string",
+    );
   const quiet = 3 * enrichmentIntervalMs;
-  const deadline = Date.now() + 10 * quiet;
+  const deadline = Date.now() + 30_000;
   let rows = await rowsOf(admin, "readwise.file", "readwise");
   let seen = key(rows);
   let since = Date.now();
-  while (Date.now() - since < quiet) {
+  while (waiting(rows) || Date.now() - since < quiet) {
     if (Date.now() > deadline)
       throw new Error("file rows were still changing after enrichment");
     await new Promise((done) => setTimeout(done, enrichmentIntervalMs / 4));
     rows = await rowsOf(admin, "readwise.file", "readwise");
     const now = key(rows);
-    if (now !== seen) {
+    if (now !== seen || waiting(rows)) {
       seen = now;
       since = Date.now();
     }

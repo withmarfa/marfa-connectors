@@ -73,4 +73,4 @@ pnpm test
 pnpm proof
 ```
 
-`pnpm proof` boots the pinned server and proves each connector against it.
+`pnpm proof` boots the pinned server and proves each connector against it. `pnpm proof --shard 2/3` runs the second of three shards of the proof, each of which boots a server of its own; `scripts/proof/shards.ts` lists the groups and how long each takes.

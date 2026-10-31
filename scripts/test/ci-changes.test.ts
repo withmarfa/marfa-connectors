@@ -3,6 +3,7 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -16,6 +17,7 @@ import {
   classify,
   forDraft,
   JOBS,
+  proofFilesTestsReach,
   RULES,
   type Job,
 } from "../ci-changes.js";
@@ -39,45 +41,49 @@ describe("what a change runs beyond formatting and the scan", () => {
     [
       "a fixture under agent files, which a test could read",
       [".agents/skills/x/fixtures/input.json"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
     [
       "a file that only looks like an agent directory",
       ["kit/src/.agents/helper.ts"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
     [
       "agent files beside a kit change",
       [".agents/skills/x/helper.py", "kit/src/main.ts"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
     [
       "a connector's source",
       ["connectors/todoist/src/main.ts"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
-    ["a connector's test", ["connectors/github/test/read.test.ts"], ["code"]],
+    [
+      "a connector's test",
+      ["connectors/github/test/read.test.ts"],
+      ["code", "tests"],
+    ],
     [
       "a fixture the proof reads",
       ["connectors/rss/test/fixtures/atom.xml"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
-    ["the kit", ["kit/src/main.ts"], ["code", "proof", "image"]],
-    ["the kit's tests", ["kit/test/scripted-server.ts"], ["code"]],
+    ["the kit", ["kit/src/main.ts"], ["code", "tests", "proof", "image"]],
+    ["the kit's tests", ["kit/test/scripted-server.ts"], ["code", "tests"]],
     [
       "a shared package's source",
       ["shared/google/src/google.ts"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
     [
       "a shared package's test",
       ["shared/google/test/google.test.ts"],
-      ["code"],
+      ["code", "tests"],
     ],
     [
       "the template",
       ["template/connector/src/main.ts"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
     ["the template's image", ["template/Dockerfile"], ["image"]],
     ["the LaunchAgent example", ["template/launchd.plist.example"], ["image"]],
@@ -85,43 +91,78 @@ describe("what a change runs beyond formatting and the scan", () => {
     [
       "the script that reads the image's client",
       ["scripts/check-image-client.ts"],
-      ["code", "image"],
+      ["code", "tests", "image"],
     ],
     ["dependency settings", [".github/dependabot.yml"], []],
     [
       "a workflow no job of ci.yml reads",
       [".github/workflows/audit.yml"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
-    ["the proof", ["scripts/proof/rss.ts"], ["code", "proof", "image"]],
+    [
+      "a scenario of the proof, which no unit test imports",
+      ["scripts/proof/rss.ts"],
+      ["code", "proof"],
+    ],
+    [
+      "the list of the proof's groups, which a unit test imports",
+      ["scripts/proof/shards.ts"],
+      ["code", "tests", "proof"],
+    ],
+    [
+      "a stub the proof shares with the unit tests",
+      ["scripts/proof/github-stub.ts"],
+      ["code", "tests", "proof"],
+    ],
+    [
+      "one connector's source",
+      ["connectors/rss/src/main.ts"],
+      ["code", "tests", "proof", "image"],
+    ],
     [
       "the monorepo pin",
       ["scripts/monorepo.commit"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
-    ["a repository test", ["scripts/test/tree.test.ts"], ["code"]],
-    ["lint settings", ["eslint.config.js"], ["code"]],
-    ["a dependency", ["pnpm-lock.yaml"], ["code", "proof", "image"]],
-    ["the workflow", [".github/workflows/ci.yml"], ["code", "proof", "image"]],
+    ["a repository test", ["scripts/test/tree.test.ts"], ["code", "tests"]],
+    ["lint settings", ["eslint.config.js"], ["code", "tests"]],
+    ["a dependency", ["pnpm-lock.yaml"], ["code", "tests", "proof", "image"]],
+    [
+      "the workflow",
+      [".github/workflows/ci.yml"],
+      ["code", "tests", "proof", "image"],
+    ],
     [
       "the CodeQL workflow, which a test reads",
       [".github/workflows/codeql.yml"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
     [
       "the description check's workflow, which a test reads",
       [".github/workflows/pr-description.yml"],
-      ["code", "proof", "image"],
+      ["code", "tests", "proof", "image"],
     ],
-    ["the description check", ["scripts/check-pr-description.ts"], ["code"]],
-    ["the classifier", ["scripts/ci-changes.ts"], ["code", "proof", "image"]],
-    ["a path no rule names", ["tools/new.ts"], ["code", "proof", "image"]],
+    [
+      "the description check",
+      ["scripts/check-pr-description.ts"],
+      ["code", "tests"],
+    ],
+    [
+      "the classifier",
+      ["scripts/ci-changes.ts"],
+      ["code", "tests", "proof", "image"],
+    ],
+    [
+      "a path no rule names",
+      ["tools/new.ts"],
+      ["code", "tests", "proof", "image"],
+    ],
     [
       "documentation beside a test",
       ["README.md", "kit/test/main.test.ts"],
-      ["code"],
+      ["code", "tests"],
     ],
-    ["an empty change", [], ["code", "proof", "image"]],
+    ["an empty change", [], ["code", "tests", "proof", "image"]],
   ])("%s", (_, paths, expected) => {
     expect(runs(paths)).toEqual(expected);
   });
@@ -134,7 +175,7 @@ describe("what a change runs beyond formatting and the scan", () => {
       .split("\n")
       .filter(Boolean);
     expect(markdown.length).toBeGreaterThan(0);
-    expect(markdown.filter((path) => affected(path).size > 0)).toEqual([]);
+    expect(markdown.filter((path) => affected(path).jobs.size > 0)).toEqual([]);
     // The witness: a path no rule names runs everything.
     expect(RULES.some(([pattern]) => pattern.test("tools/new.ts"))).toBe(false);
   });
@@ -154,12 +195,156 @@ interface Workflow {
   >;
 }
 
+describe("which unit tests a change runs", () => {
+  const tree = "scripts/test/tree.test.ts";
+
+  it.each<[string, string[], string]>([
+    [
+      "one connector's source",
+      ["connectors/github/src/main.ts"],
+      `connectors/github/ ${tree}`,
+    ],
+    [
+      "one connector's tests",
+      ["connectors/github/test/read.test.ts"],
+      `connectors/github/ ${tree}`,
+    ],
+    [
+      "two connectors",
+      ["connectors/todoist/src/main.ts", "connectors/github/src/main.ts"],
+      `connectors/github/ connectors/todoist/ ${tree}`,
+    ],
+    ["the kit", ["kit/src/main.ts"], "all"],
+    [
+      "the kit beside a connector",
+      ["connectors/github/src/main.ts", "kit/src/main.ts"],
+      "all",
+    ],
+    ["a shared package", ["shared/google/src/google.ts"], "all"],
+    [
+      "a fixture inside a connector",
+      ["connectors/rss/test/fixtures/a.xml"],
+      "all",
+    ],
+    ["the template", ["template/connector/src/main.ts"], "all"],
+    ["a dependency", ["pnpm-lock.yaml"], "all"],
+    ["a path no rule names", ["tools/new.ts"], "all"],
+    ["an empty change", [], "all"],
+    [
+      "a connector and the proof, which the tests do not read",
+      ["connectors/rss/src/main.ts", "scripts/proof/rss.ts"],
+      `connectors/rss/ ${tree}`,
+    ],
+    [
+      "a connector and a stub the tests import",
+      ["connectors/github/src/main.ts", "scripts/proof/github-stub.ts"],
+      "all",
+    ],
+    [
+      "a connector beside documentation",
+      ["connectors/rss/src/main.ts", "README.md"],
+      `connectors/rss/ ${tree}`,
+    ],
+  ])("%s", (_, paths, scope) => {
+    expect(classify(paths).scope).toBe(scope);
+  });
+
+  it("runs no tests, with the scope of all, for documentation and for the proof alone", () => {
+    for (const paths of [["README.md"], ["scripts/proof/rss.ts"]]) {
+      const answer = classify(paths);
+      expect(answer.tests).toBe(false);
+      expect(answer.scope).toBe("all");
+    }
+  });
+
+  it("only narrows to a connector no other package depends on", () => {
+    const packages = [
+      "kit",
+      "template/connector",
+      ...readdirSync(join(root, "shared")).map((name) => `shared/${name}`),
+      ...readdirSync(join(root, "connectors")).map(
+        (name) => `connectors/${name}`,
+      ),
+    ];
+    const names = new Map<string, string>();
+    const manifests = new Map<string, Record<string, unknown>>();
+    for (const folder of packages) {
+      const manifest = JSON.parse(
+        readFileSync(join(root, folder, "package.json"), "utf8"),
+      ) as Record<string, unknown>;
+      manifests.set(folder, manifest);
+      names.set(folder, String(manifest["name"]));
+    }
+    const connectors = packages.filter((folder) =>
+      folder.startsWith("connectors/"),
+    );
+    expect(connectors.length).toBeGreaterThan(0);
+    for (const folder of connectors) {
+      const name = names.get(folder);
+      for (const [other, manifest] of manifests) {
+        const wanted = {
+          ...(manifest["dependencies"] as object | undefined),
+          ...(manifest["devDependencies"] as object | undefined),
+        };
+        expect(Object.keys(wanted), `${other} uses ${folder}`).not.toContain(
+          name,
+        );
+      }
+      // The witness: a package that is used is found as one.
+      expect(
+        Object.keys(manifests.get(folder)?.["dependencies"] ?? {}),
+      ).toContain("@withmarfa/connector");
+    }
+  });
+
+  it("names every file of the proof that a unit test imports, directly or through another", () => {
+    const proof = join(root, "scripts", "proof");
+    const importsOf = (file: string): string[] =>
+      [
+        ...readFileSync(file, "utf8").matchAll(/from "(\.[^"]*?)\.js"/g),
+      ].flatMap((match) => (match[1] === undefined ? [] : [match[1]]));
+    const reached = new Set<string>();
+    const visit = (name: string): void => {
+      if (reached.has(name)) return;
+      reached.add(name);
+      for (const next of importsOf(join(proof, `${name}.ts`))) {
+        if (next.startsWith("./")) visit(next.slice(2));
+      }
+    };
+    const tests = [
+      ...readdirSync(join(root, "scripts", "test")).map((name) =>
+        join(root, "scripts", "test", name),
+      ),
+      ...["kit", "connectors", "shared", "template"].flatMap((top) =>
+        execFileSync("git", ["ls-files", `${top}/**/test/*.ts`], {
+          cwd: root,
+          encoding: "utf8",
+        })
+          .split("\n")
+          .filter(Boolean)
+          .map((path) => join(root, path)),
+      ),
+    ].filter((file) => file.endsWith(".ts"));
+    for (const file of tests) {
+      for (const match of readFileSync(file, "utf8").matchAll(
+        /from "[^"]*\/proof\/([a-z-]+)\.js"/g,
+      )) {
+        if (match[1] !== undefined) visit(match[1]);
+      }
+    }
+    // The witness: the test of the stub does read the stub.
+    expect(reached.has("github-stub")).toBe(true);
+    expect([...reached].sort()).toEqual([...proofFilesTestsReach].sort());
+  });
+});
+
 describe("what a draft runs", () => {
   it("leaves the proof and the image for ready for review, and Checks to the diff", () => {
     for (const paths of [["kit/src/main.ts"], ["README.md"], []]) {
       const answer = classify(paths);
       expect(forDraft(answer)).toEqual({
         ...answer,
+        tests: false,
         proof: false,
         image: false,
       });
@@ -171,6 +356,8 @@ describe("each job reads its answer", () => {
   const { jobs } = parse(
     readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
   ) as Workflow;
+  const commands = (job: string) =>
+    (jobs[job]?.steps ?? []).flatMap((step) => step.run ?? []);
 
   it("lets the classifier ask which runs of this workflow succeeded", () => {
     expect(jobs["changes"]?.permissions).toEqual({
@@ -183,16 +370,28 @@ describe("each job reads its answer", () => {
     expect(classify?.env).toEqual({ GH_TOKEN: "${{ github.token }}" });
   });
 
+  it("publishes every answer the classifier gives", () => {
+    expect(jobs["changes"]?.outputs).toEqual(
+      Object.fromEntries(
+        ["code", "tests", "proof", "image", "full", "scope"].map((name) => [
+          name,
+          `\${{ steps.classify.outputs.${name} }}`,
+        ]),
+      ),
+    );
+  });
+
   it("runs Proof only when the classifier says so, and when it cannot tell", () => {
-    expect(jobs["changes"]?.outputs).toEqual({
-      code: "${{ steps.classify.outputs.code }}",
-      proof: "${{ steps.classify.outputs.proof }}",
-      image: "${{ steps.classify.outputs.image }}",
-      full: "${{ steps.classify.outputs.full }}",
-    });
     expect(jobs["proof"]?.needs).toBe("changes");
     expect(jobs["proof"]?.if).toBe(
       "${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.proof != 'false') }}",
+    );
+  });
+
+  it("runs the tests for a pull request that is not a draft, and when the classifier cannot tell", () => {
+    expect(jobs["tests"]?.needs).toBe("changes");
+    expect(jobs["tests"]?.if).toBe(
+      "${{ !cancelled() && needs.changes.outputs.full != 'false' && (needs.changes.result != 'success' || needs.changes.outputs.tests != 'false') }}",
     );
   });
 
@@ -201,7 +400,7 @@ describe("each job reads its answer", () => {
     expect(jobs["image"]?.if).toBe(
       "${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.image != 'false') }}",
     );
-    const runs = (jobs["image"]?.steps ?? []).flatMap((step) => step.run ?? []);
+    const runs = commands("image");
     expect(runs.some((run) => run.includes("xmllint"))).toBe(true);
     expect(runs.some((run) => run.includes("docker build"))).toBe(true);
     expect(runs.some((run) => run.includes("check-image-client.ts"))).toBe(
@@ -209,22 +408,20 @@ describe("each job reads its answer", () => {
     );
   });
 
-  it("prepares the pinned server only for Proof and installs the registry client for Image", () => {
-    const commands = (job: string) =>
-      (jobs[job]?.steps ?? []).flatMap((step) => step.run ?? []);
+  it("prepares the pinned server only for Proof and installs the registry client for the rest", () => {
     expect(commands("proof")).toContain("scripts/monorepo.sh");
-    for (const job of ["checks", "image"]) {
+    for (const job of ["checks", "tests", "image"]) {
       expect(commands(job)).not.toContain("scripts/monorepo.sh");
       expect(commands(job)).toContain("pnpm install --frozen-lockfile");
     }
-    for (const job of ["checks", "proof", "image"]) {
+    for (const job of ["checks", "tests", "proof", "image"]) {
       expect(
         commands(job).some((command) => command.includes("vendor-client")),
       ).toBe(false);
     }
   });
 
-  it("formats and scans every change, and does the rest only for code", () => {
+  it("makes Checks the quick job: formats and scans every change, and does the rest only for code", () => {
     const checks = jobs["checks"];
     expect(checks?.needs).toBe("changes");
     expect(checks?.if).toBe("${{ !cancelled() }}");
@@ -248,14 +445,8 @@ describe("each job reads its answer", () => {
       "pnpm typecheck",
       "pnpm lint",
     ]);
-  });
-
-  it("leaves the tests to a pull request that is not a draft", () => {
-    const steps = jobs["checks"]?.steps ?? [];
-    const tests = steps.filter((step) => step.run === "pnpm test");
-    expect(tests.map((step) => step.if)).toEqual([
-      "${{ needs.changes.outputs.code != 'false' && needs.changes.outputs.full != 'false' }}",
-    ]);
+    // The tests moved to their own job, which Checks no longer holds.
+    expect(commands("checks")).not.toContain("pnpm test");
   });
 
   it("never fails Checks for being a draft", () => {
@@ -265,28 +456,88 @@ describe("each job reads its answer", () => {
     ).toBe(false);
   });
 
-  it("waits for every other job before Full CI reports, and names it Full CI only for a run that ran everything", () => {
+  it("shards the tests and the proof, each shard on its own, with the count from the matrix", () => {
+    for (const name of ["tests", "proof"]) {
+      const job = parseJobs()[name];
+      expect(job?.strategy?.["fail-fast"], name).toBe(false);
+      expect(job?.strategy?.matrix?.shard, name).toEqual([1, 2, 3]);
+    }
+    expect(commands("proof")).toContain(
+      "pnpm proof --shard ${{ matrix.shard }}/${{ strategy.job-total }}",
+    );
+    const test = (jobs["tests"]?.steps ?? []).find((step) =>
+      step.run?.includes("vitest run"),
+    );
+    expect(test?.env).toEqual({
+      SCOPE: "${{ needs.changes.outputs.scope }}",
+      SHARD: "${{ matrix.shard }}/${{ strategy.job-total }}",
+    });
+    expect(test?.run).toContain('--shard "${SHARD}"');
+    expect(test?.run).toContain("--passWithNoTests");
+  });
+
+  it("passes the classifier's scope to a shell through the environment, never into a script", () => {
+    for (const [name, job] of Object.entries(jobs)) {
+      for (const step of job.steps) {
+        expect(step.run ?? "", name).not.toContain("outputs.scope");
+      }
+    }
+  });
+
+  it("holds each job to about twice its time", () => {
+    const limits = Object.fromEntries(
+      Object.entries(parseJobs()).map(([name, job]) => [
+        name,
+        job["timeout-minutes"],
+      ]),
+    );
+    expect(limits).toEqual({
+      changes: 5,
+      checks: 10,
+      tests: 12,
+      proof: 20,
+      image: 10,
+      stop: 5,
+      gate: 5,
+    });
+  });
+
+  it("ends the slow jobs after a failed Checks on a pull request, and never on main", () => {
+    const stop = jobs["stop"];
+    expect(stop?.needs).toBe("checks");
+    expect(stop?.if).toBe(
+      "${{ always() && github.event_name == 'pull_request' && needs.checks.result == 'failure' }}",
+    );
+    expect(stop?.permissions).toEqual({ actions: "write" });
+    expect(commands("stop")).toEqual(['gh run cancel "${GITHUB_RUN_ID}"']);
+  });
+
+  it("waits for every job but the one that cancels, before Full CI reports, and names it Full CI only for a run that ran everything", () => {
     const gate = jobs["gate"];
     expect(gate?.name).toBe(
       "${{ github.event.pull_request.draft && 'Draft CI' || 'Full CI' }}",
     );
     expect([gate?.needs ?? []].flat().sort()).toEqual(
       Object.keys(jobs)
-        .filter((job) => job !== "gate")
+        .filter((job) => job !== "gate" && job !== "stop")
         .sort(),
     );
-    expect(gate?.if).toBe("${{ !cancelled() }}");
+    expect(gate?.if).toBe(
+      "${{ !cancelled() || needs.checks.result == 'failure' }}",
+    );
     expect(gate?.steps.map((step) => step.env)).toEqual([
       { RESULTS: "${{ join(needs.*.result, ' ') }}" },
     ]);
   });
 
   it.each<[string, boolean]>([
-    ["success success success success", true],
-    ["success success skipped skipped", true],
-    ["success failure skipped skipped", false],
-    ["failure success success success", false],
-    ["success success cancelled success", false],
+    ["success success success success success", true],
+    ["success success success skipped skipped", true],
+    ["success failure skipped skipped skipped", false],
+    ["failure success success success success", false],
+    ["success success cancelled success success", false],
+    ["success failure cancelled cancelled cancelled", false],
+    ["success success success failure success", false],
   ])("Full CI for the results %s passes: %s", (results, passes) => {
     const script = jobs["gate"]?.steps[0]?.run ?? "";
     let status = 0;
@@ -301,6 +552,25 @@ describe("each job reads its answer", () => {
     expect(status === 0).toBe(passes);
   });
 });
+
+function parseJobs() {
+  return (
+    parse(
+      readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
+    ) as {
+      jobs: Record<
+        string,
+        {
+          "timeout-minutes"?: number;
+          strategy?: {
+            "fail-fast"?: boolean;
+            matrix?: { shard?: number[] };
+          };
+        }
+      >;
+    }
+  ).jobs;
+}
 
 /**
  * Whether a workflow's `paths` filter pattern matches a path, as Actions reads
@@ -403,7 +673,7 @@ describe("CodeQL", () => {
       ".github/ISSUE_TEMPLATE/bug.yml",
     ]) {
       expect(skips(path), path).toBe(true);
-      expect(affected(path).size, path).toBe(0);
+      expect(affected(path).jobs.size, path).toBe(0);
     }
     for (const path of [
       ".github/workflows/ci.yml",
@@ -519,8 +789,10 @@ describe("the classifier as CI runs it", () => {
     return readFileSync(output, "utf8");
   }
 
-  const skipped = "code=false\nproof=false\nimage=false\nfull=true\n";
-  const everything = "code=true\nproof=true\nimage=true\nfull=true\n";
+  const skipped =
+    "code=false\ntests=false\nproof=false\nimage=false\nfull=true\nscope=all\n";
+  const everything =
+    "code=true\ntests=true\nproof=true\nimage=true\nfull=true\nscope=all\n";
 
   it("skips the code checks and the proof for documentation", () => {
     expect(outputs("pull_request", base, docs)).toBe(skipped);
@@ -539,10 +811,10 @@ describe("the classifier as CI runs it", () => {
 
   it("runs only the quick checks for a draft, whatever the diff, and all of them once it is ready", () => {
     expect(outputs("pull_request", base, docs, { draft: true })).toBe(
-      "code=false\nproof=false\nimage=false\nfull=false\n",
+      "code=false\ntests=false\nproof=false\nimage=false\nfull=false\nscope=all\n",
     );
     expect(outputs("pull_request", "invalid", docs, { draft: true })).toBe(
-      "code=true\nproof=false\nimage=false\nfull=false\n",
+      "code=true\ntests=false\nproof=false\nimage=false\nfull=false\nscope=all\n",
     );
     expect(outputs("pull_request", base, docs, { draft: false })).toBe(skipped);
   });

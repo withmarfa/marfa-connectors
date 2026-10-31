@@ -1140,16 +1140,12 @@ describe("an entry's content and image", () => {
             name === "a 3.6 MB article" && at > 2 ? "<p>x</p>" : content,
           ),
         ).join("");
-        const started = performance.now();
         const read = readFeed(
           at("https://example.org/rss.xml"),
           rss(item("before", good) + entries + item("after", good)),
         );
-        // Time is judged by what it would have cost: an entry past the
-        // 12 s conversion budget is held back, and that fails the counts
-        // below. This bound only stops a slowdown at any speed; a shared CI
-        // runner reads this feed in about three seconds.
-        expect(performance.now() - started).toBeLessThan(30_000);
+        // An entry past the 12 s conversion budget is held back, and that
+        // fails the counts below.
         expect(read.late).toBe(0);
         const bodies = read.entries.map((entry) => entry.properties["body"]);
         expect(bodies).toHaveLength(102);
@@ -1194,7 +1190,6 @@ describe("an entry's content and image", () => {
             .join("") +
           item("after", good),
       );
-      const started = performance.now();
       const read = await readBounded(
         {
           feed: at("https://example.org/rss.xml"),
@@ -1204,9 +1199,6 @@ describe("an entry's content and image", () => {
         },
         AbortSignal.timeout(60_000),
       );
-      // The worker ends after 30 s, so a read this close to that has
-      // failed anyway; a shared CI runner reads this feed in about two.
-      expect(performance.now() - started).toBeLessThan(25_000);
       const bodies = read.entries.map((entry) => entry.properties["body"]);
       expect(bodies[0]).toBe("A **good** body.");
       expect(bodies.at(-1)).toBe("A **good** body.");

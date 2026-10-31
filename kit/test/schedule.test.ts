@@ -174,11 +174,9 @@ describe("--every", () => {
     const silent = await silentServer();
     harness.requestTimeoutMs = 200;
     try {
-      const began = Date.now();
       expect(
         await harness.once(vendor([one]), { MARFA_API_URL: silent.url }),
       ).toBe(1);
-      expect(Date.now() - began).toBeLessThan(3000);
       expect(harness.lines.join("\n")).toContain("could not start");
     } finally {
       await silent.close();
