@@ -443,7 +443,7 @@ export class Marfa {
   ): Promise<void> {
     const body: ConnectionDefinition & { evolve_constraints: true } = {
       id: held.id,
-      ...(held.label !== undefined && { label: held.label }),
+      label: held.label,
       ...(held.description !== undefined && { description: held.description }),
       cardinality: held.cardinality,
       source_type_constraints: carried.source_type_constraints ?? [],

@@ -361,6 +361,7 @@ function stored(id: string, extra: Record<string, unknown> = {}): Item {
     occurred_at: stamp,
     created_at: stamp,
     updated_at: stamp,
+    trashed_at: null,
     properties: {
       account: "one",
       canonical_key: `one:reader-document:${id}`,
