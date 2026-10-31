@@ -268,6 +268,18 @@ describe("an issue changed in Marfa", () => {
     expect(output).toContain("has no name");
   });
 
+  it("keeps GitHub's assignees when no entry has a name", async () => {
+    const issue = github.addIssue(repository, {
+      title: "Owned",
+      assignees: ["someone"],
+    });
+    await ok();
+    marfa.edit(row(issue.node).id, { assignees: [{ email: "x@example.com" }] });
+    const output = await ok();
+    expect(issue.assignees).toEqual(["someone"]);
+    expect(output).toContain("has no name");
+  });
+
   it("closes as a duplicate when its status says duplicate", async () => {
     const issue = github.addIssue(repository, { title: "Twice" });
     await ok();

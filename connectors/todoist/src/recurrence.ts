@@ -64,16 +64,13 @@ function wallIn(at: number, timeZone: string): Wall | undefined {
 }
 
 /** Whether the zone keeps one offset from UTC across the year of the instant
- *  and the next, so a rule that advances in UTC keeps the wall time. */
+ *  and the next, sampled on the first of every month, so a rule that advances
+ *  in UTC keeps the wall time. */
 function steady(at: number, timeZone: string): boolean {
   const year = new Date(at).getUTCFullYear();
   const offsets = new Set<number>();
-  for (const when of [
-    Date.UTC(year, 0, 1),
-    Date.UTC(year, 6, 1),
-    Date.UTC(year + 1, 0, 1),
-    Date.UTC(year + 1, 6, 1),
-  ]) {
+  for (let month = 0; month < 24; month += 1) {
+    const when = Date.UTC(year, month, 1);
     const wall = wallIn(when, timeZone);
     if (wall === undefined) return false;
     const [h, m] = [Math.floor(wall.minutes / 60), wall.minutes % 60];

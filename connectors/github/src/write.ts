@@ -100,8 +100,14 @@ function entries(value: unknown): Record<string, unknown>[] {
 }
 
 /** The logins an item's `assignees` entries name. An entry with no `name` is
- *  not one GitHub can be asked to assign, so it is said once and left out. */
-function logins(context: Context, item: Item, value: unknown): string[] {
+ *  not one GitHub can be asked to assign, so it is said once and left out. A
+ *  list with entries and no name among them gives `undefined`, so nothing is
+ *  sent: sending none would unassign the people GitHub holds. */
+function logins(
+  context: Context,
+  item: Item,
+  value: unknown,
+): string[] | undefined {
   const named: string[] = [];
   let nameless = 0;
   for (const one of entries(value)) {
@@ -112,8 +118,9 @@ function logins(context: Context, item: Item, value: unknown): string[] {
   if (nameless > 0) {
     context.log.condition(
       `assignee-unnamed:${item.id}`,
-      `${String(nameless)} of the assignees of ${item.id} has no name, which GitHub needs, so ${nameless === 1 ? "it is" : "they are"} not sent`,
+      `${String(nameless)} of the assignees of ${item.id} ${nameless === 1 ? "has" : "have"} no name, which GitHub needs, so ${nameless === 1 ? "it is" : "they are"} not sent`,
     );
+    if (named.length === 0) return undefined;
   }
   return named;
 }
@@ -846,7 +853,8 @@ async function carryIssue(
   }
   if (change.changed.has("labels")) patch["labels"] = list(item, "labels");
   if (change.changed.has("assignees")) {
-    patch["assignees"] = logins(context, item, item.properties["assignees"]);
+    const named = logins(context, item, item.properties["assignees"]);
+    if (named !== undefined) patch["assignees"] = named;
   }
   const binned = change.kind === "trashed" || change.kind === "purged";
   const fromBin = change.kind === "restored" && change.was === "trashed";
@@ -947,7 +955,7 @@ async function createIssue(
         title,
         body: marked(item),
         labels: list(item, "labels"),
-        assignees: logins(context, item, item.properties["assignees"]),
+        assignees: logins(context, item, item.properties["assignees"]) ?? [],
       })
     ).data as RestIssue;
   } catch (error) {
@@ -986,6 +994,7 @@ async function placeIssue(
   const { item } = change;
   const { octokit, owner, repo } = where;
   const patch: Record<string, unknown> = {};
+  const assignees = logins(context, item, item.properties["assignees"]);
   if (found) {
     const held = issueOfRest(made, { node: "", name: "" }, null);
     const same = (a: readonly string[], b: readonly string[]): boolean =>
@@ -997,8 +1006,9 @@ async function placeIssue(
     if (!same(list(item, "labels"), held.labels)) {
       patch["labels"] = list(item, "labels");
     }
-    const assignees = logins(context, item, item.properties["assignees"]);
-    if (!same(assignees, held.assignees)) patch["assignees"] = assignees;
+    if (assignees !== undefined && !same(assignees, held.assignees)) {
+      patch["assignees"] = assignees;
+    }
   }
   const state = wanted(item.properties["status"]);
   if (state.state === "closed" || (found && made.state !== "open")) {
@@ -1028,12 +1038,7 @@ async function placeIssue(
     where,
   );
   const answer = await answerIssue(context, octokit, made.node_id, related);
-  dropped(
-    context,
-    item,
-    logins(context, item, item.properties["assignees"]),
-    answer,
-  );
+  dropped(context, item, assignees, answer);
   return answer;
 }
 
