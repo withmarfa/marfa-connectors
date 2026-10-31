@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "proof": "node scripts/dist/proof/main.js && node scripts/dist/proof/readwise-reader-main.js"
+    "proof": "node scripts/dist/proof/main.js"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

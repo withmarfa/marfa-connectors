@@ -84,7 +84,6 @@ export async function proveGitHub(
   marfa: MarfaClient,
   url: string,
   manager: MarfaClient,
-  mintKey: ProofServer["mintKey"],
 ): Promise<void> {
   const github = await new GitHubStub().start();
   github.appPem = appKey();
@@ -876,7 +875,6 @@ export async function proveGitHub(
   } finally {
     await github.stop();
   }
-  await proveGitHubCoverage(url, manager, mintKey);
 }
 
 interface CoverageEnvelope {
