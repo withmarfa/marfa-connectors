@@ -162,6 +162,9 @@ export async function proveGitHub(
             await readFile(join(folder, `${type}.json`), "utf8"),
           ) as { fields: Record<string, unknown> };
           Reflect.deleteProperty(definition.fields, "private");
+          // An earlier connector gave the issue no words of its own.
+          if (type === "github.issue")
+            Reflect.deleteProperty(definition.fields, "status");
           const { error, response } = await marfa.POST("/types", {
             body: definition as never,
           });
@@ -177,7 +180,20 @@ export async function proveGitHub(
       async () => {
         const output = await runOnce();
         const added = ["github.issue", "github.comment"].filter((type) =>
-          output.includes(`added private to the type ${type}`),
+          output.includes(
+            `added private${type === "github.issue" ? ", status" : ""} to the type ${type}`,
+          ),
+        );
+        const issueType = await marfa.GET("/types/{id}", {
+          params: { path: { id: "github.issue" } },
+        });
+        const words = JSON.stringify(
+          (
+            (issueType.data?.fields ?? {}) as Record<
+              string,
+              { status_values?: { value: string }[] }
+            >
+          )["status"]?.status_values?.map((word) => word.value),
         );
         const summary = String((await lastRun(manager, key.id)).summary);
         const grown = await Promise.all(
@@ -223,14 +239,15 @@ export async function proveGitHub(
           said.properties["private"] !== true ||
           grown.includes(false) ||
           added.length !== 2 ||
+          !["open", "duplicate"].every((word) => words.includes(`"${word}"`)) ||
           !summary.includes("created 5, updated 0, archived 0, unchanged 0") ||
           JSON.stringify(top.properties["labels"]) !== '["bug"]'
         ) {
           throw new Error(
-            `${summary}; private on the types ${grown.join()}, added by the connector to ${added.join()}; ${parents.join(", ")}; in repository ${inRepo.join()}, sub-issue of ${subOf.join()}, blocked by ${blockedBy.join()}, in thread ${thread.join()}; ${JSON.stringify(top.properties)}`,
+            `${summary}; private on the types ${grown.join()}, added by the connector to ${added.join()}, the issue's status words ${words}; ${parents.join(", ")}; in repository ${inRepo.join()}, sub-issue of ${subOf.join()}, blocked by ${blockedBy.join()}, in thread ${thread.join()}; ${JSON.stringify(top.properties)}`,
           );
         }
-        return `private added to ${added.join(" and ")} by the connector; ${parents.join(", ")}; every row marked private, each of the five counted once; ${registered.join(", ")}, and in-thread the instance's own; the child under its parent and blocked by the blocker, the comment in the parent's thread`;
+        return `private added to ${added.join(" and ")} by the connector, and the status words open and duplicate to the issue's: ${words}; ${parents.join(", ")}; every row marked private, each of the five counted once; ${registered.join(", ")}, and in-thread the instance's own; the child under its parent and blocked by the blocker, the comment in the parent's thread`;
       },
     );
 
