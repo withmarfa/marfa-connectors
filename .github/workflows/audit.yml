@@ -1,7 +1,8 @@
 name: Audit
 
 # Informational, never a check: an advisory published against a dependency
-# fails this run and leaves every other pull request's checks alone. A run
+# fails this run and leaves every other pull request's checks alone. A failed
+# weekly run opens one issue, which later failures comment on. A run
 # starts weekly, by hand, and for a pull request that changes the lockfile.
 on:
   schedule:
@@ -33,3 +34,23 @@ jobs:
         with:
           node-version: 22
       - run: pnpm audit --audit-level moderate
+
+  report-failure:
+    name: Report a failed scheduled run
+    needs: [audit]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/report-scheduled-failure.sh
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/report-scheduled-failure.sh
