@@ -47,9 +47,9 @@ await main(
     ],
     connections: [
       {
-        id: "references",
-        label: "References",
-        cardinality: "many-to-many",
+        id: "excerpt-of",
+        label: "Excerpt of",
+        cardinality: "many-to-one",
         source_type_constraints: [highlightType.id],
         target_type_constraints: [sourceType.id],
       },
@@ -57,6 +57,7 @@ await main(
         id: "attached-to",
         label: "Attached to",
         cardinality: "many-to-many",
+        cascade_on_delete: "with-hosts",
         source_type_constraints: [readerFileType.id],
         target_type_constraints: [sourceType.id, highlightType.id],
       },

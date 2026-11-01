@@ -419,13 +419,14 @@ export class Connections {
     kind: ConnectionDefinition,
     known: ReadonlySet<string>,
   ): Promise<Map<string, string>> {
-    // References are shared with links people make themselves, even between
+    // References and excerpts are shared with links people make themselves, even between
     // the connector's own types. Only its agreed or requested targets belong
     // to this connector's reconciliation.
     const ofType = edges.filter(
       (edge) =>
         edge.edge_type === kind.id &&
-        (kind.id !== "references" || known.has(edge.target_id)),
+        ((kind.id !== "references" && kind.id !== "excerpt-of") ||
+          known.has(edge.target_id)),
     );
     const unknown = ofType
       .map((edge) => edge.target_id)

@@ -26,12 +26,12 @@ it.each(["safe", "lone-holder", "unknown-parent", "reactivated"])(
     const loneHolder = scenario === "lone-holder";
     const server = await new ScriptedServer("readwise", {
       types: [sourceType.id, highlightType.id],
-      edges: ["references"],
+      edges: ["excerpt-of"],
     }).start();
     const harness = new Harness(server);
-    server.edgeTypes.set("references", {
-      id: "references",
-      cardinality: "many-to-many",
+    server.edgeTypes.set("excerpt-of", {
+      id: "excerpt-of",
+      cardinality: "many-to-one",
       source_type_constraints: ["*"],
       target_type_constraints: ["*"],
       cascade_on_delete: "orphan",
@@ -92,9 +92,9 @@ it.each(["safe", "lone-holder", "unknown-parent", "reactivated"])(
         env: {},
         connections: [
           {
-            id: "references",
-            label: "References",
-            cardinality: "many-to-many",
+            id: "excerpt-of",
+            label: "Excerpt of",
+            cardinality: "many-to-one",
             source_type_constraints: [highlightType.id],
             target_type_constraints: [sourceType.id],
           },

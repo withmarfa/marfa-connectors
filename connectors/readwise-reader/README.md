@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Create a connector key with source `readwise-reader`, claimed item source `readwise`, write access to `readwise.source`, `readwise.highlight`, and `readwise.file`, write access to the built-in `references` and `attached-to` edge types, and `types=write` metadata access. Use the feed default tier. Do not grant edge-type registration or unrelated permissions.
+Create a connector key with source `readwise-reader`, claimed item source `readwise`, write access to `readwise.source`, `readwise.highlight`, and `readwise.file`, write access to the built-in `excerpt-of` and `attached-to` edge types, and `types=write` metadata access. Use the feed default tier. Do not grant edge-type registration or unrelated permissions.
 
 Reader and Highlights must use different key sources. Two keys under the same key source would share a registration and its saved state. Highlights uses key source `readwise`; both definitions write item source `readwise` and use the same stable account label.
 
@@ -56,7 +56,7 @@ Reader owns verified Reader rows and explicit Reader creates, not every row of t
 
 Listing and preservation have independent scopes. A page acknowledges its bounded content queue before advancing. Listing completion does not mean preservation is complete: pending resources and retry conditions remain visible separately.
 
-Each retained HTML document, available original, Readwise-hosted image, overflow text, and resource manifest has its own `readwise.file` item with a `blob_ref`. Every file has an `attached-to` edge to its source or highlight. Highlights reference their source through `references`. Original HTML bytes are retained without rewriting links.
+Each retained HTML document, available original, Readwise-hosted image, overflow text, and resource manifest has its own `readwise.file` item with a `blob_ref`. Every file has an `attached-to` edge to its source or highlight. Highlights are excerpts of their source, through `excerpt-of`. Trashing a source or highlight in Marfa puts its files in the bin with it, and restoring it brings them back. Original HTML bytes are retained without rewriting links.
 
 The manifest distinguishes kept, pending, unavailable, and deliberately unkept resources. A completed empty HTTP 200 download is recorded as unavailable without replacing any retained bytes; failed or incomplete downloads remain pending. Downloads accept only the verified HTTPS `readwise-assets.s3.amazonaws.com` host and validate each redirect. They never send API credentials to storage or fetch linked websites. Pictures hosted on other websites are fetched only when `READWISE_READER_PICTURES` asks for them. Transient signed URLs are excluded from checkpoint and manifest metadata; original HTML remains exact. A changed or expired source link is refreshed through Reader. Failed downloads retain the last acknowledged bytes.
 

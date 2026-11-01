@@ -279,7 +279,7 @@ export class ScriptedServer {
         cardinality: "many-to-many",
         source_type_constraints: ["*"],
         target_type_constraints: ["*"],
-        cascade_on_delete: "orphan",
+        cascade_on_delete: "with-hosts",
         property_schema: {},
         reverse_name: "has-attachment",
         written_at: "source",
@@ -291,6 +291,19 @@ export class ScriptedServer {
       {
         id: "references",
         cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
+      "excerpt-of",
+      {
+        id: "excerpt-of",
+        cardinality: "many-to-one",
         source_type_constraints: ["*"],
         target_type_constraints: ["*"],
         cascade_on_delete: "orphan",

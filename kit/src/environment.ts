@@ -1,5 +1,5 @@
 import type { Connector, EnvDeclaration } from "./define.js";
-import { wireOf } from "./shipped.js";
+import { shippedConnection, wireOf } from "./shipped.js";
 
 export class ConfigurationError extends Error {
   override name = "ConfigurationError";
@@ -189,7 +189,10 @@ export function checkDefinition<E extends EnvDeclaration>(
         `${kind.id}'s ends without a row policy, since the instance conditions an edge's write only on its source's version`,
       );
     }
-    if (!wire.cascades && (kind.cascade_on_delete ?? "orphan") !== "orphan") {
+    if (
+      shippedConnection(kind.id) === undefined &&
+      (kind.cascade_on_delete ?? "orphan") !== "orphan"
+    ) {
       problems.push(
         `${kind.id} to orphan on delete, so a trash in Marfa takes no vendor's row with it`,
       );

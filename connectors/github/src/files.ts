@@ -53,6 +53,7 @@ export const fileKinds = fileTypes.map((id) => ({
 export const filesConnection: ConnectionDefinition = {
   id: "attached-to",
   cardinality: "many-to-many",
+  cascade_on_delete: "with-hosts",
   source_type_constraints: [...fileTypes],
   target_type_constraints: ["github.issue", "github.comment"],
 };

@@ -391,7 +391,7 @@ export class SharedRows {
         )
       )
         entry.connections = {
-          references: [
+          "excerpt-of": [
             {
               type: "readwise.source",
               id: readerIdentity(this.account, "document", source.external_id),

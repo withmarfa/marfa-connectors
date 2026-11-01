@@ -50,6 +50,7 @@ function withFiles(
       {
         id: "attached-to",
         cardinality: "many-to-many",
+        cascade_on_delete: "with-hosts",
         source_type_constraints: ["test.file"],
         target_type_constraints: ["test.entry"],
       },
@@ -157,6 +158,25 @@ describe("a file", () => {
 });
 
 describe("attached-to", () => {
+  it("is refused where it declares the instance's own type as one that orphans", async () => {
+    const held: Held = { entries: [issue], files: [], loads: 0 };
+    held.files = [file(held, "etag-1", "hello")];
+    const connector = withFiles(held);
+    const orphaning = {
+      ...connector,
+      connections: (connector.connections ?? []).map((kind) => ({
+        ...kind,
+        cascade_on_delete: "orphan" as const,
+      })),
+    };
+    expect(connector.connections?.[0]?.cascade_on_delete).toBe("with-hosts");
+    expect(await start(orphaning, harness.runtime(["--once"]))).toBe(1);
+    expect(harness.lastRun().error).toContain(
+      'cascade_on_delete is "orphan" here and "with-hosts" on the server',
+    );
+    expect(await once(held)).toBe(0);
+  });
+
   it("leaves a person's attachment of the connector's file to a row of their own, and puts back one to the connector's rows", async () => {
     const held: Held = { entries: [issue], files: [], loads: 0 };
     held.files = [file(held, "etag-1", "hello")];

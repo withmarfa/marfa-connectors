@@ -11,17 +11,16 @@ export interface Shipped {
   /** The instance's edge type that the connection writes. */
   readonly edge: string;
   readonly inbound: boolean;
-  /** A trash of the edge's source takes its targets into the bin. */
-  readonly cascades: boolean;
 }
 
 const shipped: ReadonlyMap<string, Shipped> = new Map([
-  ["attached-to", { edge: "attached-to", inbound: false, cascades: false }],
-  ["in-collection", { edge: "in-collection", inbound: false, cascades: false }],
-  ["in-thread", { edge: "in-thread", inbound: false, cascades: false }],
-  ["references", { edge: "references", inbound: false, cascades: false }],
-  ["parent-of", { edge: "parent-of", inbound: false, cascades: true }],
-  ["child-of", { edge: "parent-of", inbound: true, cascades: true }],
+  ["attached-to", { edge: "attached-to", inbound: false }],
+  ["in-collection", { edge: "in-collection", inbound: false }],
+  ["in-thread", { edge: "in-thread", inbound: false }],
+  ["references", { edge: "references", inbound: false }],
+  ["excerpt-of", { edge: "excerpt-of", inbound: false }],
+  ["parent-of", { edge: "parent-of", inbound: false }],
+  ["child-of", { edge: "parent-of", inbound: true }],
 ]);
 
 export function shippedConnection(id: string): Shipped | undefined {
@@ -30,7 +29,7 @@ export function shippedConnection(id: string): Shipped | undefined {
 
 /** How a declared connection reaches the instance's edges. */
 export function wireOf(id: string): Shipped {
-  return shipped.get(id) ?? { edge: id, inbound: false, cascades: false };
+  return shipped.get(id) ?? { edge: id, inbound: false };
 }
 
 /** The instance's edge types the connections write, which a key's edge

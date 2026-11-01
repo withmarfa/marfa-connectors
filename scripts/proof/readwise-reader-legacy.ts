@@ -45,9 +45,9 @@ await main(
     ],
     connections: [
       {
-        id: "references",
-        label: "References",
-        cardinality: "many-to-many",
+        id: "excerpt-of",
+        label: "Excerpt of",
+        cardinality: "many-to-one",
         source_type_constraints: ["readwise.highlight"],
         target_type_constraints: ["readwise.source"],
       },
@@ -93,7 +93,7 @@ await main(
                 note: highlight.note ?? "",
               },
               connections: {
-                references: [{ type: "readwise.source", id: natural }],
+                "excerpt-of": [{ type: "readwise.source", id: natural }],
               },
             },
           ]);

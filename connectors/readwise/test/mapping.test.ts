@@ -101,7 +101,7 @@ describe("Readwise mapping", () => {
     expect(entry.properties["note"]).toBeUndefined();
     expect(entry.occurred_at).toBe(highlight.highlighted_at);
     expect(entry.connections).toEqual({
-      references: [{ type: "readwise.source", id: "one:source:42" }],
+      "excerpt-of": [{ type: "readwise.source", id: "one:source:42" }],
     });
     const long = "字\n".repeat(10000);
     expect(

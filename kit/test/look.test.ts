@@ -263,6 +263,7 @@ describe("the look, for connections", () => {
       {
         id: "attached-to",
         cardinality: "many-to-many",
+        cascade_on_delete: "with-hosts",
         source_type_constraints: ["test.entry"],
         target_type_constraints: ["test.entry"],
       },
