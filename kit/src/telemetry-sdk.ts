@@ -4,15 +4,15 @@
  */
 import {
   ROOT_CONTEXT,
+  SeverityNumber,
   SpanKind,
   SpanStatusCode,
   trace,
+  type AnyValue,
   type Attributes,
-  type AttributeValue,
   type Context,
   type Span,
 } from "@opentelemetry/api";
-import { SeverityNumber, type AnyValue } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -25,11 +25,11 @@ import {
 } from "@opentelemetry/sdk-logs";
 import {
   AlwaysOnSampler,
-  BasicTracerProvider,
   BatchSpanProcessor,
+  TracerProvider,
   type ReadableSpan,
   type SpanProcessor,
-} from "@opentelemetry/sdk-trace-base";
+} from "@opentelemetry/sdk-trace";
 import type { Level, Logger } from "./log.js";
 import { describe, type RunResult, type Trigger } from "./run.js";
 import type { ExceptionReporter } from "./telemetry-posthog.js";
@@ -49,26 +49,10 @@ const severity: Record<Level, SeverityNumber> = {
   error: SeverityNumber.ERROR,
 };
 
-function redactValue(value: AttributeValue, redact: Redact): AttributeValue {
-  if (typeof value === "string") return redact(value);
-  if (!Array.isArray(value)) return value;
-  return value.map((entry: unknown) =>
-    typeof entry === "string" ? redact(entry) : entry,
-  ) as AttributeValue;
-}
-
-function redactAttributes(attributes: Attributes, redact: Redact): Attributes {
-  const out: Attributes = {};
-  for (const [key, value] of Object.entries(attributes)) {
-    out[key] = value === undefined ? value : redactValue(value, redact);
-  }
-  return out;
-}
-
 function redactAny(value: AnyValue, redact: Redact): AnyValue {
   if (typeof value === "string") return redact(value);
   if (Array.isArray(value))
-    return value.map((entry) => redactAny(entry, redact));
+    return value.map((entry: unknown) => redactAny(entry, redact));
   if (value === null || typeof value !== "object") return value;
   if (value instanceof Uint8Array) return value;
   return Object.fromEntries(
@@ -77,6 +61,14 @@ function redactAny(value: AnyValue, redact: Redact): AnyValue {
       redactAny(entry, redact),
     ]),
   );
+}
+
+function redactAttributes(attributes: Attributes, redact: Redact): Attributes {
+  const out: Attributes = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    out[key] = value === undefined ? value : redactAny(value, redact);
+  }
+  return out;
 }
 
 function redactSpan(span: ReadableSpan, redact: Redact): ReadableSpan {
@@ -271,13 +263,13 @@ export async function exporting(
   const bounded = {
     exportTimeoutMillis: exportTimeoutMs,
   };
-  const tracerProvider = new BasicTracerProvider({
+  const tracerProvider = new TracerProvider({
     resource,
     sampler: new AlwaysOnSampler(),
     spanProcessors: [
       new Sampled(
-        new BatchSpanProcessor(
-          new Redacting<ReadableSpan>(
+        new BatchSpanProcessor({
+          exporter: new Redacting<ReadableSpan>(
             new OTLPTraceExporter({
               url: settings.tracesEndpoint,
               headers: { ...settings.tracesHeaders },
@@ -289,8 +281,8 @@ export async function exporting(
             (span) => redactSpan(span, redact),
             failed,
           ),
-          bounded,
-        ),
+          ...bounded,
+        }),
         settings.sampleRatio,
         random,
       ),
