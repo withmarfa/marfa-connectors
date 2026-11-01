@@ -84,6 +84,7 @@ it("refines an existing highlight alias with verified export parent evidence for
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
     trashed_at: null,
+    read_only: false,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -234,6 +235,7 @@ it("accepts one export ID with a canonical natural key and retains its export lo
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
     trashed_at: null,
+    read_only: false,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -322,6 +324,7 @@ it.each([false, true])(
       created_at: "2026-10-15T00:00:00Z",
       updated_at: "2026-10-15T00:00:00Z",
       trashed_at: null,
+      read_only: false,
       occurred_at: "2026-10-15T00:00:00Z",
       properties: {
         account: "one",
@@ -488,6 +491,7 @@ it.each(["links", "source_ids"] as const)(
       created_at: "2026-10-15T00:00:00Z",
       updated_at: "2026-10-15T00:00:00Z",
       trashed_at: null,
+      read_only: false,
       occurred_at: "2026-10-15T00:00:00Z",
       properties: {
         account: "one",
@@ -651,6 +655,7 @@ function lifecycleFixture() {
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
     trashed_at: null,
+    read_only: false,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -851,6 +856,7 @@ it("enriches a Reader-only natural row without reassigning an existing export id
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
     trashed_at: null,
+    read_only: false,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -884,6 +890,7 @@ it("keeps a lone document holder unresolved when two export sources claim it", a
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
     trashed_at: null,
+    read_only: false,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
@@ -1491,6 +1498,7 @@ function createdRow(state: Item["state"]): Item {
     created_at: "2026-10-15T00:00:00Z",
     updated_at: "2026-10-15T00:00:00Z",
     trashed_at: state === "trashed" ? "2026-10-15T00:00:00Z" : null,
+    read_only: false,
     occurred_at: "2026-10-15T00:00:00Z",
     properties: {
       account: "one",
