@@ -333,7 +333,7 @@ export async function savePictures(
   };
   const entries = await context.held(rssEntry.id, { state: "any" });
   const states = new Map(entries.map((row) => [row.id, row]));
-  // The connector's pictures are read in pages of up to 200, each row with
+  // The connector's pictures are read in pages of up to 500, each row with
   // the connections it holds, so that whether a picture is attached to its
   // entry is known without asking about each entry. The first read comes
   // before anything is fetched or written, so when it fails the next run

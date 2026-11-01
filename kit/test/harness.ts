@@ -156,6 +156,15 @@ export interface Vendor {
   ask?:
     { connection: string; target: Target; rows?: "told" | "all" } | undefined;
   answers?: string[][];
+  askEach?:
+    | {
+        connection: string;
+        targets: { type: string; ids: string[] };
+        rows?: "told" | "all";
+      }
+    | undefined;
+  /** Each `askEach` answer: every target's rows' vendor ids, sorted. */
+  eachAnswers?: Record<string, string[]>[];
   askHeld?: boolean;
   heldAnswers?: string[][];
 }
@@ -244,6 +253,24 @@ function twoWayConnector(held: Vendor) {
         );
         (held.answers ??= []).push(
           rows.map((row) => String(row.properties["vendor_id"])),
+        );
+      }
+      if (held.askEach !== undefined) {
+        const found = await context.linkedEach(
+          testType.id,
+          held.askEach.connection,
+          held.askEach.targets,
+          held.askEach.rows === undefined
+            ? undefined
+            : { rows: held.askEach.rows },
+        );
+        (held.eachAnswers ??= []).push(
+          Object.fromEntries(
+            [...found].map(([id, rows]) => [
+              id,
+              rows.map((row) => String(row.properties["vendor_id"])).sort(),
+            ]),
+          ),
         );
       }
       if (held.askHeld === true) {

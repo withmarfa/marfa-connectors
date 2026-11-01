@@ -21,6 +21,7 @@ export interface ReaderFixtureSource {
   external_id: string;
   title: string;
   is_deleted?: boolean;
+  updated_at?: string;
   highlights: {
     id: number;
     external_id: string;
@@ -29,7 +30,10 @@ export interface ReaderFixtureSource {
     is_deleted?: boolean;
   }[];
 }
-export async function readerVendor() {
+/** With `incremental`, a listing that names `updatedAfter` leaves out what
+ *  was last updated before it, as Readwise's does; a source or document
+ *  without `updated_at` is always listed. */
+export async function readerVendor({ incremental = false } = {}) {
   const documents = new Map<string, ReaderFixtureDocument>();
   const sources: ReaderFixtureSource[] = [];
   const writes: {
@@ -48,11 +52,17 @@ export async function readerVendor() {
         return;
       }
       response.setHeader("Content-Type", "application/json");
+      const after = incremental ? url.searchParams.get("updatedAfter") : null;
+      const changed = (one: { updated_at?: string }) =>
+        after === null ||
+        one.updated_at === undefined ||
+        one.updated_at > after;
       if (request.method === "GET" && url.pathname === "/v2/export/") {
         const results = sources.filter(
           (source) =>
-            !url.searchParams.has("ids") ||
-            String(source.user_book_id) === url.searchParams.get("ids"),
+            changed(source) &&
+            (!url.searchParams.has("ids") ||
+              String(source.user_book_id) === url.searchParams.get("ids")),
         );
         response.end(
           JSON.stringify({
@@ -66,7 +76,10 @@ export async function readerVendor() {
       if (request.method === "GET" && url.pathname === "/v3/list/") {
         const id = url.searchParams.get("id");
         const results = [...documents.values()]
-          .filter((document) => id === null || document.id === id)
+          .filter(
+            (document) =>
+              changed(document) && (id === null || document.id === id),
+          )
           .map((document) => {
             const value = { ...document };
             if (url.searchParams.get("withHtmlContent") !== "true")

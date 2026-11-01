@@ -182,6 +182,31 @@ describe("the child's side of parent-of", () => {
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.answers).toEqual([["v2"]]);
   });
+
+  it.each([
+    ["from the edge type's listing", 500],
+    ["one target to a filter, where that listing is longer", 1],
+  ])("finds each of many series' exceptions, %s", async (_, edgeListCap) => {
+    const held = calendar([
+      series(1),
+      series(2),
+      series(3),
+      exception(11, 1),
+      exception(21, 1),
+      exception(12, 2),
+    ]);
+    await harness.twoWay(held);
+    harness.server.edgeListCap = edgeListCap;
+    held.entries = [];
+    held.askEach = {
+      connection: "child-of",
+      targets: { type: "test.entry", ids: ["v1", "v2", "v3", "v9"] },
+    };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers).toEqual([
+      { v1: ["v11", "v21"], v2: ["v12"], v3: [], v9: [] },
+    ]);
+  });
 });
 
 describe("a trash of the series in Marfa", () => {

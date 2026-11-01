@@ -1610,6 +1610,62 @@ describe("what the adversarial review found", () => {
     expect(links(listed.node, "github.sub-issue-of")).toEqual([parent.node]);
   });
 
+  describe("takes a relation removed on GitHub from an old issue Marfa holds", () => {
+    function pair() {
+      const repository = github.addRepository("someone/tracker");
+      const old = github.addIssue(repository, {
+        title: "Old",
+        state: "closed",
+        state_reason: "completed",
+        closed_at: github.ago(200),
+        updated_at: github.ago(200),
+      });
+      // Other listed issues, so the run asks about many at once.
+      const listed = Array.from({ length: 30 }, (_, at) =>
+        github.addIssue(repository, { title: `Listed ${String(at)}` }),
+      );
+      const one = listed[17];
+      if (one === undefined) throw new Error("none");
+      return { old, listed: one };
+    }
+
+    it("a sub-issue detached from a listed parent", async () => {
+      const { old, listed } = pair();
+      old.parent = listed.node;
+      await ok();
+      expect(links(old.node, "github.sub-issue-of")).toEqual([listed.node]);
+      old.parent = null;
+      await ok();
+      expect(links(old.node, "github.sub-issue-of")).toEqual([]);
+    });
+
+    it("an issue no longer blocked by a listed one", async () => {
+      const { old, listed } = pair();
+      old.blocked_by = [listed.node];
+      await ok();
+      expect(links(old.node, "github.blocked-by")).toEqual([listed.node]);
+      old.blocked_by = [];
+      await ok();
+      expect(links(old.node, "github.blocked-by")).toEqual([]);
+    });
+
+    it("an issue no longer related to a listed one", async () => {
+      const { old, listed } = pair();
+      old.relates_to = [listed.node];
+      listed.relates_to = [old.node];
+      await ok();
+      const related = () => [
+        ...links(old.node, "github.relates-to"),
+        ...links(listed.node, "github.relates-to"),
+      ];
+      expect(related()).toHaveLength(1);
+      old.relates_to = [];
+      listed.relates_to = [];
+      await ok();
+      expect(related()).toEqual([]);
+    });
+  });
+
   it("keeps a public issue outside the installation as an address, never a row", async () => {
     const repository = github.addRepository("someone/tracker");
     const outside = github.addRepository("someone/public", {

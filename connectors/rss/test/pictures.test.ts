@@ -797,8 +797,8 @@ describe("the pictures an entry points to", () => {
 
   it("reads the pictures it holds in pages, not once for each entry, however often it runs", async () => {
     // Eleven entries of twenty pictures each: 220 pictures, which one read
-    // of 200 does not hold. A run over each entry's attachments would ask
-    // eleven times.
+    // of 500 holds. A run over each entry's attachments would ask eleven
+    // times.
     pictures = {};
     documents["/one.json"] = Array.from({ length: 11 }, (_, e) => ({
       id: `e${String(e)}`,
@@ -830,10 +830,10 @@ describe("the pictures an entry points to", () => {
     const pictureReads = listings.filter(
       (one) => one.query.get("type") === "rss.picture",
     );
-    expect(pictureReads).toHaveLength(2);
+    expect(pictureReads).toHaveLength(1);
     for (const one of pictureReads) {
       expect(one.query.get("include")).toBe("edges");
-      expect(one.query.get("limit")).toBe("200");
+      expect(one.query.get("limit")).toBe("500");
     }
     // No read asks which pictures are attached to one entry.
     expect(listings.filter((one) => one.query.get("filter") !== null)).toEqual(
