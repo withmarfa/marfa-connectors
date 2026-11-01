@@ -301,6 +301,37 @@ it.each(["purged", "trashed"])(
   },
 );
 
+it("waits, not reports a removal, for a file that went to the bin with its only host", async () => {
+  const f = await fixture();
+  await f.once();
+  const file = f.h.server.row(id);
+  const host = f.h.server.row("one");
+  f.h.server.trash(host.id);
+  f.h.server.cascadeTrash(file.id, host.id);
+  f.parents([
+    { id: "two", type: comment.id, private: false, repository: "owner/repo" },
+  ]);
+  expect(await f.once(), f.h.lines.join("\n")).toBe(0);
+  const note = f.h.server.row("two").properties["github_files"] as {
+    pending: boolean;
+    not_kept: Record<string, string>;
+  };
+  expect(note.pending).toBe(true);
+  expect(JSON.stringify(note.not_kept)).not.toContain("removed");
+  expect(f.h.server.targetsOf(file.id, "attached-to")).toEqual([host.id]);
+  expect(f.counts().loads).toBe(1);
+
+  f.h.server.restore(host.id);
+  expect(await f.once(), f.h.lines.join("\n")).toBe(0);
+  expect(
+    (f.h.server.row("two").properties["github_files"] as { pending: boolean })
+      .pending,
+  ).toBe(false);
+  expect(f.h.server.targetsOf(file.id, "attached-to")).toContain(
+    f.h.server.row("two").id,
+  );
+  expect(f.counts().loads).toBe(1);
+});
 it("keeps a signed non-image as a generic file", async () => {
   const f = await fixture(
     new TextEncoder().encode("Retained text"),
