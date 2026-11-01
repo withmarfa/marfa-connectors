@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { packIdentities, unpackIdentities } from "./checkpoint.js";
+import { claimLimit, claimsKey, pendingClaim, readClaims } from "./claims.js";
 import type { CheckpointState, Item, RunContext } from "@withmarfa/connector";
 import {
   identity,
@@ -17,7 +18,7 @@ import {
 import type { env } from "./config.js";
 export type IdentityContext = Pick<
   RunContext<typeof env>,
-  "inspect" | "held" | "pendingOutbound"
+  "inspect" | "held" | "pendingOutbound" | "log"
 >;
 interface Alias {
   natural: string;
@@ -166,6 +167,7 @@ function unpackAliases(
 export class ReaderIdentities {
   private readonly existing = new Map<string, Item[]>();
   private readonly pendingCreates: Item[] = [];
+  private readonly claimed = new Set<string>();
   private readonly enriched = new Map<
     string,
     Readonly<Record<string, unknown>>
@@ -306,7 +308,66 @@ export class ReaderIdentities {
     for (const intent of context.pendingOutbound())
       if (!intent.acknowledged && intent.change.kind === "created")
         result.addPendingCreate(intent.change.item);
+    await result.keepClaims();
     return result;
+  }
+  /**
+   * Keeps the claims settling has made since, and drops those Marfa now
+   * holds itself: a row linked to the object, or a tombstone for it. At the
+   * limit the oldest settled claim goes, so settling never waits on room.
+   */
+  private async keepClaims(): Promise<void> {
+    const stored = readClaims(this.state.get(claimsKey));
+    const claims = new Map(stored);
+    const pending = new Set<string>();
+    for (const intent of this.context.pendingOutbound()) {
+      const claim = pendingClaim(intent, this.account);
+      if (claim === undefined) continue;
+      pending.add(claim[0]);
+      claims.set(...claim);
+    }
+    for (const [type, kind] of [
+      ["readwise.source", "document"],
+      ["readwise.highlight", "highlight"],
+    ] as const) {
+      const links = [
+        ...new Set(
+          [...claims.values()].filter((canonical) =>
+            canonical.startsWith(`${this.account}:reader-${kind}:`),
+          ),
+        ),
+      ];
+      if (links.length === 0) continue;
+      const found = await this.context.inspect(type, { links });
+      const held = new Set([
+        ...found.items.map((row) => String(row.properties["canonical_key"])),
+        ...found.tombstones.map((tombstone) => tombstone.key),
+      ]);
+      for (const [row, canonical] of claims)
+        if (held.has(canonical) && !pending.has(row)) claims.delete(row);
+    }
+    let dropped = 0;
+    for (const row of [...claims.keys()]) {
+      if (claims.size <= claimLimit) break;
+      if (pending.has(row)) continue;
+      claims.delete(row);
+      dropped += 1;
+    }
+    if (dropped > 0)
+      this.context.log.warn(
+        `Dropped the ${String(dropped)} oldest Reader claims to keep ${String(claimLimit)}; Reader objects they held back can return to the feed`,
+      );
+    if (
+      JSON.stringify([...claims].sort()) !== JSON.stringify([...stored].sort())
+    ) {
+      const saved = await this.state.checkpoint(
+        claimsKey,
+        Object.fromEntries(claims),
+      );
+      if (!saved.committed)
+        throw new Error(`Reader claims were not saved: ${saved.reason}`);
+    }
+    for (const canonical of claims.values()) this.claimed.add(canonical);
   }
   private addPendingCreate(row: Item): void {
     if (
@@ -660,6 +721,16 @@ export class ReaderIdentities {
     const kind = document.category === "highlight" ? "highlight" : "document";
     const type =
       kind === "highlight" ? "readwise.highlight" : "readwise.source";
+    const canonical = readerIdentity(this.account, kind, document.id);
+    // A claimed object belongs to a row in the bin or purged, as a tombstone
+    // would if Marfa could keep one for it.
+    if (this.claimed.has(canonical))
+      return {
+        canonical,
+        type,
+        purged: true,
+        enrichment: { sourceId: canonical, properties: {} },
+      };
     if (
       this.pendingCreates.some(
         (row) =>
@@ -676,7 +747,6 @@ export class ReaderIdentities {
       throw new Error(
         "Reader identity admission is blocked by a pending explicit create; only its outbound confirmation can link the local row",
       );
-    const canonical = readerIdentity(this.account, kind, document.id);
     const aliases = this.bridge.aliases[canonical] ?? [];
     const multiple = multipleAliases(aliases);
     if (multiple && kind !== "highlight")
