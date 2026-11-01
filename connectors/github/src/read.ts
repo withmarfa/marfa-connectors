@@ -1060,10 +1060,12 @@ async function syncRepository(
   // GitHub's side of what changed: ask about those Marfa holds under it.
   const held: string[] = [];
   if (repository.comments !== undefined) {
-    for (const id of listedNodes) {
-      const under = { type: issueType, id };
-      for (const connection of [subIssueOf, blockedBy, relatesTo]) {
-        for (const row of await context.linked(issueType, connection, under)) {
+    const under = { type: issueType, ids: [...listedNodes] };
+    for (const connection of [subIssueOf, blockedBy, relatesTo]) {
+      for (const rows of (
+        await context.linkedEach(issueType, connection, under)
+      ).values()) {
+        for (const row of rows) {
           const link = linkOf(row);
           if (link !== undefined) held.push(link);
         }
@@ -1810,19 +1812,22 @@ async function readRelatedSources(
   const checked = new Set<string>();
   for (;;) {
     const wanted = new Set<string>();
-    for (const [node, relations] of known) {
-      if (checked.has(node)) continue;
+    const unchecked = [...known.keys()].filter((node) => !checked.has(node));
+    for (const node of unchecked) {
       checked.add(node);
-      for (const other of relations.relatesTo) {
+      for (const other of known.get(node)?.relatesTo ?? []) {
         if (other.id < node && synced.has(other.repository.id))
           wanted.add(other.id);
       }
-      // A removed pair is absent from GitHub, but its canonical source
-      // still holds the connection in Marfa and must be refreshed.
-      for (const row of await context.linked(issueType, relatesTo, {
-        type: issueType,
-        id: node,
-      })) {
+    }
+    // A removed pair is absent from GitHub, but its canonical source
+    // still holds the connection in Marfa and must be refreshed.
+    const held = await context.linkedEach(issueType, relatesTo, {
+      type: issueType,
+      ids: unchecked,
+    });
+    for (const [node, rows] of held) {
+      for (const row of rows) {
         const source = linkOf(row);
         if (source !== undefined && source < node) wanted.add(source);
       }
