@@ -818,12 +818,13 @@ async function commentsMadeSince(
   );
 }
 
-// A row in the bin cannot take a link, so what GitHub may have made comes in
-// as its own row.
+// A row in the bin cannot take a link, and the kit kept none the connector
+// wrote for it (a link the row holds may be a person's, and is not used), so
+// what GitHub may have made comes in as its own row.
 export function binnedUnanswered(context: Context, item: Item): void {
   context.log.condition(
     `unanswered-create-trashed:${item.id}`,
-    `${item.id} was trashed before GitHub answered its create; anything GitHub made of it comes in as its own row, which a trash closes or deletes`,
+    `${item.id} was trashed before GitHub answered its create, and no link the connector wrote is kept for it; anything GitHub made of it comes in as its own row, which a trash closes or deletes`,
   );
 }
 

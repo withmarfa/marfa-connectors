@@ -19,6 +19,9 @@ export interface Agreement {
   changedAt?: string;
   waiting?: Record<string, string>;
   attempted?: string;
+  /** The link `setLink` is about to write onto the row, kept before the
+   *  write is sent, so a later run can tell it from one a person typed. */
+  linking?: string;
   /** When the create that made and linked the row was first sent, until a
    *  change is carried: its fields were never agreed. */
   made?: string;

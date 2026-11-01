@@ -1189,7 +1189,7 @@ describe("a create made and linked whose run then failed", () => {
     const kept = harness.server.agreements.get(row.id);
     expect(kept?.record["made"]).toEqual(expect.any(String));
     // What the instance holds when the run's end never flushed the link:
-    // the create's record from before it was sent.
+    // the create's record, and the link kept before it was written.
     const first = kept?.record["made"];
     if (kept !== undefined) {
       kept.record = {
@@ -1197,6 +1197,7 @@ describe("a create made and linked whose run then failed", () => {
         marfa: {},
         state: "active",
         attempted: first,
+        linking: "v9",
         waiting: kept.record["waiting"],
       };
     }
