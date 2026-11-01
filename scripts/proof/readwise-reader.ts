@@ -151,7 +151,10 @@ export async function proveReadwiseReader(
       assert.ok(result.data, JSON.stringify(result.error));
       return result.data;
     };
-    const transition = async (item: Item, state: "archived" | "trashed") => {
+    const transition = async (
+      item: Item,
+      state: "active" | "archived" | "trashed",
+    ) => {
       const result = await admin.POST("/items/{id}/transition", {
         params: { path: { id: item.id } },
         body: { state },
@@ -643,6 +646,116 @@ export async function proveReadwiseReader(
           "Explicit saved title",
         );
         return "explicit opt-in, one save across response loss, same local row linked to the verified Reader result";
+      },
+    );
+    const overtaken = async (
+      account: string,
+      extra: Record<string, string>,
+    ) => {
+      vendor.sources.length = 0;
+      vendor.documents.clear();
+      const runner = new ConnectorUnderProof(
+        "readwise-reader",
+        url,
+        (await key(`reader-proof-${account}`)).key,
+        { ...options(account), ...extra },
+      );
+      await once(runner);
+      const created = await admin.POST("/items", {
+        body: {
+          type: "readwise.source",
+          properties: {
+            account,
+            title: "Overtaken create",
+            url: `https://example.com/${account}`,
+            reader_create: true,
+          },
+        },
+      });
+      assert.ok(created.data, JSON.stringify(created.error));
+      const saves = vendor.writes.filter(
+        (write) => write.path === "/v3/save/",
+      ).length;
+      vendor.uncertain();
+      await runner.once();
+      assert.equal(
+        vendor.writes.filter((write) => write.path === "/v3/save/").length,
+        saves + 1,
+      );
+      assert.ok(vendor.documents.has("created"));
+      await transition(created.data.item, "trashed");
+      const imported = async () =>
+        [...(await all()).values()].filter(
+          (item) =>
+            item.properties["account"] === account &&
+            item.properties["reader_id"] === "created",
+        );
+      return { runner, item: created.data.item, saves: saves + 1, imported };
+    };
+    await verify(
+      "reader fixture: a trash over a lost create keeps the document, leaves it out of the import and a restore takes it back",
+      async () => {
+        const { runner, item, saves, imported } = await overtaken("overtrash", {
+          READWISE_READER_PROPAGATE_PURGE: "true",
+        });
+        // The first run claims the document, its sync keeps the claim and
+        // the second settles the trash; the third finds nothing to do.
+        await runner.once();
+        await once(runner);
+        await once(runner);
+        assert.ok(vendor.documents.has("created"));
+        assert.equal(
+          vendor.writes.filter((write) => write.method === "DELETE").length,
+          0,
+        );
+        assert.deepEqual(await imported(), []);
+        await transition(item, "active");
+        await once(runner);
+        await once(runner);
+        const restored = await admin.GET("/items/{id}", {
+          params: { path: { id: item.id } },
+        });
+        assert.ok(restored.data, JSON.stringify(restored.error));
+        assert.equal(
+          restored.data.item.properties["canonical_key"],
+          "overtrash:reader-document:created",
+        );
+        assert.equal(
+          vendor.writes.filter((write) => write.path === "/v3/save/").length,
+          saves,
+        );
+        assert.deepEqual(await imported(), []);
+        return "no Reader delete, no import of the claimed document, the restored row linked to it with no second save";
+      },
+    );
+    await verify(
+      "reader fixture: a purge over a lost create keeps a document the person highlighted and never imports it",
+      async () => {
+        const { runner, item, imported } = await overtaken("overpurge", {
+          READWISE_READER_PROPAGATE_PURGE: "true",
+        });
+        vendor.documents.set("their-highlight", {
+          id: "their-highlight",
+          category: "highlight",
+          parent_id: "created",
+          content: "Their passage",
+          updated_at: stamp,
+        });
+        const purged = await admin.POST("/items/{id}/purge", {
+          params: { path: { id: item.id } },
+        });
+        assert.ok(purged.response.ok, JSON.stringify(purged.error));
+        await runner.once();
+        await once(runner);
+        await once(runner);
+        assert.ok(vendor.documents.has("created"));
+        assert.ok(vendor.documents.has("their-highlight"));
+        assert.equal(
+          vendor.writes.filter((write) => write.method === "DELETE").length,
+          0,
+        );
+        assert.deepEqual(await imported(), []);
+        return "purge propagation on, no Reader delete, the document stays out of the import";
       },
     );
     await verify(

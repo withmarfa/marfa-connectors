@@ -1,6 +1,10 @@
 import { deflateSync } from "node:zlib";
 import { expect, it, vi } from "vitest";
-import type { CheckpointState, Item } from "@withmarfa/connector";
+import type {
+  CheckpointState,
+  Item,
+  OutboundIntent,
+} from "@withmarfa/connector";
 import {
   mapReaderHighlight,
   type ExportClient,
@@ -1467,3 +1471,113 @@ it.each(["parent", "status"])(
     expect(f.rows).toEqual(before);
   },
 );
+
+function createdRow(state: Item["state"]): Item {
+  return {
+    id: "local",
+    source: "readwise",
+    source_id: "local-key",
+    type: "readwise.source",
+    state,
+    version: 1,
+    schema_version: 1,
+    created_at: "2026-10-15T00:00:00Z",
+    updated_at: "2026-10-15T00:00:00Z",
+    trashed_at: state === "trashed" ? "2026-10-15T00:00:00Z" : null,
+    occurred_at: "2026-10-15T00:00:00Z",
+    properties: {
+      account: "one",
+      reader_create: true,
+      url: "https://example.com/new",
+    },
+  };
+}
+const claimed = {
+  id: "new-doc",
+  category: "article",
+  source_url: "https://example.com/new",
+} as const;
+function claiming(row: Item): OutboundIntent {
+  return {
+    token: "token",
+    change: {
+      kind: "created",
+      item: row,
+      changed: new Set<string>(),
+    },
+    request: {
+      account: "one",
+      base: "https://readwise.io/api/v3/",
+      kind: "claim",
+      id: "new-doc",
+      body: {},
+      updates: {},
+    },
+    baseline: null,
+    acknowledged: false,
+  };
+}
+
+it("keeps a pending claim and leaves the claimed document out of the import", async () => {
+  const f = fixture();
+  const row = createdRow("trashed");
+  f.rows.push(row);
+  await expect((await f.load()).resolve(claimed)).rejects.toThrow(
+    /pending explicit create/,
+  );
+  Object.assign(f.context, { pendingOutbound: () => [claiming(row)] });
+  const identities = await f.load();
+  expect(f.saved.get("claims")).toEqual({
+    local: "one:reader-document:new-doc",
+  });
+  expect(await identities.resolve(claimed)).toMatchObject({
+    canonical: "one:reader-document:new-doc",
+    purged: true,
+  });
+  f.rows.length = 0;
+  Object.assign(f.context, { pendingOutbound: () => [] });
+  expect(await (await f.load()).resolve(claimed)).toMatchObject({
+    purged: true,
+  });
+});
+
+it("drops a claim once Marfa holds the object itself", async () => {
+  const f = fixture();
+  f.saved.set("claims", {
+    restored: "one:reader-document:new-doc",
+    purged: "one:reader-document:gone-doc",
+    kept: "one:reader-document:kept-doc",
+  });
+  const row = createdRow("active");
+  row.properties = {
+    ...row.properties,
+    reader_create: undefined,
+    reader_managed: true,
+    reader_id: "new-doc",
+    canonical_key: "one:reader-document:new-doc",
+  };
+  f.rows.push(row);
+  const inspect = f.context.inspect;
+  Object.assign(f.context, {
+    inspect: async (...args: Parameters<typeof inspect>) => {
+      const found = await inspect(...args);
+      return "links" in args[1] &&
+        args[1].links.includes("one:reader-document:gone-doc")
+        ? {
+            ...found,
+            tombstones: [
+              {
+                key: "one:reader-document:gone-doc",
+                purged_at: "2026-10-15T00:00:00Z",
+                settled_at: "2026-10-15T00:00:00Z",
+              },
+            ],
+          }
+        : found;
+    },
+  });
+  await f.load();
+  expect(f.saved.get("claims")).toEqual({
+    kept: "one:reader-document:kept-doc",
+  });
+});

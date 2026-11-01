@@ -17,6 +17,7 @@ import {
   type ReaderPage,
   type ReaderReader,
 } from "@withmarfa/readwise";
+import { claimKind, claimedId, claimsKey, readClaims } from "./claims.js";
 import { env, parseConfig, type ReaderConfig } from "./config.js";
 import {
   ReaderWriteClient,
@@ -33,6 +34,17 @@ interface Plan {
     | "source-create"
     | "highlight-create"
     | "source-create-update";
+  id: string;
+  body: ReaderBody;
+  updates: ReaderBody;
+  /** For a source-create-update: whether the create made the document. */
+  made?: boolean;
+}
+/** A step that settles a create a trash or purge overtook. */
+interface Settlement {
+  account: string;
+  base: string;
+  kind: "claim" | "delete";
   id: string;
   body: ReaderBody;
   updates: ReaderBody;
@@ -157,7 +169,9 @@ function plan(value: unknown, config: ReaderConfig, change: Change): Plan {
   if (
     !object(value) ||
     Object.keys(value).sort().join(",") !==
-      "account,base,body,id,kind,updates" ||
+      (value["kind"] === "source-create-update"
+        ? "account,base,body,id,kind,made,updates"
+        : "account,base,body,id,kind,updates") ||
     value["account"] !== config.account ||
     value["base"] !== config.readerBase ||
     ![
@@ -167,7 +181,9 @@ function plan(value: unknown, config: ReaderConfig, change: Change): Plan {
       "highlight-create",
       "source-create-update",
     ].includes(String(value["kind"])) ||
-    typeof value["id"] !== "string"
+    typeof value["id"] !== "string" ||
+    (value["kind"] === "source-create-update" &&
+      typeof value["made"] !== "boolean")
   )
     throw new Refused("invalid or changed Reader intent context");
   const result = value as unknown as Plan;
@@ -176,7 +192,8 @@ function plan(value: unknown, config: ReaderConfig, change: Change): Plan {
   if (create) {
     if (
       highlight
-        ? result.kind !== "highlight-create" || result.id !== ""
+        ? result.kind !== "highlight-create" ||
+          (result.id !== "" && !id(result.id))
         : !["source-create", "source-create-update"].includes(result.kind) ||
           (result.kind === "source-create" ? result.id !== "" : !id(result.id))
     )
@@ -298,6 +315,19 @@ export async function completeInventory(
     "Reader inventory exceeds the complete traversal limit",
   );
 }
+/** What deleting these Reader objects takes with them: their highlights and notes. */
+function cascade(
+  ids: Iterable<string>,
+  rows: readonly ReaderDocument[],
+): Set<string> {
+  const result = new Set(ids);
+  for (;;) {
+    const count = result.size;
+    for (const row of rows)
+      if (row.parent_id && result.has(row.parent_id)) result.add(row.id);
+    if (count === result.size) return result;
+  }
+}
 async function inspectPurges(
   inventory: { purges: readonly Change[] },
   context: Context,
@@ -310,10 +340,20 @@ async function inspectPurges(
     context.signal,
   );
   const purges = new Set<string>();
+  // A purge that overtakes a create deletes at most the one object it
+  // proves the create made, and only when that takes nothing else.
+  let overtaking = 0;
   if (!config.inboundOnly && config.propagatePurge) {
+    const claims = readClaims(context.state.get(claimsKey));
     for (const change of inventory.purges) {
       if (change.kind !== "purged")
         throw new Refused("invalid purge preflight inventory");
+      const pending = context.outbound.get(change.item.id);
+      const claimed = claimedId(
+        claims.get(change.item.id),
+        config.account,
+        claimKind(change.item.type),
+      );
       if (
         isReaderManaged(
           change.item.type,
@@ -322,19 +362,18 @@ async function inspectPurges(
         )
       )
         purges.add(String(change.item.properties["reader_id"]));
+      else if (pending?.change.kind === "created" && !pending.acknowledged)
+        overtaking += 1;
+      else if (claimed !== undefined) purges.add(claimed);
     }
-    if (purges.size > 0) {
-      const rows = await completeInventory(client, context);
-      const cascade = new Set(purges);
-      for (;;) {
-        const count = cascade.size;
-        for (const row of rows)
-          if (row.parent_id && cascade.has(row.parent_id)) cascade.add(row.id);
-        if (count === cascade.size) break;
-      }
-      if (cascade.size > 20)
+    if (purges.size + overtaking > 0) {
+      const size =
+        (purges.size > 0
+          ? cascade(purges, await completeInventory(client, context)).size
+          : 0) + overtaking;
+      if (size > 20)
         throw new Refused(
-          `Reader purge preflight blocks ${String(cascade.size)} deletions; the limit is 20`,
+          `Reader purge preflight blocks ${String(size)} deletions; the limit is 20`,
         );
     }
   }
@@ -392,9 +431,13 @@ function assertKind(change: Change, row: ReaderDocument): void {
   )
     throw new Refused("Reader identity has a different document kind");
 }
-/** The saved step is the delete that settling a trash or purge journaled. */
-function deletion(value: unknown, config: ReaderConfig): Plan | undefined {
-  if (!object(value) || value["kind"] !== "delete") return undefined;
+/** The saved step is a claim or delete that settling journaled, if it is one. */
+function settlement(
+  value: unknown,
+  config: ReaderConfig,
+): Settlement | undefined {
+  if (!object(value) || !["claim", "delete"].includes(String(value["kind"])))
+    return undefined;
   if (
     Object.keys(value).sort().join(",") !==
       "account,base,body,id,kind,updates" ||
@@ -407,89 +450,139 @@ function deletion(value: unknown, config: ReaderConfig): Plan | undefined {
     Object.keys(value["updates"]).length
   )
     throw new Refused("invalid or changed Reader intent context");
-  return value as unknown as Plan;
+  return value as unknown as Settlement;
+}
+function step(
+  kind: Settlement["kind"],
+  target: string,
+  config: ReaderConfig,
+): { request: JsonValue; baseline: null } {
+  return {
+    request: json({
+      account: config.account,
+      base: config.readerBase,
+      kind,
+      id: target,
+      body: {},
+      updates: {},
+    } satisfies Settlement),
+    baseline: null,
+  };
+}
+function highlightMatches(
+  rows: readonly ReaderDocument[],
+  before: ReadonlySet<string>,
+  request: ReaderBody,
+): ReaderDocument[] {
+  const rest = Object.fromEntries(
+    Object.entries(request).filter(
+      ([key]) => !["parent_id", "content"].includes(key),
+    ),
+  );
+  return rows.filter(
+    (row) =>
+      !before.has(row.id) &&
+      row.category === "highlight" &&
+      row.parent_id === request["parent_id"] &&
+      row.content === request["content"] &&
+      equal(values(row, Object.keys(rest)), rest),
+  );
 }
 /**
- * A trash or purge that overtakes a pending create: delete what the create
- * made, if Reader holds it, and settle. Only a document absent from the
- * inventory the create saved can be the create's, so one Reader held before
- * is never deleted, and two candidates delete nothing.
+ * The Reader object a pending create is proved to have made: one its answer
+ * or journal names, or the one new match for what it sent, unless Reader
+ * proved the request never applied. A document Reader held before the create
+ * is the person's, never the create's.
  */
-async function settleOvertaken(
+async function madeBy(
+  held: OutboundIntent,
+  operation: Plan,
+  client: ReaderWriteClient,
+  context: Context,
+): Promise<string | undefined> {
+  if (operation.kind === "source-create-update")
+    return operation.made === true ? operation.id : undefined;
+  if (operation.kind === "highlight-create" && operation.id !== "")
+    return operation.id;
+  if (held.requestNotApplied === true) return undefined;
+  const saved = held.baseline as { ids: string[]; existing: unknown };
+  if (operation.kind === "source-create" && saved.existing !== null)
+    return undefined;
+  const before = new Set(saved.ids);
+  const rows = await completeInventory(client, context);
+  const matches =
+    operation.kind === "highlight-create"
+      ? highlightMatches(rows, before, operation.body)
+      : rows.filter(
+          (row) =>
+            !before.has(row.id) &&
+            !["highlight", "note"].includes(row.category) &&
+            row.source_url === operation.body["url"],
+        );
+  if (matches.length > 1)
+    throw new Refused(
+      "Reader creation remains uncertain; more than one new object matches it",
+    );
+  return matches[0]?.id;
+}
+/**
+ * A trash or purge that overtakes a pending create, or the purge of a row
+ * whose claim stands. A trash never deletes at Reader. A purge deletes only
+ * what the create is proved to have made, with purge propagation on, and
+ * only when that takes nothing else, such as a highlight the person added.
+ * Otherwise the object is claimed for the row, so the import does not bring
+ * it back and a restore takes it again. The claim is kept by the next sync,
+ * so the step is acknowledged on the run after it.
+ */
+async function settle(
   held: OutboundIntent,
   client: ReaderWriteClient,
   config: ReaderConfig,
   context: Context,
+  change: Change,
 ): Promise<void> {
   const itemId = held.change.item.id;
-  let token = held.token;
-  const advanced = deletion(held.request, config);
-  let doomed = advanced?.id;
-  if (advanced === undefined) {
+  const saved = settlement(held.request, config);
+  let target = saved?.id;
+  if (saved === undefined) {
     const operation = plan(held.request, config, held.change);
     validateBaseline(held.baseline, operation, held.change);
-    const saved = held.baseline as {
-      ids?: string[];
-      existing?: unknown;
-    } | null;
-    if (operation.kind === "highlight-create") {
-      const before = new Set(saved?.ids);
-      const rest = Object.fromEntries(
-        Object.entries(operation.body).filter(
-          ([key]) => !["parent_id", "content"].includes(key),
-        ),
-      );
-      const matches = (await completeInventory(client, context)).filter(
-        (row) =>
-          !before.has(row.id) &&
-          row.category === "highlight" &&
-          row.parent_id === operation.body["parent_id"] &&
-          row.content === operation.body["content"] &&
-          equal(values(row, Object.keys(rest)), rest),
-      );
-      if (matches.length > 1)
-        throw new Refused(
-          "Reader highlight creation remains uncertain; no ambiguous deletion",
-        );
-      doomed = matches[0]?.id;
-    } else if (operation.kind === "source-create") {
-      // A save of a URL Reader already held returns that document, which the
-      // create did not make.
-      if (saved?.existing == null) {
-        const before = new Set(saved?.ids);
-        const matches = (await completeInventory(client, context)).filter(
-          (row) =>
-            !before.has(row.id) && row.source_url === operation.body["url"],
-        );
-        if (matches.length > 1)
-          throw new Refused("Reader URL matches multiple documents");
-        doomed = matches[0]?.id;
-      }
-    }
-    // A create past its save no longer says whether Reader held the document
-    // before it, so it is never deleted.
-    if (doomed !== undefined) {
-      held = await context.outbound.advance(itemId, token, {
-        request: json({
-          account: config.account,
-          base: config.readerBase,
-          kind: "delete",
-          id: doomed,
-          body: {},
-          updates: {},
-        } satisfies Plan),
-        baseline: null,
-      });
-      token = held.token;
-    }
+    target = await madeBy(held, operation, client, context);
   }
-  if (doomed !== undefined) {
-    if ((await client.document(doomed)) !== undefined)
-      await client.delete(doomed);
-    if ((await client.document(doomed)) !== undefined)
+  if (target === undefined || (await client.document(target)) === undefined) {
+    await context.outbound.acknowledge(itemId, held.token);
+    return;
+  }
+  if (
+    change.kind === "purged" &&
+    config.propagatePurge &&
+    cascade([target], await completeInventory(client, context)).size === 1
+  ) {
+    if (saved?.kind !== "delete")
+      held = await context.outbound.advance(
+        itemId,
+        held.token,
+        step("delete", target, config),
+      );
+    await client.delete(target);
+    if ((await client.document(target)) !== undefined)
       throw new Unreachable("Reader deletion is not yet confirmed");
+    await context.outbound.acknowledge(itemId, held.token);
+    return;
   }
-  await context.outbound.acknowledge(itemId, token);
+  if (saved?.kind !== "claim")
+    held = await context.outbound.advance(
+      itemId,
+      held.token,
+      step("claim", target, config),
+    );
+  const canonical = readerIdentity(
+    config.account,
+    claimKind(held.change.item.type),
+    target,
+  );
+  if (readClaims(context.state.get(claimsKey)).get(itemId) === canonical)
+    await context.outbound.acknowledge(itemId, held.token);
 }
 async function performChange(
   change: Change,
@@ -497,15 +590,43 @@ async function performChange(
 ): Promise<Entry | undefined> {
   const config = parseConfig(context.env);
   if (config.inboundOnly) return;
+  const claimed = claimedId(
+    readClaims(context.state.get(claimsKey)).get(change.item.id),
+    config.account,
+    claimKind(change.item.type),
+  );
   if (change.kind === "trashed" || change.kind === "purged") {
     const pending = context.outbound.get(change.item.id);
-    if (pending?.change.kind === "created" && !pending.acknowledged) {
+    const overtaken =
+      pending !== undefined &&
+      !pending.acknowledged &&
+      (pending.change.kind === "created" ||
+        settlement(pending.request, config) !== undefined);
+    if (overtaken || (change.kind === "purged" && claimed !== undefined)) {
       const gate = approved.get(context);
       if (gate === undefined)
         throw new Refused(
           "Reader requires successful batch preflight before writes",
         );
-      await settleOvertaken(pending, gate.client, config, context);
+      if (overtaken) {
+        await settle(pending, gate.client, config, context, change);
+        return;
+      }
+      // The claim stays as the row's tombstone unless the purge may delete.
+      if (
+        claimed === undefined ||
+        pending !== undefined ||
+        !config.propagatePurge ||
+        !gate.purges.has(claimed)
+      )
+        return;
+      await settle(
+        await context.outbound.save(change, step("claim", claimed, config)),
+        gate.client,
+        config,
+        context,
+        change,
+      );
       return;
     }
   }
@@ -562,41 +683,72 @@ async function performChange(
           }
         : { url: string(props["url"]) };
       validateBody(request, highlight ? "highlight-create" : "source-create");
-      if (highlight) {
-        const parent = await client.document(String(request["parent_id"]));
-        if (
-          parent === undefined ||
-          ["highlight", "note"].includes(parent.category)
-        )
-          throw new Refused(
-            "Reader highlight parent is missing or not a document",
-          );
-      }
-      const inventory = await completeInventory(client, context);
-      const existing = highlight
-        ? []
-        : inventory.filter((row) => row.source_url === request["url"]);
-      if (existing.length > 1)
-        throw new Refused("Reader URL matches multiple documents");
-      const previous = existing[0];
-      baseline = {
-        ids: inventory.map((row) => row.id),
-        existing:
-          previous === undefined
-            ? null
+      // A row restored after its create was overtaken takes back the object
+      // it claimed, so nothing is made twice.
+      const adopted =
+        claimed === undefined ? undefined : await client.document(claimed);
+      if (
+        adopted !== undefined &&
+        (highlight
+          ? adopted.category === "highlight" &&
+            adopted.parent_id === request["parent_id"] &&
+            adopted.content === request["content"]
+          : !["highlight", "note"].includes(adopted.category) &&
+            adopted.source_url === request["url"])
+      ) {
+        operation = {
+          account: config.account,
+          base: config.readerBase,
+          ...(highlight
+            ? { kind: "highlight-create", body: request, updates: {} }
             : {
-                id: previous.id,
-                fields: values(previous, Object.keys(updates)),
-              },
-      };
-      operation = {
-        account: config.account,
-        base: config.readerBase,
-        kind: highlight ? "highlight-create" : "source-create",
-        id: "",
-        body: request,
-        updates: highlight ? {} : updates,
-      };
+                kind: "source-create-update",
+                body: updates,
+                updates: {},
+                made: true,
+              }),
+          id: adopted.id,
+        };
+        baseline = highlight
+          ? { ids: [], existing: null }
+          : json(values(adopted, Object.keys(updates)));
+      } else {
+        if (highlight) {
+          const parent = await client.document(String(request["parent_id"]));
+          if (
+            parent === undefined ||
+            ["highlight", "note"].includes(parent.category)
+          )
+            throw new Refused(
+              "Reader highlight parent is missing or not a document",
+            );
+        }
+        const inventory = await completeInventory(client, context);
+        const existing = highlight
+          ? []
+          : inventory.filter((row) => row.source_url === request["url"]);
+        if (existing.length > 1)
+          throw new Refused("Reader URL matches multiple documents");
+        const previous = existing[0];
+        baseline = {
+          ids: inventory.map((row) => row.id),
+          existing:
+            previous === undefined
+              ? null
+              : {
+                  id: previous.id,
+                  fields: values(previous, Object.keys(updates)),
+                },
+        };
+        operation = {
+          account: config.account,
+          base: config.readerBase,
+          kind: highlight ? "highlight-create" : "source-create",
+          id: "",
+          body: request,
+          updates: highlight ? {} : updates,
+        };
+      }
     } else {
       const readerId = String(props["reader_id"]);
       if (change.kind === "purged" && !gate.purges.has(readerId))
@@ -652,7 +804,8 @@ async function performChange(
     await context.outbound.acknowledge(change.item.id, held.token);
     return;
   }
-  if (operation.kind === "highlight-create") {
+  let matched = false;
+  if (operation.kind === "highlight-create" && operation.id === "") {
     if (
       !object(held.baseline) ||
       !Array.isArray(held.baseline["ids"]) ||
@@ -660,26 +813,10 @@ async function performChange(
     )
       throw new Refused("invalid saved Reader highlight inventory");
     if (recovered && !retryProvenNotApplied) {
-      const before = new Set(held.baseline["ids"]);
-      const matches = (await completeInventory(client, context)).filter(
-        (row) =>
-          !before.has(row.id) &&
-          row.category === "highlight" &&
-          row.parent_id === operation.body["parent_id"] &&
-          row.content === operation.body["content"] &&
-          equal(
-            values(
-              row,
-              Object.keys(operation.body).filter(
-                (key) => !["parent_id", "content"].includes(key),
-              ),
-            ),
-            Object.fromEntries(
-              Object.entries(operation.body).filter(
-                ([key]) => !["parent_id", "content"].includes(key),
-              ),
-            ),
-          ),
+      const matches = highlightMatches(
+        await completeInventory(client, context),
+        new Set(held.baseline["ids"] as string[]),
+        operation.body,
       );
       if (matches.length !== 1)
         throw new Refused(
@@ -687,6 +824,13 @@ async function performChange(
         );
       readerId = matches[0]?.id ?? "";
     } else readerId = await client.save(operation.body);
+    // The answer is journaled, so a trash that overtakes what follows knows
+    // which highlight the create made.
+    held = await context.outbound.advance(change.item.id, held.token, {
+      request: json({ ...operation, id: readerId }),
+      baseline: held.baseline,
+    });
+    operation = plan(held.request, config, held.change);
   } else if (operation.kind === "source-create") {
     const baseline = held.baseline;
     if (!object(baseline)) throw new Refused("invalid Reader create baseline");
@@ -703,6 +847,7 @@ async function performChange(
       );
       if (matches.length > 1)
         throw new Refused("Reader URL matches multiple documents");
+      matched = matches[0] !== undefined;
       readerId = matches[0]?.id ?? (await client.save(operation.body));
     } else readerId = await client.save(operation.body);
   }
@@ -739,6 +884,7 @@ async function performChange(
       throw new Refused(
         "Reader fields changed after the saved baseline; pending intent retained",
       );
+    const ids = object(held.baseline) ? held.baseline["ids"] : undefined;
     held = await context.outbound.advance(change.item.id, held.token, {
       request: json({
         ...operation,
@@ -746,7 +892,15 @@ async function performChange(
         id: readerId,
         body: operation.updates,
         updates: {},
-      }),
+        // Whether the create made the document, as a purge may delete only
+        // that: not one Reader held before, nor one found after Reader
+        // proved the earlier save never applied.
+        made:
+          !object(previous) &&
+          Array.isArray(ids) &&
+          !ids.includes(readerId) &&
+          !(matched && retryProvenNotApplied),
+      } satisfies Plan),
       baseline: json(baseline),
     });
     operation = plan(held.request, config, held.change);
