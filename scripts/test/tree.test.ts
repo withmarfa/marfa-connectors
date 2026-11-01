@@ -234,6 +234,25 @@ describe("the tree", () => {
     ).toEqual([]);
   });
 
+  it("gives every connector, a new one included, the quiet-run test", () => {
+    const files = tree();
+    const connectors = files
+      .map((file) => file.path)
+      .filter((path) =>
+        /^(connectors\/[^/]+|template\/connector)\/package\.json$/.test(path),
+      )
+      .map((path) => path.slice(0, -"/package.json".length));
+    expect(connectors).toContain("template/connector");
+    expect(connectors).toContain("connectors/github");
+    const quiet = (dir: string): boolean =>
+      files.some(
+        (file) =>
+          file.path === `${dir}/test/quiet-run.test.ts` &&
+          /\bquietRun\(/.test(file.text),
+      );
+    expect(connectors.filter((dir) => !quiet(dir))).toEqual([]);
+  });
+
   it("copies every shared package into the image without naming one", () => {
     const dockerfile = readFileSync(
       resolve(root, "template/Dockerfile"),
