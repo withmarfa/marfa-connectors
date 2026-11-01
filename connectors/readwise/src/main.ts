@@ -57,6 +57,7 @@ await main(
         id: "attached-to",
         label: "Attached to",
         cardinality: "many-to-many",
+        cascade_on_delete: "with-hosts",
         source_type_constraints: [readerFileType.id],
         target_type_constraints: [sourceType.id, highlightType.id],
       },

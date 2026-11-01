@@ -210,7 +210,7 @@ Each saved picture is an `rss.picture` row, a kind of `core.file.image`, with th
 | `title`                 | `p-`, the first 12 characters of a hash of that address, then the extension for its type, such as `p-0123456789ab.png`. |
 | `blob_ref`, `mime_type` | The file, and its type, as for every file in Marfa.                                                                     |
 
-An `attached-to` connection runs from the picture to its entry. To find the pictures of an entry, follow its `attached-to` connections, and match a picture to an address in the entry's text by `source_url`. The title is the same for the same address wherever it appears, so a picture is told apart by its address and never by its file name: two sites that both serve `cat.png` give two pictures.
+An `attached-to` connection runs from the picture to its entry. To find the pictures of an entry, follow its `attached-to` connections, and match a picture to an address in the entry's text by `source_url`. The title is the same for the same address wherever it appears, so a picture is told apart by its address and never by its file name: two sites that both serve `cat.png` give two pictures. Marfa keeps the connection type `attached-to` as one that goes into the bin with its hosts: trashing an entry puts its pictures in the bin with it, and restoring the entry brings them back.
 
 ### What the entry records
 

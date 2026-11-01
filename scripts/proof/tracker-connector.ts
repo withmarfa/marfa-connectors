@@ -77,6 +77,7 @@ const connector = defineConnector({
     {
       id: "attached-to",
       cardinality: "many-to-many",
+      cascade_on_delete: "with-hosts",
       source_type_constraints: ["proof.attachment"],
       target_type_constraints: ["proof.issue"],
     },

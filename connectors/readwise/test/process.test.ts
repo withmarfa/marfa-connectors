@@ -76,7 +76,7 @@ beforeEach(async () => {
     cardinality: "many-to-many",
     source_type_constraints: ["*"],
     target_type_constraints: ["*"],
-    cascade_on_delete: "orphan",
+    cascade_on_delete: "with-hosts",
     property_schema: {},
     written_at: "source",
     shipped: true,

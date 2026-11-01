@@ -37,6 +37,7 @@ export const manifestField = "rss_pictures";
 export const attachedTo: ConnectionDefinition = {
   id: "attached-to",
   cardinality: "many-to-many",
+  cascade_on_delete: "with-hosts",
   source_type_constraints: [rssPicture.id],
   target_type_constraints: [rssEntry.id],
 };
