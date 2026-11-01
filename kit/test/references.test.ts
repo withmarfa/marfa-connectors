@@ -121,6 +121,22 @@ describe("built-in references", () => {
     },
   );
 
+  it.each(["cascade", "with-hosts", "block"] as const)(
+    "refuses a declaration that gives a built-in the %s rule the instance does not",
+    async (cascade) => {
+      const held = referencing();
+      held.connections = [{ ...references, cascade_on_delete: cascade }];
+      expect(await harness.once(held)).toBe(1);
+      expect(harness.lastRun().error).toContain(
+        "differs from the instance's own",
+      );
+      expect(harness.lastRun().error).toContain(
+        `cascade_on_delete is "${cascade}" here and "orphan" on the server`,
+      );
+      expect(harness.server.requestsTo("POST", "/edge-types")).toEqual([]);
+    },
+  );
+
   it("changes the agreed source while preserving unrelated references, including to another owned item", async () => {
     const held = referencing([
       entry("old"),

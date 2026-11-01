@@ -349,9 +349,11 @@ export async function savePictures(
   };
   await readPictures();
 
-  // A picture follows its entry out of use: one whose entry is archived,
-  // trashed or gone is archived with it. The kit leaves a row a person has
-  // restored since, so what was archived is read back rather than assumed.
+  // A picture follows its entry out of use: an attached picture goes into the
+  // bin with its entry, and one still active whose entry is archived, trashed
+  // or gone, such as one saved before its connection was written, is archived.
+  // The kit leaves a row a person has restored since, so what was archived is
+  // read back rather than assumed.
   const gone = [...pictures]
     .filter(
       ([id, row]) =>

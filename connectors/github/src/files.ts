@@ -200,7 +200,7 @@ export async function fileNotes(
 async function existing(
   context: Context,
   id: string,
-): Promise<{ row: Item | undefined; removed: boolean }> {
+): Promise<{ row: Item | undefined; removed: boolean; binned: boolean }> {
   const found: Awaited<ReturnType<Context["inspect"]>>[] = [];
   for (const type of fileTypes)
     found.push(await context.inspect(type, { links: [id] }));
@@ -211,17 +211,33 @@ async function existing(
     row: rows[0],
     removed:
       found.some((one) => one.tombstones.length > 0) ||
-      rows.some((row) => row.state === "trashed"),
+      rows.some(
+        (row) => row.state === "trashed" && row.trashed_by_cascade !== true,
+      ),
+    binned: rows.some(
+      (row) => row.state === "trashed" && row.trashed_by_cascade === true,
+    ),
   };
 }
+const unkept = {
+  reason: "The signed asset could not be kept; retry waits for fresh HTML",
+  pending: true,
+};
 async function keep(
   context: Context,
   parent: Item,
   asset: Asset,
   options: { fetch?: typeof fetch; repository: Repository },
-): Promise<string | undefined> {
+): Promise<{ reason: string; pending: boolean } | undefined> {
   const prior = await existing(context, asset.id);
-  if (prior.removed) return "The retained file was removed in Marfa";
+  if (prior.removed)
+    return { reason: "The retained file was removed in Marfa", pending: false };
+  if (prior.binned)
+    return {
+      reason:
+        "The retained file is in the bin with the item it was attached to; retry waits for its restore",
+      pending: true,
+    };
   const parents = parentsOf(prior.row?.properties["github_parents"]);
   const node = String(parent.properties["github_id"]);
   parents[node] = {
@@ -267,11 +283,11 @@ async function keep(
       !(await context.known(kind, [asset.id])).has(asset.id) ||
       typeof after.row.properties["blob_ref"] !== "string"
     )
-      return "The signed asset could not be kept; retry waits for fresh HTML";
+      return unkept;
     return;
   } catch (error) {
     if (context.signal.aborted) throw error;
-    return "The signed asset could not be kept; retry waits for fresh HTML";
+    return unkept;
   } finally {
     if (opened && !opened.bytes.locked)
       await opened.bytes.cancel().catch(() => undefined);
@@ -401,15 +417,15 @@ export async function preserveFiles(
           ]),
         };
         for (const asset of parsed.assets) {
-          const reason = await keep(context, parent, asset, {
+          const kept = await keep(context, parent, asset, {
             ...options,
             repository,
           });
-          if (reason) {
+          if (kept) {
             note.not_kept[
               `https://github.com/user-attachments/assets/${asset.id}`
-            ] = reason;
-            if (reason.startsWith("The signed")) note.pending = true;
+            ] = kept.reason;
+            if (kept.pending) note.pending = true;
           } else note.assets.push(asset.id);
         }
         if (
