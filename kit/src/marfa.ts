@@ -386,9 +386,16 @@ export class Marfa {
   async register(
     name: string,
     description: string | undefined,
+    readOnlyTypes: readonly string[],
   ): Promise<string> {
     const { data, error, response } = await this.client.POST("/connectors", {
-      body: { name, ...(description !== undefined && { description }) },
+      body: {
+        name,
+        ...(description !== undefined && { description }),
+        ...(readOnlyTypes.length > 0 && {
+          read_only_types: [...readOnlyTypes],
+        }),
+      },
     });
     if (data === undefined) throw refusal(response, error);
     return data.id;

@@ -227,6 +227,7 @@ describe("registration", () => {
     expect(registrations[0]?.body).toEqual({
       name: "test",
       description: "A connector the kit's tests drive.",
+      read_only_types: ["test.entry"],
     });
     expect(harness.server.runs).toHaveLength(2);
     expect(harness.server.heartbeats).toBeGreaterThanOrEqual(2);
