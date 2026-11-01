@@ -729,17 +729,10 @@ export async function proveReadwiseReader(
       },
     );
     await verify(
-      "reader fixture: a purge over a lost create keeps a document the person highlighted and never imports it",
+      "reader fixture: a purge with propagation on over a lost create keeps the document and never imports it",
       async () => {
         const { runner, item, imported } = await overtaken("overpurge", {
           READWISE_READER_PROPAGATE_PURGE: "true",
-        });
-        vendor.documents.set("their-highlight", {
-          id: "their-highlight",
-          category: "highlight",
-          parent_id: "created",
-          content: "Their passage",
-          updated_at: stamp,
         });
         const purged = await admin.POST("/items/{id}/purge", {
           params: { path: { id: item.id } },
@@ -749,7 +742,6 @@ export async function proveReadwiseReader(
         await once(runner);
         await once(runner);
         assert.ok(vendor.documents.has("created"));
-        assert.ok(vendor.documents.has("their-highlight"));
         assert.equal(
           vendor.writes.filter((write) => write.method === "DELETE").length,
           0,

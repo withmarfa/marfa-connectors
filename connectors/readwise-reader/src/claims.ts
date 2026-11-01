@@ -9,6 +9,7 @@ import { readerIdentity } from "@withmarfa/readwise";
  * takes its claimed object back instead of creating another.
  */
 export const claimsKey = "claims";
+/** Past this, the oldest settled claim is dropped. */
 export const claimLimit = 1000;
 
 export function readClaims(value: unknown): Map<string, string> {
@@ -20,8 +21,7 @@ export function readClaims(value: unknown): Map<string, string> {
     Object.entries(value).some(
       ([key, entry]) =>
         key.length === 0 || typeof entry !== "string" || entry.length === 0,
-    ) ||
-    Object.keys(value).length > claimLimit
+    )
   )
     throw new Error("Reader claims are invalid");
   return new Map(Object.entries(value as Record<string, string>));

@@ -18,7 +18,7 @@ import {
 import type { env } from "./config.js";
 export type IdentityContext = Pick<
   RunContext<typeof env>,
-  "inspect" | "held" | "pendingOutbound"
+  "inspect" | "held" | "pendingOutbound" | "log"
 >;
 interface Alias {
   natural: string;
@@ -313,7 +313,8 @@ export class ReaderIdentities {
   }
   /**
    * Keeps the claims settling has made since, and drops those Marfa now
-   * holds itself: a row linked to the object, or a tombstone for it.
+   * holds itself: a row linked to the object, or a tombstone for it. At the
+   * limit the oldest settled claim goes, so settling never waits on room.
    */
   private async keepClaims(): Promise<void> {
     const stored = readClaims(this.state.get(claimsKey));
@@ -323,8 +324,7 @@ export class ReaderIdentities {
       const claim = pendingClaim(intent, this.account);
       if (claim === undefined) continue;
       pending.add(claim[0]);
-      if (claims.has(claim[0]) || claims.size < claimLimit)
-        claims.set(...claim);
+      claims.set(...claim);
     }
     for (const [type, kind] of [
       ["readwise.source", "document"],
@@ -346,6 +346,17 @@ export class ReaderIdentities {
       for (const [row, canonical] of claims)
         if (held.has(canonical) && !pending.has(row)) claims.delete(row);
     }
+    let dropped = 0;
+    for (const row of [...claims.keys()]) {
+      if (claims.size <= claimLimit) break;
+      if (pending.has(row)) continue;
+      claims.delete(row);
+      dropped += 1;
+    }
+    if (dropped > 0)
+      this.context.log.warn(
+        `Dropped the ${String(dropped)} oldest Reader claims to keep ${String(claimLimit)}; Reader objects they held back can return to the feed`,
+      );
     if (
       JSON.stringify([...claims].sort()) !== JSON.stringify([...stored].sort())
     ) {

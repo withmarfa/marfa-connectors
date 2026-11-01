@@ -18,7 +18,7 @@ let token: string;
 let rows: Map<string, ReaderDocument>;
 let writes: { method: string; path: string; body: Record<string, unknown> }[];
 let loseCreate = false;
-let loseDelete = false;
+let dropCreate = false;
 let losePatch = false;
 let badCount = false;
 let throttle: "GET" | "PATCH" | "POST" | undefined;
@@ -42,7 +42,7 @@ beforeEach(async () => {
   ]);
   writes = [];
   loseCreate = false;
-  loseDelete = false;
+  dropCreate = false;
   losePatch = false;
   badCount = false;
   throttle = undefined;
@@ -67,6 +67,10 @@ beforeEach(async () => {
             results: result,
           }),
         );
+        return;
+      }
+      if (dropCreate && request.method === "POST") {
+        response.destroy();
         return;
       }
       const chunks: Buffer[] = [];
@@ -120,10 +124,6 @@ beforeEach(async () => {
           if (size === doomed.size) break;
         }
         for (const key of doomed) rows.delete(key);
-        if (loseDelete) {
-          response.destroy();
-          return;
-        }
         response.writeHead(204).end();
         return;
       } else {
@@ -867,7 +867,7 @@ function sourceCreate(url = "https://example.com/new") {
     title: "Intended",
   });
 }
-function highlightCreate() {
+function highlightCreate(props: Record<string, unknown> = {}) {
   return change(
     "created",
     {
@@ -877,6 +877,7 @@ function highlightCreate() {
       reader_create: true,
       reader_parent_id: "doc",
       text: "Passage",
+      ...props,
     },
     "readwise.highlight",
   );
@@ -1050,7 +1051,7 @@ describe.each(["trashed", "purged"] as const)(
       expect(c.intent()?.acknowledged).toBe(true);
       expect(c.state.get("claims")).toBeUndefined();
     });
-    it("deletes nothing when two new highlights could be the create's", async () => {
+    it("keeps the intent pending when two new highlights could be the create's", async () => {
       const c = context(true);
       const made = highlightCreate();
       await lostCreate(c, made);
@@ -1069,7 +1070,55 @@ describe.each(["trashed", "purged"] as const)(
       expect(rows.size).toBe(3);
       expect(c.intent()?.acknowledged).toBe(false);
     });
-    it("keeps the intent and changes nothing while Reader cannot prove its inventory", async () => {
+    it("keeps the intent pending when the person edited the highlight the create made", async () => {
+      const c = context(true);
+      const made = highlightCreate({ note: "Sent note" });
+      await lostCreate(c, made);
+      const highlight = rows.get("highlight-1");
+      if (highlight?.notes !== "Sent note") throw new Error("no highlight");
+      highlight.notes = "Edited in Reader";
+      const over = overtaking(kind, made);
+      await preflight({ purges: kind === "purged" ? [over] : [] }, c.value);
+      await expect(onChange(over, c.value)).rejects.toBeInstanceOf(Unreachable);
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect(rows.has("highlight-1")).toBe(true);
+      expect(c.intent()?.acknowledged).toBe(false);
+      expect(c.state.get("claims")).toBeUndefined();
+    });
+    it("acknowledges a highlight create that left nothing at Reader", async () => {
+      const c = context(true);
+      const made = highlightCreate();
+      await preflight({ purges: [] }, c.value);
+      dropCreate = true;
+      await expect(onChange(made, c.value)).rejects.toBeInstanceOf(Unreachable);
+      dropCreate = false;
+      const over = overtaking(kind, made);
+      await preflight({ purges: kind === "purged" ? [over] : [] }, c.value);
+      await onChange(over, c.value);
+      expect(writes).toHaveLength(0);
+      expect(c.intent()?.acknowledged).toBe(true);
+      expect(c.state.get("claims")).toBeUndefined();
+    });
+    it("deletes nothing when the person saved the URL after a create that never reached Reader", async () => {
+      const c = context(true);
+      const made = sourceCreate();
+      await preflight({ purges: [] }, c.value);
+      dropCreate = true;
+      await expect(onChange(made, c.value)).rejects.toBeInstanceOf(Unreachable);
+      dropCreate = false;
+      rows.set("mine", {
+        id: "mine",
+        category: "article",
+        source_url: "https://example.com/new",
+        title: "Mine",
+      });
+      // A lost answer and a request never sent look the same at Reader, so
+      // the one new match is claimed; Reader keeps it either way.
+      await claims(c, overtaking(kind, made), "mine");
+      expect(writes).toHaveLength(0);
+      expect(rows.get("mine")?.title).toBe("Mine");
+    });
+    it("keeps the intent pending while Reader cannot prove its inventory", async () => {
       const c = context(true);
       const made = sourceCreate();
       await lostCreate(c, made);
@@ -1083,67 +1132,51 @@ describe.each(["trashed", "purged"] as const)(
     });
   },
 );
-describe("a purge that overtakes a pending create", () => {
-  it("deletes the document a lost save made when nothing else goes with it", async () => {
-    const c = context(true);
-    const made = sourceCreate();
-    await lostCreate(c, made);
-    const over = overtaking("purged", made);
-    await preflight({ purges: [over] }, c.value);
-    await onChange(over, c.value);
-    expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
-    expect(writes[1]?.path).toBe("/api/v3/delete/new-doc/");
-    expect(rows.has("doc")).toBe(true);
-    expect(c.intent()?.acknowledged).toBe(true);
-    expect(c.state.get("claims")).toBeUndefined();
-  });
-  it("deletes the one new highlight a lost create made and keeps an older twin", async () => {
-    rows.set("old", {
-      id: "old",
-      category: "highlight",
-      parent_id: "doc",
-      content: "Passage",
-      notes: "",
-      tags: {},
+describe.each([false, true])(
+  "a purge that overtakes a pending create (propagate purge %s)",
+  (propagate) => {
+    it("claims the document a lost save made and deletes nothing", async () => {
+      const c = context(propagate);
+      const made = sourceCreate();
+      await lostCreate(c, made);
+      await claims(c, overtaking("purged", made), "new-doc");
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect(rows.has("new-doc")).toBe(true);
     });
-    const c = context(true);
-    const made = highlightCreate();
-    await lostCreate(c, made);
-    const over = overtaking("purged", made);
-    await preflight({ purges: [over] }, c.value);
-    await onChange(over, c.value);
-    expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
-    expect([...rows.keys()].sort()).toEqual(["doc", "old"]);
-    expect(c.intent()?.acknowledged).toBe(true);
-  });
-  it("claims instead of deleting with purge propagation off", async () => {
-    const c = context(false);
-    const made = sourceCreate();
-    await lostCreate(c, made);
-    await claims(c, overtaking("purged", made), "new-doc");
-    expect(writes.map((write) => write.method)).toEqual(["POST"]);
-    expect(rows.has("new-doc")).toBe(true);
-  });
-  it("deletes nothing and claims the document when the person added a highlight to it", async () => {
-    const c = context(true);
-    const made = sourceCreate();
-    await lostCreate(c, made);
-    rows.set("theirs", {
-      id: "theirs",
-      category: "highlight",
-      parent_id: "new-doc",
-      content: "Their passage",
-      notes: "",
-      tags: {},
+    it("claims the one new highlight a lost create made and keeps an older twin", async () => {
+      rows.set("old", {
+        id: "old",
+        category: "highlight",
+        parent_id: "doc",
+        content: "Passage",
+        notes: "",
+        tags: {},
+      });
+      const c = context(propagate);
+      const made = highlightCreate();
+      await lostCreate(c, made);
+      await claims(c, overtaking("purged", made), "highlight-2");
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect([...rows.keys()].sort()).toEqual(["doc", "highlight-2", "old"]);
     });
-    await claims(c, overtaking("purged", made), "new-doc");
-    expect(writes.map((write) => write.method)).toEqual(["POST"]);
-    expect(rows.has("new-doc")).toBe(true);
-    expect(rows.has("theirs")).toBe(true);
-  });
-  it.each([false, true])(
-    "settles a create past its save by its provenance (propagate purge %s)",
-    async (propagate) => {
+    it("claims the document when the person added a highlight to it", async () => {
+      const c = context(propagate);
+      const made = sourceCreate();
+      await lostCreate(c, made);
+      rows.set("theirs", {
+        id: "theirs",
+        category: "highlight",
+        parent_id: "new-doc",
+        content: "Their passage",
+        notes: "",
+        tags: {},
+      });
+      await claims(c, overtaking("purged", made), "new-doc");
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect(rows.has("new-doc")).toBe(true);
+      expect(rows.has("theirs")).toBe(true);
+    });
+    it("claims the document of a create past its save, notes the person edited included", async () => {
       const c = context(propagate);
       const made = sourceCreate();
       await preflight({ purges: [] }, c.value);
@@ -1154,71 +1187,55 @@ describe("a purge that overtakes a pending create", () => {
         kind: "source-create-update",
         made: true,
       });
-      const over = overtaking("purged", made);
-      if (propagate) {
-        await preflight({ purges: [over] }, c.value);
-        await onChange(over, c.value);
-        expect(writes.map((write) => write.method)).toEqual([
-          "POST",
-          "PATCH",
-          "DELETE",
-        ]);
-        expect(rows.has("new-doc")).toBe(false);
-        expect(c.intent()?.acknowledged).toBe(true);
-      } else {
-        await claims(c, over, "new-doc");
-        expect(rows.has("new-doc")).toBe(true);
-      }
-    },
-  );
-  it("settles a lost answer to the delete without deleting again", async () => {
-    const c = context(true);
-    const made = sourceCreate();
-    await lostCreate(c, made);
-    const over = overtaking("purged", made);
-    await preflight({ purges: [over] }, c.value);
-    loseDelete = true;
-    await expect(onChange(over, c.value)).rejects.toBeInstanceOf(Unreachable);
-    expect(rows.has("new-doc")).toBe(false);
-    expect(request(c)).toMatchObject({ kind: "delete", id: "new-doc" });
-    expect(c.intent()?.acknowledged).toBe(false);
-    loseDelete = false;
-    await preflight({ purges: [over] }, c.value);
-    await onChange(over, c.value);
-    expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
-    expect(c.intent()?.acknowledged).toBe(true);
-  });
-});
-describe("a claimed row purged after its trash settled", () => {
-  async function settledTrash(c: ReturnType<typeof context>, made: Change) {
-    await lostCreate(c, made);
-    await claims(c, overtaking("trashed", made), "new-doc");
-    c.forget();
-    return {
-      ...made,
-      kind: "purged",
-      changed: new Set<string>(),
-      item: { ...made.item, state: "trashed" },
-    } satisfies Change;
-  }
-  it("deletes the claimed document when purge propagation allows it", async () => {
-    const c = context(true);
-    const purge = await settledTrash(c, sourceCreate());
-    await preflight({ purges: [purge] }, c.value);
-    await onChange(purge, c.value);
-    expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
-    expect(rows.has("new-doc")).toBe(false);
-    expect(c.intent()?.acknowledged).toBe(true);
-  });
-  it("keeps the claim as the row's tombstone with purge propagation off", async () => {
-    const c = context(false);
-    const purge = await settledTrash(c, sourceCreate());
-    await preflight({ purges: [purge] }, c.value);
-    await onChange(purge, c.value);
-    expect(writes.map((write) => write.method)).toEqual(["POST"]);
-    expect(c.intent()).toBeUndefined();
-  });
-});
+      const document = rows.get("new-doc");
+      if (document === undefined) throw new Error("no document");
+      document.notes = "Edited in Reader";
+      await claims(c, overtaking("purged", made), "new-doc");
+      expect(writes.map((write) => write.method)).toEqual(["POST", "PATCH"]);
+      expect(rows.get("new-doc")?.notes).toBe("Edited in Reader");
+    });
+    it("keeps a claim as the row's tombstone when the row is purged after its trash settled", async () => {
+      const c = context(propagate);
+      const made = sourceCreate();
+      await lostCreate(c, made);
+      await claims(c, overtaking("trashed", made), "new-doc");
+      c.forget();
+      const purge = {
+        ...made,
+        kind: "purged",
+        changed: new Set<string>(),
+        item: { ...made.item, state: "trashed" },
+      } satisfies Change;
+      await preflight({ purges: [purge] }, c.value);
+      await onChange(purge, c.value);
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect(rows.has("new-doc")).toBe(true);
+      expect(c.intent()).toBeUndefined();
+    });
+    it("changes nothing when the row is purged after its trash settled with no claim", async () => {
+      const c = context(propagate);
+      await preflight({ purges: [] }, c.value);
+      const made = sourceCreate("https://example.com/story");
+      losePatch = true;
+      await expect(onChange(made, c.value)).rejects.toThrow();
+      losePatch = false;
+      await preflight({ purges: [] }, c.value);
+      await onChange(overtaking("trashed", made), c.value);
+      expect(c.intent()?.acknowledged).toBe(true);
+      c.forget();
+      const purge = {
+        ...made,
+        kind: "purged",
+        changed: new Set<string>(),
+        item: { ...made.item, state: "trashed" },
+      } satisfies Change;
+      await preflight({ purges: [purge] }, c.value);
+      await onChange(purge, c.value);
+      expect(writes.map((write) => write.method)).toEqual(["POST", "PATCH"]);
+      expect(rows.has("doc")).toBe(true);
+    });
+  },
+);
 it("takes back the highlight a lost create made when the row is restored before its trash settles", async () => {
   const c = context(true);
   const made = highlightCreate();

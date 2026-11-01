@@ -14,6 +14,7 @@ import { ReaderIdentities, type IdentityContext } from "../src/identity.js";
 
 function fixture() {
   const saved = new Map<string, unknown>();
+  const warnings: string[] = [];
   const rows: Item[] = [];
   const sources: Source[] = [
     {
@@ -37,6 +38,12 @@ function fixture() {
         tombstones: [],
       }),
     pendingOutbound: () => [],
+    log: {
+      info: () => undefined,
+      warn: (message) => warnings.push(message),
+      condition: () => undefined,
+      unreached: () => undefined,
+    },
   };
   const state: CheckpointState = {
     get: (key) => structuredClone(saved.get(key)),
@@ -61,7 +68,7 @@ function fixture() {
   };
   const load = () =>
     ReaderIdentities.load("one", "https://example.com", context, state);
-  return { saved, rows, sources, client, load, context, state };
+  return { saved, rows, sources, client, load, context, state, warnings };
 }
 
 it("refines an existing highlight alias with verified export parent evidence for restart", async () => {
@@ -1580,4 +1587,28 @@ it("drops a claim once Marfa holds the object itself", async () => {
   expect(f.saved.get("claims")).toEqual({
     kept: "one:reader-document:kept-doc",
   });
+});
+
+it("drops the oldest settled claim at the limit and keeps the new one", async () => {
+  const f = fixture();
+  const stored = Object.fromEntries(
+    Array.from({ length: 1000 }, (_, index) => [
+      `old-${String(index)}`,
+      `one:reader-document:old-doc-${String(index)}`,
+    ]),
+  );
+  f.saved.set("claims", stored);
+  const row = createdRow("trashed");
+  f.rows.push(row);
+  Object.assign(f.context, { pendingOutbound: () => [claiming(row)] });
+  const identities = await f.load();
+  const kept = f.saved.get("claims") as Record<string, string>;
+  expect(Object.keys(kept)).toHaveLength(1000);
+  expect(kept["old-0"]).toBeUndefined();
+  expect(kept["old-1"]).toBe("one:reader-document:old-doc-1");
+  expect(kept["local"]).toBe("one:reader-document:new-doc");
+  expect(f.warnings).toEqual([
+    expect.stringContaining("Dropped the 1 oldest Reader claims"),
+  ]);
+  expect(await identities.resolve(claimed)).toMatchObject({ purged: true });
 });
