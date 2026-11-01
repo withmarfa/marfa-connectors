@@ -157,7 +157,7 @@ export function mapHighlight(
     changed_at: date(highlight.updated_at),
     properties: properties(values),
     connections: {
-      references: [
+      "excerpt-of": [
         { type: "readwise.source", id: identity(account, "source", sourceId) },
       ],
     },

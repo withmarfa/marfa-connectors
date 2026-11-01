@@ -39,7 +39,7 @@ const source = (id: number) => ({
 beforeEach(async () => {
   marfa = await new ScriptedServer("readwise", {
     types: ["readwise.source", "readwise.highlight", "readwise.file"],
-    edges: ["references", "attached-to"],
+    edges: ["excerpt-of", "attached-to"],
   }).start();
   marfa.advance(Date.now() - Date.parse("2026-09-25T00:00:00.000Z"));
   marfa.types.set("core.media", {
@@ -81,9 +81,9 @@ beforeEach(async () => {
     written_at: "source",
     shipped: true,
   });
-  marfa.edgeTypes.set("references", {
-    id: "references",
-    cardinality: "many-to-many",
+  marfa.edgeTypes.set("excerpt-of", {
+    id: "excerpt-of",
+    cardinality: "many-to-one",
     source_type_constraints: ["*"],
     target_type_constraints: ["*"],
     cascade_on_delete: "orphan",
@@ -246,7 +246,7 @@ describe("Readwise process on the kit", () => {
       "Full passage 漢字\n",
     );
     expect(
-      marfa.targetsOf(marfa.row("primary:highlight:1").id, "references"),
+      marfa.targetsOf(marfa.row("primary:highlight:1").id, "excerpt-of"),
     ).toEqual([marfa.row("primary:source:1").id]);
     const before = structuredClone({ rows: marfa.rows, edges: marfa.edges });
     const repeated = await once();

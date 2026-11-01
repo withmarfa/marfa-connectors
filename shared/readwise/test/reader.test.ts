@@ -67,7 +67,9 @@ describe("shared Reader mapping", () => {
       note: "",
     });
     expect(mapped.entry.connections).toEqual({
-      references: [{ type: "readwise.source", id: "one:reader-document:doc" }],
+      "excerpt-of": [
+        { type: "readwise.source", id: "one:reader-document:doc" },
+      ],
     });
   });
   it("preserves over-limit text through explicit file plans and keeps orphans", () => {
@@ -83,7 +85,7 @@ describe("shared Reader mapping", () => {
       mapped.textFiles[0]?.key,
     );
     expect(mapped.conditions).toContain("unresolved-parent");
-    expect(mapped.entry.connections).toEqual({ references: [] });
+    expect(mapped.entry.connections).toEqual({ "excerpt-of": [] });
   });
   it("rejects malformed pages without converting failure to emptiness", () => {
     for (const value of [

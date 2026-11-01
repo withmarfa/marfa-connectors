@@ -4,7 +4,7 @@ Import sources, complete highlights, annotations, and tags from one Readwise acc
 
 ## Data model
 
-`readwise.source` inherits `core.media`. It represents a book, article, tweet, podcast, or another source exported by Readwise. `readwise.highlight` inherits `core.highlight` and keeps the complete passage and annotation. Each highlight declares a `references` edge to its source, which expresses a reference rather than containment.
+`readwise.source` inherits `core.media`. It represents a book, article, tweet, podcast, or another source exported by Readwise. `readwise.highlight` inherits `core.highlight` and keeps the complete passage and annotation. Each highlight declares an `excerpt-of` edge to its source: a passage taken from it, not a mention.
 
 Source notes map to `notes`, summaries to `description`, and valid web source and cover URLs to `url` and `image_url`. Readwise's original addresses, such as `source_url` and `readwise_url`, are kept in their own fields, which accept any absolute URL. A blank title falls back to `readable_title`, then `Readwise source <ID>`.
 
@@ -45,10 +45,10 @@ pnpm build
 Mint a connector-scoped key using your existing Marfa administrative environment:
 
 ```bash
-marfa keys create --label readwise --source readwise --type-permission readwise.source=write --type-permission readwise.highlight=write --type-permission readwise.file=write --edge-permission references=write --edge-permission attached-to=write --metadata-permission types=write --default-tier feed
+marfa keys create --label readwise --source readwise --type-permission readwise.source=write --type-permission readwise.highlight=write --type-permission readwise.file=write --edge-permission excerpt-of=write --edge-permission attached-to=write --metadata-permission types=write --default-tier feed
 ```
 
-The built-in `references` and `attached-to` definitions are not registered or changed. Do not grant `metadata edge_types=write` or unrelated permissions.
+The built-in `excerpt-of` and `attached-to` definitions are not registered or changed. Do not grant `metadata edge_types=write` or unrelated permissions.
 
 Supply these environment variables through your secret manager or process environment:
 

@@ -64,7 +64,7 @@ export async function proveReadwise(
               "readwise.highlight": "write",
               "readwise.file": "write",
             },
-            edge_permissions: { references: "write", "attached-to": "write" },
+            edge_permissions: { "excerpt-of": "write", "attached-to": "write" },
             metadata_permissions: { types: "write" },
           },
         });
@@ -76,7 +76,7 @@ export async function proveReadwise(
           data.default_tier !== "feed" ||
           Object.keys(data.metadata_permissions).join() !== "types" ||
           Object.keys(data.edge_permissions).sort().join() !==
-            "attached-to,references"
+            "attached-to,excerpt-of"
         )
           throw new Error(
             "Readwise key permissions differ from the requested scope",
@@ -138,7 +138,7 @@ export async function proveReadwise(
         const { data, error } = await marfa.GET("/items/{id}/edges", {
           params: {
             path: { id: imported.id },
-            query: { edge_type: "references" },
+            query: { edge_type: "excerpt-of" },
           },
         });
         if (data === undefined)
@@ -165,7 +165,7 @@ export async function proveReadwise(
         const edges = await marfa.GET("/items/{id}/edges", {
           params: {
             path: { id: imported.id },
-            query: { edge_type: "references" },
+            query: { edge_type: "excerpt-of" },
           },
         });
         if (edges.data === undefined)
@@ -176,14 +176,14 @@ export async function proveReadwise(
         const after = await marfa.GET("/items/{id}/edges", {
           params: {
             path: { id: imported.id },
-            query: { edge_type: "references" },
+            query: { edge_type: "excerpt-of" },
           },
         });
         if (
           after.data === undefined ||
           JSON.stringify(after.data) !== JSON.stringify(edges.data)
         )
-          throw new Error("An unchanged export changed references");
+          throw new Error("An unchanged export changed excerpt-of edges");
         return "identical item and reference snapshots";
       },
     );

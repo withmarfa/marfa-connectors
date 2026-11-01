@@ -61,9 +61,9 @@ export function readerConnector() {
     ],
     connections: [
       {
-        id: "references",
-        label: "References",
-        cardinality: "many-to-many",
+        id: "excerpt-of",
+        label: "Excerpt of",
+        cardinality: "many-to-one",
         source_type_constraints: [highlightType.id],
         target_type_constraints: [sourceType.id],
       },

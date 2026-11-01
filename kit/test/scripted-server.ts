@@ -300,6 +300,19 @@ export class ScriptedServer {
       },
     ],
     [
+      "excerpt-of",
+      {
+        id: "excerpt-of",
+        cardinality: "many-to-one",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
       "derived-from",
       {
         id: "derived-from",

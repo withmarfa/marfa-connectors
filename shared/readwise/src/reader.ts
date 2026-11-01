@@ -394,7 +394,7 @@ function mapped(
       });
     result.entry.occurred_at = date(row.created_at);
     result.entry.connections = {
-      references: row.parent_id
+      "excerpt-of": row.parent_id
         ? [
             {
               type: "readwise.source",
