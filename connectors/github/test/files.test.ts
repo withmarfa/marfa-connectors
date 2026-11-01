@@ -317,7 +317,13 @@ it("waits, not reports a removal, for a file that went to the bin with its only 
     not_kept: Record<string, string>;
   };
   expect(note.pending).toBe(true);
-  expect(JSON.stringify(note.not_kept)).not.toContain("removed");
+  const reasons = Object.values(note.not_kept);
+  expect(reasons).toContain(
+    "The retained file is in the bin with the item it was attached to; retry waits for its restore",
+  );
+  expect(
+    reasons.filter((reason) => reason.includes("removed in Marfa")),
+  ).toEqual([]);
   expect(f.h.server.targetsOf(file.id, "attached-to")).toEqual([host.id]);
   expect(f.counts().loads).toBe(1);
 
