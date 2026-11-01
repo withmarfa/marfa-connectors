@@ -2036,7 +2036,7 @@ export async function runOnce<E extends EnvDeclaration>(
   ):
     | { readonly skip: "foreign" }
     | {
-        readonly skip: "cascade" | "cascaded" | "untold" | "typed";
+        readonly skip: "cascade" | "cascaded" | "untold" | "held";
         readonly kind: Spec;
       }
     | Planned => {
@@ -2049,7 +2049,8 @@ export async function runOnce<E extends EnvDeclaration>(
     if (item.state === "trashed" && cascaded(item))
       return { skip: "cascaded", kind };
     // A link on a row whose create sent got none back, that `setLink` did not
-    // keep as its own, is a person's: nothing is carried by it.
+    // keep as its own, is not the connector's to use: nothing is carried by
+    // it, and it is left alone, whoever put it there.
     if (
       kind.link !== undefined &&
       agreement.link === undefined &&
@@ -2057,7 +2058,7 @@ export async function runOnce<E extends EnvDeclaration>(
       item.state !== "trashed" &&
       lane(kind.type).rows.linkOf(item.properties) !== undefined
     )
-      return { skip: "typed", kind };
+      return { skip: "held", kind };
     // A trash of a row whose create sent got no link back carries no link
     // the row holds since, which a person may have typed.
     const unlinked =
@@ -2312,10 +2313,13 @@ export async function runOnce<E extends EnvDeclaration>(
     if (plan.skip === "foreign") return;
     const { kind } = plan;
     keepAgreedLink(kind, item, agreement);
-    if (plan.skip === "typed") {
+    if (plan.skip === "held") {
+      const field = kind.link ?? "link";
       raised.set(
-        `typed-link:${item.id}`,
-        `the ${kind.link ?? "link"} of ${item.id} was typed after a create at the vendor got no answer, so nothing is carried to the vendor by it and the row's own link is kept`,
+        `held-link:${item.id}`,
+        agreement.linking === undefined
+          ? `the ${field} of ${item.id} came after a create at the vendor got no answer, and where it came from is unknown, so nothing is carried to the vendor by it and the connector leaves it alone`
+          : `the ${field} of ${item.id} was typed over the one the connector wrote after a create at the vendor got no answer, so nothing is carried to the vendor by it and the row's own link is kept`,
       );
     }
     if (plan.skip === "cascaded") {

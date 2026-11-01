@@ -208,7 +208,10 @@ describe("a link a person typed after an unanswered create", () => {
       ),
     ).toEqual([]);
     expect(harness.server.byId(row.id).properties["vendor_id"]).toBe("typed");
-    expect(Object.values(harness.problems()).join("\n")).toContain("typed");
+    const said = Object.values(harness.problems()).join("\n");
+    expect(said).toContain("unknown");
+    expect(said).toContain("leaves it alone");
+    expect(said).not.toContain("typed");
   });
 
   it("is not carried by the trash or the purge that follow", async () => {
@@ -252,6 +255,9 @@ describe("a link a person typed over the one the connector wrote", () => {
       ),
     ).toEqual([]);
     expect(harness.server.byId(row.id).properties["vendor_id"]).toBe("typed");
+    expect(Object.values(harness.problems()).join("\n")).toContain(
+      "was typed over",
+    );
     harness.server.trash(row.id);
     await quietRun(held);
     expect(
@@ -259,5 +265,26 @@ describe("a link a person typed over the one the connector wrote", () => {
         (change) => change.item.properties["vendor_id"] === "typed",
       ),
     ).toEqual([]);
+  });
+});
+
+describe("a link a person typed while a create waits in the journal", () => {
+  it("is never overwritten when the replayed create writes its link", async () => {
+    const held = vendor([]);
+    held.journaled = true;
+    await harness.twoWay(held);
+    const row = harness.server.insert(
+      undefined,
+      { title: "Theirs", note: "first" },
+      "test.entry",
+      "person",
+    );
+    held.pushFail = { id: row.id, error: new Error("lost the answer") };
+    expect(await quietRun(held)).toBe(1);
+    harness.server.edit(row.id, { vendor_id: "typed" });
+    held.vendorIdFor = () => "v9";
+    await quietRun(held);
+    expect(harness.server.byId(row.id).properties["vendor_id"]).toBe("typed");
+    expect(harness.agreement(row.id)?.["link"]).not.toBe("v9");
   });
 });

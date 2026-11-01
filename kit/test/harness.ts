@@ -285,10 +285,11 @@ function twoWayConnector(held: Vendor) {
       held.changes.push(change);
       const intent =
         held.journaled === true
-          ? await context.outbound.save(change, {
+          ? (context.outbound.get(change.item.id) ??
+            (await context.outbound.save(change, {
               request: { id: change.item.id },
               baseline: null,
-            })
+            })))
           : undefined;
       if (held.unreachable?.has(change.item.id) === true) {
         throw new Unreachable(`${change.item.id} cannot be reached`);

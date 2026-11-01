@@ -1391,6 +1391,23 @@ export class Rows {
     // the connector's own link from the typed one.
     await this.store.fetch([item.id]);
     const before = this.store.get(item.id);
+    // A row the connector has not linked takes no link over one it holds,
+    // whichever door the write came by: the held one is a person's, or of
+    // unknown provenance, unless it is the one the connector recorded.
+    const keepHeld = (row: Item): void => {
+      const held = this.linkOf(row.properties);
+      if (
+        before?.link === undefined &&
+        held !== undefined &&
+        held !== value &&
+        held !== before?.linking
+      ) {
+        throw new LinkTaken(
+          `${item.id} already holds the link ${held}, which is not the ${value} the connector was about to write, so it is left as it is`,
+        );
+      }
+    };
+    keepHeld(item);
     if (before?.link !== value) {
       this.store.set(item.id, {
         vendor: {},
@@ -1433,6 +1450,7 @@ export class Rows {
         throw new Refusal(404, "item_not_found", `${item.id} is gone`);
       }
       assertOwned(current);
+      keepHeld(current);
       try {
         written = await this.marfa.merge(
           current.id,
