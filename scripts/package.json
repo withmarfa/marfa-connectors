@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@withmarfa/client": "0.0.53",
+    "@withmarfa/client": "0.0.54",
     "@withmarfa/connector": "workspace:*"
   }
 }
