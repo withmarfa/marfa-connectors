@@ -2002,6 +2002,32 @@ export async function runOnce<E extends EnvDeclaration>(
     readonly unlinked: boolean;
     readonly skip?: undefined;
   }
+  // The link `setLink` kept before it wrote, where the row holds it: the
+  // connector's own, agreed as `setLink` would have, however the run that
+  // wrote it ended.
+  const vouch = (kind: Spec, item: Item, agreement: Agreement): Agreement => {
+    const wrote = agreement.linking;
+    if (
+      wrote === undefined ||
+      agreement.link !== undefined ||
+      kind.link === undefined ||
+      lane(kind.type).rows.linkOf(item.properties) !== wrote
+    )
+      return agreement;
+    const marked = mark(wrote);
+    const next: Agreement = {
+      ...agreement,
+      vendor: { ...agreement.vendor, [kind.link]: marked },
+      marfa: { ...agreement.marfa, [kind.link]: marked },
+      link: wrote,
+    };
+    Reflect.deleteProperty(next, "linking");
+    if (agreement.attempted !== undefined) {
+      next.made = agreement.attempted;
+      Reflect.deleteProperty(next, "attempted");
+    }
+    return next;
+  };
   // What `carry` does with a row as it stands, before any side effect.
   const planOf = (
     spec: Spec,
@@ -2009,7 +2035,10 @@ export async function runOnce<E extends EnvDeclaration>(
     agreement: Agreement,
   ):
     | { readonly skip: "foreign" }
-    | { readonly skip: "cascade" | "cascaded" | "untold"; readonly kind: Spec }
+    | {
+        readonly skip: "cascade" | "cascaded" | "untold" | "typed";
+        readonly kind: Spec;
+      }
     | Planned => {
     const kind = forRow(spec, item);
     if (kind.owned === false) return { skip: "foreign" };
@@ -2019,6 +2048,16 @@ export async function runOnce<E extends EnvDeclaration>(
     if (agreement.stateBy === "cascade") return { skip: "cascade", kind };
     if (item.state === "trashed" && cascaded(item))
       return { skip: "cascaded", kind };
+    // A link on a row whose create sent got none back, that `setLink` did not
+    // keep as its own, is a person's: nothing is carried by it.
+    if (
+      kind.link !== undefined &&
+      agreement.link === undefined &&
+      agreement.attempted !== undefined &&
+      item.state !== "trashed" &&
+      lane(kind.type).rows.linkOf(item.properties) !== undefined
+    )
+      return { skip: "typed", kind };
     // A trash of a row whose create sent got no link back carries no link
     // the row holds since, which a person may have typed.
     const unlinked =
@@ -2097,10 +2136,15 @@ export async function runOnce<E extends EnvDeclaration>(
     if (inLane(id)?.item.state !== "trashed") return undefined;
     const found = await find(id);
     if (found === undefined) return undefined;
-    const plan = planOf(found.spec, found.item, agreement);
+    const settled = vouch(
+      forRow(found.spec, found.item),
+      found.item,
+      agreement,
+    );
+    const plan = planOf(found.spec, found.item, settled);
     if (plan.skip !== undefined || plan.changeKind !== "trashed")
       return undefined;
-    const change = await changeOf(plan, agreement, [], undefined);
+    const change = await changeOf(plan, settled, [], undefined);
     if (refusalStands(change) || agreement.refused?.change === sending(change))
       return undefined;
     return change;
@@ -2259,10 +2303,21 @@ export async function runOnce<E extends EnvDeclaration>(
       rows.adopt(fresh);
       item = fresh;
     }
+    const agreed = vouch(forRow(spec, item), item, agreement);
+    if (agreed !== agreement) {
+      agreement = agreed;
+      store.set(item.id, agreement);
+    }
     const plan = planOf(spec, item, agreement);
     if (plan.skip === "foreign") return;
     const { kind } = plan;
     keepAgreedLink(kind, item, agreement);
+    if (plan.skip === "typed") {
+      raised.set(
+        `typed-link:${item.id}`,
+        `the ${kind.link ?? "link"} of ${item.id} was typed after a create at the vendor got no answer, so nothing is carried to the vendor by it and the row's own link is kept`,
+      );
+    }
     if (plan.skip === "cascaded") {
       // Taken after the log was read: the log's frame will say the same.
       store.set(item.id, {

@@ -1386,6 +1386,21 @@ export class Rows {
       throw new Error("the connector declares no link property to write");
     }
     this.checkStopped();
+    // Kept before the write is sent: a process that dies after the link
+    // lands, or a person who types another over it, leaves this to tell
+    // the connector's own link from the typed one.
+    await this.store.fetch([item.id]);
+    const before = this.store.get(item.id);
+    if (before?.link !== value) {
+      this.store.set(item.id, {
+        vendor: {},
+        marfa: {},
+        state: "active",
+        ...before,
+        linking: value,
+      });
+      await this.store.flush([item.id]);
+    }
     let written: Item;
     const taken = (error: unknown): unknown => {
       if (!(error instanceof Refusal) || error.code !== "link_taken") {
@@ -1434,7 +1449,6 @@ export class Rows {
     this.index(written);
     // Only the value sent: what the server merged in beside it is a
     // person's change, still to carry.
-    await this.store.fetch([item.id]);
     const agreement = this.store.get(item.id);
     const marked = mark(value);
     const next: Agreement = {
@@ -1445,6 +1459,7 @@ export class Rows {
       link: value,
     };
     Reflect.deleteProperty(next, "attempted");
+    Reflect.deleteProperty(next, "linking");
     // A create's link says the vendor made the row, not that the fields it
     // took were agreed, which the carry settles once the connector returns.
     if (agreement?.attempted !== undefined && agreement.link === undefined) {
