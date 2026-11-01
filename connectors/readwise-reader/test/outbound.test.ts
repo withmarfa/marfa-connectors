@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Unreachable } from "@withmarfa/connector";
 import type {
   Change,
@@ -18,6 +18,7 @@ let token: string;
 let rows: Map<string, ReaderDocument>;
 let writes: { method: string; path: string; body: Record<string, unknown> }[];
 let loseCreate = false;
+let loseDelete = false;
 let losePatch = false;
 let badCount = false;
 let throttle: "GET" | "PATCH" | "POST" | undefined;
@@ -41,6 +42,7 @@ beforeEach(async () => {
   ]);
   writes = [];
   loseCreate = false;
+  loseDelete = false;
   losePatch = false;
   badCount = false;
   throttle = undefined;
@@ -118,6 +120,10 @@ beforeEach(async () => {
           if (size === doomed.size) break;
         }
         for (const key of doomed) rows.delete(key);
+        if (loseDelete) {
+          response.destroy();
+          return;
+        }
         response.writeHead(204).end();
         return;
       } else {
@@ -812,4 +818,179 @@ it("makes no mutation if the retry deadline cannot be acknowledged", async () =>
   throttle = undefined;
   await expect(onChange(change(), c.value)).rejects.toThrow("preflight");
   expect(writes).toHaveLength(0);
+});
+
+function sourceCreate(url = "https://example.com/new") {
+  return change("created", {
+    reader_id: undefined,
+    canonical_key: undefined,
+    reader_managed: undefined,
+    reader_create: true,
+    url,
+    title: "Intended",
+  });
+}
+function highlightCreate() {
+  return change(
+    "created",
+    {
+      reader_id: undefined,
+      canonical_key: undefined,
+      reader_managed: undefined,
+      reader_create: true,
+      reader_parent_id: "doc",
+      text: "Passage",
+    },
+    "readwise.highlight",
+  );
+}
+function overtaking(kind: "trashed" | "purged", of: Change): Change {
+  return {
+    ...of,
+    kind,
+    changed: new Set<string>(),
+    attempted: "2026-10-15T00:00:00Z",
+    item: {
+      ...of.item,
+      state: kind === "trashed" ? "trashed" : of.item.state,
+    },
+  };
+}
+describe.each(["trashed", "purged"] as const)(
+  "a %s row that overtakes a pending create",
+  (kind) => {
+    it.each([false, true])(
+      "deletes what a lost document save made, then acknowledges (propagate purge %s)",
+      async (propagate) => {
+        const c = context(propagate);
+        await preflight({ purges: [] }, c.value);
+        const made = sourceCreate();
+        loseCreate = true;
+        await expect(onChange(made, c.value)).rejects.toThrow();
+        expect(rows.has("new-doc")).toBe(true);
+        loseCreate = false;
+        await preflight({ purges: [] }, c.value);
+        await onChange(overtaking(kind, made), c.value);
+        expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
+        expect(writes[1]?.path).toBe("/api/v3/delete/new-doc/");
+        expect(rows.has("new-doc")).toBe(false);
+        expect(rows.has("doc")).toBe(true);
+        expect(c.intent()?.acknowledged).toBe(true);
+        expect(c.link()).toBeUndefined();
+      },
+    );
+    it("acknowledges a create that never reached Reader without a delete", async () => {
+      const c = context();
+      await preflight({ purges: [] }, c.value);
+      const made = sourceCreate();
+      throttle = "POST";
+      await expect(onChange(made, c.value)).rejects.toBeInstanceOf(Unreachable);
+      throttle = undefined;
+      await onChange(overtaking(kind, made), c.value);
+      expect(writes).toHaveLength(0);
+      expect(c.intent()?.acknowledged).toBe(true);
+    });
+    it("keeps a document Reader already held before the create", async () => {
+      const c = context();
+      await preflight({ purges: [] }, c.value);
+      const made = sourceCreate("https://example.com/story");
+      loseCreate = true;
+      await expect(onChange(made, c.value)).rejects.toThrow();
+      loseCreate = false;
+      await onChange(overtaking(kind, made), c.value);
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect(rows.has("doc")).toBe(true);
+      expect(c.intent()?.acknowledged).toBe(true);
+    });
+    it("deletes the one new highlight a lost create made and keeps an older twin", async () => {
+      rows.set("old", {
+        id: "old",
+        category: "highlight",
+        parent_id: "doc",
+        content: "Passage",
+        notes: "",
+        tags: {},
+      });
+      const c = context();
+      await preflight({ purges: [] }, c.value);
+      const made = highlightCreate();
+      loseCreate = true;
+      await expect(onChange(made, c.value)).rejects.toThrow();
+      loseCreate = false;
+      await onChange(overtaking(kind, made), c.value);
+      expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
+      expect([...rows.keys()].sort()).toEqual(["doc", "old"]);
+      expect(c.intent()?.acknowledged).toBe(true);
+    });
+    it("deletes nothing when two new highlights could be the create's", async () => {
+      const c = context();
+      await preflight({ purges: [] }, c.value);
+      const made = highlightCreate();
+      loseCreate = true;
+      await expect(onChange(made, c.value)).rejects.toThrow();
+      rows.set("twin", {
+        id: "twin",
+        category: "highlight",
+        parent_id: "doc",
+        content: "Passage",
+        notes: "",
+        tags: {},
+      });
+      loseCreate = false;
+      await expect(
+        onChange(overtaking(kind, made), c.value),
+      ).rejects.toBeInstanceOf(Unreachable);
+      expect(writes.map((write) => write.method)).toEqual(["POST"]);
+      expect(rows.size).toBe(3);
+      expect(c.intent()?.acknowledged).toBe(false);
+    });
+    it("keeps the intent and deletes nothing while Reader cannot prove its inventory", async () => {
+      const c = context();
+      await preflight({ purges: [] }, c.value);
+      const made = sourceCreate();
+      loseCreate = true;
+      await expect(onChange(made, c.value)).rejects.toThrow();
+      loseCreate = false;
+      badCount = true;
+      await expect(
+        onChange(overtaking(kind, made), c.value),
+      ).rejects.toBeInstanceOf(Unreachable);
+      expect(writes).toHaveLength(1);
+      expect(c.intent()?.acknowledged).toBe(false);
+      badCount = false;
+      await onChange(overtaking(kind, made), c.value);
+      expect(rows.has("new-doc")).toBe(false);
+      expect(c.intent()?.acknowledged).toBe(true);
+    });
+    it("settles a lost answer to the delete without deleting again", async () => {
+      const c = context();
+      await preflight({ purges: [] }, c.value);
+      const made = sourceCreate();
+      loseCreate = true;
+      await expect(onChange(made, c.value)).rejects.toThrow();
+      loseCreate = false;
+      loseDelete = true;
+      await expect(
+        onChange(overtaking(kind, made), c.value),
+      ).rejects.toBeInstanceOf(Unreachable);
+      expect(rows.has("new-doc")).toBe(false);
+      expect(c.intent()?.acknowledged).toBe(false);
+      loseDelete = false;
+      await onChange(overtaking(kind, made), c.value);
+      expect(writes.map((write) => write.method)).toEqual(["POST", "DELETE"]);
+      expect(c.intent()?.acknowledged).toBe(true);
+    });
+  },
+);
+it("leaves a document alone once its create passed the save, since Reader may have held it before", async () => {
+  const c = context();
+  await preflight({ purges: [] }, c.value);
+  const made = sourceCreate();
+  losePatch = true;
+  await expect(onChange(made, c.value)).rejects.toThrow();
+  losePatch = false;
+  await onChange(overtaking("trashed", made), c.value);
+  expect(writes.map((write) => write.method)).toEqual(["POST", "PATCH"]);
+  expect(rows.has("new-doc")).toBe(true);
+  expect(c.intent()?.acknowledged).toBe(true);
 });

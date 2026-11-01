@@ -4,6 +4,7 @@ import {
   type Change,
   type Entry,
   type JsonValue,
+  type OutboundIntent,
   type WatchContext,
 } from "@withmarfa/connector";
 import {
@@ -391,12 +392,124 @@ function assertKind(change: Change, row: ReaderDocument): void {
   )
     throw new Refused("Reader identity has a different document kind");
 }
+/** The saved step is the delete that settling a trash or purge journaled. */
+function deletion(value: unknown, config: ReaderConfig): Plan | undefined {
+  if (!object(value) || value["kind"] !== "delete") return undefined;
+  if (
+    Object.keys(value).sort().join(",") !==
+      "account,base,body,id,kind,updates" ||
+    value["account"] !== config.account ||
+    value["base"] !== config.readerBase ||
+    !id(value["id"]) ||
+    !object(value["body"]) ||
+    !object(value["updates"]) ||
+    Object.keys(value["body"]).length ||
+    Object.keys(value["updates"]).length
+  )
+    throw new Refused("invalid or changed Reader intent context");
+  return value as unknown as Plan;
+}
+/**
+ * A trash or purge that overtakes a pending create: delete what the create
+ * made, if Reader holds it, and settle. Only a document absent from the
+ * inventory the create saved can be the create's, so one Reader held before
+ * is never deleted, and two candidates delete nothing.
+ */
+async function settleOvertaken(
+  held: OutboundIntent,
+  client: ReaderWriteClient,
+  config: ReaderConfig,
+  context: Context,
+): Promise<void> {
+  const itemId = held.change.item.id;
+  let token = held.token;
+  const advanced = deletion(held.request, config);
+  let doomed = advanced?.id;
+  if (advanced === undefined) {
+    const operation = plan(held.request, config, held.change);
+    validateBaseline(held.baseline, operation, held.change);
+    const saved = held.baseline as {
+      ids?: string[];
+      existing?: unknown;
+    } | null;
+    if (operation.kind === "highlight-create") {
+      const before = new Set(saved?.ids);
+      const rest = Object.fromEntries(
+        Object.entries(operation.body).filter(
+          ([key]) => !["parent_id", "content"].includes(key),
+        ),
+      );
+      const matches = (await completeInventory(client, context)).filter(
+        (row) =>
+          !before.has(row.id) &&
+          row.category === "highlight" &&
+          row.parent_id === operation.body["parent_id"] &&
+          row.content === operation.body["content"] &&
+          equal(values(row, Object.keys(rest)), rest),
+      );
+      if (matches.length > 1)
+        throw new Refused(
+          "Reader highlight creation remains uncertain; no ambiguous deletion",
+        );
+      doomed = matches[0]?.id;
+    } else if (operation.kind === "source-create") {
+      // A save of a URL Reader already held returns that document, which the
+      // create did not make.
+      if (saved?.existing == null) {
+        const before = new Set(saved?.ids);
+        const matches = (await completeInventory(client, context)).filter(
+          (row) =>
+            !before.has(row.id) && row.source_url === operation.body["url"],
+        );
+        if (matches.length > 1)
+          throw new Refused("Reader URL matches multiple documents");
+        doomed = matches[0]?.id;
+      }
+    }
+    // A create past its save no longer says whether Reader held the document
+    // before it, so it is never deleted.
+    if (doomed !== undefined) {
+      held = await context.outbound.advance(itemId, token, {
+        request: json({
+          account: config.account,
+          base: config.readerBase,
+          kind: "delete",
+          id: doomed,
+          body: {},
+          updates: {},
+        } satisfies Plan),
+        baseline: null,
+      });
+      token = held.token;
+    }
+  }
+  if (doomed !== undefined) {
+    if ((await client.document(doomed)) !== undefined)
+      await client.delete(doomed);
+    if ((await client.document(doomed)) !== undefined)
+      throw new Unreachable("Reader deletion is not yet confirmed");
+  }
+  await context.outbound.acknowledge(itemId, token);
+}
 async function performChange(
   change: Change,
   context: Context,
 ): Promise<Entry | undefined> {
   const config = parseConfig(context.env);
-  if (config.inboundOnly || change.kind === "trashed") return;
+  if (config.inboundOnly) return;
+  if (change.kind === "trashed" || change.kind === "purged") {
+    const pending = context.outbound.get(change.item.id);
+    if (pending?.change.kind === "created" && !pending.acknowledged) {
+      const gate = approved.get(context);
+      if (gate === undefined)
+        throw new Refused(
+          "Reader requires successful batch preflight before writes",
+        );
+      await settleOvertaken(pending, gate.client, config, context);
+      return;
+    }
+  }
+  if (change.kind === "trashed") return;
   if (!["readwise.source", "readwise.highlight"].includes(change.item.type))
     throw new Refused("unsupported Reader row type");
   const create = change.kind === "created";
