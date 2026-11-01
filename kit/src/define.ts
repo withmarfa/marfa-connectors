@@ -31,9 +31,9 @@ export interface RowPolicy {
 
 /** A shipped connection type repeats the instance's own `cascade_on_delete`
  *  and is refused where it differs: `parent-of` cascades, read from either
- *  end, and `attached-to` goes into the bin with its hosts. A custom
- *  connection type orphans, so its trash in Marfa takes no vendor's row with
- *  it. */
+ *  end, and a row attached through `attached-to` goes into the bin with its
+ *  hosts. A custom connection type orphans, so its trash in Marfa takes no
+ *  vendor's row with it. */
 export type ConnectionDefinition =
   components["schemas"]["EdgeTypeRegistrationRequest"];
 
