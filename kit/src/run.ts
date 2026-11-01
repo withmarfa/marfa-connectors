@@ -1088,6 +1088,7 @@ export async function runOnce<E extends EnvDeclaration>(
         derive: (type, keys, values) =>
           serial(scope, () => lane(type).rows.derive(keys, values)),
         linked: (...args) => serial(scope, () => linked(...args)),
+        linkedEach: (...args) => serial(scope, () => linkedEach(...args)),
         known: (type, keys) => serial(scope, () => known(type, keys)),
         held: (type, options) => serial(scope, () => heldRows(type, options)),
         inspect: (type, by) => serial(scope, () => inspect(type, by)),
@@ -1100,6 +1101,7 @@ export async function runOnce<E extends EnvDeclaration>(
     derive: (type, keys, values) =>
       unscoped(() => lane(type).rows.derive(keys, values)),
     linked: (...args) => unscoped(() => linked(...args)),
+    linkedEach: (...args) => unscoped(() => linkedEach(...args)),
     known: (type, keys) => unscoped(() => known(type, keys)),
     held: (type, options) => unscoped(() => heldRows(type, options)),
     inspect: (type, by) => unscoped(() => inspect(type, by)),
@@ -1121,46 +1123,69 @@ export async function runOnce<E extends EnvDeclaration>(
       [...found].filter(([, row]) => told.has(row.id)).map(([key]) => key),
     );
   };
-  const linked: RunContext<E>["linked"] = async (
+  const linkedEach: RunContext<E>["linkedEach"] = async (
     type,
     connection,
-    target,
+    targets,
     options,
   ) => {
     const { rows } = lane(type);
     if (!specs.get(type)?.connections.has(connection)) {
       throw new Error(`${type} declares no connection ${connection}`);
     }
-    const held = (await lane(target.type).rows.named([target.id])).get(
-      target.id,
-    );
-    if (held === undefined) return [];
+    const answer = new Map<string, Item[]>(targets.ids.map((id) => [id, []]));
+    const held = await lane(targets.type).rows.named([...answer.keys()]);
+    if (held.size === 0) return answer;
+    const keyOf = new Map([...held].map(([key, row]) => [row.id, key]));
     const found = await setup.marfa.connectedTo(
       type,
       wireOf(connection).edge,
-      held.id,
+      [...keyOf.keys()],
       wireOf(connection).inbound,
     );
+    const every = [...found.values()].flat();
     const told =
       options?.rows === "all"
-        ? new Set(found.map((row) => row.id))
-        : await rows.told(found);
-    return found
-      .filter((row) => {
-        if (!told.has(row.id) || row.type !== type) return false;
-        const named =
-          rows.connecting.get(row.id)?.connections[connection] ??
-          answeredConnections.get(row.id)?.[connection];
-        return (
-          named === undefined ||
-          named.some((one) => one.type === target.type && one.id === target.id)
-        );
-      })
-      .map((row) => {
-        rows.adopt(row);
-        return structuredClone(row);
-      });
+        ? new Set(every.map((row) => row.id))
+        : await rows.told(every);
+    for (const [targetRow, connected] of found) {
+      const key = keyOf.get(targetRow);
+      if (key === undefined) continue;
+      answer.set(
+        key,
+        connected
+          .filter((row) => {
+            if (!told.has(row.id) || row.type !== type) return false;
+            const named =
+              rows.connecting.get(row.id)?.connections[connection] ??
+              answeredConnections.get(row.id)?.[connection];
+            return (
+              named === undefined ||
+              named.some((one) => one.type === targets.type && one.id === key)
+            );
+          })
+          .map((row) => {
+            rows.adopt(row);
+            return structuredClone(row);
+          }),
+      );
+    }
+    return answer;
   };
+  const linked: RunContext<E>["linked"] = async (
+    type,
+    connection,
+    target,
+    options,
+  ) =>
+    (
+      await linkedEach(
+        type,
+        connection,
+        { type: target.type, ids: [target.id] },
+        options,
+      )
+    ).get(target.id) ?? [];
   const heldRows: RunContext<E>["held"] = async (type, options) => {
     const { rows, spec } = lane(type);
     const state = options?.state ?? "active";

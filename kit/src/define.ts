@@ -285,6 +285,18 @@ export interface RunContext<E extends EnvDeclaration> {
     options?: { rows?: "told" | "all" },
   ) => Promise<Item[]>;
   /**
+   * `linked` for many targets of one type at once, answering each target's
+   * rows under its id, an empty list where there are none. It costs a few
+   * requests however many targets it names, where a call of `linked` for
+   * each would cost one or more each.
+   */
+  readonly linkedEach: (
+    type: string,
+    connection: string,
+    targets: { type: string; ids: readonly string[] },
+    options?: { rows?: "told" | "all" },
+  ) => Promise<ReadonlyMap<string, Item[]>>;
+  /**
    * Requested natural keys, or vendor IDs for a linked type, whose rows have
    * an agreement under that identity. Includes active, archived and trashed
    * rows; excludes missing, purged and unagreed manually assigned identities.
@@ -307,7 +319,7 @@ export interface RunContext<E extends EnvDeclaration> {
    * includeUnlinked also returns visible rows from other sources without a link
    * or natural key, for checking explicit local requests before importing.
    * `edges` also reads each row's outbound edges, in the same pages of up to
-   * 200 rows (`Item.edges`: the first page of each edge type), to see what
+   * 500 rows (`Item.edges`: the first page of each edge type), to see what
    * the rows are connected to without a request for each. Connections a run
    * names are written when it ends, so they show from the next run. */
   readonly held: (

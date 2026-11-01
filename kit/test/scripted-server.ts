@@ -411,6 +411,8 @@ export class ScriptedServer {
   bodyCap: number | undefined;
   /** The most edges a page of `GET /edges` holds, below the server's 500. */
   edgeListCap = 500;
+  /** The most rows a page of `GET /items` holds, below the server's 500. */
+  listCap = 500;
   tooOld = false;
   /** The cursor asked for is past the head, as after a restore. */
   cursorAhead = false;
@@ -2042,10 +2044,24 @@ export class ScriptedServer {
   private listItems(query: URLSearchParams, send: Send): void {
     const state = query.get("state") ?? "active";
     const type = query.get("type");
-    const filter = /^(edge|backref)\[([^\]]+)\] eq "([^"]+)"$/.exec(
-      query.get("filter") ?? "",
-    );
-    if (query.get("filter") !== null && filter === null) {
+    // The edge terms a filter takes, joined by OR, up to the server's caps
+    // of 10 conditions and 2,048 characters.
+    const text = query.get("filter");
+    const terms =
+      text === null
+        ? undefined
+        : text
+            .split(" OR ")
+            .map((term) =>
+              /^(edge|backref)\[([^\]]+)\] eq "([^"]+)"$/.exec(term),
+            );
+    if (
+      text !== null &&
+      (terms === undefined ||
+        terms.length > 10 ||
+        text.length > 2048 ||
+        terms.some((term) => term === null))
+    ) {
       send(400, { error: { code: "validation_error" } });
       return;
     }
@@ -2055,18 +2071,26 @@ export class ScriptedServer {
         (query.get("source") === null || row.source === query.get("source")) &&
         (state === "any" || row.state === state) &&
         (query.get("tier") === null || row.tier === query.get("tier")) &&
-        (filter === null ||
-          this.edges.some((edge) =>
-            filter[1] === "edge"
-              ? edge.source_id === row.id &&
-                edge.edge_type === filter[2] &&
-                edge.target_id === filter[3]
-              : edge.target_id === row.id &&
-                edge.edge_type === filter[2] &&
-                edge.source_id === filter[3],
+        (terms === undefined ||
+          terms.some(
+            (term) =>
+              term !== null &&
+              this.edges.some((edge) =>
+                term[1] === "edge"
+                  ? edge.source_id === row.id &&
+                    edge.edge_type === term[2] &&
+                    edge.target_id === term[3]
+                  : edge.target_id === row.id &&
+                    edge.edge_type === term[2] &&
+                    edge.source_id === term[3],
+              ),
           )),
     );
-    const limit = Number(query.get("limit") ?? "50");
+    const limit = Math.min(
+      Number(query.get("limit") ?? "50"),
+      500,
+      this.listCap,
+    );
     const start = Number(query.get("cursor") ?? "0");
     const page = matches.slice(start, start + limit);
     const next = start + limit < matches.length ? String(start + limit) : null;

@@ -856,6 +856,148 @@ describe("what a run finds linked", () => {
   });
 });
 
+describe("what a run finds linked to many targets", () => {
+  /** Targets 1 to `count`, each blocked by two rows, 100 + n and 200 + n. */
+  function blocked(count: number): Vendor {
+    const targets = Array.from({ length: count }, (_, at) => at + 1);
+    return connected([
+      ...targets.map((n) => entry(n)),
+      ...targets.flatMap((n) => [entry(100 + n, [n]), entry(200 + n, [n])]),
+    ]);
+  }
+
+  function ask(held: Vendor, ids: string[]): void {
+    held.entries = [];
+    held.askEach = {
+      connection: "test.blocks",
+      targets: { type: "test.entry", ids },
+    };
+  }
+
+  function expected(count: number): Record<string, string[]> {
+    return Object.fromEntries(
+      Array.from({ length: count }, (_, at) => [
+        `v${String(at + 1)}`,
+        [`v${String(101 + at)}`, `v${String(201 + at)}`],
+      ]),
+    );
+  }
+
+  /** The requests a run with `askEach` sends to read what is connected. */
+  function reads(from: number): string[] {
+    return harness.server.requests
+      .slice(from)
+      .filter(
+        (request) =>
+          (request.method === "GET" && request.path === "/edges") ||
+          (request.method === "GET" &&
+            request.path === "/items" &&
+            request.query.has("filter")),
+      )
+      .map((request) => `${request.method} ${request.path}`);
+  }
+
+  it("answers each target's rows in a few requests, however many targets it names", async () => {
+    const held = blocked(60);
+    await harness.twoWay(held);
+    ask(
+      held,
+      Array.from({ length: 60 }, (_, at) => `v${String(at + 1)}`),
+    );
+    const before = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers).toEqual([expected(60)]);
+    expect(reads(before)).toEqual(["GET /edges"]);
+  });
+
+  it("asks ten targets to a filter, reading each filter's every page, where the edge type's listing is longer than the filters", async () => {
+    const held = blocked(25);
+    await harness.twoWay(held);
+    harness.server.edgeListCap = 5;
+    harness.server.listCap = 7;
+    ask(
+      held,
+      Array.from({ length: 25 }, (_, at) => `v${String(at + 1)}`),
+    );
+    const before = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers).toEqual([expected(25)]);
+    const filters = harness.server.requests
+      .slice(before)
+      .filter(
+        (request) => request.path === "/items" && request.query.has("filter"),
+      );
+    // Filters of ten, ten and five targets, holding twenty, twenty and ten
+    // rows, in pages of seven.
+    expect(filters).toHaveLength(3 + 3 + 2);
+    expect(
+      new Set(
+        filters.map(
+          (request) => request.query.get("filter")?.split(" OR ").length,
+        ),
+      ),
+    ).toEqual(new Set([10, 5]));
+  });
+
+  it("finds a row holding more edges than a row's first block", async () => {
+    const targets = Array.from({ length: 60 }, (_, at) => at + 1);
+    const held = connected([
+      ...targets.map((n) => entry(n)),
+      entry(100, targets),
+    ]);
+    await harness.twoWay(held);
+    harness.server.edgeListCap = 1;
+    ask(
+      held,
+      targets.map((n) => `v${String(n)}`),
+    );
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers).toEqual([
+      Object.fromEntries(targets.map((n) => [`v${String(n)}`, ["v100"]])),
+    ]);
+  });
+
+  it("sends nothing for no targets, and answers a target Marfa lacks with no rows", async () => {
+    const held = blocked(2);
+    await harness.twoWay(held);
+    ask(held, []);
+    let before = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers).toEqual([{}]);
+    expect(reads(before)).toEqual([]);
+    ask(held, ["v1", "v9"]);
+    before = harness.server.requests.length;
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers?.[1]).toEqual({
+      v1: ["v101", "v201"],
+      v9: [],
+    });
+    // Only the target Marfa holds is asked about, in one filter.
+    expect(reads(before)).toEqual(["GET /items"]);
+  });
+
+  it("fails the run where a read of them is rate limited, and the next run answers", async () => {
+    const held = blocked(25);
+    await harness.twoWay(held);
+    harness.server.edgeListCap = 5;
+    ask(
+      held,
+      Array.from({ length: 25 }, (_, at) => `v${String(at + 1)}`),
+    );
+    harness.server.refuseWhere(
+      "GET /items",
+      (request) => request.query.get("filter")?.includes('"') === true,
+      429,
+      "rate_limited",
+    );
+    expect(await harness.twoWay(held)).toBe(1);
+    expect(harness.lastRun().outcome).toBe("failed");
+    harness.server.stopRefusing();
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(held.eachAnswers).toEqual([expected(25)]);
+  });
+});
+
 describe("connections the vendor answers after a carry", () => {
   it("are what it holds: one it would not take is taken back in Marfa, and nothing more is carried", async () => {
     const held = connected([entry(1), entry(2), entry(3)]);

@@ -31,6 +31,44 @@ const edgePage = 1000;
 
 /** The server's cap on the keys one lookup names. */
 const lookupCap = 500;
+
+/** The server's cap on the rows a page of a listing holds. */
+const listingPage = 500;
+
+/** The server's caps on the conditions and the length of a filter. */
+const filterConditions = 10;
+const filterLength = 2048;
+
+function edgeCondition(inbound: boolean, edgeType: string, id: string): string {
+  return `${inbound ? "backref" : "edge"}[${edgeType}] eq ${JSON.stringify(id)}`;
+}
+
+/** The ids cut into groups whose conditions, joined by `OR`, one filter
+ *  takes. */
+function filterGroups(
+  ids: readonly string[],
+  most: number,
+  condition: (id: string) => string,
+): string[][] {
+  const groups: string[][] = [];
+  let group: string[] = [];
+  let length = 0;
+  for (const id of ids) {
+    const added = condition(id).length + (group.length === 0 ? 0 : 4);
+    if (
+      group.length > 0 &&
+      (group.length === most || length + added > filterLength)
+    ) {
+      groups.push(group);
+      group = [];
+      length = 0;
+    }
+    length += condition(id).length + (group.length === 0 ? 0 : 4);
+    group.push(id);
+  }
+  if (group.length > 0) groups.push(group);
+  return groups;
+}
 export type RunReport = NonNullable<
   operations["reportConnectorRun"]["requestBody"]
 >["content"]["application/json"];
@@ -691,7 +729,7 @@ export class Marfa {
             state,
             ...(tier !== "all" && { tier }),
             ...(edges && { include: "edges" }),
-            limit: 200,
+            limit: listingPage,
             ...(cursor !== undefined && { cursor }),
           },
         },
@@ -704,31 +742,92 @@ export class Marfa {
     return rows;
   }
 
-  /** The rows of a type that hold an edge to the target, or with `inbound`
-   *  that the target holds an edge to. */
+  /**
+   * For each target, the active rows of a type that hold an edge of the type
+   * to it, or with `inbound` that it holds one to. A filter names at most
+   * ten targets, joined by `OR`, so many targets are first sought in a
+   * listing of the edge type, which is given up once it takes as many pages
+   * as the filters would take requests: never more than twice the cheaper
+   * read. A row's own edges say which of a filter's targets it holds; an
+   * inbound filter names one target, since a row's inbound edges are not
+   * listed with it.
+   */
   async connectedTo(
     type: string,
     edgeType: string,
-    targetId: string,
+    targetIds: readonly string[],
     inbound = false,
-  ): Promise<Item[]> {
-    const rows: Item[] = [];
-    const walk = pages(async (cursor) => {
-      const { data, error, response } = await this.client.GET("/items", {
-        params: {
-          query: {
-            type,
-            filter: `${inbound ? "backref" : "edge"}[${edgeType}] eq ${JSON.stringify(targetId)}`,
-            limit: 200,
-            ...(cursor !== undefined && { cursor }),
-          },
-        },
+  ): Promise<Map<string, Item[]>> {
+    const found = new Map<string, Item[]>(targetIds.map((id) => [id, []]));
+    if (found.size === 0) return found;
+    const groups = filterGroups(
+      [...found.keys()],
+      inbound ? 1 : filterConditions,
+      (id) => edgeCondition(inbound, edgeType, id),
+    );
+    const listed =
+      groups.length < 2
+        ? undefined
+        : await this.edgesOfType(edgeType, groups.length);
+    if (listed !== undefined) {
+      const pairs = listed.flatMap((edge) => {
+        const [target, row] = inbound
+          ? [edge.source_id, edge.target_id]
+          : [edge.target_id, edge.source_id];
+        return found.has(target) ? [{ target, row }] : [];
       });
-      if (data === undefined) throw refusal(response, error);
-      return data;
-    });
-    for await (const row of walk) rows.push("item" in row ? row.item : row);
-    return rows;
+      const rows = new Map(
+        (
+          await this.lookup(type, {
+            ids: [...new Set(pairs.map((p) => p.row))],
+          })
+        ).data
+          .filter((row) => row.type === type && row.state === "active")
+          .map((row) => [row.id, row] as const),
+      );
+      for (const { target, row } of pairs) {
+        const item = rows.get(row);
+        if (item !== undefined) found.get(target)?.push(item);
+      }
+      return found;
+    }
+    for (const group of groups) {
+      const walk = pages(async (cursor) => {
+        const { data, error, response } = await this.client.GET("/items", {
+          params: {
+            query: {
+              type,
+              filter: group
+                .map((id) => edgeCondition(inbound, edgeType, id))
+                .join(" OR "),
+              ...(group.length > 1 && { include: "edges" }),
+              limit: listingPage,
+              ...(cursor !== undefined && { cursor }),
+            },
+          },
+        });
+        if (data === undefined) throw refusal(response, error);
+        return data;
+      });
+      for await (const listed of walk) {
+        const row: Item = { ...("item" in listed ? listed.item : listed) };
+        const block = row.edges?.[edgeType];
+        Reflect.deleteProperty(row, "edges");
+        const held =
+          group.length === 1
+            ? group
+            : [
+                ...(block?.data ?? []),
+                ...(block === undefined || block.next_cursor === null
+                  ? []
+                  : await this.moreEdges(row.id, edgeType, block.next_cursor)),
+              ]
+                .map((edge) => edge.target_id)
+                .filter((target) => group.includes(target));
+        for (const target of new Set(held)) found.get(target)?.push(row);
+      }
+    }
+    return found;
   }
 
   async lookup(
