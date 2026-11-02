@@ -389,6 +389,8 @@ export class ScriptedServer {
   runs: Run[] = [];
   heartbeats = 0;
   registrations = 0;
+  /** The registration's `read_only_types`, replaced by each register call. */
+  readOnlyTypes: string[] = [];
   requests: Request[] = [];
   readonly log: Event[] = [];
   readonly entryRefusals = new Map<string, Refusal>();
@@ -1195,6 +1197,7 @@ export class ScriptedServer {
       if (this.lost) this.holder = undefined;
       this.lost = false;
       this.registrations += 1;
+      this.readOnlyTypes = (input["read_only_types"] ?? []) as string[];
       const at = this.now();
       send(this.registrations === 1 ? 201 : 200, {
         id: "connector-1",
@@ -1205,6 +1208,7 @@ export class ScriptedServer {
         registered_at: at,
         updated_at: at,
         last_heartbeat_at: null,
+        read_only_types: this.readOnlyTypes,
         last_run: null,
         problems: this.problems.get(this.keySource) ?? {},
       });

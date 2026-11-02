@@ -46,6 +46,7 @@ import {
   type Telemetry,
   type TelemetrySettings,
 } from "./telemetry.js";
+import { readOnlyTypesOf } from "./read-only-types.js";
 import { setUp, workingTreeOf } from "./setup.js";
 import { edgeTypesOf, shippedConnection, turned } from "./shipped.js";
 import {
@@ -286,10 +287,21 @@ function keyProblems<E extends EnvDeclaration>(
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
+  environment: Environment,
   again: boolean,
   logger: Logger,
 ): Promise<Started> {
-  const id = await marfa.register(connector.name, connector.description);
+  const id = await marfa.register(
+    connector.name,
+    connector.description,
+    readOnlyTypesOf(
+      specsOf(
+        connector,
+        environment.values as EnvValues<E>,
+        undefined,
+      ).values(),
+    ),
+  );
   const key = await marfa.currentKey();
   const problems = keyProblems(connector, key);
   const stopped = (problem: string): Started => ({
@@ -697,7 +709,13 @@ async function serve<E extends EnvDeclaration>(
   let started: Started | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
-      started = await registerAndCheck(connector, marfa, again, logger);
+      started = await registerAndCheck(
+        connector,
+        marfa,
+        environment,
+        again,
+        logger,
+      );
     } catch (error) {
       if (causeOf(error) === "address" || faultOf(error) !== undefined) {
         cannotStart(logger, telemetry, addressProblem(error, environment.url));
