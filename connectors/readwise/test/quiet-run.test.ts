@@ -13,7 +13,7 @@ quietRun({
   async hold(size) {
     const marfa = await new ScriptedServer("readwise", {
       types: ["readwise.source", "readwise.highlight", "readwise.file"],
-      edges: ["excerpt-of", "attached-to"],
+      edges: ["excerpt-of", "references", "attached-to"],
     }).start();
     marfa.grants = { metadata_permissions: { types: "write" } };
     const vendor = await readerVendor({ incremental: true });

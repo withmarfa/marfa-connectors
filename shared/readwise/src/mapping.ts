@@ -160,6 +160,7 @@ export function mapHighlight(
       "excerpt-of": [
         { type: "readwise.source", id: identity(account, "source", sourceId) },
       ],
+      references: [],
     },
   };
 }

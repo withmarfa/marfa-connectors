@@ -42,9 +42,11 @@ beforeEach(async () => {
       "attached-to",
       "github.closes",
       "github.closed-by",
-      "in-thread",
+      "comments-on",
       "in-collection",
       "parent-of",
+      "about",
+      "in-thread",
       "references",
     ],
   }).start();

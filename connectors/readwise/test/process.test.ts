@@ -39,7 +39,7 @@ const source = (id: number) => ({
 beforeEach(async () => {
   marfa = await new ScriptedServer("readwise", {
     types: ["readwise.source", "readwise.highlight", "readwise.file"],
-    edges: ["excerpt-of", "attached-to"],
+    edges: ["excerpt-of", "references", "attached-to"],
   }).start();
   marfa.advance(Date.now() - Date.parse("2026-09-25T00:00:00.000Z"));
   marfa.types.set("core.media", {

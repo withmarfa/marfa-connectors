@@ -44,7 +44,9 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "parent-of",
+      "about",
       "references",
+      "comments-on",
       "in-thread",
       "in-collection",
     ],
@@ -607,13 +609,13 @@ describe("a run for deliveries", () => {
           marfa.rows.some(
             (one) =>
               one.properties["github_id"] === comment.node &&
-              marfa.targetsOf(one.id, "in-thread").length > 0,
+              marfa.targetsOf(one.id, "comments-on").length > 0,
           ),
         "the comment being written in its thread",
       );
       expect(
         marfa
-          .targetsOf(row(comment.node).id, "in-thread")
+          .targetsOf(row(comment.node).id, "comments-on")
           .map((id) => marfa.byId(id).properties["github_id"]),
       ).toEqual([issue.node]);
       expect(row(issue.node).properties["github_updated_at"]).toBe(
@@ -642,13 +644,13 @@ describe("a run for deliveries", () => {
           marfa.rows.some(
             (one) =>
               one.properties["github_id"] === comment.node &&
-              marfa.targetsOf(one.id, "in-thread").length > 0,
+              marfa.targetsOf(one.id, "comments-on").length > 0,
           ),
         "the comment being written in its discussion's thread",
       );
       expect(
         marfa
-          .targetsOf(row(comment.node).id, "in-thread")
+          .targetsOf(row(comment.node).id, "comments-on")
           .map((id) => marfa.byId(id).properties["github_id"]),
       ).toEqual([discussion.node]);
       expect(row(other.node).properties["title"]).toBe("Untouched");
@@ -908,13 +910,13 @@ describe("a run for deliveries", () => {
       const reads = marfa.requests.filter(
         (one) => one.method === "GET" && one.path.startsWith("/items"),
       );
-      // Nine, whether the repository holds 8 discussions or 30: only the named
-      // discussion's comments are read, never every comment row or every
-      // discussion's.
-      expect(reads.length).toBeLessThanOrEqual(10);
+      // Ten, whether the repository holds 8 discussions or 30: only the named
+      // discussion's comments are read, with one more read for their replies,
+      // never every comment row or every discussion's.
+      expect(reads.length).toBeLessThanOrEqual(11);
       expect(
-        reads.filter((one) => one.query.get("filter")?.includes("in-thread")),
-      ).toHaveLength(1);
+        reads.filter((one) => one.query.get("filter")?.includes("comments-on")),
+      ).toHaveLength(2);
     });
   });
 

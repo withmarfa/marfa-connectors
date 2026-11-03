@@ -42,6 +42,10 @@ export const relatesTo = "github.relates-to";
 export const duplicateOf = "github.duplicate-of";
 export const githubCloses = "github.closes";
 export const githubClosedBy = "github.closed-by";
+export const commentsOn = "comments-on";
+export const about = "about";
+/** Retired: the connector clears these on the rows it wrote with them, so a
+ *  row synced before holds only its current edges. */
 export const inThread = "in-thread";
 export const references = "references";
 
@@ -417,7 +421,8 @@ export function commentEntry(comment: Comment, hidden?: boolean): Entry {
     occurred_at: comment.createdAt,
     changed_at: comment.updatedAt,
     connections: {
-      [inThread]: [{ type: issueType, id: comment.issue }],
+      [commentsOn]: [{ type: issueType, id: comment.issue }],
+      [inThread]: [],
       [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
     },
   };
@@ -472,12 +477,17 @@ export function discussionCommentEntry(
     occurred_at: comment.createdAt,
     changed_at: comment.updatedAt,
     connections: {
-      [inThread]: [{ type: discussionType, id: comment.discussion }],
-      [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
-      [childOf]:
+      // A reply comments on the comment it answers, a top-level comment on the
+      // discussion: the edge is many-to-one, so a reply has no second link to
+      // the discussion.
+      [commentsOn]: [
         comment.replyTo === null
-          ? []
-          : [{ type: commentType, id: comment.replyTo }],
+          ? { type: discussionType, id: comment.discussion }
+          : { type: commentType, id: comment.replyTo },
+      ],
+      [inThread]: [],
+      [childOf]: [],
+      [inRepository]: [{ type: repositoryType, id: comment.repository.node }],
     },
   };
 }

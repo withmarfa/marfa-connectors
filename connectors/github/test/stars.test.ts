@@ -34,9 +34,11 @@ const connections = [
   "github.closes",
   "github.closed-by",
   "parent-of",
+  "comments-on",
   "in-thread",
-  "in-collection",
   "references",
+  "in-collection",
+  "about",
 ];
 
 let key: string;

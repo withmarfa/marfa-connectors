@@ -49,6 +49,8 @@ export async function proveGitHubRelations(
       "parent-of",
       "references",
       "in-thread",
+      "comments-on",
+      "about",
       "in-collection",
     ];
     const key = await mintKey({

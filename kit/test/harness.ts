@@ -150,6 +150,7 @@ export interface Vendor {
   archivedWhen?:
     ((properties: Readonly<Record<string, unknown>>) => boolean) | undefined;
   connections?: ConnectionDefinition[];
+  retired?: { type: string; connection: string }[];
   readOnly?: string[];
   derived?: string[];
   derive?: { keys: string[]; values: Record<string, unknown> };
@@ -186,6 +187,7 @@ export function testConnector(held: Vendor) {
       },
     ],
     ...(held.connections !== undefined && { connections: held.connections }),
+    ...(held.retired !== undefined && { retired: held.retired }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;
@@ -225,6 +227,7 @@ function twoWayConnector(held: Vendor) {
       },
     ],
     ...(held.connections !== undefined && { connections: held.connections }),
+    ...(held.retired !== undefined && { retired: held.retired }),
     env: { TEST_TOKEN: "secret", TEST_REGION: "optional" },
     async run(context) {
       held.runs += 1;

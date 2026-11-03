@@ -2,7 +2,7 @@ import type { Entry, Item } from "@withmarfa/connector";
 import { describe, expect, it } from "vitest";
 import {
   inRepository,
-  inThread,
+  commentsOn,
   issueType,
   repositoryType,
   type Issue,
@@ -31,7 +31,7 @@ function comment(node: string, body: string, issue: string): Entry {
     source_id: node,
     properties: { github_id: node, body, from: "alice" },
     occurred_at: at,
-    connections: { [inThread]: [{ type: issueType, id: issue }] },
+    connections: { [commentsOn]: [{ type: issueType, id: issue }] },
   };
 }
 

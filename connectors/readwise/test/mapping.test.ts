@@ -102,6 +102,7 @@ describe("Readwise mapping", () => {
     expect(entry.occurred_at).toBe(highlight.highlighted_at);
     expect(entry.connections).toEqual({
       "excerpt-of": [{ type: "readwise.source", id: "one:source:42" }],
+      references: [],
     });
     const long = "字\n".repeat(10000);
     expect(

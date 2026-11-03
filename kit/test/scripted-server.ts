@@ -318,6 +318,32 @@ export class ScriptedServer {
       },
     ],
     [
+      "about",
+      {
+        id: "about",
+        cardinality: "many-to-many",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "orphan",
+        property_schema: {},
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
+      "comments-on",
+      {
+        id: "comments-on",
+        cardinality: "many-to-one",
+        source_type_constraints: ["*"],
+        target_type_constraints: ["*"],
+        cascade_on_delete: "with-hosts",
+        property_schema: {},
+        written_at: "source",
+        shipped: true,
+      },
+    ],
+    [
       "derived-from",
       {
         id: "derived-from",
@@ -650,19 +676,37 @@ export class ScriptedServer {
   }
 
   /** What the server does with an edge type that cascades: every target
-   *  still active goes into the bin, at every depth, marked with the root. */
+   *  still active goes into the bin, at every depth, marked with the root.
+   *  A comment on its host, a `with-hosts` edge, goes into the bin when its
+   *  last active host does. No other `with-hosts` type is modelled. */
   private cascadeFrom(id: string, root: string): void {
+    const rule = (edge: EdgeRow): unknown =>
+      this.edgeTypes.get(edge.edge_type)?.["cascade_on_delete"];
     for (const edge of this.edges) {
-      if (
-        edge.source_id !== id ||
-        this.edgeTypes.get(edge.edge_type)?.["cascade_on_delete"] !== "cascade"
-      ) {
-        continue;
+      if (edge.source_id === id && rule(edge) === "cascade") {
+        const target = this.byId(edge.target_id);
+        if (target.state === "trashed") continue;
+        this.cascadeTrash(target.id, root);
+        this.cascadeFrom(target.id, root);
       }
-      const target = this.byId(edge.target_id);
-      if (target.state === "trashed") continue;
-      this.cascadeTrash(target.id, root);
-      this.cascadeFrom(target.id, root);
+      if (
+        edge.target_id === id &&
+        edge.edge_type === "comments-on" &&
+        rule(edge) === "with-hosts"
+      ) {
+        const part = this.byId(edge.source_id);
+        if (part.state === "trashed") continue;
+        const hosted = this.edges.filter(
+          (one) => one.source_id === part.id && rule(one) === "with-hosts",
+        );
+        if (
+          hosted.some((one) => this.byId(one.target_id).state !== "trashed")
+        ) {
+          continue;
+        }
+        this.cascadeTrash(part.id, root);
+        this.cascadeFrom(part.id, root);
+      }
     }
   }
 

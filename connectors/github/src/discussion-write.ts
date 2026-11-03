@@ -8,13 +8,12 @@ import {
   type Item,
 } from "@withmarfa/connector";
 import {
-  childOf,
   commentType,
   discussionCommentEntry,
   discussionEntry,
   discussionType,
   inRepository,
-  inThread,
+  commentsOn,
   unmarked,
   type Discussion,
   type DiscussionComment,
@@ -234,13 +233,27 @@ async function threadIsDiscussion(
   const { item } = change;
   const thread =
     change.kind === "created"
-      ? change.connections?.[inThread]?.added[0]
-      : change.placement?.[inThread]?.[0];
-  if (thread !== undefined) return thread.type === discussionType;
+      ? change.connections?.[commentsOn]?.added[0]
+      : change.placement?.[commentsOn]?.[0];
+  if (thread !== undefined) return inDiscussion(thread, context, app);
   if (change.kind === "created") return false;
   const node = text(item, "github_id");
   if (node === undefined) return false;
   return (await commentAt(context, app, item, node)) !== undefined;
+}
+
+/** Whether what a comment comments on belongs to a discussion: a discussion,
+ *  or a comment that GitHub holds in one. An issue's comment does not. */
+async function inDiscussion(
+  thread: Item,
+  context: Context,
+  app: App,
+): Promise<boolean> {
+  if (thread.type === discussionType) return true;
+  if (thread.type !== commentType) return false;
+  const node = text(thread, "github_id");
+  if (node === undefined) return false;
+  return (await commentAt(context, app, thread, node)) !== undefined;
 }
 
 /** Carries a change to a discussion or to a comment on one; nothing for any
@@ -505,21 +518,23 @@ async function createComment(
 ): Promise<Entry | undefined> {
   const { item } = change;
   const thread =
-    change.connections?.[inThread]?.added[0] ??
-    change.placement?.[inThread]?.[0];
+    change.connections?.[commentsOn]?.added[0] ??
+    change.placement?.[commentsOn]?.[0];
+  const hostNode = thread === undefined ? undefined : text(thread, "github_id");
+  // A reply comments on its parent comment, so the discussion is the one
+  // GitHub holds that comment in.
   const discussionNode =
-    thread === undefined ? undefined : text(thread, "github_id");
+    thread?.type === commentType && hostNode !== undefined
+      ? (await commentAt(context, app, thread, hostNode))?.comment.discussion
+      : hostNode;
   if (discussionNode === undefined) {
     context.log.condition(
       `comment-unplaced:${item.id}`,
-      `${item.id} is in no discussion's thread the App reads, so it is not sent to GitHub; put it in one with ${inThread}`,
+      `${item.id} is in no discussion's thread the App reads, so it is not sent to GitHub; put it in one with ${commentsOn}`,
     );
     return undefined;
   }
-  const answering =
-    change.connections?.[childOf]?.added[0] ?? change.placement?.[childOf]?.[0];
-  const replyNode =
-    answering === undefined ? undefined : text(answering, "github_id");
+  const replyNode = thread?.type === commentType ? hostNode : undefined;
   const { attempted } = change;
   const found =
     attempted === undefined
@@ -614,7 +629,8 @@ export async function remakeDiscussions(
 ): Promise<boolean | undefined> {
   const { item } = change;
   if (item.type !== commentType) return undefined;
-  if (change.placement?.[inThread]?.[0]?.type !== discussionType) {
+  const thread = change.placement?.[commentsOn]?.[0];
+  if (thread === undefined || !(await inDiscussion(thread, context, app))) {
     return undefined;
   }
   const node = text(item, "github_id");

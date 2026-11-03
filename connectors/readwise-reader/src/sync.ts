@@ -446,7 +446,7 @@ export async function sync(
           );
         if (document.category === "highlight" && document.parent_id) {
           if (parent === undefined) {
-            mapped.entry.connections = { "excerpt-of": [] };
+            mapped.entry.connections = { "excerpt-of": [], references: [] };
             mapped.conditions.push("unresolved-parent");
           } else if (
             parent.category === "highlight" ||
@@ -456,7 +456,7 @@ export async function sync(
           else {
             const parentIdentity = await identities.resolve(parent);
             if (parentIdentity.purged) {
-              mapped.entry.connections = { "excerpt-of": [] };
+              mapped.entry.connections = { "excerpt-of": [], references: [] };
               mapped.conditions.push("purged-parent");
             } else if (!combined.has(parent.id)) {
               const parentMapped = mapReaderSource(
