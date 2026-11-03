@@ -86,7 +86,7 @@ export async function proveReadwiseReader(
         },
         edge_permissions: {
           "excerpt-of": "write",
-          references: "write",
+          ...(!legacy && { references: "write" as const }),
           ...(!legacy && { "attached-to": "write" as const }),
         },
         metadata_permissions: { types: "write" },
