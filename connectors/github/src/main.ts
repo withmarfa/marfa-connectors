@@ -94,6 +94,8 @@ const connector = defineConnector<typeof env>({
   description:
     "Repositories, issues, discussions, comments, read-only pull requests, read-only notifications and read-only Markdown files from chosen repository paths through a personal access token or GitHub App, with relations, closing links and checks. Personal token runs are read only; App runs can carry issue, discussion and comment edits back.",
   source: "github",
+  sourceName: "GitHub",
+  sourceMark: "simple-icons:github",
   types: [
     ...fileKinds,
     {

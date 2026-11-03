@@ -645,6 +645,20 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly description?: string;
   readonly source: string;
   /**
+   * The name an owner reads for `source`, such as `GitHub`: the system the
+   * rows come from, not the route they came by, and not the account. The kit
+   * sets it with `PATCH /source` at start, only where the owner has not set a
+   * name of their own.
+   */
+  readonly sourceName?: string;
+  /**
+   * An Iconify icon ID from the sets Marfa accepts, `lucide` and
+   * `simple-icons` (`simple-icons:github`); left out where neither has a mark
+   * for the system. Set at start like `sourceName`, only where the source has
+   * none.
+   */
+  readonly sourceMark?: string;
+  /**
    * The connector's own README, as a path from the repository root such as
    * `connectors/rss/README.md`, where its owner learns to mint its key. The
    * messages that send an owner to mint one name it; without it they name

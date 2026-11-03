@@ -132,6 +132,8 @@ const connector = defineConnector({
   name: "rss",
   description: "Entries from Atom, RSS and JSON feeds.",
   source: "rss",
+  sourceName: "RSS",
+  sourceMark: "simple-icons:rss",
   readme: "connectors/rss/README.md",
   types: [
     {

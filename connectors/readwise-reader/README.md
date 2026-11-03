@@ -2,6 +2,8 @@
 
 Keep Reader documents, highlights, annotations, and available content in Marfa. Reader can carry supported edits back to Readwise. The separate [Highlights connector](../readwise/README.md) remains usable on its own.
 
+On every start the connector gives its source `readwise` the name Readwise, so apps show it instead of the code, unless the owner has already set a name of their own, which it leaves alone. Neither icon set Marfa accepts has a mark for Readwise, so it sets none. Reader and Highlights write under the same source, so they share the name.
+
 ## Configure and run
 
 Build from the repository root with Node 22.13 or later:

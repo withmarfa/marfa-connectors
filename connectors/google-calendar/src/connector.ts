@@ -65,6 +65,8 @@ export function createConnector(options?: GoogleOptions) {
     description:
       "Calendars and events of a Google account, read through the Calendar API, with changes to events made in Marfa carried back.",
     source,
+    sourceName: "Google Calendar",
+    sourceMark: "simple-icons:googlecalendar",
     readme: "connectors/google-calendar/README.md",
     types: [
       { type: calendarDefinition as TypeDefinition, fields: calendarFields },
