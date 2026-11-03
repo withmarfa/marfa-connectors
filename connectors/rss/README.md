@@ -2,6 +2,8 @@
 
 Reads feeds in Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed. By default it keeps only the addresses of an entry's pictures; if you ask it to, it also saves those pictures as files attached to the entry (see [Saving pictures](#saving-pictures)). It never writes an entry into the library, and moving an entry to the library is a person's or an app's act. A picture file reaches the library only as part of an entry that is already there.
 
+On every start the connector gives its source `rss` the name RSS and the mark `simple-icons:rss`, so apps show them instead of the code, and sets only what the source does not already have, so a name or mark an owner chose in an app is kept.
+
 ## What it does
 
 Each run fetches every feed in `RSS_FEEDS`, reads the entries it finds, and writes the ones that are new or changed. A feed that has not changed since the last run, as its server says by answering 304, is not read again. That progress is saved for each feed once Marfa has taken all of that feed's entries. When Marfa refuses an entry, only its feed keeps the progress it had before, so the next run reads that feed again, and the other feeds keep theirs. Every request carries the `User-Agent` `MarfaRSS (+https://github.com/withmarfa/marfa-connectors)`, so a feed's owner can tell who is reading. A run reports its counts, such as `created 4, updated 0, archived 0, unchanged 0, skipped 0`, and the conditions it raised. Read them with `marfa connectors runs <connector-id>`; `marfa connectors list` shows the id.

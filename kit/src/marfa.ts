@@ -436,6 +436,25 @@ export class Marfa {
     return keyNarrowerThanTypes(await this.currentKey(), types, connections);
   }
 
+  async source(code: string): Promise<components["schemas"]["Source"]> {
+    const { data, error, response } = await this.client.GET("/source", {
+      params: { query: { source: code } },
+    });
+    if (data === undefined) throw refusal(response, error);
+    return data;
+  }
+
+  async nameSource(
+    code: string,
+    body: { name?: string; mark?: string },
+  ): Promise<void> {
+    const { data, error, response } = await this.client.PATCH("/source", {
+      params: { query: { source: code } },
+      body,
+    });
+    if (data === undefined) throw refusal(response, error);
+  }
+
   async normalizeType(
     type: TypeDefinition,
   ): Promise<components["schemas"]["NormalizedType"]> {

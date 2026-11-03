@@ -2,6 +2,8 @@
 
 Reads a Todoist account's tasks through the Sync API into `todoist.task` rows at the feed tier, and carries changes made in Marfa back to Todoist.
 
+On every start the connector gives its source `todoist` the name Todoist and the mark `simple-icons:todoist`, so apps show them instead of the code, and sets only what the source does not already have, so a name or mark an owner chose in an app is kept.
+
 ## What syncs
 
 Every `todoist.task` on the instance syncs, whoever created it and under whatever source. The link between a row and its task is the property `todoist_id`: set from the sync for a task read from Todoist, and from Todoist's answer for a row created in Marfa, which becomes a task there. A conflicted copy, the row Marfa writes to keep the losing side of two colliding edits (tagged `conflicted-copy`), is not a row created in Marfa: it stays in Marfa, and the run raises a condition that names it. A task meant to stay in Marfa is a `core.task`, not a `todoist.task`.

@@ -284,6 +284,39 @@ function keyProblems<E extends EnvDeclaration>(
   return problems.length === 0 ? undefined : problems.join(" ");
 }
 
+/**
+ * Gives the source the name and mark the connector declares, where the source
+ * has none set: a name or mark an owner chose in an app outlasts a restart.
+ * Marfa refusing it never stops the start, since the rows sync under their code
+ * all the same; the next start asks again. An answer that does not come, or a
+ * key Marfa refuses, ends the attempt as it ends any other call of the start.
+ */
+async function nameSource<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  marfa: Marfa,
+  logger: Logger,
+): Promise<void> {
+  const { sourceName, sourceMark } = connector;
+  if (sourceName === undefined && sourceMark === undefined) return;
+  try {
+    const held = await marfa.source(connector.source);
+    const body = {
+      ...(sourceName !== undefined &&
+        held.name_from !== "set" && { name: sourceName }),
+      ...(sourceMark !== undefined &&
+        held.mark === undefined && { mark: sourceMark }),
+    };
+    if (Object.keys(body).length > 0) {
+      await marfa.nameSource(connector.source, body);
+    }
+  } catch (error) {
+    if (causeOf(error) !== "refused") throw error;
+    logger.warn(
+      `could not set the name or mark of the source ${connector.source}, so apps may show its key's label or its code instead; the next start tries again:${describe(error)}`,
+    );
+  }
+}
+
 async function registerAndCheck<E extends EnvDeclaration>(
   connector: Connector<E>,
   marfa: Marfa,
@@ -323,6 +356,7 @@ async function registerAndCheck<E extends EnvDeclaration>(
   if (step.problem !== undefined) return stopped(step.problem);
   const problem = await ensureConnections(connector.connections ?? [], marfa);
   if (problem !== undefined) return stopped(problem);
+  await nameSource(connector, marfa, logger);
   // Registering and widening connections are finished for this binary.
   // Types stay writable, since that is how the connector keeps its types current.
   // Read on edge_types gates nothing, and

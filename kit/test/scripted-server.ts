@@ -257,6 +257,11 @@ export class ScriptedServer {
   readonly key = "marfa_k1_scripted";
   readonly source: string;
   keySource: string;
+  /** What `PATCH /source` has set, by source code. */
+  readonly sourceNames = new Map<
+    string,
+    { name?: string | undefined; mark?: string | undefined }
+  >();
   grants: {
     sources?: string[];
     oauth_client_id?: string;
@@ -1185,6 +1190,27 @@ export class ScriptedServer {
         expires_at: null,
         last_used_at: null,
         ...this.grants,
+      });
+      return;
+    }
+    if (url.pathname === "/source") {
+      const code = url.searchParams.get("source") ?? "";
+      const held = this.sourceNames.get(code) ?? {};
+      if (method === "PATCH") {
+        const next = { ...held };
+        for (const field of ["name", "mark"] as const) {
+          const value = input[field];
+          if (value === null) next[field] = undefined;
+          else if (typeof value === "string") next[field] = value;
+        }
+        this.sourceNames.set(code, next);
+        Object.assign(held, next);
+      }
+      send(200, {
+        source: code,
+        name: held.name ?? code,
+        name_from: held.name === undefined ? "key" : "set",
+        ...(held.mark !== undefined && { mark: held.mark }),
       });
       return;
     }

@@ -35,6 +35,8 @@ const connector = defineConnector({
   description:
     "Tasks from a Todoist account, read through the Sync API, and every todoist.task in Marfa carried back to it.",
   source,
+  sourceName: "Todoist",
+  sourceMark: "simple-icons:todoist",
   types: [
     {
       // Imported JSON widens every string, so its field types read as

@@ -23,6 +23,7 @@ await main(
   defineConnector({
     name: "readwise",
     source: "readwise",
+    sourceName: "Readwise",
     description:
       "Sources and complete highlights from one Readwise account, read only.",
     readme: "connectors/readwise/README.md",

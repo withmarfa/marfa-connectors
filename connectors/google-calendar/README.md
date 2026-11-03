@@ -2,6 +2,8 @@
 
 Reads the calendars and events of a Google account into Marfa, and carries changes made to events in Marfa back to Google Calendar. It never invites anyone and never has Google email anyone. It signs in through the shared [Google sign-in](../../shared/google/README.md), so it uses the same OAuth client and refresh token as any other Google connector.
 
+On every start the connector gives its source `google-calendar` the name Google Calendar and the mark `simple-icons:googlecalendar`, so apps show them instead of the code, and sets only what the source does not already have, so a name or mark an owner chose in an app is kept.
+
 For how to build, deploy and run a connector, see the [template README](../../template/README.md). This page covers what is specific to Google Calendar.
 
 ## What it reads

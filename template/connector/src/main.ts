@@ -163,6 +163,9 @@ const connector = defineConnector({
   description:
     "Items from the example vendor's list, and changes to them carried back.",
   source: "example",
+  // What an app shows for the source: the system, not the route or an account.
+  // Add `sourceMark` with an icon ID from Marfa's sets where one fits.
+  sourceName: "Example",
   types: [
     {
       // Imported JSON widens every string, so its field types read as
@@ -187,8 +190,8 @@ const connector = defineConnector({
       account: string;
       items: VendorItem[];
     };
-    // The account inside the source id, so two accounts under one source
-    // never share a row.
+    // The account inside the source id for what the account owns, so two
+    // accounts under one source never share a row.
     const key = (item: VendorItem): string => `${account}:${item.id}`;
 
     const untitled = items.filter(

@@ -20,6 +20,7 @@ export function readerConnector() {
   return defineConnector({
     name: "readwise-reader",
     source: "readwise",
+    sourceName: "Readwise",
     description:
       "Reader documents, highlights, annotations, and retained content with supported two-way edits.",
     readme: "connectors/readwise-reader/README.md",
