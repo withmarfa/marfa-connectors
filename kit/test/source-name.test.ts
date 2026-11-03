@@ -112,4 +112,29 @@ describe("a connector's source name and mark", () => {
     expect(await start(connector, harness.runtime(["--once"]))).toBe(1);
     expect(harness.server.sourceNames.get("test")).toBeUndefined();
   });
+
+  it("warns and still syncs when the server refuses to read the source", async () => {
+    harness.server.refuseNext("GET /source", 404, "source_not_found");
+    expect(
+      await start(
+        named({ sourceName: "Test Vendor" }),
+        harness.runtime(["--once"]),
+      ),
+    ).toBe(0);
+    expect(patches()).toEqual([]);
+    expect(
+      harness.lines.some((line) => line.includes("source_not_found")),
+    ).toBe(true);
+  });
+
+  it("does not swallow a key the server refuses", async () => {
+    harness.server.refuseNext("GET /source", 401, "unauthorized");
+    expect(
+      await start(
+        named({ sourceName: "Test Vendor" }),
+        harness.runtime(["--once"]),
+      ),
+    ).toBe(1);
+    expect(patches()).toEqual([]);
+  });
 });

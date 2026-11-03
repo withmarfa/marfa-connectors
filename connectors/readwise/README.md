@@ -2,7 +2,7 @@
 
 Import sources, complete highlights, annotations, and tags from one Readwise account into Marfa. The connector only sends GET requests to Readwise. It polls through the connector kit and keeps progress on the Marfa instance.
 
-On every start the connector gives its source `readwise` the name Readwise, so apps show it instead of the code, unless the owner has already set a name of their own, which it leaves alone. Neither icon set Marfa accepts has a mark for Readwise, so it sets none.
+On every start the connector gives its source `readwise` the name Readwise, so apps show it instead of the code, and sets it only where the source has no name set, so a name an owner chose in an app is kept. Neither icon set Marfa accepts has a mark for Readwise, so it sets none.
 
 ## Data model
 

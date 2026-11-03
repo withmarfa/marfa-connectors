@@ -312,7 +312,7 @@ async function nameSource<E extends EnvDeclaration>(
   } catch (error) {
     if (causeOf(error) !== "refused") throw error;
     logger.warn(
-      `could not set the name or mark of the source ${connector.source}, which is shown by its code until the next start sets it: ${describe(error)}`,
+      `could not set the name or mark of the source ${connector.source}, so apps may show its key's label or its code instead; the next start tries again:${describe(error)}`,
     );
   }
 }

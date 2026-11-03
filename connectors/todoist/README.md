@@ -2,7 +2,7 @@
 
 Reads a Todoist account's tasks through the Sync API into `todoist.task` rows at the feed tier, and carries changes made in Marfa back to Todoist.
 
-On every start the connector gives its source `todoist` the name Todoist and the mark `simple-icons:todoist`, so apps show them instead of the code, unless the owner has already set a name or mark of their own, which it leaves alone.
+On every start the connector gives its source `todoist` the name Todoist and the mark `simple-icons:todoist`, so apps show them instead of the code, and sets only what the source does not already have, so a name or mark an owner chose in an app is kept.
 
 ## What syncs
 

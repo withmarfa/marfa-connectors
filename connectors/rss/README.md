@@ -2,7 +2,7 @@
 
 Reads feeds in Atom, RSS 2.0, RSS 1.0 (RDF) and JSON Feed into `rss.entry` rows at the feed tier, one row for each entry. It only reads: nothing goes back to a feed. By default it keeps only the addresses of an entry's pictures; if you ask it to, it also saves those pictures as files attached to the entry (see [Saving pictures](#saving-pictures)). It never writes an entry into the library, and moving an entry to the library is a person's or an app's act. A picture file reaches the library only as part of an entry that is already there.
 
-On every start the connector gives its source `rss` the name RSS and the mark `simple-icons:rss`, so apps show them instead of the code, unless the owner has already set a name or mark of their own, which it leaves alone.
+On every start the connector gives its source `rss` the name RSS and the mark `simple-icons:rss`, so apps show them instead of the code, and sets only what the source does not already have, so a name or mark an owner chose in an app is kept.
 
 ## What it does
 

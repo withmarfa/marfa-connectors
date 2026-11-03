@@ -2,7 +2,7 @@
 
 Reads the repositories a personal access token can reach or a GitHub App is installed on, their issues, discussions, comments and pull requests, with sub-issues, blockers, related issues, duplicates and closing links, into `github.repository`, `github.issue`, `github.discussion`, `github.comment` and `github.pull_request` rows at the feed tier (with a personal token, also the repositories its owner has starred, as `github.repository` rows), and, with a second token, the person's notifications into `github.notification` rows, and carries changes made in Marfa to issues, discussions and comments back to GitHub, where they appear under the App's name. Personal access token runs are always read only.
 
-On every start the connector gives its source `github` the name GitHub and the mark `simple-icons:github`, so apps show them instead of the code, unless the owner has already set a name or mark of their own, which it leaves alone.
+On every start the connector gives its source `github` the name GitHub and the mark `simple-icons:github`, so apps show them instead of the code, and sets only what the source does not already have, so a name or mark an owner chose in an app is kept.
 
 ## What syncs
 
