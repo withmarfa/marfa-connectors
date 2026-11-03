@@ -677,8 +677,8 @@ export class ScriptedServer {
 
   /** What the server does with an edge type that cascades: every target
    *  still active goes into the bin, at every depth, marked with the root.
-   *  A part of a `with-hosts` edge, such as a comment on its host, goes into
-   *  the bin when its last active host does. */
+   *  A comment on its host, a `with-hosts` edge, goes into the bin when its
+   *  last active host does. No other `with-hosts` type is modelled. */
   private cascadeFrom(id: string, root: string): void {
     const rule = (edge: EdgeRow): unknown =>
       this.edgeTypes.get(edge.edge_type)?.["cascade_on_delete"];
@@ -689,7 +689,11 @@ export class ScriptedServer {
         this.cascadeTrash(target.id, root);
         this.cascadeFrom(target.id, root);
       }
-      if (edge.target_id === id && rule(edge) === "with-hosts") {
+      if (
+        edge.target_id === id &&
+        edge.edge_type === "comments-on" &&
+        rule(edge) === "with-hosts"
+      ) {
         const part = this.byId(edge.source_id);
         if (part.state === "trashed") continue;
         const hosted = this.edges.filter(

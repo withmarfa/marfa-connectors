@@ -51,6 +51,8 @@ const connections = [
   "parent-of",
   "references",
   "in-thread",
+  "comments-on",
+  "about",
   "in-collection",
 ];
 
@@ -175,7 +177,7 @@ export async function proveGitHub(
     );
 
     await check(
-      "github: the first run adds private to the types an earlier connector registered, registers the rest as kinds of the core's, writes the repository, the issues and the comment, and connects them, the comment in its issue's thread through the instance's in-thread",
+      "github: the first run adds private to the types an earlier connector registered, registers the rest as kinds of the core's, writes the repository, the issues and the comment, and connects them, the comment on its issue through the instance's comments-on",
       async () => {
         const output = await runOnce();
         const added = ["github.issue", "github.comment"].filter((type) =>
@@ -219,7 +221,7 @@ export async function proveGitHub(
           targets(marfa, top, "github.in-repository"),
           targets(marfa, below, "github.sub-issue-of"),
           targets(marfa, below, "github.blocked-by"),
-          targets(marfa, said, "in-thread"),
+          targets(marfa, said, "comments-on"),
         ]);
         const blockerRow = await row(blocker.node);
         const kinds = await marfa.GET("/edge-types");
@@ -355,7 +357,7 @@ export async function proveGitHub(
           body: "Said in Marfa",
           from: "the proof",
         });
-        await connect(marfa, said, await row(parent.node), "in-thread");
+        await connect(marfa, said, await row(parent.node), "comments-on");
         await runOnce();
         const issue = github.issues.find(
           (one) => one.title === "Made in Marfa",
@@ -629,7 +631,7 @@ export async function proveGitHub(
           body: "Where does this go?",
           from: "me",
         });
-        await connect(marfa, said, named, "in-thread");
+        await connect(marfa, said, named, "comments-on");
         const binnedRow = await edit(marfa, await row(binned.node), {
           number: parent.number,
           repository: "other/public",
@@ -792,7 +794,7 @@ export async function proveGitHub(
           body: "Said once, through a 502",
           from: "me",
         });
-        await connect(marfa, said, await row(parent.node), "in-thread");
+        await connect(marfa, said, await row(parent.node), "comments-on");
         github.loseNextCreate = true;
         await runOnce();
         const posted = github.comments.filter((one) =>

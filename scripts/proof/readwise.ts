@@ -64,7 +64,11 @@ export async function proveReadwise(
               "readwise.highlight": "write",
               "readwise.file": "write",
             },
-            edge_permissions: { "excerpt-of": "write", "attached-to": "write" },
+            edge_permissions: {
+              "excerpt-of": "write",
+              "attached-to": "write",
+              references: "write",
+            },
             metadata_permissions: { types: "write" },
           },
         });
@@ -76,7 +80,7 @@ export async function proveReadwise(
           data.default_tier !== "feed" ||
           Object.keys(data.metadata_permissions).join() !== "types" ||
           Object.keys(data.edge_permissions).sort().join() !==
-            "attached-to,excerpt-of"
+            "attached-to,excerpt-of,references"
         )
           throw new Error(
             "Readwise key permissions differ from the requested scope",

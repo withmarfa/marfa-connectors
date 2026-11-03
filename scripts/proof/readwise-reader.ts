@@ -86,6 +86,7 @@ export async function proveReadwiseReader(
         },
         edge_permissions: {
           "excerpt-of": "write",
+          references: "write",
           ...(!legacy && { "attached-to": "write" as const }),
         },
         metadata_permissions: { types: "write" },
@@ -260,7 +261,11 @@ export async function proveReadwiseReader(
             "readwise.highlight": "write",
             "readwise.file": "write",
           },
-          edge_permissions: { "excerpt-of": "write", "attached-to": "write" },
+          edge_permissions: {
+            "excerpt-of": "write",
+            "attached-to": "write",
+            references: "write",
+          },
         });
         assert.deepEqual(await all(), retained);
         assert.deepEqual((await state()).data, agreements.data);

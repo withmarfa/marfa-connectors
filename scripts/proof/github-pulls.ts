@@ -59,6 +59,8 @@ export async function proveGitHubPullRequests(
       "parent-of",
       "references",
       "in-thread",
+      "comments-on",
+      "about",
       "in-collection",
       "attached-to",
     ];
