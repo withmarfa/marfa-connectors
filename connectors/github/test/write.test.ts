@@ -47,7 +47,9 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "parent-of",
+      "about",
       "references",
+      "comments-on",
       "in-thread",
       "in-collection",
     ],
@@ -505,7 +507,7 @@ describe("a row made in Marfa", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(made.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(made.id, row(issue.node).id, "comments-on");
     await settled();
     const comment = github.comments.find(
       (one) => unmarked(one.body) === "From Marfa",
@@ -528,7 +530,7 @@ describe("a row made in Marfa", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(made.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(made.id, row(issue.node).id, "comments-on");
     repository.issuesOff = true;
     const output = await ok();
     expect(output).toContain("has its issues turned off");
@@ -671,7 +673,7 @@ describe("what the write review found", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(said.id, row(issue.node).id, "comments-on");
     github.loseNextCreate = true;
     github.listLate = true;
     expect(await ok()).toContain("waits");
@@ -704,7 +706,7 @@ describe("what the write review found", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(said.id, row(issue.node).id, "comments-on");
     github.loseNextCreate = true;
     await ok();
     await ok();
@@ -821,7 +823,7 @@ describe("what the adversarial review found", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(said.id, row(issue.node).id, "comments-on");
     github.loseNextCreate = true;
     github.listLate = true;
     expect(await ok()).toContain("waits");
@@ -1183,7 +1185,7 @@ describe("where a write lands", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(said.id, named.id, "in-thread");
+    marfa.drawEdge(said.id, named.id, "comments-on");
     const output = await ok();
     await ok();
     expect(github.comments).toEqual([]);
@@ -1384,7 +1386,7 @@ describe("an installation that refuses the App", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(said.id, row(issue.node).id, "comments-on");
     await ok();
     expect(
       github.comments.some((one) =>
@@ -1413,7 +1415,7 @@ describe("a create GitHub made but answered with a server error", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(said.id, row(issue.node).id, "in-thread");
+    marfa.drawEdge(said.id, row(issue.node).id, "comments-on");
     github.loseNextCreate = true;
     await settled();
     const issues = github.issues.filter((one) => one.title === "Made once");

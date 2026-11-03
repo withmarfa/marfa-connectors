@@ -17,7 +17,7 @@ import {
   relatesTo,
   commentEntry,
   commentType,
-  inThread,
+  commentsOn,
   inRepository,
   issueEntry,
   issueOfRest,
@@ -1104,12 +1104,13 @@ async function createComment(
   app: App,
 ): Promise<Entry | undefined> {
   const { item } = change;
-  const issue = change.connections?.[inThread]?.added[0];
-  const issueNode = issue === undefined ? undefined : text(issue, "github_id");
+  const issue = change.connections?.[commentsOn]?.added[0];
+  const issueNode =
+    issue?.type === issueType ? text(issue, "github_id") : undefined;
   if (issueNode === undefined) {
     context.log.condition(
       `comment-unplaced:${item.id}`,
-      `${item.id} is in no issue's thread the App reads, so it is not sent to GitHub; put it in one with ${inThread}`,
+      `${item.id} is in no issue's thread the App reads, so it is not sent to GitHub; put it in one with ${commentsOn}`,
     );
     return undefined;
   }

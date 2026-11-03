@@ -30,7 +30,9 @@ const connections = [
   "github.closes",
   "github.closed-by",
   "parent-of",
+  "about",
   "references",
+  "comments-on",
   "in-thread",
   "in-collection",
 ];
@@ -511,12 +513,12 @@ describe("a first sync", () => {
       body: "First!",
       from: "another",
     });
-    expect(links(comment.node, "in-thread")).toEqual([parent.node]);
+    expect(links(comment.node, "comments-on")).toEqual([parent.node]);
     expect(links(comment.node, "github.in-repository")).toEqual([
       repository.node,
     ]);
     expect(marfa.edgeTypes.has("github.sub-issue-of")).toBe(true);
-    expect(marfa.edgeTypes.get("in-thread")?.["id"]).toBe("in-thread");
+    expect(marfa.edgeTypes.get("comments-on")?.["id"]).toBe("comments-on");
   });
 });
 

@@ -669,6 +669,15 @@ export interface Connector<E extends EnvDeclaration = EnvDeclaration> {
   readonly types: readonly Kind[];
   readonly connections?: readonly ConnectionDefinition[];
   /**
+   * Connections a row of a type once wrote and no longer does, each also
+   * declared among `connections` so an entry can name it with none. Naming
+   * one with an empty list removes only the edges the kit agreed with the
+   * row, in every mode, read only included, so a link a person drew is never
+   * removed; and a change to one in Marfa is never put back. Without this,
+   * a connection an entry no longer names stays on a row written before.
+   */
+  readonly retired?: readonly { type: string; connection: string }[];
+  /**
    * The types whose changes go back to the vendor, from the environment, so
    * any kind can run read only; every type where the connector has
    * `onChange` and says nothing.

@@ -13,7 +13,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Create a connector key with source `readwise-reader`, claimed item source `readwise`, write access to `readwise.source`, `readwise.highlight`, and `readwise.file`, write access to the built-in `excerpt-of` and `attached-to` edge types, and `types=write` metadata access. Use the feed default tier. Do not grant edge-type registration or unrelated permissions.
+Create a connector key with source `readwise-reader`, claimed item source `readwise`, write access to `readwise.source`, `readwise.highlight`, and `readwise.file`, write access to the built-in `excerpt-of`, `references` (which the connector clears from a highlight it once wrote with it) and `attached-to` edge types, and `types=write` metadata access. Use the feed default tier. Do not grant edge-type registration or unrelated permissions.
 
 Reader and Highlights must use different key sources. Two keys under the same key source would share a registration and its saved state. Highlights uses key source `readwise`; both definitions write item source `readwise` and use the same stable account label.
 

@@ -4,6 +4,7 @@ import {
   discussionType,
   issueType,
   pullRequestType,
+  about,
   references,
 } from "./entries.js";
 import {
@@ -179,10 +180,11 @@ function entryOf(
     occurred_at: thread.updated_at,
     changed_at: thread.updated_at,
     connections: {
-      [references]:
+      [about]:
         node === undefined || kind === undefined
           ? []
           : [{ type: kind.type, id: node }],
+      [references]: [],
     },
   };
 }

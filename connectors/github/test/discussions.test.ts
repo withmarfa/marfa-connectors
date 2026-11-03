@@ -48,9 +48,11 @@ beforeEach(async () => {
       "github.closes",
       "github.closed-by",
       "parent-of",
-      "references",
+      "about",
       "attached-to",
+      "comments-on",
       "in-thread",
+      "references",
       "in-collection",
     ],
   }).start();
@@ -113,16 +115,6 @@ function links(link: string, type: string): unknown[] {
   return marfa
     .targetsOf(row(link).id, type)
     .map((target) => marfa.byId(target).properties["github_id"]);
-}
-
-/** The comment a reply answers: Marfa's `parent-of` runs from it to the reply. */
-function parents(link: string): unknown[] {
-  return marfa.edges
-    .filter(
-      (edge) =>
-        edge.edge_type === "parent-of" && edge.target_id === row(link).id,
-    )
-    .map((edge) => marfa.byId(edge.source_id).properties["github_id"]);
 }
 
 function written(): string[] {
@@ -195,10 +187,8 @@ describe("reading discussions", () => {
       body: "Weekly.",
       from: "ana",
     });
-    expect(links(first.node, "in-thread")).toEqual([discussion.node]);
-    expect(parents(first.node)).toEqual([]);
-    expect(links(reply.node, "in-thread")).toEqual([discussion.node]);
-    expect(parents(reply.node)).toEqual([first.node]);
+    expect(links(first.node, "comments-on")).toEqual([discussion.node]);
+    expect(links(reply.node, "comments-on")).toEqual([first.node]);
     const versions = marfa.rows.map((one) => one.version);
     await ok();
     expect(marfa.rows.map((one) => one.version)).toEqual(versions);
@@ -222,7 +212,9 @@ describe("reading discussions", () => {
     for (const one of [...comments, ...replies]) {
       expect(row(one.node).properties["body"]).toBe(one.body);
     }
-    expect(parents(replies[4]?.node ?? "")).toEqual([comments[4]?.node]);
+    expect(links(replies[4]?.node ?? "", "comments-on")).toEqual([
+      comments[4]?.node,
+    ]);
   });
 
   it("keeps a deleted comment that has replies as an empty row, and archives one deleted outright at the daily check", async () => {
@@ -425,6 +417,18 @@ describe("a discussion changed in Marfa", () => {
     expect(written()).toEqual([]);
   });
 
+  it("clears the retired child-of of a comment, but never one a person drew, even where comments are read only", async () => {
+    const first = github.addDiscussionComment(discussion, "First", "ana");
+    const second = github.addDiscussionComment(discussion, "Second", "bo");
+    await ok();
+    // A person's own link from one comment to another.
+    marfa.drawEdge(row(first.node).id, row(second.node).id, "parent-of");
+    await ok({ GITHUB_READ_ONLY: "comment" });
+    await ok({ GITHUB_READ_ONLY: "comment" });
+    expect(links(first.node, "parent-of")).toEqual([second.node]);
+    expect(links(second.node, "comments-on")).toEqual([discussion.node]);
+  });
+
   it("is carried while another kind is read only, and leaves its comments alone", async () => {
     const comment = github.addDiscussionComment(discussion, "Mine", bot);
     comment.app = true;
@@ -588,7 +592,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    marfa.drawEdge(top.id, row(discussion.node).id, "comments-on");
     await settled();
     const posted = github.discussionComments.find(
       (one) => unmarked(one.body) === "From Marfa",
@@ -600,8 +604,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(reply.id, row(discussion.node).id, "in-thread");
-    marfa.drawEdge(top.id, reply.id, "parent-of");
+    marfa.drawEdge(reply.id, top.id, "comments-on");
     await settled();
     expect(
       github.discussionComments.find(
@@ -632,7 +635,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    marfa.drawEdge(top.id, row(discussion.node).id, "comments-on");
     await settled();
     const parent = github.discussionComments.find(
       (one) => unmarked(one.body) === "Parent",
@@ -643,8 +646,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(reply.id, row(discussion.node).id, "in-thread");
-    marfa.drawEdge(top.id, reply.id, "parent-of");
+    marfa.drawEdge(reply.id, top.id, "comments-on");
     await settled();
     const ours = github.discussionComments.find(
       (one) => unmarked(one.body) === "Ours",
@@ -656,7 +658,7 @@ describe("a comment on a discussion", () => {
       parent ?? null,
     );
     await settled();
-    expect(parents(theirs.node)).toEqual([parent?.node]);
+    expect(links(theirs.node, "comments-on")).toEqual([parent?.node]);
     expect(written()).toEqual(["AddDiscussionComment", "AddDiscussionComment"]);
 
     marfa.trash(top.id);
@@ -692,8 +694,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(reply.id, row(discussion.node).id, "in-thread");
-    marfa.drawEdge(row(theirs.node).id, reply.id, "parent-of");
+    marfa.drawEdge(reply.id, row(theirs.node).id, "comments-on");
     await settled();
     expect(written()).toEqual(["AddDiscussionComment"]);
 
@@ -718,7 +719,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    marfa.drawEdge(top.id, row(discussion.node).id, "comments-on");
     github.loseNextCreate = true;
     github.listLate = true;
     expect(await ok()).toContain("waits");
@@ -739,7 +740,7 @@ describe("a comment on a discussion", () => {
       "github.comment",
       "person",
     );
-    marfa.drawEdge(top.id, row(discussion.node).id, "in-thread");
+    marfa.drawEdge(top.id, row(discussion.node).id, "comments-on");
     repository.discussionsOff = true;
     const output = await ok();
     expect(output).toContain("has its Discussions turned off");

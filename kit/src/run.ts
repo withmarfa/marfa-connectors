@@ -880,6 +880,9 @@ export async function runOnce<E extends EnvDeclaration>(
     store,
     hooks,
     setup.signal,
+    new Set(
+      (connector.retired ?? []).map((one) => `${one.type} ${one.connection}`),
+    ),
   );
   const lane = (type: string): { spec: Spec; rows: Rows } => {
     const found = lanes.get(type);

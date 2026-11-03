@@ -402,6 +402,7 @@ function mapped(
             },
           ]
         : [],
+      references: [],
     };
     if (!row.parent_id) result.conditions.push("unresolved-parent");
   }

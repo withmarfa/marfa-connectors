@@ -200,10 +200,19 @@ export class Connections {
     private readonly store: Store,
     private readonly hooks: Hooks,
     private readonly signal: AbortSignal,
+    private readonly retired: ReadonlySet<string> = new Set(),
   ) {}
 
+  /** Whether a connection of the row's type is one it no longer writes. */
+  isRetired(row: string, connection: string): boolean {
+    return this.retired.has(`${row} ${connection}`);
+  }
+
   mirrored(spec: Spec, type: string): boolean {
-    return !spec.twoWay || spec.readOnly.has(type);
+    return (
+      !this.isRetired(spec.type, type) &&
+      (!spec.twoWay || spec.readOnly.has(type))
+    );
   }
 
   typesFrom(type: string): string[] {
@@ -388,7 +397,9 @@ export class Connections {
       kind,
       new Set([...agreed, ...wanted]),
     );
-    const mirror = this.mirrored(spec, type) || seeding;
+    const mirror =
+      !this.isRetired(spec.type, type) &&
+      (this.mirrored(spec, type) || seeding);
     const add = [...wanted].filter(
       (target) => !current.has(target) && (mirror || !agreed.has(target)),
     );
@@ -419,13 +430,15 @@ export class Connections {
     kind: ConnectionDefinition,
     known: ReadonlySet<string>,
   ): Promise<Map<string, string>> {
-    // References and excerpts are shared with links people make themselves, even between
+    // References, excerpts and notes about a row are shared with links people make themselves, even between
     // the connector's own types. Only its agreed or requested targets belong
     // to this connector's reconciliation.
     const ofType = edges.filter(
       (edge) =>
         edge.edge_type === kind.id &&
-        ((kind.id !== "references" && kind.id !== "excerpt-of") ||
+        ((kind.id !== "references" &&
+          kind.id !== "excerpt-of" &&
+          kind.id !== "about") ||
           known.has(edge.target_id)),
     );
     const unknown = ofType

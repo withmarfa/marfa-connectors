@@ -70,6 +70,7 @@ describe("shared Reader mapping", () => {
       "excerpt-of": [
         { type: "readwise.source", id: "one:reader-document:doc" },
       ],
+      references: [],
     });
   });
   it("preserves over-limit text through explicit file plans and keeps orphans", () => {
@@ -85,7 +86,10 @@ describe("shared Reader mapping", () => {
       mapped.textFiles[0]?.key,
     );
     expect(mapped.conditions).toContain("unresolved-parent");
-    expect(mapped.entry.connections).toEqual({ "excerpt-of": [] });
+    expect(mapped.entry.connections).toEqual({
+      "excerpt-of": [],
+      references: [],
+    });
   });
   it("rejects malformed pages without converting failure to emptiness", () => {
     for (const value of [

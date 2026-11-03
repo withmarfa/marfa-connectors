@@ -30,7 +30,9 @@ const edges = [
   "github.closes",
   "github.closed-by",
   "parent-of",
+  "about",
   "references",
+  "comments-on",
   "in-thread",
   "in-collection",
   "attached-to",
@@ -172,9 +174,9 @@ describe("notifications", () => {
       "https://github.com/someone/tracker/commit/0123456789abcdef0123456789abcdef01234567",
     );
     expect(row(release.id).properties["url"]).toBeUndefined();
-    expect(links(thread.id, "references")).toEqual([issue.node]);
-    expect(links(review.id, "references")).toEqual([pr.node]);
-    expect(links(commit.id, "references")).toEqual([]);
+    expect(links(thread.id, "about")).toEqual([issue.node]);
+    expect(links(review.id, "about")).toEqual([pr.node]);
+    expect(links(commit.id, "about")).toEqual([]);
     expect(conditions()).toEqual({});
   });
 
@@ -200,8 +202,8 @@ describe("notifications", () => {
       subject_type: "Discussion",
       url: `https://github.com/someone/tracker/discussions/${String(discussion.number)}`,
     });
-    expect(links(thread.id, "references")).toEqual([discussion.node]);
-    expect(links(unsynced.id, "references")).toEqual([]);
+    expect(links(thread.id, "about")).toEqual([discussion.node]);
+    expect(links(unsynced.id, "about")).toEqual([]);
     expect(conditions()).toEqual({});
   });
 
@@ -264,12 +266,8 @@ describe("notifications", () => {
       number: issue.number,
     });
     await ok();
-    const own = marfa.drawEdge(
-      row(thread.id).id,
-      row(other.node).id,
-      "references",
-    );
-    expect(links(thread.id, "references").sort()).toEqual(
+    const own = marfa.drawEdge(row(thread.id).id, row(other.node).id, "about");
+    expect(links(thread.id, "about").sort()).toEqual(
       [issue.node, other.node].sort(),
     );
     // The thread changes, and a day on it is read whole again.
@@ -279,14 +277,14 @@ describe("notifications", () => {
     await ok();
     expect(row(thread.id).properties["unread"]).toBe(false);
     expect(marfa.edges.map((one) => one.id)).toContain(own.id);
-    expect(links(thread.id, "references").sort()).toEqual(
+    expect(links(thread.id, "about").sort()).toEqual(
       [issue.node, other.node].sort(),
     );
     // The witness: the connector's own link is still the one it made.
     expect(
       marfa.edges.filter(
         (one) =>
-          one.source_id === row(thread.id).id && one.edge_type === "references",
+          one.source_id === row(thread.id).id && one.edge_type === "about",
       ),
     ).toHaveLength(2);
   });
@@ -299,18 +297,34 @@ describe("notifications", () => {
       number: 1,
     });
     await ok();
-    expect(links(thread.id, "references")).toEqual([]);
+    expect(links(thread.id, "about")).toEqual([]);
     const issue = github.addIssue(repo, { title: "Not synced yet" });
     expect(issue.number).toBe(1);
     // The listing is unchanged, so it is not read and nothing is connected.
     await ok();
     expect(listings().map((one) => one.status)).toEqual([200, 304]);
     expect(row(issue.node).type).toBe("github.issue");
-    expect(links(thread.id, "references")).toEqual([]);
+    expect(links(thread.id, "about")).toEqual([]);
     age(25 * 60 * 60, "checked");
     await ok();
     expect(listings().map((one) => one.status)).toEqual([200, 304, 200]);
-    expect(links(thread.id, "references")).toEqual([issue.node]);
+    expect(links(thread.id, "about")).toEqual([issue.node]);
+  });
+
+  it("clears the retired references of a thread, and leaves a mention a person drew to another row", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const issue = github.addIssue(repo, { title: "An issue" });
+    const other = github.addIssue(repo, { title: "Another" });
+    const thread = github.notifications.add(repo, {
+      type: "Issue",
+      title: issue.title,
+      number: issue.number,
+    });
+    await ok();
+    marfa.drawEdge(row(thread.id).id, row(other.node).id, "references");
+    await ok();
+    expect(links(thread.id, "about")).toEqual([issue.node]);
+    expect(links(thread.id, "references")).toEqual([other.node]);
   });
 
   it("puts back an edit made in Marfa", async () => {
@@ -451,10 +465,10 @@ describe("notifications", () => {
       private: false,
       url: "https://github.com/stranger/public/issues/7",
     });
-    expect(links(outside.id, "references")).toEqual([]);
-    expect(links(unknown.id, "references")).toEqual([]);
+    expect(links(outside.id, "about")).toEqual([]);
+    expect(links(unknown.id, "about")).toEqual([]);
     // The witness: the same kind of thread, for an issue the sync holds.
-    expect(links(inside.id, "references")).toEqual([issue.node]);
+    expect(links(inside.id, "about")).toEqual([issue.node]);
     expect(
       marfa.rows.filter((one) => one.type === "github.repository"),
     ).toHaveLength(1);
@@ -819,7 +833,7 @@ describe("notifications", () => {
       GITHUB_PRIVATE_KEY: undefined,
       GITHUB_WEBHOOK_SECRET: undefined,
     });
-    expect(links(thread.id, "references")).toEqual([issue.node]);
+    expect(links(thread.id, "about")).toEqual([issue.node]);
     expect(github.writes()).toEqual([]);
     expect(
       github.asked.some(

@@ -46,11 +46,20 @@ await main(
         policy: (item, entry) => readerFilePolicy(account, item, entry),
       },
     ],
+    retired: [{ type: highlightType.id, connection: "references" }],
     connections: [
       {
         id: "excerpt-of",
         label: "Excerpt of",
         cardinality: "many-to-one",
+        source_type_constraints: [highlightType.id],
+        target_type_constraints: [sourceType.id],
+      },
+      // Retired: cleared on every highlight written, so one synced before holds
+      // only `excerpt-of`.
+      {
+        id: "references",
+        cardinality: "many-to-many",
         source_type_constraints: [highlightType.id],
         target_type_constraints: [sourceType.id],
       },

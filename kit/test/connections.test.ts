@@ -245,6 +245,51 @@ describe("connections from the vendor", () => {
     }
   });
 
+  it.each(["two way", "read only"] as const)(
+    "clear a retired connection type named with none, so a row written with the old edge is left with only the new one, and never a link a person drew, %s",
+    async (mode) => {
+      const relates: ConnectionDefinition = { ...blocks, id: "test.relates" };
+      const before = connected([entry(1, [2]), entry(2), entry(3)]);
+      await harness.twoWay(before);
+      expect(targets(1)).toEqual(["a:2"]);
+      // A link a person drew on their own is not one the connector wrote.
+      harness.server.drawEdge(
+        harness.server.row("a:1").id,
+        harness.server.row("a:3").id,
+        "test.blocks",
+      );
+      harness.server.grants = {
+        type_permissions: { "test.entry": "write" },
+        edge_permissions: { "test.blocks": "write", "test.relates": "write" },
+        metadata_permissions: { types: "write", edge_types: "write" },
+      };
+      {
+        const after = vendor([
+          {
+            ...entry(1),
+            connections: {
+              "test.blocks": [],
+              "test.relates": [{ type: "test.entry", id: "v2" }],
+            },
+          },
+          entry(2),
+          entry(3),
+        ]);
+        after.connections = [blocks, relates];
+        after.retired = [{ type: "test.entry", connection: "test.blocks" }];
+        if (mode === "read only") after.readOnly = ["test.blocks"];
+        expect(await harness.twoWay(after)).toBe(0);
+        expect(targets(1), mode).toEqual(["a:3"]);
+        expect(
+          harness.server
+            .targetsOf(harness.server.row("a:1").id, "test.relates")
+            .map((id) => harness.server.byId(id).source_id),
+          mode,
+        ).toEqual(["a:2"]);
+      }
+    },
+  );
+
   it("leave a connection type the entry does not name as it is", async () => {
     const held = connected([entry(1, [2]), entry(2)]);
     await harness.twoWay(held);

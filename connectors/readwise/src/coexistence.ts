@@ -397,6 +397,7 @@ export class SharedRows {
               id: readerIdentity(this.account, "document", source.external_id),
             },
           ],
+          references: [],
         };
     }
     return entry;

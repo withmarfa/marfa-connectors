@@ -19,6 +19,8 @@ const shipped: ReadonlyMap<string, Shipped> = new Map([
   ["in-thread", { edge: "in-thread", inbound: false }],
   ["references", { edge: "references", inbound: false }],
   ["excerpt-of", { edge: "excerpt-of", inbound: false }],
+  ["about", { edge: "about", inbound: false }],
+  ["comments-on", { edge: "comments-on", inbound: false }],
   ["parent-of", { edge: "parent-of", inbound: false }],
   ["child-of", { edge: "parent-of", inbound: true }],
 ]);

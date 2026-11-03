@@ -14,9 +14,11 @@ import {
   githubClosedBy,
   githubCloses,
   inRepository,
+  commentsOn,
   inThread,
   issueType,
   pullRequestType,
+  about,
   references,
   repositoryType,
   subIssueOf,
@@ -190,8 +192,7 @@ const connector = defineConnector<typeof env>({
         "repository",
         "private",
         "url",
-        inThread,
-        childOf,
+        commentsOn,
         inRepository,
       ],
       derived: ["private", "github_files"],
@@ -293,7 +294,7 @@ const connector = defineConnector<typeof env>({
         "subject_type",
         "url",
         "private",
-        references,
+        about,
       ],
     },
     // GitHub is the source of these, whatever GITHUB_READ_ONLY says: no
@@ -337,11 +338,16 @@ const connector = defineConnector<typeof env>({
       derived: ["private"],
     },
   ],
+  retired: [
+    { type: notificationType, connection: references },
+    { type: commentType, connection: inThread },
+    { type: commentType, connection: childOf },
+  ],
   connections: [
     filesConnection,
     {
-      id: references,
-      label: "References",
+      id: about,
+      label: "About",
       description:
         "A GitHub notification and the synced issue, pull request or discussion it concerns.",
       cardinality: "many-to-many",
@@ -396,11 +402,26 @@ const connector = defineConnector<typeof env>({
       source_type_constraints: [issueType],
       target_type_constraints: [issueType],
     },
+    // Retired (see `retired`): cleared on every row written with them, so one synced before
+    // holds only `about` and `comments-on`.
+    {
+      id: references,
+      cardinality: "many-to-many",
+      source_type_constraints: [notificationType],
+      target_type_constraints: [issueType, pullRequestType, discussionType],
+    },
     {
       id: inThread,
       cardinality: "many-to-one",
       source_type_constraints: [commentType],
       target_type_constraints: [issueType, discussionType],
+    },
+    {
+      id: commentsOn,
+      cardinality: "many-to-one",
+      cascade_on_delete: "with-hosts",
+      source_type_constraints: [commentType],
+      target_type_constraints: [issueType, discussionType, commentType],
     },
     {
       id: childOf,

@@ -9,7 +9,7 @@ import {
   commentEntry,
   commentType,
   inRepository,
-  inThread,
+  commentsOn,
   issueType,
   repositoryType,
   type Comment,
@@ -285,7 +285,7 @@ export async function withMovedComments(
 ): Promise<Entry[]> {
   if (moved.size === 0) return [...entries];
   const wanted = (entry: Entry): string | undefined => {
-    const issue = entry.connections?.[inThread]?.[0]?.id;
+    const issue = entry.connections?.[commentsOn]?.[0]?.id;
     return issue !== undefined && moved.has(issue) ? issue : undefined;
   };
   const threads = new Map<string, Item[]>();
@@ -296,7 +296,7 @@ export async function withMovedComments(
         .filter((one) => wanted(one) === issue)
         .map((one) => one.source_id),
     );
-    const rows = await context.linked(commentType, inThread, {
+    const rows = await context.linked(commentType, commentsOn, {
       type: issueType,
       id: issue,
     });
@@ -309,7 +309,7 @@ export async function withMovedComments(
     const replaced =
       old === undefined
         ? rows
-        : await context.linked(commentType, inThread, {
+        : await context.linked(commentType, commentsOn, {
             type: issueType,
             id: old,
           });

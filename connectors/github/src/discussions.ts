@@ -7,7 +7,7 @@ import {
   discussionEntry,
   discussionType,
   inRepository,
-  inThread,
+  commentsOn,
   linkOf,
   repositoryType,
   type Discussion,
@@ -550,26 +550,40 @@ export async function deleteDiscussionComment(
 
 type Reading = Pick<
   RunContext<EnvDeclaration>,
-  "upsert" | "linked" | "archive" | "log" | "hints"
+  "upsert" | "linked" | "linkedEach" | "archive" | "log" | "hints"
 >;
 
 /** The links of the comments and replies Marfa holds under a discussion. */
 async function heldComments(
-  context: Pick<Reading, "linked">,
+  context: Pick<Reading, "linked" | "linkedEach">,
   discussion: string,
 ): Promise<string[]> {
-  const comments = await context.linked(commentType, inThread, {
+  // A reply comments on its parent comment, not on the discussion, so the
+  // replies are read for all the top-level comments together.
+  const top = await context.linked(commentType, commentsOn, {
     type: discussionType,
     id: discussion,
   });
-  return comments.flatMap((one) => linkOf(one) ?? []);
+  const held = top.flatMap((one) => linkOf(one) ?? []);
+  if (held.length === 0) return held;
+  const replies = await context.linkedEach(commentType, commentsOn, {
+    type: commentType,
+    ids: held,
+  });
+  for (const rows of replies.values()) {
+    for (const row of rows) {
+      const link = linkOf(row);
+      if (link !== undefined && !held.includes(link)) held.push(link);
+    }
+  }
+  return held;
 }
 
 /** The discussions Marfa holds in a repository, each with the links of the
  *  comments and replies it holds under it. Rows written by this run have no
  *  connection yet, so this is read before anything is written. */
 export async function heldIn(
-  context: Pick<Reading, "linked">,
+  context: Pick<Reading, "linked" | "linkedEach">,
   node: string,
 ): Promise<Map<string, string[]>> {
   const held = new Map<string, string[]>();
