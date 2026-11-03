@@ -286,6 +286,10 @@ describe("connections from the vendor", () => {
             .map((id) => harness.server.byId(id).source_id),
           mode,
         ).toEqual(["a:2"]);
+        // A later run must not adopt the person's link and then clear it.
+        expect(await harness.twoWay(after)).toBe(0);
+        expect(await harness.twoWay(after)).toBe(0);
+        expect(targets(1), mode).toEqual(["a:3"]);
       }
     },
   );

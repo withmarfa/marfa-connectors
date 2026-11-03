@@ -873,6 +873,16 @@ export async function runOnce<E extends EnvDeclaration>(
       },
     ]),
   );
+  for (const one of connector.retired ?? []) {
+    if (
+      !lanes.has(one.type) ||
+      !(connector.connections ?? []).some((kind) => kind.id === one.connection)
+    ) {
+      throw new Error(
+        `the connector retires ${one.connection} on ${one.type}, which it does not declare`,
+      );
+    }
+  }
   const connections = new Connections(
     setup.marfa,
     new Map((connector.connections ?? []).map((kind) => [kind.id, kind])),

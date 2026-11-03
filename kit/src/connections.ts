@@ -215,9 +215,14 @@ export class Connections {
     );
   }
 
+  /** The connections a row of this type is read and put back through; a retired one is only cleared, never adopted. */
   typesFrom(type: string): string[] {
     return [...this.kinds.values()]
-      .filter((kind) => kind.source_type_constraints?.includes(type) === true)
+      .filter(
+        (kind) =>
+          kind.source_type_constraints?.includes(type) === true &&
+          !this.isRetired(type, kind.id),
+      )
       .map((kind) => kind.id);
   }
 
