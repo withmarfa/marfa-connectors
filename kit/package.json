@@ -35,9 +35,9 @@
     "@withmarfa/client": "0.0.66",
     "eventsource-parser": "4.1.3",
     "htmlparser2": "12.0.0",
-    "marked": "18.1.2",
-    "posthog-node": "5.60.0",
-    "turndown": "7.2.4"
+    "marked": "18.1.3",
+    "posthog-node": "5.62.0",
+    "turndown": "7.2.5"
   },
   "devDependencies": {
     "@types/turndown": "5.0.6"
