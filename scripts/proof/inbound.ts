@@ -436,6 +436,49 @@ export async function proveInbound(
     );
 
     await check(
+      "inbound: a delivery with an empty body answers 202, is read as zero bytes, and the next run marks it processed with no body left unfetched",
+      async () => {
+        const empty = {
+          body: "",
+          headers: {
+            "X-GitHub-Delivery": "77777777-7777-7777-7777-777777777777",
+            "X-Hub-Signature-256": `sha256=${createHmac("sha256", secret).update("").digest("hex")}`,
+          },
+        };
+        const answer = await post(url, path, empty);
+        if (answer.status !== 202)
+          throw new Error(`the door answered ${String(answer.status)}`);
+        const [stored] = await deliveries(own, connectorId, "pending");
+        if (stored === undefined) throw new Error("nothing is waiting");
+        const body = await own.GET(
+          "/connectors/{id}/deliveries/{delivery_id}/body",
+          {
+            params: { path: { id: connectorId, delivery_id: stored.id } },
+            parseAs: "arrayBuffer",
+          },
+        );
+        if (!body.response.ok || (body.data?.byteLength ?? 0) !== 0)
+          throw new Error(
+            `the body answered ${String(body.response.status)} with ${String(body.data?.byteLength)} bytes`,
+          );
+        await runOnce();
+        const after = (await deliveries(own, connectorId, "any")).find(
+          (delivery) => delivery.id === stored.id,
+        );
+        const summary = (await lastRun(manager, key.id)).summary ?? "";
+        if (
+          after?.outcome !== "processed" ||
+          summary.includes("could not be fetched")
+        ) {
+          throw new Error(
+            `outcome ${String(after?.outcome)}, report ${summary}`,
+          );
+        }
+        return "202, a zero-byte body answered 200, and the run marked the delivery processed";
+      },
+    );
+
+    await check(
       "inbound: a retired endpoint's address answers 404 and stores nothing",
       async () => {
         const before = (await deliveries(own, connectorId, "any")).length;
@@ -461,6 +504,13 @@ export async function proveInbound(
     );
 
     await proveSetup(url, own, runner, connectorId);
+
+    // The server lets one key hold a source, and the keys group mints a key
+    // of this one for itself, so this group's key goes with the group.
+    const released = await manager.DELETE("/keys/{id}", {
+      params: { path: { id: key.id } },
+    });
+    if (!released.response.ok) throw new Error("the key was not revoked");
   } finally {
     await vendor.close();
   }

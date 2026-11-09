@@ -5,6 +5,7 @@ import {
   hung,
   secretToken,
   signed,
+  signedText,
   vendor,
   type Vendor,
 } from "./harness.js";
@@ -237,6 +238,41 @@ describe("deliveries a scheduled run takes", () => {
       "1 delivery's body could not be fetched, so it waits for a later run",
     );
     expect(looks()).toHaveLength(0);
+    harness.stop();
+    expect(await exit).toBe(0);
+  });
+
+  it("takes a delivery with an empty body as fetched, and marks it", async () => {
+    const empty = signedText("");
+    harness.server.deliver(empty.body, empty.headers);
+    const held = vendor([one]);
+
+    expect(await harness.inbound(held)).toBe(0);
+    expect(outcomes()).toEqual(["processed"]);
+    expect(held.hints).toEqual([undefined]);
+    expect(harness.lastRun().summary).not.toContain("could not be fetched");
+  });
+
+  it("marks an empty delivery and handles a valid one posted after it within a look, not at the next schedule", async () => {
+    const held = vendor([one]);
+    const exit = harness.inbound(held, ["--every", "1h", "--look-every", "5s"]);
+    await harness.clock.sleeping(5000);
+    expect(held.runs).toBe(1);
+
+    const empty = signedText("");
+    harness.server.deliver(empty.body, empty.headers);
+    await harness.clock.wake(5000);
+    await until(() => held.runs === 2);
+    await harness.clock.sleeping(5000);
+    expect(outcomes()).toEqual(["processed"]);
+
+    const said = signed({ ids: ["a:1"] });
+    harness.server.deliver(said.body, said.headers);
+    await harness.clock.wake(5000);
+    await until(() => held.runs === 3);
+    await harness.clock.sleeping(5000);
+    expect(outcomes()).toEqual(["processed", "processed"]);
+    expect(held.hints?.[2]).toEqual(new Set(["a:1"]));
     harness.stop();
     expect(await exit).toBe(0);
   });

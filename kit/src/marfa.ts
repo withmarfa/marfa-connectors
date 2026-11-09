@@ -1100,8 +1100,9 @@ export class Marfa {
         signal,
       },
     );
-    if (data === undefined) throw refusal(response, error);
-    return new Uint8Array(data);
+    if (!response.ok) throw refusal(response, error);
+    // A zero-length `200` is an empty body, and the client reads it as no data.
+    return new Uint8Array(data ?? new ArrayBuffer(0));
   }
 
   /** The first mark stands. */
