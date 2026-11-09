@@ -1393,6 +1393,7 @@ export class ScriptedServer {
       }
       res.writeHead(200, {
         "Content-Type": "application/octet-stream",
+        "Content-Length": String(delivery.body.length),
         "X-Marfa-Contract": String(CONTRACT_VERSION),
       });
       res.end(delivery.body);

@@ -44,7 +44,7 @@ export const GROUPS = [
   { name: "rss", instance: "shared", statements: 14, seconds: 98 },
   { name: "readwise", instance: "shared", statements: 6, seconds: 2 },
   { name: "todoist", instance: "shared", statements: 31, seconds: 11 },
-  { name: "inbound", instance: "shared", statements: 11, seconds: 4 },
+  { name: "inbound", instance: "shared", statements: 12, seconds: 5 },
   { name: "keys", instance: "shared", statements: 6, seconds: 1 },
   { name: "tracker", instance: "shared", statements: 18, seconds: 15 },
   { name: "github", instance: "shared", statements: 18, seconds: 486 },

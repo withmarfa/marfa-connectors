@@ -429,7 +429,13 @@ export function signed(
   said: { ids?: string[]; type?: string; everything?: boolean },
   secret = secretToken,
 ): { body: string; headers: [string, string][] } {
-  const body = JSON.stringify(said);
+  return signedText(JSON.stringify(said), secret);
+}
+
+export function signedText(
+  body: string,
+  secret = secretToken,
+): { body: string; headers: [string, string][] } {
   return {
     body,
     headers: [
