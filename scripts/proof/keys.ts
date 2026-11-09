@@ -17,10 +17,11 @@ async function mint(
   marfa: MarfaClient,
   source: string,
   sources: string[],
+  label = source,
 ): Promise<Minted> {
   const { data, error } = await marfa.POST("/keys", {
     body: {
-      ...keyBody({ label: source, source, typePermission: "proof.thing" }),
+      ...keyBody({ label, source, typePermission: "proof.thing" }),
       sources,
     },
   });
@@ -64,21 +65,25 @@ export async function proveKeys(
 
     // Only direct owner or local authority grants a source a caller does not
     // hold, and the boot hands the proof a working key, which grants its own
-    // source and its claims. So the connector's key goes, freeing its source,
-    // and a key of that source claiming the boot key's own mints the rest.
+    // source and its claims. So a key of the connector's source is minted
+    // and goes, freeing the source, and a key of that source claiming the
+    // boot key's own mints the rest. The group mints its own, so it needs no
+    // other group to have run.
     let minter = marfa;
     let elsewhere = "";
     await check(
       "keys: the connector's source is taken over by a key that may mint keys claiming it and one other source",
       async () => {
         const current = await marfa.GET("/keys/current");
-        const listed = await manager.GET("/keys");
-        const inbound = listed.data?.data.find(
-          (key) => key.source === "proof-inbound",
-        );
-        if (current.data === undefined || inbound === undefined)
-          throw new Error("the boot key or the connector's key is not listed");
+        if (current.data === undefined)
+          throw new Error("the boot key is not readable");
         elsewhere = current.data.source;
+        const inbound = await mint(
+          marfa,
+          "proof-inbound",
+          [],
+          "proof-keys-connector",
+        );
         const revoked = await manager.DELETE("/keys/{id}", {
           params: { path: { id: inbound.id } },
         });

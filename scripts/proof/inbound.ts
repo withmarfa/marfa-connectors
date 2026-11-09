@@ -504,6 +504,13 @@ export async function proveInbound(
     );
 
     await proveSetup(url, own, runner, connectorId);
+
+    // The server lets one key hold a source, and the keys group mints a key
+    // of this one for itself, so this group's key goes with the group.
+    const released = await manager.DELETE("/keys/{id}", {
+      params: { path: { id: key.id } },
+    });
+    if (!released.response.ok) throw new Error("the key was not revoked");
   } finally {
     await vendor.close();
   }
