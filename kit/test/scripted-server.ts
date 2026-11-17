@@ -2538,8 +2538,7 @@ export class ScriptedServer {
     return level === "read" || level === "write";
   }
 
-  /** A source the store cannot find is read as one with no type to refuse,
-   *  as `sourceTypeReadable` reads it. */
+  /** A missing starting item supplies no type to refuse. */
   private readsSourceOf(edge: EdgeRow): boolean {
     const source = this.rows.find((row) => row.id === edge.from_id);
     return source === undefined || this.permission(source.type) !== "none";
