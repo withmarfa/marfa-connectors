@@ -507,3 +507,142 @@ describe("pull request reading", () => {
     expect(row(pr.node).state).toBe("active");
   });
 });
+
+describe("pull request checks as table rows", () => {
+  const passing = {
+    state: "SUCCESS",
+    check_runs: { COMPLETED: 2 },
+    statuses: { SUCCESS: 1 },
+  };
+  const checkList = [
+    {
+      id: "CR_1",
+      kind: "check_run" as const,
+      name: "build",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      url: "https://example.test/build",
+      started_at: "2026-01-01T00:00:00Z",
+      completed_at: "2026-01-01T00:05:00Z",
+    },
+    {
+      id: "CR_2",
+      kind: "check_run" as const,
+      name: "lint",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    },
+    {
+      id: "SC_1",
+      kind: "status" as const,
+      name: "ci/deploy",
+      status: "SUCCESS",
+    },
+  ];
+  const [first, lint, deploy] = checkList as [
+    (typeof checkList)[number],
+    (typeof checkList)[number],
+    (typeof checkList)[number],
+  ];
+  function checkRows(id: string): Record<string, unknown>[] {
+    const table = marfa.tableRows.get(row(id).id)?.get("check_runs");
+    return [...(table?.values() ?? [])].map((one) => one.values);
+  }
+  const batches = (): number =>
+    marfa.requests.filter(
+      (one) => one.method === "POST" && one.path.endsWith("/rows"),
+    ).length;
+
+  it("writes each check of a pull request to its check_runs table, and none twice", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: passing,
+      check_list: checkList,
+    });
+    await ok();
+    expect(checkRows(pr.node).map((one) => [one["name"], one["kind"]])).toEqual(
+      expect.arrayContaining([
+        ["build", "check_run"],
+        ["lint", "check_run"],
+        ["ci/deploy", "status"],
+      ]),
+    );
+    expect(checkRows(pr.node)).toHaveLength(3);
+    expect(checkRows(pr.node).find((one) => one["name"] === "build")).toEqual({
+      name: "build",
+      kind: "check_run",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      url: "https://example.test/build",
+      started_at: "2026-01-01T00:00:00Z",
+      completed_at: "2026-01-01T00:05:00Z",
+    });
+    const written = batches();
+    expect(written).toBe(1);
+    await ok();
+    expect(checkRows(pr.node)).toHaveLength(3);
+    expect(batches()).toBe(written);
+  });
+
+  it("changes a check that moved on and deletes one GitHub no longer lists", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: passing,
+      check_list: checkList.map((one) => ({ ...one })),
+    });
+    await ok();
+    pr.check_list = [{ ...first, conclusion: "FAILURE" }, deploy];
+    await ok();
+    const after = checkRows(pr.node);
+    expect(after).toHaveLength(2);
+    expect(after.find((one) => one["name"] === "build")?.["conclusion"]).toBe(
+      "FAILURE",
+    );
+    expect(after.some((one) => one["name"] === "lint")).toBe(false);
+  });
+
+  it("reads every page of a rollup's checks", async () => {
+    github.checkPageSize = 2;
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: passing,
+      check_list: checkList,
+    });
+    await ok();
+    expect(checkRows(pr.node)).toHaveLength(3);
+  });
+
+  it("reports a check whose name is too long and keeps the others", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: passing,
+      check_list: [{ ...first, id: "CR_long", name: "x".repeat(300) }, lint],
+    });
+    await ok();
+    expect(checkRows(pr.node).map((one) => one["name"])).toEqual(["lint"]);
+    expect(Object.keys(marfa.problems.get("github") ?? {})).toContain(
+      "table-rows:github.pull_request:check_runs",
+    );
+  });
+
+  it("leaves the table as it was where GitHub refuses the token its checks", async () => {
+    const personal = "github_pat_no_checks";
+    const env = {
+      GITHUB_PERSONAL_TOKEN: personal,
+      GITHUB_APP_ID: undefined,
+      GITHUB_PRIVATE_KEY: undefined,
+      GITHUB_WEBHOOK_SECRET: undefined,
+    };
+    github.personalToken = personal;
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: passing,
+      check_list: checkList,
+    });
+    await ok(env);
+    expect(checkRows(pr.node)).toHaveLength(3);
+    github.personalChecksError = "FORBIDDEN";
+    await ok(env);
+    expect(checkRows(pr.node)).toHaveLength(3);
+  });
+});

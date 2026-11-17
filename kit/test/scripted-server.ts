@@ -32,6 +32,11 @@ export interface Run {
   error?: string;
 }
 
+interface TableRowHeld {
+  values: Record<string, unknown>;
+  updated_at: string;
+}
+
 export interface Request {
   method: string;
   path: string;
@@ -2524,10 +2529,7 @@ export class ScriptedServer {
   /** Rows of each item's tables, by item and table, in the order written. */
   readonly tableRows = new Map<
     string,
-    Map<
-      string,
-      Map<string, { values: Record<string, unknown>; updated_at: string }>
-    >
+    Map<string, Map<string, TableRowHeld>>
   >();
   /** What a batch answered under its key, to answer it again. */
   private readonly batchKeys = new Map<
@@ -2578,7 +2580,8 @@ export class ScriptedServer {
       string,
       Record<string, unknown>
     >;
-    const held = this.tableRows.get(id)?.get(table) ?? new Map();
+    const held: Map<string, TableRowHeld> =
+      this.tableRows.get(id)?.get(table) ?? new Map<string, TableRowHeld>();
     if (method === "GET") {
       const limit = Number(url.searchParams.get("limit") ?? "100");
       const from = Number(url.searchParams.get("cursor") ?? "0");
@@ -2702,11 +2705,7 @@ export class ScriptedServer {
           (type === "enum" &&
             !((def["enum_values"] ?? []) as unknown[]).includes(value));
         if (bad) {
-          invalid(
-            index,
-            `values.${column}`,
-            `the value is not a ${String(type)}`,
-          );
+          invalid(index, `values.${column}`, `the value is not a ${type}`);
           return;
         }
         const longest = def["max_length"];
@@ -2768,9 +2767,12 @@ export class ScriptedServer {
               : "patched",
       });
     }
-    const itemRows = this.tableRows.get(id) ?? new Map();
+    let itemRows = this.tableRows.get(id);
+    if (itemRows === undefined) {
+      itemRows = new Map<string, Map<string, TableRowHeld>>();
+      this.tableRows.set(id, itemRows);
+    }
     itemRows.set(table, work);
-    this.tableRows.set(id, itemRows);
     this.batches += changed > 0 ? 1 : 0;
     const payload = {
       batch:

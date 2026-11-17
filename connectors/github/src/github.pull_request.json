@@ -29,10 +29,22 @@
       "type": "status",
       "description": "The pull request's state on GitHub: draft or open while it is open, merged when merged, and closed when closed without merging.",
       "status_values": [
-        { "value": "draft", "group": "in_progress" },
-        { "value": "open", "group": "in_progress" },
-        { "value": "merged", "group": "completed" },
-        { "value": "closed", "group": "canceled" }
+        {
+          "value": "draft",
+          "group": "in_progress"
+        },
+        {
+          "value": "open",
+          "group": "in_progress"
+        },
+        {
+          "value": "merged",
+          "group": "completed"
+        },
+        {
+          "value": "closed",
+          "group": "canceled"
+        }
       ]
     },
     "merged_at": {
@@ -59,5 +71,48 @@
   "display_hints": {
     "title_field": "title",
     "body_field": "body"
+  },
+  "tables": {
+    "check_runs": {
+      "label": "Check runs",
+      "description": "Each check run and commit status on the pull request's head commit, as GitHub reported them at the last read. A row's id comes from GitHub's own id for the check, so a check read again is the same row. Empty when GitHub refuses the token the checks.",
+      "columns": {
+        "name": {
+          "type": "string",
+          "description": "The check run's name, or the status context's name.",
+          "required": true,
+          "max_length": 255
+        },
+        "kind": {
+          "type": "enum",
+          "description": "Whether this is a check run or a commit status.",
+          "enum_values": ["check_run", "status"],
+          "required": true
+        },
+        "status": {
+          "type": "string",
+          "description": "A check run's state (such as QUEUED, IN_PROGRESS or COMPLETED), or a commit status's state (such as PENDING or SUCCESS), as GitHub names it.",
+          "max_length": 64
+        },
+        "conclusion": {
+          "type": "string",
+          "description": "How a completed check run ended (such as SUCCESS or FAILURE), as GitHub names it. Empty until it completes, and for a commit status.",
+          "max_length": 64
+        },
+        "url": {
+          "type": "url",
+          "description": "Where GitHub shows the check's details."
+        },
+        "started_at": {
+          "type": "datetime",
+          "description": "When the check run started, or when the commit status was created."
+        },
+        "completed_at": {
+          "type": "datetime",
+          "description": "When the check run completed."
+        }
+      },
+      "order": "started_at"
+    }
   }
 }

@@ -228,7 +228,7 @@ export function typeDifferences(
         !isDeepStrictEqual(carried[name], declared[name]),
     )
     .map(String);
-  const tables = tableDifferences(carried as Record<string, unknown>, served);
+  const tables = tableDifferences(carried, served);
   other.push(...tables.other);
   return { missing, presentation, tables: tables.missing, other };
 }

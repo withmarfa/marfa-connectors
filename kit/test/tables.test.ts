@@ -73,7 +73,7 @@ function itemId(): string {
 function held(): Map<string, Record<string, unknown>> {
   const table = harness.server.tableRows.get(itemId())?.get("checks");
   return new Map(
-    [...(table ?? new Map())].map(([id, row]) => [id, row.values]),
+    [...(table ?? [])].map(([id, row]) => [id, row.values] as const),
   );
 }
 
@@ -85,8 +85,8 @@ const batches = (): number =>
 describe("a type that declares tables", () => {
   it("is registered with them", async () => {
     harness.server.grants = fixer;
-    expect(await runOnce(async () => undefined)).toBe(0);
-    expect(harness.server.types.get("test.entry")?.tables).toHaveProperty(
+    expect(await runOnce(() => Promise.resolve())).toBe(0);
+    expect(harness.server.types.get("test.entry")?.["tables"]).toHaveProperty(
       "checks",
     );
   });
@@ -94,11 +94,11 @@ describe("a type that declares tables", () => {
   it("gains a table its stored definition lacks, when the key may write types", async () => {
     harness.server.grants = fixer;
     harness.server.types.set("test.entry", { ...testType });
-    expect(await runOnce(async () => undefined)).toBe(0);
+    expect(await runOnce(() => Promise.resolve())).toBe(0);
     expect(harness.server.requestsTo("PUT", "/types/test.entry")).toHaveLength(
       1,
     );
-    expect(harness.server.types.get("test.entry")?.tables).toHaveProperty(
+    expect(harness.server.types.get("test.entry")?.["tables"]).toHaveProperty(
       "checks",
     );
   });

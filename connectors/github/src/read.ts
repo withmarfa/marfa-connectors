@@ -63,6 +63,7 @@ import {
 import {
   listPullRequests,
   pullRequestsByNode,
+  syncChecks,
   withStoredChecks,
   closedByOf,
   pullNodeOfNumber,
@@ -730,6 +731,7 @@ async function readAll(
             ),
           ),
         );
+        await syncChecks(scoped, prs);
         next[node] = await marked(
           scoped,
           node,
@@ -1151,6 +1153,7 @@ async function syncRepository(
       ),
     ),
   );
+  await syncChecks(context, [...allPRs.values()]);
   const closer = (id: string): ClosedByPR => {
     const pr = closedBy.get(id);
     return pr === undefined
@@ -2195,6 +2198,7 @@ async function readNamed(
       ),
     ),
   );
+  await syncChecks(context, [...prs.values()]);
   await upsert(
     issueType,
     await fileNotes(
