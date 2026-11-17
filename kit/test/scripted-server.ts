@@ -135,9 +135,7 @@ function changedKeys(
   return changed;
 }
 
-/** The members of a type a key holding `metadata.types:write` and not
- *  `schema.write` may change, as marfa's `evolutionOf`
- *  (packages/server/src/routes/_type-evolution.ts) leaves them free. */
+/** Type members a key may change with `metadata.types:write` alone. */
 const freeMembers = new Set([
   "id",
   "label",
@@ -2529,11 +2527,7 @@ export class ScriptedServer {
     );
   }
 
-  /** As `edgeKindReadable` and `sourceTypeReadable`
-   *  (packages/server/src/routes/_edge-visibility.ts) ask it: the key reads
-   *  an edge only if its edge type is one it holds read or write on and the
-   *  type of the edge's source item is one it may read
-   *  (`edges/read-hydrated-withheld`). */
+  /** Reading an edge needs read access to its type and its starting item's type. */
   private mayReadEdge(edge: EdgeRow): boolean {
     return this.readsEdgeType(edge.edge_type) && this.readsSourceOf(edge);
   }
@@ -2561,8 +2555,6 @@ export class ScriptedServer {
     return level === "read" || level === "write" ? level : "none";
   }
 
-  /** Whether no type pattern grants read or write, as marfa's
-   *  `refuseReachingNoType` (packages/server/src/middleware/auth.ts) asks. */
   private reachesNoType(): boolean {
     return !Object.values(
       this.grants.type_permissions ?? this.minted.type_permissions,
@@ -2583,12 +2575,7 @@ export class ScriptedServer {
           error: { code: refusal.code, message: refusal.message },
         };
       }
-      // In the order of marfa's processBulkItem
-      // (packages/server/src/routes/bulk.ts): the write check on the type the
-      // entry declares, then the row its natural key resolves, refused
-      // without its id where the key may not write it (requireResolvedRowWrite
-      // in packages/server/src/middleware/auth.ts), then the declared type
-      // against the row's.
+      // Check write access before revealing the resolved row's identity or type.
       if (this.permission(String(entry["type"])) !== "write") {
         return {
           index,
