@@ -100,6 +100,19 @@ export interface Issue {
   unlisted?: number;
 }
 
+/** A check run or commit status on a pull request's head commit, with the
+ *  fields GitHub's StatusCheckRollup shows of it. */
+export interface Check {
+  id: string;
+  kind: "check_run" | "status";
+  name: string;
+  status: string;
+  conclusion?: string;
+  url?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
 export interface PullRequest extends Issue {
   pr_state: "open" | "closed" | "merged";
   draft: boolean;
@@ -113,6 +126,10 @@ export interface PullRequest extends Issue {
     check_runs: Record<string, number>;
     statuses: Record<string, number>;
   } | null;
+  /** The checks the rollup lists, when it has any. */
+  check_list?: Check[];
+  /** GitHub answers with no head commit at all, as it can for a moment. */
+  no_commit?: boolean;
 }
 
 export interface Comment {
@@ -234,6 +251,8 @@ export class GitHubStub {
   pulls: PullRequest[] = [];
   pullPageSize = 100;
   closingPageSize = 100;
+  /** How many checks one page of a rollup holds. */
+  checkPageSize = 100;
   missingPullRepository = false;
   comments: Comment[] = [];
   discussions: Discussion[] = [];
@@ -2513,8 +2532,10 @@ export class GitHubStub {
       pr.checks === null
         ? null
         : {
+            id: `SCR_${pr.node}`,
             state: pr.checks.state,
             contexts: {
+              ...this.checkPage(pr, 0),
               checkRunCountsByState: Object.entries(pr.checks.check_runs).map(
                 ([state, count]) => ({ state, count }),
               ),
@@ -2552,8 +2573,45 @@ export class GitHubStub {
       },
       // GraphQL answers only the fields asked for.
       ...(withCommits && {
-        commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+        commits: {
+          nodes:
+            pr.no_commit === true
+              ? []
+              : [{ commit: { statusCheckRollup: rollup } }],
+        },
       }),
+    };
+  }
+
+  private checkPage(pr: PullRequest, after: number): Record<string, unknown> {
+    const list = pr.check_list ?? [];
+    const size = this.checkPageSize;
+    return {
+      nodes: list.slice(after, after + size).map((check) =>
+        check.kind === "check_run"
+          ? {
+              __typename: "CheckRun",
+              id: check.id,
+              name: check.name,
+              status: check.status,
+              conclusion: check.conclusion ?? null,
+              detailsUrl: check.url ?? null,
+              startedAt: check.started_at ?? null,
+              completedAt: check.completed_at ?? null,
+            }
+          : {
+              __typename: "StatusContext",
+              id: check.id,
+              context: check.name,
+              state: check.status,
+              targetUrl: check.url ?? null,
+              createdAt: check.started_at ?? null,
+            },
+      ),
+      pageInfo: {
+        hasNextPage: list.length > after + size,
+        endCursor: String(after + size),
+      },
     };
   }
 
@@ -2703,6 +2761,22 @@ export class GitHubStub {
       });
       refuseChecks(found, ["nodes"]);
       answer({ nodes: found });
+      return;
+    }
+    if (operation === "CheckContexts") {
+      const pr = this.pulls.find(
+        (one) => `SCR_${one.node}` === body.variables["id"],
+      );
+      send(200, {
+        data: {
+          node:
+            pr === undefined || !seesPull(this.repositoryOf(pr))
+              ? null
+              : {
+                  contexts: this.checkPage(pr, Number(body.variables["after"])),
+                },
+        },
+      });
       return;
     }
     if (operation === "ClosingIssues") {

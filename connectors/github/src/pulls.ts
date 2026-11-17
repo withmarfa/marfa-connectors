@@ -6,17 +6,24 @@ import {
   pullRequestType,
   type CheckCounts,
   type CheckedPullRequest,
+  type CheckRun,
   type PullRequest,
   type Related,
 } from "./entries.js";
 
 const issueFields = "id url repository { id }";
 const closingFields = `nodes { ${issueFields} } pageInfo { hasNextPage endCursor }`;
+const contextFields = `nodes {
+  __typename
+  ... on CheckRun { id name status conclusion detailsUrl startedAt completedAt }
+  ... on StatusContext { id context state targetUrl createdAt }
+} pageInfo { hasNextPage endCursor }`;
 const rollupFields = `
   commits(last: 1) { nodes { commit { statusCheckRollup {
-    state contexts(first: 0) {
+    id state contexts(first: 100) {
       checkRunCountsByState { state count }
       statusContextCountsByState { state count }
+      ${contextFields}
     }
   } } } }
 `;
@@ -130,6 +137,26 @@ interface Count {
   state: string;
   count: number;
 }
+type Context =
+  | {
+      __typename: "CheckRun";
+      id: string;
+      name: string;
+      status: string | null;
+      conclusion: string | null;
+      detailsUrl: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+    }
+  | {
+      __typename: "StatusContext";
+      id: string;
+      context: string;
+      state: string | null;
+      targetUrl: string | null;
+      createdAt: string | null;
+    }
+  | { __typename: string };
 interface GraphPR {
   __typename: string;
   id: string;
@@ -152,11 +179,12 @@ interface GraphPR {
     nodes: ({
       commit: {
         statusCheckRollup: {
+          id: string;
           state: string;
           contexts: {
             checkRunCountsByState: Count[];
             statusContextCountsByState: Count[];
-          };
+          } & Page<Context>;
         } | null;
       };
     } | null)[];
@@ -177,6 +205,66 @@ function next(page: Page<unknown>, seen: Set<string>): string | undefined {
     throw new Error("GitHub did not advance its pull request cursor");
   seen.add(cursor);
   return cursor;
+}
+function checkOf(one: Context): CheckRun | undefined {
+  if (one.__typename === "CheckRun") {
+    const run = one as Extract<Context, { __typename: "CheckRun" }>;
+    return {
+      id: run.id,
+      name: run.name,
+      kind: "check_run",
+      status: run.status,
+      conclusion: run.conclusion,
+      url: run.detailsUrl,
+      startedAt: run.startedAt,
+      completedAt: run.completedAt,
+    };
+  }
+  if (one.__typename === "StatusContext") {
+    const status = one as Extract<Context, { __typename: "StatusContext" }>;
+    return {
+      id: status.id,
+      name: status.context,
+      kind: "status",
+      status: status.state,
+      conclusion: null,
+      url: status.targetUrl,
+      startedAt: status.createdAt,
+      completedAt: null,
+    };
+  }
+  return undefined;
+}
+/** Every check on the rollup: the first page came with the pull request, and
+ *  the rest are read by the rollup's id. */
+async function checkRunsOf(
+  octokit: Client,
+  rollup: { id: string; contexts: Page<Context> },
+): Promise<CheckRun[]> {
+  const found = new Map<string, CheckRun>();
+  let page = rollup.contexts;
+  const seen = new Set<string>();
+  for (;;) {
+    for (const one of page.nodes) {
+      const check = one === null ? undefined : checkOf(one);
+      if (check !== undefined) found.set(check.id, check);
+    }
+    const after = next(page, seen);
+    if (after === undefined) break;
+    const result = (await query(
+      octokit,
+      `query CheckContexts($id: ID!, $after: String!) {
+      node(id: $id) { ... on StatusCheckRollup { contexts(first: 100, after: $after) { ${contextFields} } } }
+    }`,
+      { id: rollup.id, after },
+    )) as { node: { contexts: Page<Context> } | null };
+    if (result.node === null)
+      throw new Error(
+        "GitHub no longer shows a check rollup while reading its checks",
+      );
+    page = result.node.contexts;
+  }
+  return [...found.values()];
 }
 async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
   let page = node.closingIssuesReferences;
@@ -199,10 +287,9 @@ async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
       );
     page = result.node.closingIssuesReferences;
   }
-  const rollup =
-    node.commits === undefined
-      ? undefined
-      : (node.commits.nodes[0]?.commit.statusCheckRollup ?? null);
+  // Only a present commit whose rollup is an explicit null has no checks; a
+  // missing commit or rollup is unknown, which leaves the stored checks alone.
+  const rollup = node.commits?.nodes[0]?.commit.statusCheckRollup;
   const checks: CheckCounts | null | undefined =
     rollup === undefined || rollup === null
       ? rollup
@@ -211,6 +298,12 @@ async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
           check_runs: counts(rollup.contexts.checkRunCountsByState),
           statuses: counts(rollup.contexts.statusContextCountsByState),
         };
+  const checkRuns =
+    rollup === undefined
+      ? undefined
+      : rollup === null
+        ? []
+        : await checkRunsOf(octokit, rollup);
   return {
     node: node.id,
     number: node.number,
@@ -230,6 +323,7 @@ async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
     headBranch: node.headRefName,
     author: loginOf(node.author),
     checks,
+    checkRuns,
     createdAt: node.createdAt,
     updatedAt: node.updatedAt,
     repository: {
@@ -261,6 +355,35 @@ export async function withStoredChecks(
     ...pr,
     checks: pr.checks === undefined ? (stored.get(pr.node) ?? null) : pr.checks,
   }));
+}
+
+/** The checks of each pull request, written to the `check_runs` table of its
+ *  item, which must be written first. A pull request whose checks GitHub
+ *  refused this run is left as it was, since unknown is not none. */
+export async function syncChecks(
+  context: Pick<RunContext<EnvDeclaration>, "tables">,
+  prs: readonly PullRequest[],
+): Promise<void> {
+  for (const pr of prs) {
+    if (pr.checkRuns === undefined) continue;
+    await context.tables.replace(
+      pullRequestType,
+      pr.node,
+      "check_runs",
+      pr.checkRuns.map((check) => ({
+        key: check.id,
+        values: {
+          name: check.name,
+          kind: check.kind,
+          status: check.status,
+          conclusion: check.conclusion,
+          url: check.url,
+          started_at: check.startedAt,
+          completed_at: check.completedAt,
+        },
+      })),
+    );
+  }
 }
 
 export async function pullRequestsByNode(

@@ -63,7 +63,7 @@ const runners: Record<GroupName, (c: Context) => Promise<void>> = {
   "github-relations": (c) => proveGitHubRelations(c.url, c.mintKey),
   "connection-evolution": (c) =>
     proveConnectionEvolution(c.url, c.mintKey, c.updateKey),
-  "github-pulls": (c) => proveGitHubPullRequests(c.url, c.mintKey),
+  "github-pulls": (c) => proveGitHubPullRequests(c.url, c.marfa, c.mintKey),
   "parent-of": (c) => proveParentOf(c.url, c.mintKey),
   checkpoint: (c) => proveCheckpoint(c.marfa, c.url),
   "watch-checkpoint": (c) => proveWatchCheckpoint(c.marfa, c.url),

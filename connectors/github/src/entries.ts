@@ -333,6 +333,19 @@ export interface CheckCounts {
   statuses: Record<string, number>;
 }
 
+/** A check run or a commit status on a pull request's head commit. */
+export interface CheckRun {
+  /** GitHub's node id for it: the same check read again is the same row. */
+  id: string;
+  name: string;
+  kind: "check_run" | "status";
+  status: string | null;
+  conclusion: string | null;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface PullRequest {
   node: string;
   number: number;
@@ -349,6 +362,10 @@ export interface PullRequest {
   /** Null when the commit has no checks, and undefined when GitHub refused
    *  them to the token, so nothing is known. */
   checks: CheckCounts | null | undefined;
+  /** The checks themselves, as the `check_runs` table holds them: empty when
+   *  the commit has none, and undefined when GitHub refused them to the token,
+   *  so the table is left as it was. */
+  checkRuns: CheckRun[] | undefined;
   createdAt: string;
   updatedAt: string;
   repository: { node: string; name: string };

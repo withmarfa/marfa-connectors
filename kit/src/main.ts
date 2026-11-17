@@ -1026,6 +1026,13 @@ async function serve<E extends EnvDeclaration>(
         );
       }
     }
+    for (const type of was?.tables.keys() ?? []) {
+      if (step.narrowed?.tables.has(type) !== true) {
+        logger.info(
+          `the type ${type} now holds every table this connector declares, so it writes their rows`,
+        );
+      }
+    }
     setup.narrowed = step.narrowed;
     return undefined;
   };

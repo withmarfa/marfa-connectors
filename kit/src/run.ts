@@ -84,6 +84,7 @@ import {
   type UpsertAttempt,
 } from "./inbound-retry.js";
 import { edgeTypesOf, endsOf, wireOf } from "./shipped.js";
+import { Tables } from "./tables.js";
 import { Watch, type LogRead, type Seen } from "./watch.js";
 import { checkedJson, intentOf as checkedEntry } from "./inbound-retry.js";
 import {
@@ -498,8 +499,8 @@ export async function runOnce<E extends EnvDeclaration>(
   const specs = specsOf(connector, env, setup.narrowed);
   const twoWay = [...specs.values()].some((spec) => spec.twoWay);
   const raised = new Map<string, string>();
-  for (const [type, condition] of setup.narrowed?.conditions ?? []) {
-    raised.set(`type-fields:${type}`, condition);
+  for (const [key, condition] of setup.narrowed?.conditions ?? []) {
+    raised.set(key, condition);
   }
   const unreachedKeys = new Set<string>();
   const unreachedBatches: { prefixes: string[]; exceptKeys: string[] }[] = [];
@@ -1031,6 +1032,34 @@ export async function runOnce<E extends EnvDeclaration>(
       phase.rootInFlight -= 1;
     }
   };
+  const tableWriter = new Tables({
+    marfa: setup.marfa,
+    declared: (type) =>
+      connector.types.find((kind) => kind.type.id === type)?.type,
+    narrowed: (type, table) =>
+      setup.narrowed?.tables.get(type)?.includes(table) === true,
+    find: async (type, key) => {
+      const { spec } = lane(type);
+      const found = await setup.marfa.lookup(
+        type,
+        spec.link !== undefined
+          ? { links: [key] }
+          : { source: spec.source, source_ids: [key] },
+      );
+      return found.data.find((item) => item.type === type);
+    },
+    check,
+    condition: (key, message) => raised.set(key, message),
+  });
+  const tablesIn = (
+    run: <T>(work: () => Promise<T>) => Promise<T>,
+  ): RunContext<E>["tables"] => ({
+    put: (...args) => run(() => tableWriter.put(...args)),
+    patch: (...args) => run(() => tableWriter.patch(...args)),
+    remove: (...args) => run(() => tableWriter.remove(...args)),
+    replace: (...args) => run(() => tableWriter.replace(...args)),
+    read: (...args) => run(() => tableWriter.read(...args)),
+  });
   const context: RunContext<E> = {
     waitUntil,
     pendingOutbound,
@@ -1106,6 +1135,7 @@ export async function runOnce<E extends EnvDeclaration>(
         held: (type, options) => serial(scope, () => heldRows(type, options)),
         inspect: (type, by) => serial(scope, () => inspect(type, by)),
         written,
+        tables: tablesIn((work) => serial(scope, work)),
       };
       return scoped;
     },
@@ -1119,6 +1149,7 @@ export async function runOnce<E extends EnvDeclaration>(
     held: (type, options) => unscoped(() => heldRows(type, options)),
     inspect: (type, by) => unscoped(() => inspect(type, by)),
     written,
+    tables: tablesIn(unscoped),
   };
   const inspect: RunContext<E>["inspect"] = async (type, by) => {
     const { spec } = lane(type);

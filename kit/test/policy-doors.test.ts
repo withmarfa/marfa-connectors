@@ -159,6 +159,7 @@ it.each([false, true])(
       narrowed
         ? {
             fields: new Map([[linkedType.id, ["note"]]]),
+            tables: new Map(),
             conditions: new Map(),
           }
         : undefined,

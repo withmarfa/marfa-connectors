@@ -36,9 +36,19 @@ export {
   type SetupContext,
   type State,
   type Target,
+  type Tables,
   type TypeDefinition,
   type WatchContext,
 } from "./define.js";
 export { main } from "./main.js";
 export { Declined, LinkTaken, Refused, Unreachable } from "./rows.js";
+export {
+  rowId,
+  type RefusedRow,
+  type Skipped,
+  type TableReport,
+  type TableRow,
+  type TableRowRead,
+  type TableValues,
+} from "./tables.js";
 export { verifyHmac, type HmacCheck } from "./verify.js";

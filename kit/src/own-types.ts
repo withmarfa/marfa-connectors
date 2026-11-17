@@ -9,7 +9,12 @@ type TypeUpdate = components["schemas"]["TypeDefinitionUpdate"];
  *  type lacks them and the key may not add them. */
 export interface Narrowed {
   readonly fields: ReadonlyMap<string, readonly string[]>;
-  /** What each type's run raises, since the way out differs by type. */
+  /** The tables the connector writes none of, by type, since the server's
+   *  type lacks them, or a column or the order of them, and the key may not
+   *  add it. */
+  readonly tables: ReadonlyMap<string, readonly string[]>;
+  /** What a run raises, by condition key, since the way out differs by
+   *  type. */
   readonly conditions: ReadonlyMap<string, string>;
 }
 
@@ -26,7 +31,11 @@ export interface TypeStep {
 
 type Outcome =
   | { readonly problem: string }
-  | { readonly omitted: readonly string[]; readonly withheld?: Withheld };
+  | {
+      readonly omitted: readonly string[];
+      readonly omittedTables?: readonly string[];
+      readonly withheld?: Withheld;
+    };
 
 /** Fields no row can be written without as the connector means it. */
 const fileFields = ["blob_ref", "mime_type"];
@@ -63,9 +72,13 @@ export function narrowedCondition(
   type: string,
   fields: readonly string[],
   withheld: Withheld,
+  noun: "field" | "table" = "field",
 ): string {
   const them = fields.length === 1 ? "it" : "them";
-  const until = `until then it writes the type ${type} without ${fields.join(", ")}, which this connector declares and the server's type lacks`;
+  const until =
+    noun === "field"
+      ? `until then it writes the type ${type} without ${fields.join(", ")}, which this connector declares and the server's type lacks`
+      : `until then it writes no rows to the ${fields.length === 1 ? "table" : "tables"} ${fields.join(", ")} of the type ${type}, which this connector declares and the server's type lacks in whole or in part`;
   if (withheld.kind === "grant") {
     return `grant the key ${withheld.key} metadata types=write with \`${withheld.command}\`, and the connector adds ${them} on its next start or scheduled run; ${until}, and the key may not add ${them}`;
   }
@@ -103,6 +116,26 @@ function listed(differences: TypeDifferences): string {
   ].join("; ");
 }
 
+/** The tables the connector declares laid over the server's, which keeps the
+ *  tables and columns the connector does not declare, as it keeps fields. */
+function mergedTables(
+  served: unknown,
+  carried: TypeDefinition["tables"],
+): Record<string, unknown> | undefined {
+  const theirs = record(served);
+  const merged: Record<string, unknown> = { ...theirs };
+  for (const [name, table] of Object.entries(carried ?? {})) {
+    const there = record(theirs[name]);
+    const here = record(table);
+    merged[name] = {
+      ...there,
+      ...here,
+      columns: { ...record(there["columns"]), ...record(here["columns"]) },
+    };
+  }
+  return Object.keys(merged).length === 0 ? undefined : merged;
+}
+
 export function replacement(
   type: TypeDefinition,
   served: Record<string, unknown>,
@@ -112,6 +145,9 @@ export function replacement(
     ...type,
     fields: { ...record(served["fields"]), ...type.fields },
   };
+  const tables = mergedTables(served["tables"], type.tables);
+  if (tables === undefined) Reflect.deleteProperty(definition, "tables");
+  else Object.assign(definition, { tables });
   Reflect.deleteProperty(definition, "id");
   for (const name of ["version", "version_policy", "roles", "merge_policy"]) {
     Reflect.deleteProperty(definition, name);
@@ -131,7 +167,7 @@ export function replacement(
  * to what the connector carries. A key holding `metadata.types:write` adds
  * the optional fields the server lacks itself, and sets the `label`,
  * `description` and `display_hints` the type declares differently itself,
- * in one replacement, when the server allows that key the change; one that
+ * and those of its tables and columns, in one replacement, when the server allows that key the change; one that
  * lacks the scope, or is refused, runs without them. Every other difference
  * stops the start, so two versions of a connector never rewrite each
  * other's structure. Nothing orders presentation between versions: each
@@ -147,6 +183,7 @@ export async function ensureTypes(
   say: (message: string) => void,
 ): Promise<TypeStep> {
   const fields = new Map<string, readonly string[]>();
+  const tables = new Map<string, readonly string[]>();
   const conditions = new Map<string, string>();
   for (const type of types) {
     const snapshot = await marfa.normalizeType(type);
@@ -161,7 +198,7 @@ export async function ensureTypes(
     if (outcome.omitted.length > 0) {
       fields.set(type.id, outcome.omitted);
       conditions.set(
-        type.id,
+        `type-fields:${type.id}`,
         narrowedCondition(
           type.id,
           outcome.omitted,
@@ -169,10 +206,25 @@ export async function ensureTypes(
         ),
       );
     }
+    if ((outcome.omittedTables ?? []).length > 0) {
+      tables.set(type.id, outcome.omittedTables ?? []);
+      conditions.set(
+        `type-tables:${type.id}`,
+        narrowedCondition(
+          type.id,
+          outcome.omittedTables ?? [],
+          outcome.withheld ?? grantWithheld(key),
+          "table",
+        ),
+      );
+    }
   }
   return {
     problem: undefined,
-    narrowed: fields.size === 0 ? undefined : { fields, conditions },
+    narrowed:
+      fields.size === 0 && tables.size === 0
+        ? undefined
+        : { fields, tables, conditions },
   };
 }
 
@@ -227,8 +279,12 @@ async function reconcile(
       problem: `the type ${type.id} on the server differs from the one this connector carries, and is not rewritten: ${listed(differences)}. ${capitalized(operatorFix(type.id))}`,
     };
   }
-  const { missing, presentation } = differences;
-  if (missing.length === 0 && presentation.length === 0) {
+  const { missing, presentation, tables } = differences;
+  if (
+    missing.length === 0 &&
+    presentation.length === 0 &&
+    tables.length === 0
+  ) {
     return { omitted: [] };
   }
   const needed = missing.filter(
@@ -242,7 +298,8 @@ async function reconcile(
           : `the server refused the key the change to the ${presentation.join(", ")} of the type ${type.id}, which this connector carries; it runs on with the server's`,
       );
     }
-    if (needed.length === 0) return { omitted: missing, withheld: reason };
+    if (needed.length === 0)
+      return { omitted: missing, omittedTables: tables, withheld: reason };
     const fix =
       reason.kind === "grant"
         ? `grant it metadata types=write with \`${grantCommand(key)}\`, or ${operatorFix(type.id)}`
@@ -268,6 +325,7 @@ async function reconcile(
     if (
       error instanceof Refusal &&
       missing.length === 0 &&
+      tables.length === 0 &&
       refusedChanges(error) === undefined
     ) {
       return withheld({ kind: "refused", changes: [...presentation] });
@@ -281,12 +339,17 @@ async function reconcile(
       );
     }
     return {
-      problem: `the type ${type.id} could not be brought up to date with ${missing.join(", ")}, which this connector declares and the server lacks: ${said(error)}`,
+      problem: `the type ${type.id} could not be brought up to date with ${[...missing, ...tables.map((name) => `table ${name}`)].join(", ")}, which this connector declares and the server lacks: ${said(error)}`,
     };
   }
   if (missing.length > 0) {
     say(
       `added ${missing.join(", ")} to the type ${type.id}, which this connector declares and the server lacked`,
+    );
+  }
+  if (tables.length > 0) {
+    say(
+      `added the ${tables.length === 1 ? "table" : "tables"} ${tables.join(", ")} to the type ${type.id}, which this connector declares and the server lacked`,
     );
   }
   if (presentation.length > 0) {
@@ -303,7 +366,11 @@ async function reconcile(
     now.resolved_type,
     now.registered_type,
   );
-  if (left.other.length > 0 || left.missing.length > 0) {
+  if (
+    left.other.length > 0 ||
+    left.missing.length > 0 ||
+    left.tables.length > 0
+  ) {
     return {
       problem: `the type ${type.id} on the server still differs from the one this connector carries after it was brought up to date, so another process may be changing it: ${listed(left)}`,
     };
