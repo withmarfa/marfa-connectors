@@ -135,6 +135,6 @@ pnpm exec vitest run shared/readwise/test connectors/readwise/test connectors/re
 pnpm proof
 ```
 
-Prepare the proof server with `scripts/monorepo.sh` as described in the repository README. The process proof uses disposable vendor fixtures and separate connector registrations. It covers existing schemas, both startup orders, retained states, uncertain creates, independent refresh, cleared fields, unchanged row/file/edge versions, oversized text, deletion limits, and readable archived blobs after housekeeping. Fixture results are not evidence of a live account import.
+Fetch the proof server with `scripts/monorepo.sh` as described in the repository README. The process proof uses disposable vendor fixtures and separate connector registrations. It covers existing schemas, both startup orders, retained states, uncertain creates, independent refresh, cleared fields, unchanged row/file/edge versions, oversized text, deletion limits, and readable archived blobs after housekeeping. Fixture results are not evidence of a live account import.
 
 Provider behavior is checked against the [Reader API](https://readwise.io/reader_api) and [Readwise export API](https://readwise.io/api_deets).

@@ -712,7 +712,7 @@ export async function proveWatchCheckpoint(
               params: { path: { id } },
               body: { process },
             });
-            assert.equal(required(taken.data).ttl_ms, 1000);
+            assert.equal(required(taken.data).ttl_seconds, 1);
             const state = await fixture.own.PUT("/connectors/{id}/state", {
               params: { path: { id } },
               body: {

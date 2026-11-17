@@ -410,6 +410,7 @@ describe("each job reads its answer", () => {
 
   it("prepares the pinned server only for Proof and installs the registry client for the rest", () => {
     expect(commands("proof")).toContain("scripts/monorepo.sh");
+    expect(commands("proof")).toContain("scripts/monorepo.sh hooks");
     for (const job of ["checks", "tests", "image"]) {
       expect(commands(job)).not.toContain("scripts/monorepo.sh");
       expect(commands(job)).toContain("pnpm install --frozen-lockfile");
@@ -495,7 +496,7 @@ describe("each job reads its answer", () => {
       changes: 5,
       checks: 10,
       tests: 12,
-      proof: 20,
+      proof: 35,
       image: 10,
       stop: 5,
       gate: 5,

@@ -27,8 +27,8 @@ void main(
         label: "Proof repository",
         description: "A connection kept during an endpoint upgrade.",
         cardinality: "many-to-one",
-        source_type_constraints: widened ? [type, extra] : [type],
-        target_type_constraints: [type],
+        from_type_constraints: widened ? [type, extra] : [type],
+        to_type_constraints: [type],
       },
     ],
     async run(context) {

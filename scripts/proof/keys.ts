@@ -47,6 +47,7 @@ export async function proveKeys(
   marfa: MarfaClient,
   url: string,
   manager: MarfaClient,
+  mintKey: ProofServer["mintKey"],
   updateKey: ProofServer["updateKey"],
 ): Promise<void> {
   const vendor = await serveThings();
@@ -63,12 +64,10 @@ export async function proveKeys(
         entry,
       );
 
-    // Only direct owner or local authority grants a source a caller does not
-    // hold, and the boot hands the proof a working key, which grants its own
-    // source and its claims. So a key of the connector's source is minted
-    // and goes, freeing the source, and a key of that source claiming the
-    // boot key's own mints the rest. The group mints its own, so it needs no
-    // other group to have run.
+    // A source a connector registration names is held, and only direct owner,
+    // local authority or `keys.manage` mints a key that takes it as its own, so
+    // the key that may mint keys claiming it comes from the local command.
+    // The group mints its own, so it needs no other group to have run.
     let minter = marfa;
     let elsewhere = "";
     await check(
@@ -78,31 +77,17 @@ export async function proveKeys(
         if (current.data === undefined)
           throw new Error("the boot key is not readable");
         elsewhere = current.data.source;
-        const inbound = await mint(
-          marfa,
-          "proof-inbound",
-          [],
-          "proof-keys-connector",
-        );
-        const revoked = await manager.DELETE("/keys/{id}", {
-          params: { path: { id: inbound.id } },
+        const data = await mintKey({
+          ...keyBody({
+            label: "proof-inbound-minter",
+            source: "proof-inbound",
+            typePermission: "proof.thing",
+          }),
+          sources: [elsewhere],
+          permissions: ["keys.mint"],
         });
-        if (!revoked.response.ok) throw new Error("the revoke was refused");
-        const { data, error } = await marfa.POST("/keys", {
-          body: {
-            ...keyBody({
-              label: "proof-inbound-minter",
-              source: "proof-inbound",
-              typePermission: "proof.thing",
-            }),
-            sources: [elsewhere],
-            permissions: ["keys.mint"],
-          },
-        });
-        if (data === undefined)
-          throw new Error(`the minter was refused: ${JSON.stringify(error)}`);
         minter = createClient({ baseUrl: url, credential: data.key });
-        return `revoked ${inbound.id}; ${data.id} holds proof-inbound and claims ${elsewhere}`;
+        return `${data.id} holds proof-inbound and claims ${elsewhere}`;
       },
     );
 
@@ -139,7 +124,7 @@ export async function proveKeys(
         const said = JSON.stringify(refused.error);
         if (
           refused.response.status !== 403 ||
-          !said.includes("does not hold metadata.types:write")
+          !said.includes("metadata.types:write, which you do not hold")
         ) {
           throw new Error(
             `answered ${String(refused.response.status)}: ${said}`,

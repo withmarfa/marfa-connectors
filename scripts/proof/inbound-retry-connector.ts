@@ -31,7 +31,7 @@ await main(
             title: {
               type: "string",
               required: true,
-              maxLength: config.maxLength,
+              max_length: config.maxLength,
             },
             vendor_id: { type: "string" },
             note: { type: "string" },
@@ -44,8 +44,8 @@ await main(
       {
         id: related,
         cardinality: "many-to-many",
-        source_type_constraints: [type],
-        target_type_constraints: [type],
+        from_type_constraints: [type],
+        to_type_constraints: [type],
       },
     ],
     env: { PROOF_CONTROL_URL: "required" },

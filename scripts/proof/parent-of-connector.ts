@@ -46,8 +46,8 @@ void main(
         id: "child-of",
         cardinality: "many-to-one",
         cascade_on_delete: "cascade",
-        source_type_constraints: [type],
-        target_type_constraints: [type],
+        from_type_constraints: [type],
+        to_type_constraints: [type],
       },
     ],
     async run(context) {

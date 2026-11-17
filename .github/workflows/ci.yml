@@ -119,14 +119,14 @@ jobs:
           fi
           pnpm exec vitest run --shard "${SHARD}" --passWithNoTests "${paths[@]}"
 
-  # Each shard boots a pinned server of its own and runs the groups
+  # Each shard boots the pinned release server of its own and runs the groups
   # `scripts/proof/shards.ts` gives it, so a scenario runs in exactly one.
   proof:
     name: Proof ${{ matrix.shard }}/${{ strategy.job-total }}
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.proof != 'false') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -141,6 +141,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: scripts/monorepo.sh
+      - run: scripts/monorepo.sh hooks
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm proof --shard ${{ matrix.shard }}/${{ strategy.job-total }}

@@ -13,7 +13,7 @@ import {
   rowsOf,
   type Item,
 } from "./connector.js";
-import { enrichmentIntervalMs, type ProofServer } from "./server.js";
+import { enrichmentPollMs, type ProofServer } from "./server.js";
 import { readerVendor } from "./readwise-reader-stub.js";
 
 /**
@@ -38,7 +38,7 @@ async function settledFiles(admin: MarfaClient): Promise<Map<string, Item>> {
           row.properties["resource_kind"] === "text") &&
         typeof row.properties["extracted_text"] !== "string",
     );
-  const quiet = 3 * enrichmentIntervalMs;
+  const quiet = 3 * enrichmentPollMs;
   const deadline = Date.now() + 30_000;
   let rows = await rowsOf(admin, "readwise.file", "readwise");
   let seen = key(rows);
@@ -46,7 +46,7 @@ async function settledFiles(admin: MarfaClient): Promise<Map<string, Item>> {
   while (waiting(rows) || Date.now() - since < quiet) {
     if (Date.now() > deadline)
       throw new Error("file rows were still changing after enrichment");
-    await new Promise((done) => setTimeout(done, enrichmentIntervalMs / 4));
+    await new Promise((done) => setTimeout(done, enrichmentPollMs / 4));
     rows = await rowsOf(admin, "readwise.file", "readwise");
     const now = key(rows);
     if (now !== seen || waiting(rows)) {
