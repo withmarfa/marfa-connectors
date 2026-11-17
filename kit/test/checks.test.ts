@@ -215,6 +215,38 @@ describe("the type check", () => {
       ).toHaveLength(1);
     });
 
+    it("names a table or column whose label or description differs as presentation, not as a difference", () => {
+      const labelled = {
+        label: "Checks",
+        description: "The checks.",
+        columns: {
+          name: { ...table.columns.name, label: "Name" },
+          note: { ...table.columns.note, description: "A note." },
+        },
+        order: "name",
+      };
+      expect(
+        compare(withTables({ checks: labelled }), holding({ checks: table })),
+      ).toEqual({
+        ...none,
+        presentation: [
+          "table checks label",
+          "table checks description",
+          "table checks column name label",
+          "table checks column note description",
+        ],
+      });
+      expect(
+        compare(
+          withTables({ checks: labelled }),
+          holding({ checks: labelled }),
+        ),
+      ).toEqual(none);
+      expect(
+        compare(withTables({ checks: table }), holding({ checks: labelled })),
+      ).toEqual(none);
+    });
+
     it("keeps a table or column the server holds and the connector does not declare", () => {
       expect(compare(withTables({}), holding({ checks: table }))).toEqual(none);
     });

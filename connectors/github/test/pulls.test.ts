@@ -625,6 +625,24 @@ describe("pull request checks as table rows", () => {
     );
   });
 
+  it("keeps the rows when GitHub answers with no head commit, and clears them for a commit with no checks", async () => {
+    const repo = github.addRepository("someone/tracker");
+    const pr = github.addPullRequest(repo, {
+      checks: passing,
+      check_list: checkList,
+    });
+    await ok();
+    expect(checkRows(pr.node)).toHaveLength(3);
+    pr.no_commit = true;
+    await ok();
+    expect(checkRows(pr.node)).toHaveLength(3);
+    pr.no_commit = false;
+    pr.checks = null;
+    pr.check_list = [];
+    await ok();
+    expect(checkRows(pr.node)).toHaveLength(0);
+  });
+
   it("leaves the table as it was where GitHub refuses the token its checks", async () => {
     const personal = "github_pat_no_checks";
     const env = {

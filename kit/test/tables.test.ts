@@ -103,6 +103,56 @@ describe("a type that declares tables", () => {
     );
   });
 
+  it("replaces the type to land a changed table or column label and description", async () => {
+    harness.server.grants = fixer;
+    harness.server.types.set("test.entry", {
+      ...testType,
+      tables: tabled.tables,
+    });
+    const relabelled: TypeDefinition = {
+      ...testType,
+      tables: {
+        checks: {
+          label: "Check runs",
+          description: "What ran on the head commit.",
+          columns: {
+            ...tabled.tables?.["checks"]?.columns,
+            name: {
+              type: "string",
+              required: true,
+              max_length: 12,
+              label: "Check name",
+            },
+          },
+          order: "name",
+        },
+      },
+    };
+    expect(await runOnce(() => Promise.resolve(), relabelled)).toBe(0);
+    expect(harness.server.requestsTo("PUT", "/types/test.entry")).toHaveLength(
+      1,
+    );
+    const stored = harness.server.types.get("test.entry")?.["tables"] as
+      | Record<
+          string,
+          {
+            label?: string;
+            description?: string;
+            columns: Record<string, { label?: string }>;
+          }
+        >
+      | undefined;
+    expect(stored?.["checks"]).toMatchObject({
+      label: "Check runs",
+      description: "What ran on the head commit.",
+    });
+    expect(stored?.["checks"]?.columns["name"]?.label).toBe("Check name");
+    expect(await runOnce(() => Promise.resolve(), relabelled)).toBe(0);
+    expect(harness.server.requestsTo("PUT", "/types/test.entry")).toHaveLength(
+      1,
+    );
+  });
+
   it("leaves a key that may not write types to skip the table, and says so", async () => {
     harness.server.types.set("test.entry", { ...testType });
     let report: TableReport | undefined;
@@ -152,21 +202,39 @@ describe("writing rows", () => {
     expect(held().size).toBe(2);
   });
 
-  it("answers a batch sent again under its key without writing it twice", async () => {
-    const work: Work = async (context, key) => {
-      await context.tables.put("test.entry", key, "checks", rows("a"));
-    };
-    await runOnce(work);
+  it("writes a value that returns to an earlier state, since a key is never made from the content", async () => {
+    const as =
+      (state: "passed" | "failed"): Work =>
+      async (context, key) => {
+        await context.tables.put("test.entry", key, "checks", [
+          { key: "a", values: { name: "a", state } },
+        ]);
+      };
+    for (const state of ["passed", "failed", "passed"] as const) {
+      expect(await runOnce(as(state))).toBe(0);
+      expect([...held().values()]).toEqual([{ name: "a", state }]);
+    }
     const keys = harness.server.requests
       .filter((request) => request.path.endsWith("/rows"))
       .map((request) => request.headers["idempotency-key"]);
-    await runOnce(work);
-    const after = harness.server.requests
+    expect(keys).toHaveLength(3);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("sends each page of a call under a key of its own", async () => {
+    await runOnce(async (context, key) => {
+      await context.tables.put(
+        "test.entry",
+        key,
+        "checks",
+        rows(...Array.from({ length: 501 }, (_, index) => `r${String(index)}`)),
+      );
+    });
+    const keys = harness.server.requests
       .filter((request) => request.path.endsWith("/rows"))
       .map((request) => request.headers["idempotency-key"]);
-    expect(keys).toHaveLength(1);
-    expect(keys[0]).toBeTypeOf("string");
-    expect(after).toEqual([keys[0], keys[0]]);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it("reports a refused row, keeps the rest, and raises a condition", async () => {

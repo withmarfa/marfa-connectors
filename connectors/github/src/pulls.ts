@@ -287,10 +287,9 @@ async function mapped(octokit: Client, node: GraphPR): Promise<PullRequest> {
       );
     page = result.node.closingIssuesReferences;
   }
-  const rollup =
-    node.commits === undefined
-      ? undefined
-      : (node.commits.nodes[0]?.commit.statusCheckRollup ?? null);
+  // Only a present commit whose rollup is an explicit null has no checks; a
+  // missing commit or rollup is unknown, which leaves the stored checks alone.
+  const rollup = node.commits?.nodes[0]?.commit.statusCheckRollup;
   const checks: CheckCounts | null | undefined =
     rollup === undefined || rollup === null
       ? rollup

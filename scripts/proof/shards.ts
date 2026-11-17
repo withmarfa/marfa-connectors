@@ -56,7 +56,7 @@ export const GROUPS = [
     statements: 1,
     seconds: 1,
   },
-  { name: "github-pulls", instance: "shared", statements: 3, seconds: 35 },
+  { name: "github-pulls", instance: "shared", statements: 4, seconds: 40 },
   { name: "parent-of", instance: "shared", statements: 1, seconds: 2 },
   { name: "checkpoint", instance: "shared", statements: 9, seconds: 20 },
   { name: "watch-checkpoint", instance: "shared", statements: 6, seconds: 19 },

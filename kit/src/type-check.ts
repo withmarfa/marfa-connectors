@@ -42,9 +42,10 @@ export interface TypeDifferences {
    *  difference a connector puts right itself: a type gaining a field
    *  leaves the rows it holds as they are. */
   readonly missing: readonly string[];
-  /** Of `label`, `description` and `display_hints`, those the connector
-   *  carries and the type holds differently itself, not by inheritance. A
-   *  connector puts these right itself: they change no stored item. */
+  /** Of `label`, `description` and `display_hints`, and of each table's and
+   *  column's `label` and `description`, those the connector carries and the
+   *  type holds differently itself, not by inheritance. A connector puts these
+   *  right itself: they change no stored item. */
   readonly presentation: readonly string[];
   /** Tables the connector declares that the server lacks, or lacks an
    *  optional column of or the `order` of, the other difference a connector
@@ -67,16 +68,33 @@ const columnShape = [
 ] as const;
 
 /** What a table the connector declares needs of the server's: the tables and
- *  optional columns it lacks, and what differs beyond that. The server's own
- *  tables and columns that the connector does not declare are no difference. */
+ *  optional columns it lacks, the labels and descriptions the type itself
+ *  holds differently, and what differs beyond that. The server's own tables
+ *  and columns that the connector does not declare are no difference. */
 function tableDifferences(
   carried: Record<string, unknown>,
   served: Record<string, unknown>,
-): { missing: string[]; other: string[] } {
+  declared: Record<string, unknown>,
+): { missing: string[]; presentation: string[]; other: string[] } {
   const missing: string[] = [];
+  const presentation: string[] = [];
   const other: string[] = [];
   const mine = record(carried["tables"]);
   const theirs = record(served["tables"]);
+  const own = record(declared["tables"]);
+  const shown = (
+    wanted: Record<string, unknown>,
+    holds: Record<string, unknown>,
+    where: string,
+  ): void => {
+    for (const attribute of ["label", "description"] as const) {
+      if (
+        wanted[attribute] !== undefined &&
+        !isDeepStrictEqual(wanted[attribute], holds[attribute])
+      )
+        presentation.push(`${where} ${attribute}`);
+    }
+  };
   for (const name of Object.keys(mine).sort()) {
     if (!Object.hasOwn(theirs, name)) {
       missing.push(name);
@@ -86,6 +104,8 @@ function tableDifferences(
     const there = record(theirs[name]);
     const columns = record(here["columns"]);
     const held = record(there["columns"]);
+    const mineOwn = record(own[name]);
+    shown(here, mineOwn, `table ${name}`);
     let lacks = false;
     for (const column of Object.keys(columns).sort()) {
       const wanted = record(columns[column]);
@@ -98,6 +118,11 @@ function tableDifferences(
         continue;
       }
       const have = record(held[column]);
+      shown(
+        wanted,
+        record(record(mineOwn["columns"])[column]),
+        `table ${name} column ${column}`,
+      );
       for (const attribute of columnShape) {
         if (
           JSON.stringify(wanted[attribute]) !== JSON.stringify(have[attribute])
@@ -123,7 +148,7 @@ function tableDifferences(
     }
     if (lacks) missing.push(name);
   }
-  return { missing, other };
+  return { missing, presentation, other };
 }
 
 /** Fields the server holds and the connector does not declare are no
@@ -221,16 +246,21 @@ export function typeDifferences(
       `link_field is ${show(carried.link_field)} here and ${show(linkThere)} on the server`,
     );
   }
-  const presentation = (["label", "description", "display_hints"] as const)
+  const typePresentation = (["label", "description", "display_hints"] as const)
     .filter(
       (name) =>
         carried[name] !== undefined &&
         !isDeepStrictEqual(carried[name], declared[name]),
     )
     .map(String);
-  const tables = tableDifferences(carried, served);
+  const tables = tableDifferences(carried, served, declared);
   other.push(...tables.other);
-  return { missing, presentation, tables: tables.missing, other };
+  return {
+    missing,
+    presentation: [...typePresentation, ...tables.presentation],
+    tables: tables.missing,
+    other,
+  };
 }
 
 export function edgeTypeDifferences(

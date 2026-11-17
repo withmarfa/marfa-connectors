@@ -128,6 +128,8 @@ export interface PullRequest extends Issue {
   } | null;
   /** The checks the rollup lists, when it has any. */
   check_list?: Check[];
+  /** GitHub answers with no head commit at all, as it can for a moment. */
+  no_commit?: boolean;
 }
 
 export interface Comment {
@@ -2571,7 +2573,12 @@ export class GitHubStub {
       },
       // GraphQL answers only the fields asked for.
       ...(withCommits && {
-        commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] },
+        commits: {
+          nodes:
+            pr.no_commit === true
+              ? []
+              : [{ commit: { statusCheckRollup: rollup } }],
+        },
       }),
     };
   }

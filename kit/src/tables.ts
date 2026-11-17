@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { Item, TypeDefinition } from "./define.js";
 import {
@@ -135,15 +135,19 @@ function pagesOf(operations: readonly Operation[]): Operation[][] {
   return pages;
 }
 
-/** The key a batch is sent under: made from the batch itself, so the same
- *  batch is always the same key and a different one never reuses it. */
+/** The key a batch is sent under. The server replays a key it knows for 30
+ *  days, so the key is never made from the batch alone: a value that returned
+ *  to an earlier state would be replayed and never written. The call's own
+ *  random value keeps a retry within the call on one key, and a later call or
+ *  run on a fresh one. */
 function keyOf(
+  call: string,
   item: string,
   table: string,
   page: readonly Operation[],
 ): string {
   const digest = createHash("sha256")
-    .update(JSON.stringify([item, table, page.map((one) => one.op)]))
+    .update(JSON.stringify([call, item, table, page.map((one) => one.op)]))
     .digest("hex");
   return `rows-${digest.slice(0, 48)}`;
 }
@@ -201,6 +205,8 @@ export interface TablesHost {
 }
 
 interface Target {
+  /** Made once for each call that writes, for the keys of its batches. */
+  readonly call: string;
   readonly id: string;
   readonly type: string;
   readonly key: string;
@@ -393,7 +399,13 @@ export class Tables {
     const item = await this.host.find(type, key);
     if (item === undefined) return done("missing");
     if (item.state === "trashed") return done("bin");
-    const target: Target = { id: item.id, type, key, table };
+    const target: Target = {
+      call: randomUUID(),
+      id: item.id,
+      type,
+      key,
+      table,
+    };
     try {
       const planned = await operations(target);
       const list = Array.isArray(planned) ? planned : planned.operations;
@@ -425,7 +437,7 @@ export class Tables {
         target.id,
         target.table,
         page.map((one) => one.op),
-        keyOf(target.id, target.table, page),
+        keyOf(target.call, target.id, target.table, page),
       );
     } catch (error) {
       if (!(error instanceof Refusal)) throw error;

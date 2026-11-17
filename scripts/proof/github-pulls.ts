@@ -316,6 +316,52 @@ export async function proveGitHubPullRequests(
         return "four checks came, the 300-character name was refused and reported while three rows were kept, a changed check was replaced, an unlisted check was deleted, and a repeated run changed nothing, on the real server";
       },
     );
+    await check(
+      "github: a check that returns to an earlier state is written again, and a row deleted, restored and deleted again is deleted again",
+      async () => {
+        const returning = github.addPullRequest(repo, {
+          node: "PR_checks_return_proof",
+          checks: {
+            state: "PENDING",
+            check_runs: { IN_PROGRESS: 1 },
+            statuses: {},
+          },
+          check_list: [
+            {
+              id: "CR_return_build",
+              kind: "check_run",
+              name: "build",
+              status: "IN_PROGRESS",
+            },
+          ],
+        });
+        await run();
+        const held = await row("github.pull_request", returning.node);
+        const states = async (): Promise<string> =>
+          (await checkRows(held))
+            .map((one) => `${String(one["name"])}:${String(one["status"])}`)
+            .join();
+        const [build] = returning.check_list ?? [];
+        if (build === undefined) throw new Error("the stub lost its check");
+        const seen: string[] = [];
+        for (const status of ["COMPLETED", "IN_PROGRESS"]) {
+          returning.check_list = [{ ...build, status }];
+          await run();
+          seen.push(await states());
+        }
+        if (seen.join() !== "build:COMPLETED,build:IN_PROGRESS")
+          throw new Error(`the row went ${seen.join(", then ")}`);
+        const gone: string[] = [];
+        for (const listed of [[], [build], []]) {
+          returning.check_list = listed;
+          await run();
+          gone.push(String((await checkRows(held)).length));
+        }
+        if (gone.join() !== "0,1,0")
+          throw new Error(`the table held ${gone.join(", then ")} rows`);
+        return "a check went in progress, completed and in progress again, and a check was dropped, listed again and dropped again, each change written on the real server and none replayed from an earlier batch";
+      },
+    );
   } finally {
     await github.stop();
   }

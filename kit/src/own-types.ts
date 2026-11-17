@@ -167,7 +167,7 @@ export function replacement(
  * to what the connector carries. A key holding `metadata.types:write` adds
  * the optional fields the server lacks itself, and sets the `label`,
  * `description` and `display_hints` the type declares differently itself,
- * in one replacement, when the server allows that key the change; one that
+ * and those of its tables and columns, in one replacement, when the server allows that key the change; one that
  * lacks the scope, or is refused, runs without them. Every other difference
  * stops the start, so two versions of a connector never rewrite each
  * other's structure. Nothing orders presentation between versions: each
