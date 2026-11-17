@@ -139,7 +139,7 @@ async function fixture(content = png, mime = "image/png") {
       {
         id: "github.in-repository",
         cardinality: "many-to-one",
-        source_type_constraints: [
+        from_type_constraints: [
           parent.id,
           comment.id,
           pullRequest.id,
@@ -147,7 +147,7 @@ async function fixture(content = png, mime = "image/png") {
           repositoryFileType.id,
           directoryType.id,
         ],
-        target_type_constraints: [repositoryType.id],
+        to_type_constraints: [repositoryType.id],
       },
     ],
     async run(root) {

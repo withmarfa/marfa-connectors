@@ -33,8 +33,8 @@ it.each(["adopt", "restore", "edit", "witness"])(
           {
             id: "test.blocks",
             cardinality: "many-to-many",
-            source_type_constraints: [linkedType.id],
-            target_type_constraints: [linkedType.id],
+            from_type_constraints: [linkedType.id],
+            to_type_constraints: [linkedType.id],
           },
         ],
         async run(context) {

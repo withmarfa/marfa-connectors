@@ -6,8 +6,8 @@ let harness: Harness;
 const references: ConnectionDefinition = {
   id: "references",
   cardinality: "many-to-many",
-  source_type_constraints: [testType.id],
-  target_type_constraints: [testType.id],
+  from_type_constraints: [testType.id],
+  to_type_constraints: [testType.id],
 };
 
 beforeEach(async () => {
@@ -18,11 +18,11 @@ beforeEach(async () => {
   };
   harness.server.edgeTypes.set("references", {
     ...references,
-    source_type_constraints: ["*"],
-    target_type_constraints: ["*"],
+    from_type_constraints: ["*"],
+    to_type_constraints: ["*"],
     cascade_on_delete: "orphan",
     property_schema: {},
-    written_at: "source",
+    written_from: "from",
     shipped: true,
   });
 });
@@ -91,7 +91,7 @@ describe("built-in references", () => {
     expect(harness.lastRun().error).toContain("edge in-thread=write");
   });
 
-  it.each(["source_type_constraints", "target_type_constraints"] as const)(
+  it.each(["from_type_constraints", "to_type_constraints"] as const)(
     "refuses declarations reaching other types through %s",
     async (end) => {
       const held = referencing();

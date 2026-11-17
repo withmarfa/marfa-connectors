@@ -93,11 +93,11 @@ describe("pull request reading", () => {
       id: "github.in-repository",
       label: "In repository",
       cardinality: "many-to-one",
-      source_type_constraints: ["github.issue", "github.comment"],
-      target_type_constraints: ["github.repository"],
+      from_type_constraints: ["github.issue", "github.comment"],
+      to_type_constraints: ["github.repository"],
       cascade_on_delete: "orphan",
       property_schema: {},
-      written_at: "source",
+      written_from: "from",
       shipped: false,
     });
     const repo = github.addRepository("someone/upgraded");

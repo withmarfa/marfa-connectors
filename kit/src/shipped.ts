@@ -46,11 +46,11 @@ export function edgeTypesOf(
  *  the connector's row: the source, or for an inbound connection the target. */
 export function endsOf(
   connections: readonly Pick<ConnectionDefinition, "id">[],
-): Map<string, "source" | "target"> {
+): Map<string, "from" | "to"> {
   return new Map(
     connections.map((kind) => {
       const wire = wireOf(kind.id);
-      return [wire.edge, wire.inbound ? "target" : "source"];
+      return [wire.edge, wire.inbound ? "to" : "from"];
     }),
   );
 }

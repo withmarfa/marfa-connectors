@@ -283,8 +283,7 @@ describe("notifications", () => {
     // The witness: the connector's own link is still the one it made.
     expect(
       marfa.edges.filter(
-        (one) =>
-          one.source_id === row(thread.id).id && one.edge_type === "about",
+        (one) => one.from_id === row(thread.id).id && one.edge_type === "about",
       ),
     ).toHaveLength(2);
   });

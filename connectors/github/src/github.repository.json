@@ -22,8 +22,7 @@
       "description": "Whether the person the personal access token, or without one the notifications token, belongs to has starred the repository, as of the last scheduled run that listed their stars. Empty where no run has listed them."
     },
     "starred_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "When the person starred the repository. Empty where it is not starred."
     },
     "synced": {

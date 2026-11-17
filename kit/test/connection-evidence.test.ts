@@ -29,8 +29,8 @@ const connections = [
   {
     id: "test.blocks",
     cardinality: "many-to-many" as const,
-    source_type_constraints: [linkedType.id],
-    target_type_constraints: [linkedType.id],
+    from_type_constraints: [linkedType.id],
+    to_type_constraints: [linkedType.id],
   },
 ];
 function entry(id: string): Entry {

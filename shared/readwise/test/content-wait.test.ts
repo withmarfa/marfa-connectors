@@ -87,8 +87,8 @@ it("refreshes expired storage outside the kit row write and resumes after its du
         id: "attached-to",
         cardinality: "many-to-many",
         cascade_on_delete: "with-hosts",
-        source_type_constraints: [readerFileType.id],
-        target_type_constraints: [sourceType.id],
+        from_type_constraints: [readerFileType.id],
+        to_type_constraints: [sourceType.id],
       },
     ],
     async run(context) {

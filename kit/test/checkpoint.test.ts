@@ -245,8 +245,8 @@ it("drains applicable edges and durably retains missing target identity before p
     {
       id: "test.blocks",
       cardinality: "many-to-many",
-      source_type_constraints: [testType.id],
-      target_type_constraints: [testType.id],
+      from_type_constraints: [testType.id],
+      to_type_constraints: [testType.id],
     },
   ];
   held.read = async (context) => {
@@ -418,8 +418,8 @@ it("blocks full missing-target identities that grow past the agreement cap durin
     {
       id: "test.blocks",
       cardinality: "many-to-many",
-      source_type_constraints: [testType.id],
-      target_type_constraints: [testType.id],
+      from_type_constraints: [testType.id],
+      to_type_constraints: [testType.id],
     },
   ];
   held.read = async (context) => {

@@ -74,8 +74,8 @@ export class ScriptedRefusal extends Error {
 
 export interface EdgeRow {
   id: string;
-  source_id: string;
-  target_id: string;
+  from_id: string;
+  to_id: string;
   edge_type: string;
   properties: Record<string, unknown>;
   created_at: string;
@@ -257,7 +257,7 @@ export class ScriptedServer {
   readonly key = "marfa_k1_scripted";
   readonly source: string;
   keySource: string;
-  /** What `PATCH /source` has set, by source code. */
+  /** What `PATCH /sources/{source}` has set, by source code. */
   readonly sourceNames = new Map<
     string,
     { name?: string | undefined; mark?: string | undefined }
@@ -282,12 +282,12 @@ export class ScriptedServer {
       {
         id: "attached-to",
         cardinality: "many-to-many",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "with-hosts",
         property_schema: {},
         reverse_name: "has-attachment",
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -296,11 +296,11 @@ export class ScriptedServer {
       {
         id: "references",
         cardinality: "many-to-many",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "orphan",
         property_schema: {},
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -309,11 +309,11 @@ export class ScriptedServer {
       {
         id: "excerpt-of",
         cardinality: "many-to-one",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "orphan",
         property_schema: {},
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -322,11 +322,11 @@ export class ScriptedServer {
       {
         id: "about",
         cardinality: "many-to-many",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "orphan",
         property_schema: {},
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -335,11 +335,11 @@ export class ScriptedServer {
       {
         id: "comments-on",
         cardinality: "many-to-one",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "with-hosts",
         property_schema: {},
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -348,11 +348,11 @@ export class ScriptedServer {
       {
         id: "derived-from",
         cardinality: "many-to-many",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "orphan",
         property_schema: {},
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -361,12 +361,12 @@ export class ScriptedServer {
       {
         id: "parent-of",
         cardinality: "one-to-many",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "cascade",
         property_schema: {},
         reverse_name: "child-of",
-        written_at: "target",
+        written_from: "to",
         shipped: true,
       },
     ],
@@ -375,13 +375,13 @@ export class ScriptedServer {
       {
         id: "in-collection",
         cardinality: "many-to-many",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["role:container"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["role:container"],
         cascade_on_delete: "orphan",
         property_schema: {
           position: { type: "number", description: "Ordering." },
         },
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -390,13 +390,13 @@ export class ScriptedServer {
       {
         id: "in-thread",
         cardinality: "many-to-one",
-        source_type_constraints: ["*"],
-        target_type_constraints: ["*"],
+        from_type_constraints: ["*"],
+        to_type_constraints: ["*"],
         cascade_on_delete: "orphan",
         property_schema: {
           position: { type: "number", description: "Ordering." },
         },
-        written_at: "source",
+        written_from: "from",
         shipped: true,
       },
     ],
@@ -438,7 +438,7 @@ export class ScriptedServer {
   /** The registration is gone: every door under it answers 404 until the
    *  connector registers again. */
   lost = false;
-  /** What the hold answers for `ttl_ms`, where it is not the window: a
+  /** What the hold answers for `ttl_seconds`, where it is not the window: a
    *  value that is no number, or none at all. */
   ttlAnswer: { value: unknown } | undefined;
   bodyCap: number | undefined;
@@ -670,7 +670,7 @@ export class ScriptedServer {
     const before = { ...row, state: "trashed" as const };
     row.state = "trashed";
     row.updated_at = this.now();
-    this.announce("item.deleted", before);
+    this.announce("item.trashed", before);
     this.cascadeFrom(id, id);
     return row;
   }
@@ -683,25 +683,23 @@ export class ScriptedServer {
     const rule = (edge: EdgeRow): unknown =>
       this.edgeTypes.get(edge.edge_type)?.["cascade_on_delete"];
     for (const edge of this.edges) {
-      if (edge.source_id === id && rule(edge) === "cascade") {
-        const target = this.byId(edge.target_id);
+      if (edge.from_id === id && rule(edge) === "cascade") {
+        const target = this.byId(edge.to_id);
         if (target.state === "trashed") continue;
         this.cascadeTrash(target.id, root);
         this.cascadeFrom(target.id, root);
       }
       if (
-        edge.target_id === id &&
+        edge.to_id === id &&
         edge.edge_type === "comments-on" &&
         rule(edge) === "with-hosts"
       ) {
-        const part = this.byId(edge.source_id);
+        const part = this.byId(edge.from_id);
         if (part.state === "trashed") continue;
         const hosted = this.edges.filter(
-          (one) => one.source_id === part.id && rule(one) === "with-hosts",
+          (one) => one.from_id === part.id && rule(one) === "with-hosts",
         );
-        if (
-          hosted.some((one) => this.byId(one.target_id).state !== "trashed")
-        ) {
+        if (hosted.some((one) => this.byId(one.to_id).state !== "trashed")) {
           continue;
         }
         this.cascadeTrash(part.id, root);
@@ -723,7 +721,7 @@ export class ScriptedServer {
     row.trashed_with = root;
     row.trashed_by_cascade = true;
     row.updated_at = this.now();
-    this.announce("item.deleted", before);
+    this.announce("item.trashed", before);
     return row;
   }
 
@@ -805,12 +803,12 @@ export class ScriptedServer {
     // A row's agreement goes with it, as the instance's foreign key takes it.
     for (const held of this.agreementsBySource.values()) held.delete(id);
     for (const edge of this.edges.filter(
-      (candidate) => candidate.source_id === id || candidate.target_id === id,
+      (candidate) => candidate.from_id === id || candidate.to_id === id,
     )) {
       this.announceEdge("edge.deleted", edge, id, row);
     }
     this.edges = this.edges.filter(
-      (edge) => edge.source_id !== id && edge.target_id !== id,
+      (edge) => edge.from_id !== id && edge.to_id !== id,
     );
     this.announce("item.purged", row);
   }
@@ -910,7 +908,7 @@ export class ScriptedServer {
       event,
       edge: { ...edge },
       source_type: [...this.rows, ...(taken === undefined ? [] : [taken])].find(
-        (row) => row.id === edge.source_id,
+        (row) => row.id === edge.from_id,
       )?.type,
       ...(purgedWith !== undefined && { purged_with: purgedWith }),
     });
@@ -957,8 +955,8 @@ export class ScriptedServer {
     this.sequence += 1;
     const edge: EdgeRow = {
       id: `edge-${String(this.sequence)}`,
-      source_id: sourceId,
-      target_id: targetId,
+      from_id: sourceId,
+      to_id: targetId,
       edge_type: edgeType,
       properties: {},
       created_at: at,
@@ -984,14 +982,14 @@ export class ScriptedServer {
   updateEdge(
     id: string,
     change: {
-      source_id?: string;
-      target_id?: string;
+      from_id?: string;
+      to_id?: string;
       properties?: Record<string, unknown>;
     },
   ): EdgeRow {
     const edge = this.edges.find((candidate) => candidate.id === id);
     if (edge === undefined) throw new ScriptedRefusal(404, "edge_not_found");
-    const moves = (["source_id", "target_id"] as const).filter(
+    const moves = (["from_id", "to_id"] as const).filter(
       (end) => change[end] !== undefined && change[end] !== edge[end],
     );
     const [end] = moves;
@@ -999,23 +997,22 @@ export class ScriptedServer {
       new ScriptedRefusal(400, "validation_error", {
         errors: [{ path }],
       });
-    if (moves.length > 1) throw invalid("target_id");
+    if (moves.length > 1) throw invalid("to_id");
     const kind = this.edgeTypes.get(edge.edge_type);
     if (kind === undefined) throw new Error(`no edge type ${edge.edge_type}`);
     const cardinality = String(kind["cardinality"]);
     // The end that stays must hold one edge of the type, or there is no one
     // edge to move.
     if (
-      (end === "source_id" &&
+      (end === "from_id" &&
         !["one-to-one", "one-to-many"].includes(cardinality)) ||
-      (end === "target_id" &&
-        !["one-to-one", "many-to-one"].includes(cardinality))
+      (end === "to_id" && !["one-to-one", "many-to-one"].includes(cardinality))
     )
       throw invalid(end);
     const to = end === undefined ? undefined : change[end];
     const moved = { ...edge, ...(end !== undefined && { [end]: to }) };
-    const source = this.rows.find((row) => row.id === moved.source_id);
-    const target = this.rows.find((row) => row.id === moved.target_id);
+    const source = this.rows.find((row) => row.id === moved.from_id);
+    const target = this.rows.find((row) => row.id === moved.to_id);
     if (
       source === undefined ||
       target === undefined ||
@@ -1032,11 +1029,11 @@ export class ScriptedServer {
         });
       const allowed = (constraints: unknown, type: string) =>
         this.admits(constraints, type);
-      if (!allowed(kind["source_type_constraints"], source.type))
+      if (!allowed(kind["from_type_constraints"], source.type))
         throw new ScriptedRefusal(400, "edge_constraint_violation", {
           source_type: source.type,
         });
-      if (!allowed(kind["target_type_constraints"], target.type))
+      if (!allowed(kind["to_type_constraints"], target.type))
         throw new ScriptedRefusal(400, "edge_constraint_violation", {
           target_type: target.type,
         });
@@ -1066,9 +1063,9 @@ export class ScriptedServer {
   targetsOf(sourceId: string, edgeType: string): string[] {
     return this.edges
       .filter(
-        (edge) => edge.source_id === sourceId && edge.edge_type === edgeType,
+        (edge) => edge.from_id === sourceId && edge.edge_type === edgeType,
       )
-      .map((edge) => edge.target_id);
+      .map((edge) => edge.to_id);
   }
 
   private snapshot(row: Row): void {
@@ -1237,8 +1234,8 @@ export class ScriptedServer {
       });
       return;
     }
-    if (url.pathname === "/source") {
-      const code = url.searchParams.get("source") ?? "";
+    if (parts[0] === "sources" && parts.length === 2) {
+      const code = decodeURIComponent(parts[1] ?? "");
       const held = this.sourceNames.get(code) ?? {};
       if (method === "PATCH") {
         const next = { ...held };
@@ -1470,8 +1467,10 @@ export class ScriptedServer {
       res.setHeader("Date", new Date(now).toUTCString());
       send(200, {
         expires_at: new Date(this.holder.until).toISOString(),
-        ttl_ms:
-          this.ttlAnswer === undefined ? this.holdMs : this.ttlAnswer.value,
+        ttl_seconds:
+          this.ttlAnswer === undefined
+            ? this.holdMs / 1000
+            : this.ttlAnswer.value,
         renewed,
       });
       return;
@@ -1687,7 +1686,7 @@ export class ScriptedServer {
     if (method === "POST" && url.pathname === "/types") {
       const id = String(input["id"]);
       if (this.types.has(id)) {
-        refuse(409, "type_already_exists");
+        refuse(409, "type_exists");
         return;
       }
       send(201, { type: this.store(input) });
@@ -1811,11 +1810,11 @@ export class ScriptedServer {
         return;
       }
       const stored = {
-        source_type_constraints: [],
-        target_type_constraints: [],
+        from_type_constraints: [],
+        to_type_constraints: [],
         cascade_on_delete: "orphan",
         property_schema: {},
-        written_at: "source",
+        written_from: "from",
         ...input,
         shipped: false,
       };
@@ -1824,14 +1823,14 @@ export class ScriptedServer {
       return;
     }
     if (method === "POST" && url.pathname === "/edges") {
-      const source = this.rows.find((row) => row.id === input["source_id"]);
+      const source = this.rows.find((row) => row.id === input["from_id"]);
       if (source === undefined) {
         refuse(404, "item_not_found");
         return;
       }
       if (
-        url.searchParams.has("source_version") &&
-        Number(url.searchParams.get("source_version")) !== source.version
+        url.searchParams.has("from_version") &&
+        Number(url.searchParams.get("from_version")) !== source.version
       ) {
         refuse(409, "version_conflict");
         return;
@@ -1867,9 +1866,9 @@ export class ScriptedServer {
         return;
       }
       if (
-        url.searchParams.has("source_version") &&
-        Number(url.searchParams.get("source_version")) !==
-          this.byId(edge.source_id).version
+        url.searchParams.has("from_version") &&
+        Number(url.searchParams.get("from_version")) !==
+          this.byId(edge.from_id).version
       ) {
         refuse(409, "version_conflict");
         return;
@@ -1935,8 +1934,8 @@ export class ScriptedServer {
       const all = this.edges.filter(
         (edge) =>
           (parts[2] === "edges"
-            ? edge.source_id === parts[1]
-            : edge.target_id === parts[1]) &&
+            ? edge.from_id === parts[1]
+            : edge.to_id === parts[1]) &&
           (type === null || edge.edge_type === type),
       );
       send(200, {
@@ -2152,12 +2151,12 @@ export class ScriptedServer {
               term !== null &&
               this.edges.some((edge) =>
                 term[1] === "edge"
-                  ? edge.source_id === row.id &&
+                  ? edge.from_id === row.id &&
                     edge.edge_type === term[2] &&
-                    edge.target_id === term[3]
-                  : edge.target_id === row.id &&
+                    edge.to_id === term[3]
+                  : edge.to_id === row.id &&
                     edge.edge_type === term[2] &&
-                    edge.source_id === term[3],
+                    edge.from_id === term[3],
               ),
           )),
     );
@@ -2319,8 +2318,8 @@ export class ScriptedServer {
     id?: string;
     error?: { code: string; message: string };
   } {
-    const source = this.rows.find((row) => row.id === entry["source_id"]);
-    const target = this.rows.find((row) => row.id === entry["target_id"]);
+    const source = this.rows.find((row) => row.id === entry["from_id"]);
+    const target = this.rows.find((row) => row.id === entry["to_id"]);
     const kind = this.edgeTypes.get(String(entry["edge_type"]));
     if (source === undefined || target === undefined || kind === undefined) {
       return {
@@ -2332,8 +2331,8 @@ export class ScriptedServer {
     const allowed = (constraints: unknown, type: string) =>
       this.admits(constraints, type);
     if (
-      !allowed(kind["source_type_constraints"], source.type) ||
-      !allowed(kind["target_type_constraints"], target.type)
+      !allowed(kind["from_type_constraints"], source.type) ||
+      !allowed(kind["to_type_constraints"], target.type)
     ) {
       return {
         index,
@@ -2353,8 +2352,8 @@ export class ScriptedServer {
     }
     const held = this.edges.find(
       (edge) =>
-        edge.source_id === source.id &&
-        edge.target_id === target.id &&
+        edge.from_id === source.id &&
+        edge.to_id === target.id &&
         edge.edge_type === entry["edge_type"],
     );
     if (held !== undefined) return { index, outcome: "updated", id: held.id };
@@ -2366,9 +2365,9 @@ export class ScriptedServer {
     );
     if (
       (["one-to-many", "one-to-one"].includes(cardinality) &&
-        ofType.some((edge) => edge.target_id === target.id)) ||
+        ofType.some((edge) => edge.to_id === target.id)) ||
       (["many-to-one", "one-to-one"].includes(cardinality) &&
-        ofType.some((edge) => edge.source_id === source.id))
+        ofType.some((edge) => edge.from_id === source.id))
     ) {
       return {
         index,
@@ -2393,7 +2392,7 @@ export class ScriptedServer {
    *  with nothing is removed (`edges/read-hydrated-block`). */
   private hydrated(id: string): Record<string, unknown> {
     const byType = new Map<string, EdgeRow[]>();
-    for (const edge of this.edges.filter((edge) => edge.source_id === id)) {
+    for (const edge of this.edges.filter((edge) => edge.from_id === id)) {
       byType.set(edge.edge_type, [...(byType.get(edge.edge_type) ?? []), edge]);
     }
     return Object.fromEntries(
@@ -2548,7 +2547,7 @@ export class ScriptedServer {
   /** A source the store cannot find is read as one with no type to refuse,
    *  as `sourceTypeReadable` reads it. */
   private readsSourceOf(edge: EdgeRow): boolean {
-    const source = this.rows.find((row) => row.id === edge.source_id);
+    const source = this.rows.find((row) => row.id === edge.from_id);
     return source === undefined || this.permission(source.type) !== "none";
   }
 

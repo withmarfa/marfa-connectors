@@ -38,8 +38,8 @@ it.each(["none", "empty", "add", "owned-add", "adopted-add"] as const)(
         {
           id: "test.blocks",
           cardinality: "many-to-many",
-          source_type_constraints: [linkedType.id],
-          target_type_constraints: [linkedType.id],
+          from_type_constraints: [linkedType.id],
+          to_type_constraints: [linkedType.id],
         },
       ],
       async run(context) {
@@ -192,8 +192,8 @@ it.each(["owned", "adopted", "racing"])(
         {
           id: "test.blocks",
           cardinality: "many-to-many",
-          source_type_constraints: [linkedType.id],
-          target_type_constraints: [linkedType.id],
+          from_type_constraints: [linkedType.id],
+          to_type_constraints: [linkedType.id],
         },
       ],
       async run(context) {
@@ -316,8 +316,8 @@ it.each([false, true])(
         {
           id: "test.blocks",
           cardinality: "many-to-many",
-          source_type_constraints: [linkedType.id],
-          target_type_constraints: [linkedType.id],
+          from_type_constraints: [linkedType.id],
+          to_type_constraints: [linkedType.id],
         },
       ],
       async run(context) {

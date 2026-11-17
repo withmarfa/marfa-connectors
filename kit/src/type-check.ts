@@ -8,8 +8,8 @@ const shape = [
   "format",
   "enum_values",
   "searchable",
-  "maxLength",
-  "maxItems",
+  "max_length",
+  "max_items",
 ] as const;
 
 function record(value: unknown): Record<string, unknown> {
@@ -169,17 +169,17 @@ export function edgeTypeDifferences(
       served.cascade_on_delete,
     ],
     [
-      "source_type_constraints",
-      sorted(carried.source_type_constraints),
-      sorted(served.source_type_constraints),
+      "from_type_constraints",
+      sorted(carried.from_type_constraints),
+      sorted(served.from_type_constraints),
     ],
     [
-      "target_type_constraints",
-      sorted(carried.target_type_constraints),
-      sorted(served.target_type_constraints),
+      "to_type_constraints",
+      sorted(carried.to_type_constraints),
+      sorted(served.to_type_constraints),
     ],
     ["reverse_name", carried.reverse_name, served.reverse_name],
-    ["written_at", carried.written_at ?? "source", served.written_at],
+    ["written_from", carried.written_from ?? "from", served.written_from],
   ];
   return pairs
     .filter(([, here, there]) => JSON.stringify(here) !== JSON.stringify(there))
@@ -197,8 +197,8 @@ export function constraintWidening(
     edgeTypeDifferences(
       {
         ...carried,
-        source_type_constraints: served.source_type_constraints,
-        target_type_constraints: served.target_type_constraints,
+        from_type_constraints: served.from_type_constraints,
+        to_type_constraints: served.to_type_constraints,
       },
       served,
     ).length > 0 ||
@@ -213,13 +213,7 @@ export function constraintWidening(
     return before.every((value) => after.includes(value));
   };
   return (
-    widens(
-      served.source_type_constraints,
-      carried.source_type_constraints ?? [],
-    ) &&
-    widens(
-      served.target_type_constraints,
-      carried.target_type_constraints ?? [],
-    )
+    widens(served.from_type_constraints, carried.from_type_constraints ?? []) &&
+    widens(served.to_type_constraints, carried.to_type_constraints ?? [])
   );
 }

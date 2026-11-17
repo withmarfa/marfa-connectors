@@ -170,8 +170,8 @@ describe("the look, for connections", () => {
   const blocks = {
     id: "test.blocks",
     cardinality: "many-to-many" as const,
-    source_type_constraints: ["test.entry"],
-    target_type_constraints: ["test.entry"],
+    from_type_constraints: ["test.entry"],
+    to_type_constraints: ["test.entry"],
   };
 
   function blocking(
@@ -264,8 +264,8 @@ describe("the look, for connections", () => {
         id: "attached-to",
         cardinality: "many-to-many",
         cascade_on_delete: "with-hosts",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     harness.server.grants = {
@@ -316,7 +316,7 @@ describe("the look, for connections", () => {
     await harness.clock.sleeping(10_000);
     expect(held.runs).toBe(1);
     harness.server.updateEdge(edge.id, {
-      target_id: harness.server.row("a:3").id,
+      to_id: harness.server.row("a:3").id,
     });
     await harness.clock.wake(10_000);
     await until(() => held.runs === 2);

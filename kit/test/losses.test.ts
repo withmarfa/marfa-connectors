@@ -109,8 +109,8 @@ describe("a link put back", () => {
   const blocks: ConnectionDefinition = {
     id: "test.blocks",
     cardinality: "many-to-many",
-    source_type_constraints: ["test.entry"],
-    target_type_constraints: ["test.entry"],
+    from_type_constraints: ["test.entry"],
+    to_type_constraints: ["test.entry"],
   };
 
   it("keeps what else was agreed, so the row's connections carry only what changed", async () => {
@@ -171,8 +171,8 @@ describe("the state a row is in", () => {
       {
         id: "test.blocks",
         cardinality: "many-to-many",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     await harness.twoWay(held);

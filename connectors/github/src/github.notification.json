@@ -18,13 +18,11 @@
       "description": "Whether the thread is unread on GitHub."
     },
     "github_updated_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "When GitHub last changed the thread."
     },
     "last_read_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "When the person last read the thread. Empty until they have."
     },
     "subject_type": {
@@ -32,8 +30,7 @@
       "description": "What the thread concerns, as GitHub names it, such as Issue, PullRequest, Discussion, Commit or Release."
     },
     "url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The address on GitHub of what the thread concerns. Empty for a kind of subject with no page of its own to name."
     },
     "private": {

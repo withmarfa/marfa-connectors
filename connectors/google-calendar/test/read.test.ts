@@ -149,8 +149,8 @@ function active(): string[] {
 function seriesOf(link: string): string[] {
   const id = row(link).id;
   return server.edges
-    .filter((edge) => edge.edge_type === "parent-of" && edge.target_id === id)
-    .map((edge) => String(server.byId(edge.source_id).properties["google_id"]));
+    .filter((edge) => edge.edge_type === "parent-of" && edge.to_id === id)
+    .map((edge) => String(server.byId(edge.from_id).properties["google_id"]));
 }
 
 function placesOf(link: string): string[] {

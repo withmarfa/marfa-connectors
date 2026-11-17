@@ -125,8 +125,8 @@ function rowsOf(type: string) {
 
 function targets(from: string, edgeType: string): string[] {
   return marfa.edges
-    .filter((one) => one.source_id === from && one.edge_type === edgeType)
-    .map((one) => one.target_id);
+    .filter((one) => one.from_id === from && one.edge_type === edgeType)
+    .map((one) => one.to_id);
 }
 
 function gitReads(): number {
@@ -193,8 +193,7 @@ describe("repository files", () => {
     expect(
       marfa.edges.filter(
         (one) =>
-          one.edge_type === "parent-of" &&
-          one.target_id === folder("runbooks")?.id,
+          one.edge_type === "parent-of" && one.to_id === folder("runbooks")?.id,
       ),
     ).toEqual([]);
     expect(conditions()).toEqual({});

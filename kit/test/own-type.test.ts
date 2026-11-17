@@ -343,11 +343,11 @@ describe("a key with metadata types=write", () => {
     harness.server.grants = fixer;
     harness.server.store({
       id: "test.base",
-      fields: { extra: { type: "string", maxLength: 120 } },
+      fields: { extra: { type: "string", max_length: 120 } },
     });
     const refinement = {
       type: "string",
-      maxLength: 120,
+      max_length: 120,
       description: "An operator's child refinement",
     };
     underParent({
@@ -737,18 +737,18 @@ describe("a key with metadata types=write", () => {
       {
         id: "test.blocks",
         cardinality: "many-to-many",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     harness.server.edgeTypes.set("test.blocks", {
       id: "test.blocks",
       cardinality: "one-to-one",
-      source_type_constraints: ["test.entry"],
-      target_type_constraints: ["test.entry"],
+      from_type_constraints: ["test.entry"],
+      to_type_constraints: ["test.entry"],
       cascade_on_delete: "orphan",
       property_schema: {},
-      written_at: "source",
+      written_from: "from",
     });
     expect(await harness.once(held)).toBe(1);
     expect(harness.lastRun().error).toContain(
@@ -771,8 +771,8 @@ describe("a key without metadata types=write", () => {
       {
         id: "test.blocks",
         cardinality: "many-to-many",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     expect(await harness.once(held)).toBe(0);

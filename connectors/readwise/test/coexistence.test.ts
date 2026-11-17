@@ -23,6 +23,7 @@ const row = (sourceId = "one:source:7"): Item => ({
   occurred_at: "2026-01-01T00:00:00Z",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
+  last_activity_at: "2026-01-01T00:00:00Z",
   trashed_at: null,
   read_only: false,
   properties: {

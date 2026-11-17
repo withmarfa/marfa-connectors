@@ -137,7 +137,7 @@ const relinkedCap = 1000;
 
 /** Events that move a row between states and change none of its fields. */
 const quiet = new Set([
-  "item.deleted",
+  "item.trashed",
   "item.restored",
   "item.state_changed",
   "item.purged",
@@ -274,7 +274,7 @@ export function specsOf<E extends EnvDeclaration>(
           connections: new Set(
             (connector.connections ?? [])
               .filter((connection) =>
-                connection.source_type_constraints?.includes(kind.type.id),
+                connection.from_type_constraints?.includes(kind.type.id),
               )
               .map((connection) => connection.id),
           ),
@@ -3812,7 +3812,7 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
       const now = new Set(
         edges
           .filter((edge) => edge.edge_type === type)
-          .map((edge) => edge.target_id),
+          .map((edge) => edge.to_id),
       );
       for (const target of now)
         if (!was.has(target)) added.push([type, target]);
@@ -3836,7 +3836,7 @@ export async function waitingInMarfa<E extends EnvDeclaration>(
       const row = rows.get(target);
       return (
         row !== undefined &&
-        kinds.get(type)?.target_type_constraints?.includes(row.type) === true
+        kinds.get(type)?.to_type_constraints?.includes(row.type) === true
       );
     }) || removed.some((target) => rows.has(target));
   return { waiting: changed, cursor: read.cursor };

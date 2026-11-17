@@ -21,8 +21,7 @@
       "description": "The Git object ID of the file's contents, which changes whenever its contents do."
     },
     "url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The file's address on GitHub, on the default branch."
     },
     "private": {
