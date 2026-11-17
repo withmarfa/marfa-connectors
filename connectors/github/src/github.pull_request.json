@@ -75,7 +75,7 @@
   "tables": {
     "check_runs": {
       "label": "Check runs",
-      "description": "Each check run and commit status on the pull request's head commit, as GitHub reported them at the last read. A row's id comes from GitHub's own id for the check, so a check read again is the same row. Empty when GitHub refuses the token the checks.",
+      "description": "Each check run and commit status on the pull request's head commit, as GitHub reported them at the last read. A row's id comes from GitHub's own id for the check, so a check read again is the same row. Left as it was when GitHub refuses the token the checks.",
       "columns": {
         "name": {
           "type": "string",
