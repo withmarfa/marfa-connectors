@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createClient, type components } from "@withmarfa/client";
+import {
+  createClient,
+  type MarfaClient,
+  type components,
+} from "@withmarfa/client";
 import type { ProofServer } from "./server.js";
 import { check } from "./check.js";
 import {
@@ -15,6 +19,7 @@ import { appKey, GitHubStub } from "./github-stub.js";
 
 export async function proveGitHubPullRequests(
   url: string,
+  admin: MarfaClient,
   mintKey: ProofServer["mintKey"],
 ): Promise<void> {
   const github = await new GitHubStub().start();
@@ -141,9 +146,19 @@ export async function proveGitHubPullRequests(
           ),
         ) as Record<string, unknown>;
         delete declared["tables"];
-        const stored = await marfa.POST("/types", {
-          body: declared as components["schemas"]["TypeDefinitionInput"],
+        const body = declared as components["schemas"]["TypeDefinitionInput"];
+        // Another group may have registered the type already: it is put back
+        // as it was before it held the table, which takes the admin key.
+        const held = await admin.GET("/types/{id}", {
+          params: { path: { id: "github.pull_request" } },
         });
+        const stored =
+          held.data === undefined
+            ? await admin.POST("/types", { body })
+            : await admin.PUT("/types/{id}", {
+                params: { path: { id: "github.pull_request" } },
+                body,
+              });
         if (stored.data === undefined)
           throw new Error(
             `the type was refused: ${JSON.stringify(stored.error)}`,
