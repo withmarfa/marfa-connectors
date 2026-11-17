@@ -135,7 +135,7 @@ export async function proveGitHubPullRequests(
           readFileSync(
             resolve(
               import.meta.dirname,
-              "../../connectors/github/src/github.pull_request.json",
+              "../../../connectors/github/src/github.pull_request.json",
             ),
             "utf8",
           ),
