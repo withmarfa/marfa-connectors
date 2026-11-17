@@ -143,18 +143,45 @@ const freeMembers = new Set([
   "display_hints",
   "version",
   "fields",
+  "tables",
 ]);
 
 function plain(value: unknown): unknown {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function tablesOf(type: Record<string, unknown>): Record<string, unknown> {
+  return (type["tables"] ?? {}) as Record<string, unknown>;
+}
+
 export function canonicalType(
   value: Record<string, unknown>,
 ): Record<string, unknown> {
+  const tables = Object.entries(tablesOf(value)).map(([name, raw]) => {
+    const table = raw as Record<string, unknown>;
+    return [
+      name,
+      {
+        ...table,
+        columns: Object.fromEntries(
+          Object.entries(
+            (table["columns"] ?? {}) as Record<string, unknown>,
+          ).map(([column, spec]) => [
+            column,
+            {
+              required: false,
+              searchable: false,
+              ...(spec as Record<string, unknown>),
+            },
+          ]),
+        ),
+      },
+    ] as const;
+  });
   return {
     version: 0,
     ...value,
+    ...(tables.length > 0 && { tables: Object.fromEntries(tables) }),
     fields: Object.fromEntries(
       Object.entries(fieldsOf(value)).map(([name, raw]) => {
         const field = {
@@ -219,6 +246,40 @@ function evolutionOf(
       needsSchemaWrite.push(`fields.${name}`);
     } else {
       additions.push(name);
+    }
+  }
+  const tableShape = (column: unknown): unknown => {
+    const rest = { ...(column as Record<string, unknown>) };
+    Reflect.deleteProperty(rest, "label");
+    Reflect.deleteProperty(rest, "description");
+    return plain(rest);
+  };
+  const tablesBefore = tablesOf(stored);
+  const tablesAfter = tablesOf(next);
+  for (const [name, raw] of Object.entries(tablesBefore)) {
+    const was = raw as Record<string, unknown>;
+    const now = tablesAfter[name] as Record<string, unknown> | undefined;
+    if (now === undefined) {
+      needsSchemaWrite.push(`tables.${name}`);
+      continue;
+    }
+    if (was["order"] !== undefined && was["order"] !== now["order"])
+      needsSchemaWrite.push(`tables.${name}.order`);
+    const columnsBefore = (was["columns"] ?? {}) as Record<string, unknown>;
+    const columnsAfter = (now["columns"] ?? {}) as Record<string, unknown>;
+    for (const [column, spec] of Object.entries(columnsBefore)) {
+      if (
+        !Object.hasOwn(columnsAfter, column) ||
+        !isDeepStrictEqual(tableShape(spec), tableShape(columnsAfter[column]))
+      )
+        needsSchemaWrite.push(`tables.${name}.columns.${column}`);
+    }
+    for (const [column, spec] of Object.entries(columnsAfter)) {
+      if (
+        !Object.hasOwn(columnsBefore, column) &&
+        (spec as { required?: unknown }).required === true
+      )
+        needsSchemaWrite.push(`tables.${name}.columns.${column}`);
     }
   }
   return { needsSchemaWrite, additions };
@@ -1748,6 +1809,14 @@ export class ScriptedServer {
       this.stream(url.searchParams, headers["last-event-id"], res);
       return;
     }
+    if (
+      parts[0] === "items" &&
+      parts[2] === "tables" &&
+      parts[1] !== undefined
+    ) {
+      this.tableDoor(method, parts, url, input, headers, send, refuse, res);
+      return;
+    }
     if (method === "GET" && url.pathname === "/items") {
       this.listItems(url.searchParams, send);
       this.afterRead?.(request);
@@ -2452,6 +2521,269 @@ export class ScriptedServer {
     };
   }
 
+  /** Rows of each item's tables, by item and table, in the order written. */
+  readonly tableRows = new Map<
+    string,
+    Map<
+      string,
+      Map<string, { values: Record<string, unknown>; updated_at: string }>
+    >
+  >();
+  /** What a batch answered under its key, to answer it again. */
+  private readonly batchKeys = new Map<
+    string,
+    { body: string; payload: unknown }
+  >();
+  batches = 0;
+
+  private tableDoor(
+    method: string,
+    parts: string[],
+    url: URL,
+    input: Record<string, unknown>,
+    headers: Record<string, string | undefined>,
+    send: Send,
+    refuse: Refuse,
+    res: ServerResponse,
+  ): void {
+    const id = parts[1] ?? "";
+    const item = this.rows.find((row) => row.id === id);
+    const level = item === undefined ? "none" : this.permission(item.type);
+    if (item === undefined || level === "none") {
+      refuse(404, "item_not_found");
+      return;
+    }
+    if (item.state === "trashed") {
+      refuse(404, "item_not_found", "item_not_found", { trashed: true });
+      return;
+    }
+    const declared = tablesOf(this.types.get(item.type) ?? {});
+    if (parts.length === 3 && method === "GET") {
+      send(200, {
+        data: Object.keys(declared).map((name) => ({
+          name,
+          row_count: this.tableRows.get(id)?.get(name)?.size ?? 0,
+        })),
+        next_cursor: null,
+      });
+      return;
+    }
+    const table = parts[3] ?? "";
+    const spec = declared[table] as Record<string, unknown> | undefined;
+    if (spec === undefined || parts[4] !== "rows") {
+      refuse(404, "table_not_found");
+      return;
+    }
+    const columns = (spec["columns"] ?? {}) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const held = this.tableRows.get(id)?.get(table) ?? new Map();
+    if (method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? "100");
+      const from = Number(url.searchParams.get("cursor") ?? "0");
+      const ids = [...held.keys()].sort();
+      send(200, {
+        data: ids.slice(from, from + limit).map((rowId) => ({
+          id: rowId,
+          values: structuredClone(held.get(rowId)?.values),
+          updated_at: held.get(rowId)?.updated_at,
+        })),
+        next_cursor: from + limit < ids.length ? String(from + limit) : null,
+      });
+      return;
+    }
+    if (level !== "write") {
+      refuse(403, "type_not_permitted");
+      return;
+    }
+    const key = headers["idempotency-key"];
+    const body = JSON.stringify(input);
+    const kept = key === undefined ? undefined : this.batchKeys.get(key);
+    if (kept !== undefined) {
+      if (kept.body !== body) {
+        refuse(422, "idempotency_key_reused");
+        return;
+      }
+      res.setHeader("Idempotency-Replayed", "true");
+      send(200, kept.payload);
+      return;
+    }
+    const operations = input["operations"];
+    if (
+      !Array.isArray(operations) ||
+      operations.length === 0 ||
+      operations.length > 1000
+    ) {
+      refuse(400, "validation_error", "operations", {});
+      return;
+    }
+    const work = new Map(
+      [...held].map(([rowId, row]) => [rowId, structuredClone(row)]),
+    );
+    const now = new Date().toISOString();
+    const results: { id: string; outcome: string }[] = [];
+    let changed = 0;
+    const invalid = (
+      operation: number,
+      path: string,
+      message: string,
+      status = 400,
+      code = "validation_error",
+    ): void => {
+      refuse(status, code, message, {
+        operation,
+        errors: [{ path: `operations.${String(operation)}.${path}`, message }],
+      });
+    };
+    for (const [index, raw] of operations.entries()) {
+      const op = raw as Record<string, unknown>;
+      const rowId = op["id"];
+      if (
+        rowId !== undefined &&
+        !(
+          typeof rowId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+            rowId,
+          )
+        )
+      ) {
+        invalid(index, "id", "the id is not a lowercase UUIDv7");
+        return;
+      }
+      const name =
+        typeof rowId === "string"
+          ? rowId
+          : `0190${String(index).padStart(4, "0")}-0000-7000-8000-000000000000`;
+      if (op["op"] === "delete") {
+        results.push({
+          id: name,
+          outcome: work.delete(name) ? "deleted" : "absent",
+        });
+        if (results.at(-1)?.outcome === "deleted") changed += 1;
+        continue;
+      }
+      if (op["op"] !== "put" && op["op"] !== "patch") {
+        invalid(index, "op", "the op is not put, patch or delete");
+        return;
+      }
+      const values = op["values"];
+      if (
+        typeof values !== "object" ||
+        values === null ||
+        Array.isArray(values)
+      ) {
+        invalid(index, "values", "values is not an object");
+        return;
+      }
+      for (const [column, value] of Object.entries(values)) {
+        const def = columns[column];
+        if (def === undefined) {
+          invalid(
+            index,
+            `values.${column}`,
+            `the table declares no column ${column}`,
+          );
+          return;
+        }
+        if (value === null) continue;
+        const type = def["type"];
+        const bad =
+          (type === "string" && typeof value !== "string") ||
+          (type === "boolean" && typeof value !== "boolean") ||
+          (type === "integer" && !Number.isInteger(value)) ||
+          (type === "number" && typeof value !== "number") ||
+          (type === "url" &&
+            !(typeof value === "string" && URL.canParse(value))) ||
+          (type === "datetime" &&
+            !(
+              typeof value === "string" && Number.isFinite(Date.parse(value))
+            )) ||
+          (type === "enum" &&
+            !((def["enum_values"] ?? []) as unknown[]).includes(value));
+        if (bad) {
+          invalid(
+            index,
+            `values.${column}`,
+            `the value is not a ${String(type)}`,
+          );
+          return;
+        }
+        const longest = def["max_length"];
+        if (
+          typeof longest === "number" &&
+          typeof value === "string" &&
+          value.length > longest
+        ) {
+          invalid(
+            index,
+            `values.${column}`,
+            `the value is longer than ${String(longest)} characters`,
+          );
+          return;
+        }
+      }
+      const before = work.get(name);
+      if (op["op"] === "patch" && before === undefined) {
+        invalid(
+          index,
+          "id",
+          "the table holds no such row",
+          404,
+          "row_not_found",
+        );
+        return;
+      }
+      const merged: Record<string, unknown> =
+        op["op"] === "patch" ? { ...before?.values } : {};
+      for (const [column, value] of Object.entries(values)) {
+        if (value === null) Reflect.deleteProperty(merged, column);
+        else merged[column] = value;
+      }
+      if (op["op"] === "put") {
+        for (const [column, def] of Object.entries(columns)) {
+          if (def["required"] === true && merged[column] === undefined) {
+            invalid(
+              index,
+              `values.${column}`,
+              `the column ${column} is required`,
+            );
+            return;
+          }
+        }
+      }
+      if (before !== undefined && isDeepStrictEqual(before.values, merged)) {
+        results.push({ id: name, outcome: "unchanged" });
+        continue;
+      }
+      work.set(name, { values: merged, updated_at: now });
+      changed += 1;
+      results.push({
+        id: name,
+        outcome:
+          before === undefined
+            ? "created"
+            : op["op"] === "put"
+              ? "replaced"
+              : "patched",
+      });
+    }
+    const itemRows = this.tableRows.get(id) ?? new Map();
+    itemRows.set(table, work);
+    this.tableRows.set(id, itemRows);
+    this.batches += changed > 0 ? 1 : 0;
+    const payload = {
+      batch:
+        changed > 0
+          ? `0190${String(this.batches).padStart(4, "0")}-0000-7000-8000-000000000001`
+          : null,
+      last_activity_at: now,
+      results,
+    };
+    if (key !== undefined) this.batchKeys.set(key, { body, payload });
+    send(200, payload);
+  }
+
   /** Stores a type by what it holds itself, as the server does, and answers
    *  it as `GET /types/{id}` serves it: the parent's fields, roles and
    *  policies resolved under its own. */
@@ -2478,9 +2810,11 @@ export class ScriptedServer {
         ...(parent["display_hints"] as object | undefined),
         ...(own["display_hints"] as object | undefined),
       };
+      const tables = { ...tablesOf(parent), ...tablesOf(own) };
       served = {
         ...own,
         fields: { ...fieldsOf(parent), ...fieldsOf(own) },
+        ...(Object.keys(tables).length > 0 && { tables }),
         ...(Object.keys(hints).length > 0 && { display_hints: hints }),
         ...(roles.length > 0 && { roles }),
         ...(Object.keys(versions).length > 0 && { version_policy: versions }),

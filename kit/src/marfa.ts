@@ -25,6 +25,9 @@ export type Edge = components["schemas"]["Edge"];
  *  `keep_both_copies` property collide. */
 export const conflictedCopyTag = "conflicted-copy";
 export type EdgeType = components["schemas"]["EdgeType"];
+export type TableRowOperation = components["schemas"]["RowOperation"];
+export type TableRowRecord = components["schemas"]["TableRow"];
+export type RowBatchResult = components["schemas"]["RowBatchResult"];
 
 /** Edges one bulk request carries, well inside the door's 5000. */
 const edgePage = 1000;
@@ -34,6 +37,9 @@ const lookupCap = 500;
 
 /** The server's cap on the rows a page of a listing holds. */
 const listingPage = 500;
+
+/** The most rows a page of a table's rows holds. */
+const tablePage = 1000;
 
 /** The server's caps on the conditions and the length of a filter. */
 const filterConditions = 10;
@@ -491,6 +497,51 @@ export class Marfa {
       body,
     });
     if (data === undefined) throw refusal(response, error);
+  }
+
+  /** Every row of one of an item's tables, in the table's own order. */
+  async tableRows(id: string, table: string): Promise<TableRowRecord[]> {
+    const rows: TableRowRecord[] = [];
+    const walk = pages(async (cursor) => {
+      const { data, error, response } = await this.client.GET(
+        "/items/{id}/tables/{table}/rows",
+        {
+          params: {
+            path: { id, table },
+            query: {
+              limit: tablePage,
+              ...(cursor !== undefined && { cursor }),
+            },
+          },
+        },
+      );
+      if (data === undefined) throw refusal(response, error);
+      return data;
+    });
+    for await (const row of walk) rows.push(row);
+    return rows;
+  }
+
+  /** One batch of changes to an item's table, which the server writes whole or
+   *  not at all; a batch sent again under its key writes nothing again. */
+  async writeTableRows(
+    id: string,
+    table: string,
+    operations: readonly TableRowOperation[],
+    idempotencyKey: string,
+  ): Promise<RowBatchResult> {
+    const { data, error, response } = await this.client.POST(
+      "/items/{id}/tables/{table}/rows",
+      {
+        params: {
+          path: { id, table },
+          header: { "Idempotency-Key": idempotencyKey },
+        },
+        body: { operations: [...operations] },
+      },
+    );
+    if (data === undefined) throw refusal(response, error);
+    return data;
   }
 
   /** Every edge type the instance holds, which the door answers in one page. */

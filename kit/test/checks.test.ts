@@ -13,7 +13,7 @@ function compare(carried: TypeDefinition, served: Record<string, unknown>) {
 }
 
 describe("the type check", () => {
-  const none = { missing: [], presentation: [], other: [] };
+  const none = { missing: [], presentation: [], tables: [], other: [] };
   const served = {
     id: "test.entry",
     label: testType.label,
@@ -164,6 +164,59 @@ describe("the type check", () => {
       missing: [],
       presentation: [],
       other: ['field "title" is required here and missing on the server'],
+    });
+  });
+
+  describe("tables", () => {
+    const table = {
+      columns: {
+        name: { type: "string", required: true },
+        note: { type: "string" },
+      },
+      order: "name",
+    };
+    const withTables = (tables: object): TypeDefinition =>
+      ({ ...testType, tables }) as TypeDefinition;
+    const holding = (tables: object) => ({ ...served, tables });
+
+    it("adds a table, or an optional column, the server lacks, as no other difference", () => {
+      expect(compare(withTables({ checks: table }), served)).toMatchObject({
+        tables: ["checks"],
+        other: [],
+      });
+      const fewer = { columns: { name: table.columns.name }, order: "name" };
+      expect(
+        compare(withTables({ checks: table }), holding({ checks: fewer })),
+      ).toMatchObject({ tables: ["checks"], other: [] });
+    });
+
+    it("tells a required column the server lacks, or a column that differs, from a gain", () => {
+      const needing = {
+        columns: { ...table.columns, kind: { type: "string", required: true } },
+        order: "name",
+      };
+      expect(
+        compare(withTables({ checks: needing }), holding({ checks: table }))
+          .other,
+      ).toHaveLength(1);
+      const longer = {
+        ...table,
+        columns: { ...table.columns, name: { type: "string", max_length: 5 } },
+      };
+      expect(
+        compare(withTables({ checks: longer }), holding({ checks: table }))
+          .other,
+      ).toHaveLength(1);
+    });
+
+    it("keeps a table or column the server holds and the connector does not declare", () => {
+      expect(compare(withTables({}), holding({ checks: table }))).toEqual(none);
+    });
+
+    it("finds no difference where the server holds the table as declared", () => {
+      expect(
+        compare(withTables({ checks: table }), holding({ checks: table })),
+      ).toEqual(none);
     });
   });
 });

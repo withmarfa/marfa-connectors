@@ -46,8 +46,84 @@ export interface TypeDifferences {
    *  carries and the type holds differently itself, not by inheritance. A
    *  connector puts these right itself: they change no stored item. */
   readonly presentation: readonly string[];
+  /** Tables the connector declares that the server lacks, or lacks an
+   *  optional column of or the `order` of, the other difference a connector
+   *  puts right itself: each is named by its table, and no stored row is
+   *  changed by adding it. */
+  readonly tables: readonly string[];
   /** Every other difference, which only an operator may put right. */
   readonly other: readonly string[];
+}
+
+const columnShape = [
+  "type",
+  "enum_values",
+  "format",
+  "max_length",
+  "minimum",
+  "maximum",
+  "type_constraints",
+  "adds_up",
+] as const;
+
+/** What a table the connector declares needs of the server's: the tables and
+ *  optional columns it lacks, and what differs beyond that. The server's own
+ *  tables and columns that the connector does not declare are no difference. */
+function tableDifferences(
+  carried: Record<string, unknown>,
+  served: Record<string, unknown>,
+): { missing: string[]; other: string[] } {
+  const missing: string[] = [];
+  const other: string[] = [];
+  const mine = record(carried["tables"]);
+  const theirs = record(served["tables"]);
+  for (const name of Object.keys(mine).sort()) {
+    if (!Object.hasOwn(theirs, name)) {
+      missing.push(name);
+      continue;
+    }
+    const here = record(mine[name]);
+    const there = record(theirs[name]);
+    const columns = record(here["columns"]);
+    const held = record(there["columns"]);
+    let lacks = false;
+    for (const column of Object.keys(columns).sort()) {
+      const wanted = record(columns[column]);
+      if (!Object.hasOwn(held, column)) {
+        if (wanted["required"] === true)
+          other.push(
+            `table "${name}" column "${column}" is required here and missing on the server`,
+          );
+        else lacks = true;
+        continue;
+      }
+      const have = record(held[column]);
+      for (const attribute of columnShape) {
+        if (
+          JSON.stringify(wanted[attribute]) !== JSON.stringify(have[attribute])
+        )
+          other.push(
+            `table "${name}" column "${column}" has ${attribute} ${show(wanted[attribute])} here and ${show(have[attribute])} on the server`,
+          );
+      }
+      for (const attribute of ["required", "searchable"] as const) {
+        if ((wanted[attribute] ?? false) !== (have[attribute] ?? false))
+          other.push(
+            `table "${name}" column "${column}" has ${attribute} ${show(wanted[attribute] ?? false)} here and ${show(have[attribute] ?? false)} on the server`,
+          );
+      }
+    }
+    const order = here["order"];
+    if (order !== undefined && order !== there["order"]) {
+      if (there["order"] === undefined) lacks = true;
+      else
+        other.push(
+          `table "${name}" has order ${show(order)} here and ${show(there["order"])} on the server`,
+        );
+    }
+    if (lacks) missing.push(name);
+  }
+  return { missing, other };
 }
 
 /** Fields the server holds and the connector does not declare are no
@@ -152,7 +228,9 @@ export function typeDifferences(
         !isDeepStrictEqual(carried[name], declared[name]),
     )
     .map(String);
-  return { missing, presentation, other };
+  const tables = tableDifferences(carried as Record<string, unknown>, served);
+  other.push(...tables.other);
+  return { missing, presentation, tables: tables.missing, other };
 }
 
 export function edgeTypeDifferences(

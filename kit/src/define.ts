@@ -1,4 +1,5 @@
 import type { components } from "@withmarfa/client";
+import type { TableReport, TableRow, TableRowRead } from "./tables.js";
 
 /**
  * The start check compares it in the form the server stores: a format that is
@@ -346,6 +347,58 @@ export interface RunContext<E extends EnvDeclaration> {
    * includes these in whatever marker makes it read in full.
    */
   readonly written: (type: string) => readonly string[];
+  /**
+   * The rows of the tables the connector's types declare, on the connector's
+   * own items, named by the item's link, or its `source_id` where the type
+   * names none, as `linked` names a target. Rows follow their item: they have
+   * no tier of their own, a row of an item in the bin is left alone, and a
+   * call writes nothing for an item Marfa does not hold yet, so upsert the
+   * item first. Each call returns a report, and the server's refusal of a
+   * row, such as a value over a column's `max_length`, is in it and raised as
+   * a condition, with the rest of the batch written.
+   */
+  readonly tables: Tables;
+}
+
+export interface Tables {
+  /** Creates or replaces whole rows, by the vendor's key for each. */
+  put(
+    type: string,
+    key: string,
+    table: string,
+    rows: readonly TableRow[],
+  ): Promise<TableReport>;
+  /** Sets the columns each row names, keeping the rest; a row the table does
+   *  not hold is refused. `null` clears a column. */
+  patch(
+    type: string,
+    key: string,
+    table: string,
+    rows: readonly TableRow[],
+  ): Promise<TableReport>;
+  /** Deletes the rows with these keys; a row already gone is counted absent. */
+  remove(
+    type: string,
+    key: string,
+    table: string,
+    rowKeys: readonly string[],
+  ): Promise<TableReport>;
+  /** Makes the table hold exactly these rows: it reads the table, writes the
+   *  rows that are new or differ and deletes the others, so what the vendor
+   *  removed goes and a repeated call writes nothing. */
+  replace(
+    type: string,
+    key: string,
+    table: string,
+    rows: readonly TableRow[],
+  ): Promise<TableReport>;
+  /** What the table holds, or `undefined` where it cannot be read: no item
+   *  holds the key, it is in the bin, or the server's type lacks the table. */
+  read(
+    type: string,
+    key: string,
+    table: string,
+  ): Promise<readonly TableRowRead[] | undefined>;
 }
 
 export type ChangeKind =
