@@ -38,8 +38,8 @@ export const attachedTo: ConnectionDefinition = {
   id: "attached-to",
   cardinality: "many-to-many",
   cascade_on_delete: "with-hosts",
-  source_type_constraints: [rssPicture.id],
-  target_type_constraints: [rssEntry.id],
+  from_type_constraints: [rssPicture.id],
+  to_type_constraints: [rssEntry.id],
 };
 
 /** The entry type as it is declared when pictures are saved: with the field
@@ -255,7 +255,7 @@ export function privateHostsFor(
 function isAttached(picture: Item, entryRow: string): boolean {
   return (
     picture.edges?.[attachedTo.id]?.data.some(
-      (edge) => edge.target_id === entryRow,
+      (edge) => edge.to_id === entryRow,
     ) ?? false
   );
 }

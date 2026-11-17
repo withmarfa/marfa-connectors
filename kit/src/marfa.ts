@@ -437,9 +437,12 @@ export class Marfa {
   }
 
   async source(code: string): Promise<components["schemas"]["Source"]> {
-    const { data, error, response } = await this.client.GET("/source", {
-      params: { query: { source: code } },
-    });
+    const { data, error, response } = await this.client.GET(
+      "/sources/{source}",
+      {
+        params: { path: { source: code } },
+      },
+    );
     if (data === undefined) throw refusal(response, error);
     return data;
   }
@@ -448,10 +451,13 @@ export class Marfa {
     code: string,
     body: { name?: string; mark?: string },
   ): Promise<void> {
-    const { data, error, response } = await this.client.PATCH("/source", {
-      params: { query: { source: code } },
-      body,
-    });
+    const { data, error, response } = await this.client.PATCH(
+      "/sources/{source}",
+      {
+        params: { path: { source: code } },
+        body,
+      },
+    );
     if (data === undefined) throw refusal(response, error);
   }
 
@@ -510,14 +516,14 @@ export class Marfa {
       label: held.label,
       ...(held.description !== undefined && { description: held.description }),
       cardinality: held.cardinality,
-      source_type_constraints: carried.source_type_constraints ?? [],
-      target_type_constraints: carried.target_type_constraints ?? [],
+      from_type_constraints: carried.from_type_constraints ?? [],
+      to_type_constraints: carried.to_type_constraints ?? [],
       cascade_on_delete: held.cascade_on_delete,
       property_schema: held.property_schema,
       ...(held.reverse_name !== undefined && {
         reverse_name: held.reverse_name,
       }),
-      written_at: held.written_at,
+      written_from: held.written_from,
       evolve_constraints: true,
     };
     const { data, error, response } = await this.client.POST("/edge-types", {
@@ -644,8 +650,8 @@ export class Marfa {
 
   async connect(
     edges: readonly {
-      source_id: string;
-      target_id: string;
+      from_id: string;
+      to_id: string;
       edge_type: string;
     }[],
   ): Promise<BulkResult[]> {
@@ -668,8 +674,8 @@ export class Marfa {
 
   async connectExact(item: Item, type: string, target: string): Promise<void> {
     const { data, error, response } = await this.client.POST("/edges", {
-      body: { source_id: item.id, target_id: target, edge_type: type },
-      querySerializer: () => `source_version=${String(item.version)}`,
+      body: { from_id: item.id, to_id: target, edge_type: type },
+      querySerializer: () => `from_version=${String(item.version)}`,
     });
     if (data === undefined) {
       const failed = refusal(response, error);
@@ -730,7 +736,7 @@ export class Marfa {
     const { error, response } = await this.client.DELETE("/edges/{id}", {
       params: { path: { id } },
       ...(sourceVersion !== undefined && {
-        querySerializer: () => `source_version=${String(sourceVersion)}`,
+        querySerializer: () => `from_version=${String(sourceVersion)}`,
       }),
     });
     if (response.ok || response.status === 404) return;
@@ -798,8 +804,8 @@ export class Marfa {
     if (listed !== undefined) {
       const pairs = listed.flatMap((edge) => {
         const [target, row] = inbound
-          ? [edge.source_id, edge.target_id]
-          : [edge.target_id, edge.source_id];
+          ? [edge.from_id, edge.to_id]
+          : [edge.to_id, edge.from_id];
         return found.has(target) ? [{ target, row }] : [];
       });
       const rows = new Map(
@@ -848,7 +854,7 @@ export class Marfa {
                   ? []
                   : await this.moreEdges(row.id, edgeType, block.next_cursor)),
               ]
-                .map((edge) => edge.target_id)
+                .map((edge) => edge.to_id)
                 .filter((target) => group.includes(target));
         for (const target of new Set(held)) found.get(target)?.push(row);
       }
@@ -1143,18 +1149,18 @@ export class Marfa {
     );
     if (data !== undefined) {
       // A window that is no positive number would never fence a run.
-      if (!Number.isFinite(data.ttl_ms) || data.ttl_ms <= 0) {
+      if (!Number.isFinite(data.ttl_seconds) || data.ttl_seconds <= 0) {
         throw new Refusal(
           response.status,
           "invalid_hold_window",
-          `the hold answered no usable hold window (ttl_ms ${String(data.ttl_ms)})`,
+          `the hold answered no usable hold window (ttl_seconds ${String(data.ttl_seconds)})`,
         );
       }
       return {
         elsewhere: false,
         until: data.expires_at,
         renewed: data.renewed,
-        ttlMs: data.ttl_ms,
+        ttlMs: data.ttl_seconds * 1000,
       };
     }
     const refused = refusal(response, error);
@@ -1232,7 +1238,7 @@ export class Marfa {
           params: {
             path: { id },
             query: {
-              ...(waiting && { waiting: "true" as const }),
+              ...(waiting && { waiting: true as const }),
               limit: 200,
               ...(cursor !== undefined && { cursor }),
             },

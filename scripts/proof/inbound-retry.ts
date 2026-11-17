@@ -190,7 +190,7 @@ class Fixture {
         label: "Retry item",
         link_field: "vendor_id",
         fields: {
-          title: { type: "string", required: true, maxLength: 100 },
+          title: { type: "string", required: true, max_length: 100 },
           vendor_id: { type: "string" },
           note: { type: "string" },
         },

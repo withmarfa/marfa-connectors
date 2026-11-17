@@ -72,7 +72,7 @@ export async function proveParentOf(
             params: { path: { id }, query: { edge_type: "parent-of" } },
           });
           assert.ok(data, JSON.stringify(error));
-          return data.data.map((edge) => edge.source_id);
+          return data.data.map((edge) => edge.from_id);
         };
 
         // The exceptions come before the series that they name.
@@ -91,9 +91,7 @@ export async function proveParentOf(
           return row.id;
         };
         assert.deepEqual(
-          (await edgesFrom(marfa, id("s")))
-            .map((edge) => edge.target_id)
-            .sort(),
+          (await edgesFrom(marfa, id("s"))).map((edge) => edge.to_id).sort(),
           [id("e1"), id("e2")].sort(),
         );
         assert.deepEqual(await seriesOf(id("e1")), [id("s")]);
@@ -207,15 +205,15 @@ export async function proveParentOf(
         ] as const) {
           const joined = await outsider.POST("/edges", {
             body: {
-              source_id: source,
-              target_id: target,
+              from_id: source,
+              to_id: target,
               edge_type: "parent-of",
             },
           });
           assert.ok(joined.data, JSON.stringify(joined.error));
         }
         const gone = (await edgesFrom(marfa, id("u"))).find(
-          (edge) => edge.target_id === id("x0"),
+          (edge) => edge.to_id === id("x0"),
         );
         assert.ok(gone);
         const dropped = await marfa.DELETE("/edges/{id}", {
@@ -228,12 +226,12 @@ export async function proveParentOf(
         ]);
         assert.deepEqual(
           (await edgesFrom(outsider, id("u")))
-            .map((edge) => edge.target_id)
+            .map((edge) => edge.to_id)
             .filter((target) => target === first),
           [first],
         );
         assert.deepEqual(
-          (await edgesFrom(outsider, first)).map((edge) => edge.target_id),
+          (await edgesFrom(outsider, first)).map((edge) => edge.to_id),
           [second],
         );
         return "the exceptions' edges point from their series, a move lets the old one go, a removal in Marfa is carried, a trash carries the series once, a restore brings its exceptions back, and a calendar of many exceptions finds the same edges";

@@ -36,11 +36,11 @@ void main(
       {
         id: "proof.checkpoint.related",
         cardinality: "many-to-many",
-        source_type_constraints: [
+        from_type_constraints: [
           "proof.checkpoint.issue",
           "proof.checkpoint.comment",
         ],
-        target_type_constraints: ["proof.checkpoint.issue"],
+        to_type_constraints: ["proof.checkpoint.issue"],
       },
     ],
     env: { PROOF_CONTROL_URL: "required" },

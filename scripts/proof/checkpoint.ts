@@ -750,7 +750,7 @@ export async function proveCheckpoint(
               body: { process },
             });
             assert.ok(taken.data);
-            assert.equal(taken.data.ttl_ms, 1000);
+            assert.equal(taken.data.ttl_seconds, 1);
             const kept = await test.own.PUT("/connectors/{id}/state", {
               params: { path: { id: registered.id } },
               body: {

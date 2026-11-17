@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import {
   CONTRACT_VERSION,
   createClient,
@@ -58,8 +56,8 @@ const runners: Record<GroupName, (c: Context) => Promise<void>> = {
   readwise: (c) => proveReadwise(c.marfa, c.url),
   todoist: (c) => proveTodoist(c.marfa, c.url, c.manager),
   inbound: (c) => proveInbound(c.marfa, c.url, c.manager),
-  keys: (c) => proveKeys(c.marfa, c.url, c.manager, c.updateKey),
-  tracker: (c) => proveTracker(c.marfa, c.url, c.manager),
+  keys: (c) => proveKeys(c.marfa, c.url, c.manager, c.mintKey, c.updateKey),
+  tracker: (c) => proveTracker(c.marfa, c.url, c.manager, c.mintKey),
   github: (c) => proveGitHub(c.marfa, c.url, c.manager),
   "github-coverage": (c) => proveGitHubCoverage(c.url, c.manager, c.mintKey),
   "github-relations": (c) => proveGitHubRelations(c.url, c.mintKey),
@@ -146,21 +144,10 @@ try {
   const reader = groups.filter((group) => group.instance === "reader");
   console.log(`running ${groups.map((group) => group.name).join(", ")}`);
   if (shared.length > 0) {
-    const pin = (
-      await readFile(
-        resolve(import.meta.dirname, "../../monorepo.commit"),
-        "utf8",
-      )
-    ).trim();
     let started: { server: ProofServer; booted: Booted } | undefined;
     await check("the pinned server boots", async () => {
       started = await boot();
-      if (started.booted.commit !== pin) {
-        throw new Error(
-          `the checkout is at ${started.booted.commit}, the pin is ${pin}`,
-        );
-      }
-      return `monorepo ${started.booted.commit}, ${started.booted.url}`;
+      return `${started.booted.server}, ${started.booted.url}`;
     });
     if (started === undefined) throw new Error("the boot answered nothing");
     const context = contextOf(started.server, started.booted);
@@ -194,7 +181,7 @@ try {
   }
   if (reader.length > 0) {
     const { server, booted } = await boot();
-    console.log(`Reader fixture proof server ${booted.commit}`);
+    console.log(`Reader fixture proof server ${booted.server}`);
     await runGroups(reader, contextOf(server, booted));
   }
   console.log(

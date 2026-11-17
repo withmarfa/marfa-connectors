@@ -361,6 +361,7 @@ function stored(id: string, extra: Record<string, unknown> = {}): Item {
     occurred_at: stamp,
     created_at: stamp,
     updated_at: stamp,
+    last_activity_at: stamp,
     trashed_at: null,
     read_only: false,
     properties: {

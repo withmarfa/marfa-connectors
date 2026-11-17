@@ -18,8 +18,8 @@ afterEach(async () => {
 const blocks: ConnectionDefinition = {
   id: "test.blocks",
   cardinality: "many-to-many",
-  source_type_constraints: ["test.entry"],
-  target_type_constraints: ["test.entry"],
+  from_type_constraints: ["test.entry"],
+  to_type_constraints: ["test.entry"],
 };
 
 function entry(n: number, blocked: number[] = []): Entry {
@@ -56,8 +56,8 @@ function bulkEdges(): number {
 const inList: ConnectionDefinition = {
   id: "test.in-list",
   cardinality: "many-to-one",
-  source_type_constraints: ["test.entry"],
-  target_type_constraints: ["test.entry"],
+  from_type_constraints: ["test.entry"],
+  to_type_constraints: ["test.entry"],
 };
 
 function filed(n: number, list?: number): Entry {
@@ -129,14 +129,14 @@ describe("connections from the vendor", () => {
     harness.server.beforeAnswer = (request) => {
       if (request.path !== "/edges/bulk") return;
       const kind = harness.server.edgeTypes.get("test.blocks");
-      if (kind !== undefined) kind["target_type_constraints"] = ["test.other"];
+      if (kind !== undefined) kind["to_type_constraints"] = ["test.other"];
     };
     expect(await harness.twoWay(held)).toBe(0);
     expect(targets(1)).toEqual([]);
     expect(harness.lastRun().summary).toContain("edge_constraint_violation");
     harness.server.beforeAnswer = undefined;
     const kind = harness.server.edgeTypes.get("test.blocks");
-    if (kind !== undefined) kind["target_type_constraints"] = ["test.entry"];
+    if (kind !== undefined) kind["to_type_constraints"] = ["test.entry"];
     expect(await harness.twoWay(held)).toBe(0);
     expect(targets(1)).toEqual(["a:2"]);
     expect(held.changes).toEqual([]);
@@ -307,8 +307,8 @@ describe("connections, whatever order the rows come in", () => {
   const parentOf: ConnectionDefinition = {
     id: "test.parent-of",
     cardinality: "one-to-many",
-    source_type_constraints: ["test.entry"],
-    target_type_constraints: ["test.entry"],
+    from_type_constraints: ["test.entry"],
+    to_type_constraints: ["test.entry"],
   };
 
   function parenting(entries: Entry[]): Vendor {
@@ -363,7 +363,7 @@ describe("connections, whatever order the rows come in", () => {
     await harness.twoWay(held);
     expect(await harness.twoWay(held)).toBe(0);
     const edge = harness.server.edges.find(
-      (candidate) => candidate.target_id === harness.server.row("a:3").id,
+      (candidate) => candidate.to_id === harness.server.row("a:3").id,
     );
     if (edge === undefined) throw new Error("no edge");
     held.changes.length = 0;
@@ -377,7 +377,7 @@ describe("connections, whatever order the rows come in", () => {
     const two = harness.server.row("a:2");
     const three = harness.server.row("a:3");
 
-    harness.server.updateEdge(edge.id, { source_id: two.id });
+    harness.server.updateEdge(edge.id, { from_id: two.id });
     const before = harness.server.requests.length;
     expect(await harness.twoWay(held)).toBe(0);
 
@@ -437,7 +437,7 @@ describe("connections, whatever order the rows come in", () => {
       "test.entry",
       "person",
     );
-    harness.server.updateEdge(edge.id, { source_id: four.id });
+    harness.server.updateEdge(edge.id, { from_id: four.id });
     const route = "POST /connectors/connector-1/agreements";
     let kept = false;
     held.answer = (change) => {
@@ -494,7 +494,7 @@ describe("connections, whatever order the rows come in", () => {
     ).toEqual([]);
 
     // The same edge moved is carried, so the frame was read.
-    harness.server.updateEdge(edge.id, { source_id: two.id });
+    harness.server.updateEdge(edge.id, { from_id: two.id });
     expect(await harness.twoWay(held)).toBe(0);
     expect(held.changes.map((change) => change.item.id)).toHaveLength(2);
     expect(scans()).toBe(1);
@@ -509,7 +509,7 @@ describe("connections, whatever order the rows come in", () => {
     // Only the log can find the move: the vendor sends nothing.
     held.entries = [];
 
-    harness.server.updateEdge(edge.id, { source_id: two.id });
+    harness.server.updateEdge(edge.id, { from_id: two.id });
     expect(await harness.twoWay(held)).toBe(0);
 
     expect(childrenOf(1)).toEqual(["a:3"]);
@@ -536,7 +536,7 @@ describe("connections, whatever order the rows come in", () => {
 
     // The edit names the row the child left before the move names the other.
     harness.server.edit(one.id, { title: "One, edited" });
-    harness.server.updateEdge(edge.id, { source_id: two.id });
+    harness.server.updateEdge(edge.id, { from_id: two.id });
     expect(await harness.twoWay(held)).toBe(0);
 
     expect(childrenOf(1)).toEqual(["a:3"]);
@@ -564,7 +564,7 @@ describe("connections made in Marfa", () => {
     const two = harness.server.row("a:2");
     const three = harness.server.row("a:3");
     const edge = harness.server.edges.find(
-      (candidate) => candidate.target_id === two.id,
+      (candidate) => candidate.to_id === two.id,
     );
     harness.server.removeEdge(edge?.id ?? "");
     harness.server.drawEdge(one.id, three.id, "test.blocks");
@@ -584,12 +584,12 @@ describe("connections made in Marfa", () => {
     const two = harness.server.row("a:2");
     const three = harness.server.row("a:3");
     const edge = harness.server.edges.find(
-      (candidate) => candidate.target_id === two.id,
+      (candidate) => candidate.to_id === two.id,
     );
     if (edge === undefined) throw new Error("no edge");
     held.changes.length = 0;
 
-    harness.server.updateEdge(edge.id, { target_id: three.id });
+    harness.server.updateEdge(edge.id, { to_id: three.id });
     expect(await harness.twoWay(held)).toBe(0);
 
     expect(listOf(1)).toEqual(["a:3"]);
@@ -1300,7 +1300,7 @@ describe("a read-only connection type on a two-way kind", () => {
     harness.server.beforeAnswer = (request) => {
       if (request.path !== "/edges/bulk") return;
       const kind = harness.server.edgeTypes.get("test.blocks");
-      if (kind !== undefined) kind["target_type_constraints"] = ["test.other"];
+      if (kind !== undefined) kind["to_type_constraints"] = ["test.other"];
     };
     expect(await harness.twoWay(held)).toBe(0);
     expect(targets(1)).toEqual([]);
@@ -1324,7 +1324,7 @@ describe("a read-only connection type on a two-way kind", () => {
     if (edge === undefined) throw new Error("no edge");
     held.changes.length = 0;
     harness.server.updateEdge(edge.id, {
-      target_id: harness.server.row("a:3").id,
+      to_id: harness.server.row("a:3").id,
     });
     expect(await harness.twoWay(held)).toBe(0);
     expect(listOf(1)).toEqual(["a:2"]);
@@ -1759,8 +1759,8 @@ describe("in-thread", () => {
   const thread: ConnectionDefinition = {
     id: "in-thread",
     cardinality: "many-to-one",
-    source_type_constraints: ["test.entry"],
-    target_type_constraints: ["test.entry"],
+    from_type_constraints: ["test.entry"],
+    to_type_constraints: ["test.entry"],
   };
 
   function threaded(entries: Entry[]): Vendor {
@@ -1832,9 +1832,7 @@ describe("a connection type", () => {
       "test.blocks to orphan on delete",
     );
     const outward = connected([]);
-    outward.connections = [
-      { ...blocks, target_type_constraints: ["core.note"] },
-    ];
+    outward.connections = [{ ...blocks, to_type_constraints: ["core.note"] }];
     expect(await harness.twoWay(outward)).toBe(2);
     expect(harness.lines.join("\n")).toContain(
       "test.blocks's both ends constrained to its own types",
@@ -1858,7 +1856,7 @@ describe("a connection type", () => {
       ...blocks,
       cardinality: "one-to-many",
       cascade_on_delete: "orphan",
-      written_at: "source",
+      written_from: "from",
       property_schema: {},
     });
     expect(await harness.twoWay(connected([]))).toBe(1);

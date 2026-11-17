@@ -31,8 +31,8 @@ const connections: ConnectionDefinition[] = [
     label: "On calendar",
     description: "A Google Calendar event on the calendar it belongs to.",
     cardinality: "many-to-one",
-    source_type_constraints: [eventType],
-    target_type_constraints: [calendarType],
+    from_type_constraints: [eventType],
+    to_type_constraints: [calendarType],
   },
   {
     id: childOf,
@@ -41,8 +41,8 @@ const connections: ConnectionDefinition[] = [
       "A changed occurrence of a Google Calendar series, beneath the series.",
     cardinality: "many-to-one",
     cascade_on_delete: "cascade",
-    source_type_constraints: [eventType],
-    target_type_constraints: [eventType],
+    from_type_constraints: [eventType],
+    to_type_constraints: [eventType],
   },
 ];
 

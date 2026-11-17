@@ -27,16 +27,16 @@ const childOf: ConnectionDefinition = {
   id: "child-of",
   cardinality: "many-to-one",
   cascade_on_delete: "cascade",
-  source_type_constraints: ["test.entry"],
-  target_type_constraints: ["test.entry"],
+  from_type_constraints: ["test.entry"],
+  to_type_constraints: ["test.entry"],
 };
 
 const parentOf: ConnectionDefinition = {
   id: "parent-of",
   cardinality: "one-to-many",
   cascade_on_delete: "cascade",
-  source_type_constraints: ["test.entry"],
-  target_type_constraints: ["test.entry"],
+  from_type_constraints: ["test.entry"],
+  to_type_constraints: ["test.entry"],
 };
 
 /** An exception names its series, or an empty list for an ordinary event. */
@@ -71,10 +71,8 @@ function calendar(entries: Entry[], readOnly = false): Vendor {
 function seriesOf(n: number): string[] {
   const row = harness.server.row(`a:${String(n)}`);
   return harness.server.edges
-    .filter(
-      (edge) => edge.edge_type === "parent-of" && edge.target_id === row.id,
-    )
-    .map((edge) => harness.server.byId(edge.source_id).source_id ?? "");
+    .filter((edge) => edge.edge_type === "parent-of" && edge.to_id === row.id)
+    .map((edge) => harness.server.byId(edge.from_id).source_id ?? "");
 }
 
 function kinds(changes: readonly Change[]): string[] {
@@ -284,7 +282,7 @@ describe("the parent's side of parent-of", () => {
 describe("a declaration of parent-of", () => {
   it("with an end outside the connector's types is refused at start", async () => {
     const held = calendar([]);
-    held.connections = [{ ...childOf, target_type_constraints: ["core.note"] }];
+    held.connections = [{ ...childOf, to_type_constraints: ["core.note"] }];
     expect(await harness.twoWay(held)).toBe(2);
     expect(harness.lines.join("\n")).toContain(
       "child-of's both ends constrained to its own types",
@@ -435,9 +433,7 @@ describe("reading the connections of a calendar's rows", () => {
     // The oldest edge sits on the last page: a person's removal of it is
     // carried, and only it.
     const two = harness.server.row("a:2");
-    const oldest = harness.server.edges.find(
-      (edge) => edge.target_id === two.id,
-    );
+    const oldest = harness.server.edges.find((edge) => edge.to_id === two.id);
     harness.server.removeEdge(oldest?.id ?? "");
     harness.server.tooOld = true;
     expect(await harness.twoWay(held)).toBe(0);

@@ -572,7 +572,7 @@ describe("relations drawn in Marfa", () => {
     expect(child.parent).toBe(parent.node);
     expect(child.blocked_by).toEqual([parent.node]);
     for (const edge of marfa.edges.filter(
-      (one) => one.source_id === row(child.node).id,
+      (one) => one.from_id === row(child.node).id,
     )) {
       if (edge.edge_type !== "github.in-repository") marfa.removeEdge(edge.id);
     }
@@ -603,7 +603,7 @@ describe("relations drawn in Marfa", () => {
     await ok();
     const edge = marfa.edges.find(
       (one) =>
-        one.source_id === row(child.node).id &&
+        one.from_id === row(child.node).id &&
         one.edge_type === "github.in-repository",
     );
     marfa.removeEdge(edge?.id ?? "");

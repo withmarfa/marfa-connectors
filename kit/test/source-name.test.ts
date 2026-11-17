@@ -24,9 +24,9 @@ function named(declared: { sourceName?: string; sourceMark?: string }) {
   });
 }
 
-const patches = (): { query: string | null; body: unknown }[] =>
-  harness.server.requestsTo("PATCH", "/source").map((request) => ({
-    query: request.query.get("source"),
+const patches = (): { source: string | null; body: unknown }[] =>
+  harness.server.requestsTo("PATCH", "/sources/test").map((request) => ({
+    source: request.path.split("/").at(-1) ?? null,
     body: request.body,
   }));
 
@@ -39,7 +39,7 @@ describe("a connector's source name and mark", () => {
     expect(await start(connector, harness.runtime(["--once"]))).toBe(0);
     expect(patches()).toEqual([
       {
-        query: "test",
+        source: "test",
         body: { name: "Test Vendor", mark: "simple-icons:github" },
       },
     ]);
@@ -51,7 +51,7 @@ describe("a connector's source name and mark", () => {
 
   it("sends nothing where the connector declares neither", async () => {
     expect(await start(named({}), harness.runtime(["--once"]))).toBe(0);
-    expect(harness.server.requestsTo("GET", "/source")).toHaveLength(0);
+    expect(harness.server.requestsTo("GET", "/sources/test")).toHaveLength(0);
     expect(patches()).toEqual([]);
   });
 
@@ -61,7 +61,7 @@ describe("a connector's source name and mark", () => {
       harness.runtime(["--once"]),
     );
     expect(patches()).toEqual([
-      { query: "test", body: { name: "Test Vendor" } },
+      { source: "test", body: { name: "Test Vendor" } },
     ]);
   });
 
@@ -73,7 +73,7 @@ describe("a connector's source name and mark", () => {
     });
     await start(connector, harness.runtime(["--once"]));
     expect(patches()).toEqual([
-      { query: "test", body: { mark: "simple-icons:github" } },
+      { source: "test", body: { mark: "simple-icons:github" } },
     ]);
     expect(harness.server.sourceNames.get("test")).toEqual({
       name: "My vendor",
@@ -85,7 +85,7 @@ describe("a connector's source name and mark", () => {
 
   it("still syncs, and says so, when the server refuses the name or mark", async () => {
     harness.server.refuseNext(
-      "PATCH /source",
+      "PATCH /sources/test",
       400,
       "invalid_schema",
       "mark is not an icon",
@@ -107,14 +107,14 @@ describe("a connector's source name and mark", () => {
   });
 
   it("does not swallow an unreachable server: the start tries again", async () => {
-    harness.server.refuseNext("PATCH /source", 503, "unavailable");
+    harness.server.refuseNext("PATCH /sources/test", 503, "unavailable");
     const connector = named({ sourceName: "Test Vendor" });
     expect(await start(connector, harness.runtime(["--once"]))).toBe(1);
     expect(harness.server.sourceNames.get("test")).toBeUndefined();
   });
 
   it("warns and still syncs when the server refuses to read the source", async () => {
-    harness.server.refuseNext("GET /source", 404, "source_not_found");
+    harness.server.refuseNext("GET /sources/test", 404, "source_not_found");
     expect(
       await start(
         named({ sourceName: "Test Vendor" }),
@@ -128,7 +128,7 @@ describe("a connector's source name and mark", () => {
   });
 
   it("does not swallow a key the server refuses", async () => {
-    harness.server.refuseNext("GET /source", 401, "unauthorized");
+    harness.server.refuseNext("GET /sources/test", 401, "unauthorized");
     expect(
       await start(
         named({ sourceName: "Test Vendor" }),

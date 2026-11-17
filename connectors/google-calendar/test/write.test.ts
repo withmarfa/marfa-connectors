@@ -613,7 +613,7 @@ describe("an edit made in Marfa", () => {
     const one = await read();
     const etag = one.properties["etag"];
     const edge = server.edges.find(
-      (e) => e.source_id === one.id && e.edge_type === inCalendar,
+      (e) => e.from_id === one.id && e.edge_type === inCalendar,
     );
     if (edge === undefined) throw new Error("no edge");
 
@@ -646,13 +646,13 @@ describe("an edit made in Marfa", () => {
     const one = await read();
     const etag = one.properties["etag"];
     const edge = server.edges.find(
-      (e) => e.source_id === one.id && e.edge_type === inCalendar,
+      (e) => e.from_id === one.id && e.edge_type === inCalendar,
     );
     if (edge === undefined) throw new Error("no edge");
     await landed();
     expect(writes()).toEqual([]);
 
-    server.updateEdge(edge.id, { target_id: calendarRow(team).id });
+    server.updateEdge(edge.id, { to_id: calendarRow(team).id });
     await landed();
 
     expect(writes()).toEqual([
@@ -674,7 +674,7 @@ describe("an edit made in Marfa", () => {
     const one = await read();
     const etag = one.properties["etag"];
     const edge = server.edges.find(
-      (e) => e.source_id === one.id && e.edge_type === inCalendar,
+      (e) => e.from_id === one.id && e.edge_type === inCalendar,
     );
     if (edge === undefined) throw new Error("no edge");
     server.removeEdge(edge.id);

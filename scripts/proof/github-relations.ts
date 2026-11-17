@@ -94,7 +94,7 @@ export async function proveGitHubRelations(
     };
     const connect = async (from: Item, to: Item, type: string) => {
       const result = await marfa.POST("/edges", {
-        body: { source_id: from.id, target_id: to.id, edge_type: type },
+        body: { from_id: from.id, to_id: to.id, edge_type: type },
       });
       if (!result.response.ok)
         throw new Error("A proof connection was refused");
@@ -116,16 +116,16 @@ export async function proveGitHubRelations(
         const canonical = (await edges(low, "github.relates-to"))[0];
         const duplicate = (await edges(high, "github.duplicate-of"))[0];
         if (
-          canonical?.target_id !== high.id ||
+          canonical?.to_id !== high.id ||
           (await edges(high, "github.relates-to")).length !== 0 ||
-          duplicate?.target_id !== low.id
+          duplicate?.to_id !== low.id
         )
           throw new Error("Related or duplicate edges were not imported");
         await remove(duplicate.id);
         await connect(high, low, "github.relates-to");
         await run();
         if (
-          (await edges(high, "github.duplicate-of"))[0]?.target_id !== low.id ||
+          (await edges(high, "github.duplicate-of"))[0]?.to_id !== low.id ||
           (await edges(high, "github.relates-to")).length !== 0 ||
           (await edges(low, "github.relates-to"))[0]?.id !== canonical.id ||
           github.writes().length !== 0
@@ -141,7 +141,7 @@ export async function proveGitHubRelations(
         )
           throw new Error("A new related link was not carried once");
         const added = (await edges(low, "github.relates-to")).find(
-          (edge) => edge.target_id === other.id,
+          (edge) => edge.to_id === other.id,
         );
         if (added === undefined) throw new Error("The new relation is missing");
         await remove(added.id);

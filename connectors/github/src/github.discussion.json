@@ -51,13 +51,11 @@
       "description": "Whether the discussion is locked on GitHub."
     },
     "url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The discussion's address on GitHub."
     },
     "github_updated_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "When GitHub last changed the discussion. An edit to one of its comments does not move it."
     }
   },

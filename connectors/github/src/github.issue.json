@@ -43,13 +43,11 @@
       "description": "Why GitHub says the issue is closed or was reopened: completed, not_planned, duplicate or reopened, as GitHub names it."
     },
     "github_updated_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "When GitHub last changed the issue, a new comment included."
     },
     "parent_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The address of the issue this one is a sub-issue of, where that issue's repository is not synced."
     },
     "blocked_by_urls": {
@@ -63,8 +61,7 @@
       "description": "The addresses of the issues this one relates to whose repositories are not synced."
     },
     "duplicate_of_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The address of the canonical issue this one is a duplicate of, where that issue's repository is not synced."
     },
     "github_files": {
@@ -72,8 +69,7 @@
       "description": "Attachment UUIDs, unavailable links and safe retry outcomes. Signed download addresses are never retained."
     },
     "closed_by_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The address of the pull request that closed this issue, where that pull request's repository is not synced."
     }
   },

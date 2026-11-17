@@ -74,21 +74,21 @@ beforeEach(async () => {
   marfa.edgeTypes.set("attached-to", {
     id: "attached-to",
     cardinality: "many-to-many",
-    source_type_constraints: ["*"],
-    target_type_constraints: ["*"],
+    from_type_constraints: ["*"],
+    to_type_constraints: ["*"],
     cascade_on_delete: "with-hosts",
     property_schema: {},
-    written_at: "source",
+    written_from: "from",
     shipped: true,
   });
   marfa.edgeTypes.set("excerpt-of", {
     id: "excerpt-of",
     cardinality: "many-to-one",
-    source_type_constraints: ["*"],
-    target_type_constraints: ["*"],
+    from_type_constraints: ["*"],
+    to_type_constraints: ["*"],
     cascade_on_delete: "orphan",
     property_schema: {},
-    written_at: "source",
+    written_from: "from",
     shipped: true,
   });
   pages = [{ count: 2, nextPageCursor: null, results: [source(1), source(2)] }];

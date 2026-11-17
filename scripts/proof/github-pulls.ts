@@ -101,7 +101,7 @@ export async function proveGitHubPullRequests(
         params: { path: { id: from.id }, query: { edge_type: type } },
       });
       if (result.data === undefined) throw new Error("Edges were refused");
-      return result.data.data.map((edge) => edge.target_id);
+      return result.data.data.map((edge) => edge.to_id);
     };
     await check(
       "github: pull requests are read-only tasks with API closing links and check summaries, and unchanged rows retain their versions",

@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { createClient, type MarfaClient } from "@withmarfa/client";
 import { check } from "./check.js";
+import type { ProofServer } from "./server.js";
 import {
   ConnectorUnderProof,
   create,
@@ -30,32 +31,27 @@ interface Minted {
 }
 
 async function mintWithConnections(
-  marfa: MarfaClient,
+  mint: (body: Record<string, unknown>) => Promise<Minted>,
   label: string,
   keySource: string,
   edges: boolean,
 ): Promise<Minted> {
-  const { data, error } = await marfa.POST("/keys", {
-    body: {
-      label,
-      source: keySource,
-      type_permissions: {
-        "proof.issue": "write",
-        "proof.attachment": "write",
-      },
-      ...(edges && {
-        edge_permissions: {
-          "proof.sub-issue": "write",
-          "attached-to": "write",
-        },
-      }),
-      metadata_permissions: { types: "write", edge_types: "write" },
-      default_tier: "feed",
+  return mint({
+    label,
+    source: keySource,
+    type_permissions: {
+      "proof.issue": "write",
+      "proof.attachment": "write",
     },
+    ...(edges && {
+      edge_permissions: {
+        "proof.sub-issue": "write",
+        "attached-to": "write",
+      },
+    }),
+    metadata_permissions: { types: "write", edge_types: "write" },
+    default_tier: "feed",
   });
-  if (data === undefined)
-    throw new Error(`the key was refused: ${JSON.stringify(error)}`);
-  return data;
 }
 
 async function targets(
@@ -68,7 +64,7 @@ async function targets(
   });
   if (data === undefined)
     throw new Error(`the edges were refused: ${JSON.stringify(error)}`);
-  return data.data.map((edge) => edge.target_id);
+  return data.data.map((edge) => edge.to_id);
 }
 
 async function connect(
@@ -78,7 +74,7 @@ async function connect(
   edgeType: string,
 ): Promise<void> {
   const { error, response } = await marfa.POST("/edges", {
-    body: { source_id: from.id, target_id: to.id, edge_type: edgeType },
+    body: { from_id: from.id, to_id: to.id, edge_type: edgeType },
   });
   if (!response.ok)
     throw new Error(`the edge was refused: ${JSON.stringify(error)}`);
@@ -99,7 +95,16 @@ export async function proveTracker(
   marfa: MarfaClient,
   url: string,
   manager: MarfaClient,
+  mintKey: ProofServer["mintKey"],
 ): Promise<void> {
+  const viaMarfa = async (body: Record<string, unknown>): Promise<Minted> => {
+    const { data, error } = await marfa.POST("/keys", {
+      body: body as never,
+    });
+    if (data === undefined)
+      throw new Error(`the key was refused: ${JSON.stringify(error)}`);
+    return data;
+  };
   const tracker = await new Tracker().start();
   try {
     const parent = tracker.add("Parent");
@@ -131,7 +136,7 @@ export async function proveTracker(
     await check(
       "tracker: its key is minted with write on its types and connection types, and the metadata to register both",
       async () => {
-        key = await mintWithConnections(marfa, source, source, true);
+        key = await mintWithConnections(viaMarfa, source, source, true);
         runner = new ConnectorUnderProof(source, url, key.key, env, entry);
         return `a key for ${source} with proof.issue, proof.attachment, proof.sub-issue and attached-to`;
       },
@@ -354,7 +359,7 @@ export async function proveTracker(
           params: { path: { id: key.id } },
         });
         if (!revoked.response.ok) throw new Error("the revoke was refused");
-        key = await mintWithConnections(marfa, `${source}-2`, source, true);
+        key = await mintWithConnections(mintKey, `${source}-2`, source, true);
         runner = new ConnectorUnderProof(source, url, key.key, env, entry);
         await runOnce();
         const held = (await issues()).has(loose.id);
@@ -409,7 +414,7 @@ export async function proveTracker(
         });
         const reborn = await row(loose.id);
         const edge = edges.data?.data.find(
-          (candidate) => candidate.target_id === reborn.id,
+          (candidate) => candidate.to_id === reborn.id,
         );
         if (edge === undefined) {
           throw new Error(`${parent.id} holds no edge to ${loose.id}`);
@@ -514,7 +519,7 @@ export async function proveTracker(
       "tracker: a key that may not write its connection types is refused at start",
       async () => {
         const narrow = await mintWithConnections(
-          marfa,
+          viaMarfa,
           `${source}-narrow`,
           `${source}-narrow`,
           false,
@@ -677,7 +682,7 @@ export async function proveTracker(
           const deleted = await marfa.DELETE("/types/{id}", {
             params: {
               path: { id: "proof.attachment" },
-              query: { force: "true" },
+              query: { force: true },
             },
           });
           if (!deleted.response.ok) {

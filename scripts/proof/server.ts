@@ -1,83 +1,115 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createClient } from "@withmarfa/client";
 import { request } from "node:http";
 import type { Minted } from "./connector.js";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
-/** How often the server's enrichment sweep runs in the proof. */
-export const enrichmentIntervalMs = 1000;
+const root = resolve(import.meta.dirname, "../../..");
 
-export const monorepo = resolve(import.meta.dirname, "../../../vendor/marfa");
+/** Where `scripts/monorepo.sh` leaves the pinned release's `marfa-server`. */
+const release = join(root, "vendor/marfa-server");
+/** Where `scripts/monorepo.sh hooks` leaves a `marfa-server` built from the
+ *  pinned commit with test hooks, which a release is built without. */
+const hooked = join(root, "vendor/marfa-server-hooks");
 
-// Choices the boot script reads on purpose; one inherited from the shell
-// would make two proofs share a port or an instance. MARFA_AUTH_SECRET and
-// API_KEY_SALT are listed so a boot never takes a secret nobody chose for it.
-const bootChoices = [
-  "PORT",
-  "MARFA_SERVER_KEEP",
-  "MARFA_AUTH_SECRET",
-  "API_KEY_SALT",
-  "MARFA_CONNECTOR_HOLD_MS",
-];
+/** The throwaway owner of every proof instance, which is gone with it. */
+const owner = {
+  email: "proof-owner@example.com",
+  password: "throwaway-proof-owner-password",
+};
+
+/** How often the proof looks at what enrichment writes while it waits for it
+ *  to settle. */
+export const enrichmentPollMs = 1000;
 
 export interface Booted {
   url: string;
   key: string;
   managementKey: string;
-  commit: string;
+  /** What the server program says it is, and whether it is the pinned one. */
+  server: string;
 }
 
-function parseEnv(text: string): Map<string, string> {
-  const vars = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = /^export ([A-Z_]+)='(.*)'$/.exec(line.trim());
-    if (match?.[1] !== undefined && match[2] !== undefined) {
-      vars.set(match[1], match[2]);
+/** A name is the proof's to choose, never the shell's: the server warns of a
+ *  `MARFA_` name it does not know, and an inherited telemetry setting would
+ *  make a throwaway instance report. */
+function inherited(name: string): boolean {
+  return (
+    name.startsWith("MARFA_") ||
+    name.startsWith("OTEL_") ||
+    name === "API_KEY_SALT"
+  );
+}
+
+async function descendants(pid: number): Promise<number[]> {
+  let found: number[] = [];
+  try {
+    const { stdout } = await run("pgrep", ["-P", String(pid)]);
+    for (const child of stdout.split("\n").filter((line) => line !== "")) {
+      found = [...found, ...(await descendants(Number(child))), Number(child)];
     }
+  } catch {
+    // pgrep answers 1 when the process has no children.
   }
-  return vars;
+  return found;
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export class ProofServer {
+  /** `connectorHoldMs` shortens the window a connector's hold lasts, which only
+   *  a server built with test hooks allows; the released one refuses to start
+   *  asked for it. */
   constructor(private readonly connectorHoldMs?: number) {}
   private dir: string | undefined;
+  private controlDir: string | undefined;
   private socketPath: string | undefined;
+  private child: ChildProcess | undefined;
+  private output = "";
   private stopped: Promise<void> | undefined;
 
   async boot(): Promise<Booted> {
-    const commit = (
-      await run("git", ["-C", monorepo, "rev-parse", "HEAD"])
-    ).stdout.trim();
-    await run("pnpm", ["--filter", "@withmarfa/server...", "build"], {
-      cwd: monorepo,
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    const program = await this.program();
+    const version = (await run(program, ["--version"])).stdout.trim();
     this.dir = await mkdtemp(join(tmpdir(), "marfa-connectors-proof-"));
-    await run("bash", [join(monorepo, "core/scripts/server-up.sh")], {
-      env: this.env(),
-      maxBuffer: 64 * 1024 * 1024,
+    // A socket path has a short limit, and a temporary folder here can pass it.
+    this.controlDir = await mkdtemp(
+      join(await realpath("/tmp"), "marfa-proof-control-"),
+    );
+    this.socketPath = join(this.controlDir, "marfa.sock");
+    const url = await this.start(program);
+    await this.claim();
+    const key = await this.mintKey({
+      label: "connector proof",
+      source: "core-proof",
+      permissions: [
+        "keys.mint",
+        "items.purge",
+        "webhooks.manage",
+        "grants.manage",
+        "audit.read",
+        "config.manage",
+        "schema.write",
+      ],
+      type_permissions: { "*": "write" },
+      extension_permissions: { "*": "write" },
+      edge_permissions: { "*": "write" },
+      metadata_permissions: { "*": "write" },
+      profile_permissions: { "*": "read" },
     });
-    const vars = parseEnv(await readFile(this.envFile(), "utf8"));
-    const url = vars.get("MARFA_TEST_URL");
-    const key = vars.get("MARFA_TEST_KEY");
-    this.socketPath = vars.get("MARFA_TEST_SOCKET");
-    if (
-      url === undefined ||
-      key === undefined ||
-      key === "" ||
-      this.socketPath === undefined ||
-      this.socketPath === ""
-    ) {
-      throw new Error(
-        "the boot script wrote no server URL, working key or private socket",
-      );
-    }
     const management = await this.mintKey({
       label: "connector proof reports",
       source: "proof-reports",
@@ -88,51 +120,136 @@ export class ProofServer {
       metadata_permissions: {},
       profile_permissions: {},
     });
-    const client = createClient({ baseUrl: url, credential: key });
+    const client = createClient({ baseUrl: url, credential: key.key });
     const current = await client.GET("/keys/current");
     if (current.data === undefined)
       throw new Error("the working key was refused");
-    const narrowed = await client.PATCH("/keys/{id}", {
-      params: { path: { id: current.data.id } },
-      body: {
-        permissions: [
-          "keys.mint",
-          "items.purge",
-          "webhooks.manage",
-          "grants.manage",
-          "audit.read",
-          "config.manage",
-          "schema.write",
-        ],
-      },
-    });
-    if (!narrowed.response.ok)
-      throw new Error("the working key could not shed management permissions");
-    return { url, key, managementKey: management.key, commit };
+    return {
+      url,
+      key: key.key,
+      managementKey: management.key,
+      server: version,
+    };
   }
 
-  // Fixture provisioning uses the server's private machine-authority transport.
-  // All connector and public proof requests still use the published SDK.
-  async mintKey(body: Record<string, unknown>): Promise<Minted> {
-    const minted = (await this.localKeyRequest(
+  /** The `marfa-server` to boot: the one `MARFA_SERVER_BIN` names, or the
+   *  pinned release's, which `scripts/monorepo.sh` fetched. A server that
+   *  shortens the connector hold needs test hooks, so it is the one
+   *  `MARFA_HOOKS_SERVER_BIN` names, or the build `scripts/monorepo.sh hooks`
+   *  made. */
+  private async program(): Promise<string> {
+    const hooks = this.connectorHoldMs !== undefined;
+    const named =
+      process.env[hooks ? "MARFA_HOOKS_SERVER_BIN" : "MARFA_SERVER_BIN"];
+    const fetched = hooks ? hooked : release;
+    if (named !== undefined && named !== "") return resolve(named);
+    const pin = (
+      await readFile(resolve(root, "scripts/monorepo.commit"), "utf8")
+    ).trim();
+    const held = await readFile(join(fetched, "commit"), "utf8").catch(
+      () => undefined,
+    );
+    if (held?.trim() !== pin) {
+      throw new Error(
+        `${relative(root, fetched)} holds ${held?.trim() ?? "no server"}, the pin is ${pin}; run scripts/monorepo.sh${hooks ? " hooks" : ""}`,
+      );
+    }
+    return join(fetched, "marfa-server");
+  }
+
+  private async start(program: string): Promise<string> {
+    if (this.dir === undefined || this.socketPath === undefined)
+      throw new Error("the server has no folder");
+    const env: NodeJS.ProcessEnv = {};
+    for (const [name, value] of Object.entries(process.env)) {
+      if (!inherited(name)) env[name] = value;
+    }
+    env["OTEL_SDK_DISABLED"] = "true";
+    env["MARFA_DATABASE_PATH"] = join(this.dir, "marfa.db");
+    env["MARFA_BLOB_PATH"] = join(this.dir, "blobs");
+    env["MARFA_PORT"] = "0";
+    env["MARFA_LISTEN_HOST"] = "127.0.0.1";
+    env["MARFA_CONTROL_SOCKET"] = this.socketPath;
+    if (this.connectorHoldMs !== undefined) {
+      env["MARFA_TEST_HOOKS"] = "true";
+      env["MARFA_TEST_TUNING"] =
+        `connector_hold_ms=${String(this.connectorHoldMs)}`;
+    }
+    const child = spawn(program, [], {
+      cwd: this.dir,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    this.child = child;
+    const exited = new Promise<never>((_, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => {
+        reject(
+          new Error(
+            `the server exited (${String(code ?? signal)}) before answering /health:\n${this.log()}`,
+          ),
+        );
+      });
+    });
+    exited.catch(() => undefined);
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.setEncoding("utf8");
+      stream.on("data", (chunk: string) => {
+        this.output += chunk;
+      });
+    }
+    const listening = (async (): Promise<string> => {
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && child.exitCode === null) {
+        const port = /Marfa server listening on port (\d+)/.exec(
+          this.output,
+        )?.[1];
+        if (port !== undefined) return `http://127.0.0.1:${port}`;
+        await new Promise((done) => setTimeout(done, 100));
+      }
+      throw new Error(`the server never said it was listening:\n${this.log()}`);
+    })();
+    const url = await Promise.race([listening, exited]);
+    const health = await fetch(`${url}/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!health.ok)
+      throw new Error(`/health answered ${String(health.status)}`);
+    return url;
+  }
+
+  /** The server's own words, with any setup proof left out. */
+  private log(): string {
+    return this.output.replace(
+      /(setup|recovery) code: [A-Z2-7-]+/g,
+      "$1 code: [redacted]",
+    );
+  }
+
+  private async claim(): Promise<void> {
+    const claimed = await this.overSocket(
       "POST",
-      "/keys",
-      body,
-    )) as Minted;
+      "/_control/setup/claim",
+      owner,
+    );
+    if (typeof (claimed as { email?: unknown }).email !== "string")
+      throw new Error("the owner claim returned no owner");
+  }
+
+  // Fixture provisioning uses the server's private control socket. All
+  // connector and public proof requests still use the published SDK.
+  async mintKey(body: Record<string, unknown>): Promise<Minted> {
+    const minted = (await this.overSocket("POST", "/keys", body)) as Minted;
     if (typeof minted.id !== "string" || typeof minted.key !== "string")
       throw new Error("local key provisioning returned no key");
     return minted;
   }
 
   async updateKey(id: string, body: Record<string, unknown>): Promise<void> {
-    await this.localKeyRequest(
-      "PATCH",
-      `/keys/${encodeURIComponent(id)}`,
-      body,
-    );
+    await this.overSocket("PATCH", `/keys/${encodeURIComponent(id)}`, body);
   }
 
-  private async localKeyRequest(
+  private async overSocket(
     method: "POST" | "PATCH",
     path: string,
     body: Record<string, unknown>,
@@ -156,9 +273,13 @@ export class ProofServer {
           res.on("error", reject);
           res.on("end", () => {
             try {
-              if (res.statusCode !== (method === "POST" ? 201 : 200))
+              if (
+                res.statusCode === undefined ||
+                res.statusCode < 200 ||
+                res.statusCode >= 300
+              )
                 throw new Error(
-                  `local key provisioning returned ${String(res.statusCode)}`,
+                  `${method} ${path} on the private socket returned ${String(res.statusCode)}`,
                 );
               resolve(JSON.parse(text) as unknown);
             } catch (error) {
@@ -169,7 +290,7 @@ export class ProofServer {
       );
       req.on("error", reject);
       req.setTimeout(15_000, () =>
-        req.destroy(new Error("local key provisioning timed out")),
+        req.destroy(new Error("the private socket timed out")),
       );
       req.end(JSON.stringify(body));
     });
@@ -181,41 +302,30 @@ export class ProofServer {
     return this.stopped;
   }
 
-  private envFile(): string {
-    if (this.dir === undefined) throw new Error("the server was never booted");
-    return join(this.dir, "server.env");
-  }
-
-  private env(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      MARFA_SERVER_REPO: monorepo,
-      MARFA_SERVER_ENV: this.envFile(),
-      // The tracker waits on the enrichment sweep, every 30 s by default.
-      MARFA_ENRICHMENT_INTERVAL_MS: String(enrichmentIntervalMs),
-    };
-    for (const name of bootChoices) Reflect.deleteProperty(env, name);
-    if (this.connectorHoldMs !== undefined)
-      env["MARFA_CONNECTOR_HOLD_MS"] = String(this.connectorHoldMs);
-    return env;
-  }
-
+  /** Ends the server this proof started, by its process ID and its children's,
+   *  and removes its folders. */
   private async down(): Promise<void> {
-    if (this.dir === undefined) return;
-    // The file names the server's process from the moment the boot starts
-    // it, and server-down refuses a file that is not there, which is the
-    // case when the boot never got that far or cleaned up after itself.
-    if (existsSync(this.envFile())) {
-      try {
-        await run(
-          "bash",
-          [join(monorepo, "core/scripts/server-down.sh"), this.envFile()],
-          { env: this.env() },
-        );
-      } catch (error) {
-        console.error(`server-down: ${String(error)}`);
+    const pid = this.child?.pid;
+    if (pid !== undefined && alive(pid)) {
+      // The children are found first, since an orphan can no longer be.
+      const family = [...(await descendants(pid)), pid];
+      for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+        for (const one of family) {
+          try {
+            process.kill(one, signal);
+          } catch {
+            // Already gone.
+          }
+        }
+        const deadline = Date.now() + 10_000;
+        while (alive(pid) && Date.now() < deadline)
+          await new Promise((done) => setTimeout(done, 100));
+        if (!alive(pid)) break;
       }
     }
-    await rm(this.dir, { recursive: true, force: true });
+    for (const dir of [this.dir, this.controlDir]) {
+      if (dir !== undefined && existsSync(dir))
+        await rm(dir, { recursive: true, force: true });
+    }
   }
 }

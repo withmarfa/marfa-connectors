@@ -13,8 +13,7 @@
       "description": "The directory's path in the repository, from its root."
     },
     "url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The directory's address on GitHub, on the default branch."
     },
     "private": {

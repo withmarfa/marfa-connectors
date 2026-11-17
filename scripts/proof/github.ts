@@ -66,7 +66,7 @@ async function targets(
   });
   if (data === undefined)
     throw new Error(`the edges were refused: ${JSON.stringify(error)}`);
-  return data.data.map((edge) => edge.target_id);
+  return data.data.map((edge) => edge.to_id);
 }
 
 async function connect(
@@ -76,7 +76,7 @@ async function connect(
   edgeType: string,
 ): Promise<void> {
   const { error, response } = await marfa.POST("/edges", {
-    body: { source_id: from.id, target_id: to.id, edge_type: edgeType },
+    body: { from_id: from.id, to_id: to.id, edge_type: edgeType },
   });
   if (!response.ok)
     throw new Error(`the edge was refused: ${JSON.stringify(error)}`);

@@ -151,8 +151,7 @@ export async function proveReadwise(
           );
         if (
           !data.data.some(
-            (edge) =>
-              edge.source_id === imported.id && edge.target_id === source.id,
+            (edge) => edge.from_id === imported.id && edge.to_id === source.id,
           )
         )
           throw new Error(

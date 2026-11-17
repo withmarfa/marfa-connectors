@@ -56,7 +56,7 @@ export async function proveConnectionEvolution(
       };
       const held = await edges(original.id);
       assert.equal(held.length, 1);
-      assert.equal(held[0]?.target_id, target.id);
+      assert.equal(held[0]?.to_id, target.id);
       const definition = async () => {
         const result = await client.GET("/edge-types");
         assert.ok(result.data, JSON.stringify(result.error));
@@ -89,10 +89,10 @@ export async function proveConnectionEvolution(
       const added = await item(client, listedAdded.id);
       const addedEdges = await edges(added.id);
       assert.equal(addedEdges.length, 1);
-      assert.equal(addedEdges[0]?.target_id, target.id);
+      assert.equal(addedEdges[0]?.to_id, target.id);
       assert.deepEqual(await definition(), {
         ...before,
-        source_type_constraints: [type, extra],
+        from_type_constraints: [type, extra],
       });
       assert.deepEqual(await item(client, original.id), original);
       assert.deepEqual(await item(client, target.id), target);

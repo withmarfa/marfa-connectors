@@ -343,7 +343,7 @@ describe("the hold's window", () => {
 });
 
 describe("the hold at any window the server allows", () => {
-  it("refuses an answer whose ttl_ms is no positive number, and the run does not start", async () => {
+  it("refuses an answer whose ttl_seconds is no positive number, and the run does not start", async () => {
     for (const value of [undefined, null, 0, -5, "180000"]) {
       harness.server.ttlAnswer = { value };
       harness.server.holder = undefined;

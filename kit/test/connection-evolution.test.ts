@@ -10,8 +10,8 @@ const connection: ConnectionDefinition = {
   label: "Kept label",
   description: "Kept description",
   cardinality: "many-to-one",
-  source_type_constraints: [testType.id],
-  target_type_constraints: [testType.id],
+  from_type_constraints: [testType.id],
+  to_type_constraints: [testType.id],
 };
 
 beforeEach(async () => {
@@ -59,7 +59,7 @@ function reader(definition = connection, includeExtra = false) {
 }
 const widened = () => ({
   ...connection,
-  source_type_constraints: [testType.id, extra.id],
+  from_type_constraints: [testType.id, extra.id],
 });
 const run = (definition = connection, includeExtra = false) =>
   start(reader(definition, includeExtra), harness.runtime(["--once"]));
@@ -85,10 +85,10 @@ it("widens a registered connection in place and imports the newly admitted sourc
   ).toEqual([
     {
       ...connection,
-      source_type_constraints: [testType.id, extra.id],
+      from_type_constraints: [testType.id, extra.id],
       cascade_on_delete: "orphan",
       property_schema: {},
-      written_at: "source",
+      written_from: "from",
       evolve_constraints: true,
     },
   ]);
@@ -120,11 +120,11 @@ it("widens the target end with the same explicit operation", async () => {
   expect(
     await run({
       ...connection,
-      target_type_constraints: [testType.id, extra.id],
+      to_type_constraints: [testType.id, extra.id],
     }),
   ).toBe(0);
   expect(harness.server.edgeTypes.get(connection.id)).toMatchObject({
-    target_type_constraints: [testType.id, extra.id],
+    to_type_constraints: [testType.id, extra.id],
   });
 });
 
@@ -132,7 +132,7 @@ it.each<Partial<ConnectionDefinition>>([
   { cardinality: "many-to-many" },
   { cascade_on_delete: "cascade" },
   { reverse_name: "test.contains" },
-  { written_at: "target" },
+  { written_from: "to" },
   { property_schema: { note: { type: "string" } } },
 ])("refuses widening alongside structural changes: %j", async (change) => {
   expect(await run()).toBe(0);
@@ -146,7 +146,7 @@ it.each<Partial<ConnectionDefinition>>([
   expect(harness.server.rows.some((row) => row.type === extra.id)).toBe(false);
 });
 
-it.each(["source_type_constraints", "target_type_constraints"] as const)(
+it.each(["from_type_constraints", "to_type_constraints"] as const)(
   "refuses narrowing %s without sending evolution",
   async (end) => {
     const old = { ...connection, [end]: [testType.id, extra.id] };
@@ -165,7 +165,7 @@ it("keeps an unrestricted stored end rather than narrowing it to today's types",
   expect(await run()).toBe(0);
   const stored = harness.server.edgeTypes.get(connection.id);
   if (stored === undefined) throw new Error("No held definition");
-  stored["source_type_constraints"] = [];
+  stored["from_type_constraints"] = [];
   const count = harness.server.requestsTo("POST", "/edge-types").length;
   expect(await run(widened())).toBe(1);
   expect(harness.server.requestsTo("POST", "/edge-types")).toHaveLength(count);
@@ -194,7 +194,7 @@ it("checks the served definition after evolution before starting the vendor", as
     ) {
       const held = harness.server.edgeTypes.get(connection.id);
       if (held === undefined) throw new Error("No held definition");
-      held["source_type_constraints"] = [testType.id];
+      held["from_type_constraints"] = [testType.id];
     }
   };
   const before = structuredClone(harness.server.edges);

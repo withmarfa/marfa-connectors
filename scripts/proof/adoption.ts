@@ -39,7 +39,7 @@ export async function proveAdoption(
       link: { type: "url" },
       extra: {
         type: "string",
-        maxLength: 120,
+        max_length: 120,
         required,
         description: "Child refinement",
       },
@@ -53,7 +53,7 @@ export async function proveAdoption(
           version: 4,
           fields: {
             title: { type: "string", required: true },
-            extra: { type: "string", maxLength: 120 },
+            extra: { type: "string", max_length: 120 },
           },
           ...policies,
         },
@@ -242,7 +242,7 @@ export async function proveAdoption(
           ),
         ],
         [state, { problem: "x".repeat(501) }],
-        [state, { problem: "😀".repeat(251) }],
+        [state, { problem: "😀".repeat(501) }],
       ] as const) {
         assert.equal(
           (await write(nextState, nextProblems)).response.status,

@@ -35,28 +35,23 @@
       "description": "The original locator kind, including vendor-specific kinds."
     },
     "highlighted_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original highlighting timestamp."
     },
     "readwise_created_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original creation timestamp."
     },
     "readwise_updated_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original update timestamp."
     },
     "url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The highlight URL as Readwise supplied it."
     },
     "readwise_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The highlight page in Readwise."
     },
     "location": {
@@ -121,38 +116,31 @@
       "description": "The original Reader listening time."
     },
     "reader_published_date": {
-      "type": "string",
-      "format": "date",
+      "type": "date",
       "description": "The original Reader published date."
     },
     "reader_created_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original Reader created at."
     },
     "reader_updated_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original Reader updated at."
     },
     "reader_first_opened_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original Reader first opened at."
     },
     "reader_last_opened_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original Reader last opened at."
     },
     "reader_saved_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original Reader saved at."
     },
     "reader_last_moved_at": {
-      "type": "string",
-      "format": "datetime",
+      "type": "datetime",
       "description": "The original Reader last moved at."
     },
     "reader_highlight_location": {
@@ -160,18 +148,15 @@
       "description": "The original Reader highlight location."
     },
     "reader_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The original Reader url."
     },
     "reader_source_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The original Reader source url."
     },
     "reader_image_url": {
-      "type": "string",
-      "format": "url",
+      "type": "url",
       "description": "The original Reader image url."
     },
     "reader_language": {

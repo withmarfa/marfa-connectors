@@ -752,8 +752,8 @@ describe("a two-way connector's run for deliveries", () => {
       {
         id: "test.blocks",
         cardinality: "many-to-many",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     const { exit } = await settledTwoWay(held);

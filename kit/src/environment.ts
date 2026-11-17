@@ -120,7 +120,7 @@ export function checkDefinition<E extends EnvDeclaration>(
     const from = new Set(
       (connector.connections ?? [])
         .filter((connection) =>
-          connection.source_type_constraints?.includes(kind.type.id),
+          connection.from_type_constraints?.includes(kind.type.id),
         )
         .map((connection) => connection.id),
     );
@@ -168,12 +168,12 @@ export function checkDefinition<E extends EnvDeclaration>(
   }
   for (const kind of connector.connections ?? []) {
     const ends = [
-      ...(kind.source_type_constraints ?? []),
-      ...(kind.target_type_constraints ?? []),
+      ...(kind.from_type_constraints ?? []),
+      ...(kind.to_type_constraints ?? []),
     ];
     if (
-      (kind.source_type_constraints ?? []).length === 0 ||
-      (kind.target_type_constraints ?? []).length === 0 ||
+      (kind.from_type_constraints ?? []).length === 0 ||
+      (kind.to_type_constraints ?? []).length === 0 ||
       ends.some((end) => !types.has(end))
     ) {
       problems.push(`${kind.id}'s both ends constrained to its own types`);

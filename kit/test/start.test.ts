@@ -436,8 +436,8 @@ describe("the key check on start", () => {
       {
         id: "test.blocks",
         cardinality: "many-to-many",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     for (let start = 0; start < 2; start += 1) {

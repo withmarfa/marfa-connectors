@@ -48,8 +48,8 @@ await main(
         id: "excerpt-of",
         label: "Excerpt of",
         cardinality: "many-to-one",
-        source_type_constraints: ["readwise.highlight"],
-        target_type_constraints: ["readwise.source"],
+        from_type_constraints: ["readwise.highlight"],
+        to_type_constraints: ["readwise.source"],
       },
     ],
     async run(context) {

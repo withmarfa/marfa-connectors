@@ -310,11 +310,12 @@ describe("highlight title and body", () => {
 
 describe("field kinds", () => {
   it("declares every date, time and address field with its kind", () => {
+    const kinds = new Set(["url", "datetime", "date"]);
     const formats = (fields: typeof sourceType.fields) =>
       Object.fromEntries(
         Object.entries(fields)
-          .filter(([, field]) => field.format !== undefined)
-          .map(([name, field]) => [name, field.format]),
+          .filter(([, field]) => kinds.has(field.type))
+          .map(([name, field]) => [name, field.type]),
       );
     expect(formats(sourceType.fields)).toMatchObject({
       source_url: "url",
@@ -342,7 +343,8 @@ describe("field kinds", () => {
     });
     for (const fields of [sourceType.fields, highlightType.fields])
       for (const [name, field] of Object.entries(fields))
-        if (/_(at|url)$/.test(name)) expect(field.format, name).toBeDefined();
+        if (/_(at|url)$/.test(name))
+          expect(kinds.has(field.type), name).toBe(true);
   });
   it("judges values as the server does", () => {
     expect(isDatetime("2025-08-18T14:18:02.485953+00:00")).toBe(true);

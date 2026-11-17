@@ -6,8 +6,8 @@ let harness: Harness;
 const inCollection: ConnectionDefinition = {
   id: "in-collection",
   cardinality: "many-to-many",
-  source_type_constraints: [testType.id],
-  target_type_constraints: [testType.id],
+  from_type_constraints: [testType.id],
+  to_type_constraints: [testType.id],
 };
 
 beforeEach(async () => {
@@ -19,7 +19,7 @@ beforeEach(async () => {
   // The test's type holds no container role, which the instance's own
   // constraint asks of the target.
   const served = harness.server.edgeTypes.get("in-collection");
-  if (served !== undefined) served["target_type_constraints"] = ["*"];
+  if (served !== undefined) served["to_type_constraints"] = ["*"];
 });
 afterEach(async () => {
   await harness.close();

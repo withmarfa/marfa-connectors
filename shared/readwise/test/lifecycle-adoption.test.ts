@@ -32,11 +32,11 @@ it.each(["safe", "lone-holder", "unknown-parent", "reactivated"])(
     server.edgeTypes.set("excerpt-of", {
       id: "excerpt-of",
       cardinality: "many-to-one",
-      source_type_constraints: ["*"],
-      target_type_constraints: ["*"],
+      from_type_constraints: ["*"],
+      to_type_constraints: ["*"],
       cascade_on_delete: "orphan",
       property_schema: {},
-      written_at: "source",
+      written_from: "from",
       shipped: true,
     });
     const source: Source = {
@@ -96,14 +96,14 @@ it.each(["safe", "lone-holder", "unknown-parent", "reactivated"])(
             id: "excerpt-of",
             label: "Excerpt of",
             cardinality: "many-to-one",
-            source_type_constraints: [highlightType.id],
-            target_type_constraints: [sourceType.id],
+            from_type_constraints: [highlightType.id],
+            to_type_constraints: [sourceType.id],
           },
           {
             id: "references",
             cardinality: "many-to-many",
-            source_type_constraints: [highlightType.id],
-            target_type_constraints: [sourceType.id],
+            from_type_constraints: [highlightType.id],
+            to_type_constraints: [sourceType.id],
           },
         ],
         types: [

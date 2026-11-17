@@ -49,7 +49,7 @@ const edgeEvents = new Set(["edge.created", "edge.updated", "edge.deleted"]);
 const itemEvents = new Set([
   "item.created",
   "item.updated",
-  "item.deleted",
+  "item.trashed",
   "item.restored",
   "item.purged",
   "item.state_changed",
@@ -86,7 +86,7 @@ export class Watch {
      *  the connector's row. */
     private readonly connections: ReadonlyMap<
       string,
-      "source" | "target"
+      "from" | "to"
     > = new Map(),
   ) {
     this.types = new Set(types);
@@ -150,9 +150,9 @@ export class Watch {
             )
               continue;
             const [row, other] =
-              end === "target"
-                ? [edge.target_id, edge.source_id]
-                : [edge.source_id, edge.target_id];
+              end === "to"
+                ? [edge.to_id, edge.from_id]
+                : [edge.from_id, edge.to_id];
             if (!connected.has(row)) connected.set(row, edge.updated_at);
             if (frame.event === "edge.updated") {
               updated.push({

@@ -49,8 +49,8 @@ function turnedAbout(edge: Edge, kind: ConnectionDefinition): Edge {
   return {
     ...edge,
     edge_type: kind.id,
-    source_id: edge.target_id,
-    target_id: edge.source_id,
+    from_id: edge.to_id,
+    to_id: edge.from_id,
   };
 }
 
@@ -83,7 +83,7 @@ async function readInbound(
     if (listed !== undefined) {
       const into = new Map<string, Edge[]>();
       for (const edge of listed) {
-        into.set(edge.target_id, [...(into.get(edge.target_id) ?? []), edge]);
+        into.set(edge.to_id, [...(into.get(edge.to_id) ?? []), edge]);
       }
       for (const { kind, item, edges } of group) {
         for (const edge of into.get(item.id) ?? []) {
@@ -142,7 +142,7 @@ export async function readEdges(
         [...found.values()]
           .filter(
             ({ item }) =>
-              kind.source_type_constraints?.includes(item.type) === true,
+              kind.from_type_constraints?.includes(item.type) === true,
           )
           .map(({ item, edges }) => ({ kind, item, edges })),
       ),
@@ -220,7 +220,7 @@ export class Connections {
     return [...this.kinds.values()]
       .filter(
         (kind) =>
-          kind.source_type_constraints?.includes(type) === true &&
+          kind.from_type_constraints?.includes(type) === true &&
           !this.isRetired(type, kind.id),
       )
       .map((kind) => kind.id);
@@ -376,7 +376,7 @@ export class Connections {
     const { item, spec } = found;
     const kind = this.kinds.get(type);
     const outside = (said ?? []).filter(
-      (target) => kind?.target_type_constraints?.includes(target.type) !== true,
+      (target) => kind?.to_type_constraints?.includes(target.type) !== true,
     );
     if (kind === undefined || outside.length > 0) {
       this.hooks.condition(
@@ -444,23 +444,23 @@ export class Connections {
         ((kind.id !== "references" &&
           kind.id !== "excerpt-of" &&
           kind.id !== "about") ||
-          known.has(edge.target_id)),
+          known.has(edge.to_id)),
     );
     const unknown = ofType
-      .map((edge) => edge.target_id)
+      .map((edge) => edge.to_id)
       .filter((target) => !known.has(target));
     const rows = await this.rows(unknown);
     return new Map(
       ofType
         .filter((edge) => {
-          if (known.has(edge.target_id)) return true;
-          const row = rows.get(edge.target_id);
+          if (known.has(edge.to_id)) return true;
+          const row = rows.get(edge.to_id);
           return (
             row !== undefined &&
-            kind.target_type_constraints?.includes(row.type) === true
+            kind.to_type_constraints?.includes(row.type) === true
           );
         })
-        .map((edge) => [edge.target_id, edge.id]),
+        .map((edge) => [edge.to_id, edge.id]),
     );
   }
 
@@ -888,8 +888,8 @@ export class Connections {
       plain.map(({ item, type, target }) => {
         const wire = wireOf(type);
         return wire.inbound
-          ? { source_id: target, target_id: item.id, edge_type: wire.edge }
-          : { source_id: item.id, target_id: target, edge_type: wire.edge };
+          ? { from_id: target, to_id: item.id, edge_type: wire.edge }
+          : { from_id: item.id, to_id: target, edge_type: wire.edge };
       }),
     );
     for (const result of results) {

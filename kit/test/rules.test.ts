@@ -203,8 +203,8 @@ describe("a run for deliveries", () => {
       {
         id: "test.blocks",
         cardinality: "many-to-many",
-        source_type_constraints: ["test.entry"],
-        target_type_constraints: ["test.entry"],
+        from_type_constraints: ["test.entry"],
+        to_type_constraints: ["test.entry"],
       },
     ];
     const exit = harness.inboundTwoWay(held, ["--every", "15m"]);
@@ -233,8 +233,8 @@ describe("connections", () => {
   const blocks: ConnectionDefinition = {
     id: "test.blocks",
     cardinality: "many-to-many",
-    source_type_constraints: ["test.entry"],
-    target_type_constraints: ["test.entry"],
+    from_type_constraints: ["test.entry"],
+    to_type_constraints: ["test.entry"],
   };
   beforeEach(() => {
     harness.server.grants = {

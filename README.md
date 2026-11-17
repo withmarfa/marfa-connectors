@@ -29,24 +29,11 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-The proof server is independently pinned in `scripts/monorepo.commit`. Run `scripts/monorepo.sh` before `pnpm proof`; it prepares only the server checkout, and the proof uses the installed registry client.
+The proof server is independently pinned in `scripts/monorepo.commit`. Run `scripts/monorepo.sh` before `pnpm proof`. It downloads `marfa-server` from the Marfa release whose tag names that commit, checks it against the release's checksums and leaves it in `vendor/marfa-server`. The proof boots that server on a free port with a temporary database, claims the owner through its control socket, mints its keys there, uses the installed registry client against it, and stops it afterward. Set `MARFA_SERVER_BIN` to a `marfa-server` of your own to boot that instead.
 
-`scripts/monorepo.sh` leaves a checkout of the Marfa monorepo in `vendor/marfa`. Build its server and boot a throwaway one, which exports the server's address as `MARFA_TEST_URL`, an ordinary working key as `MARFA_TEST_KEY`, and the private socket as `MARFA_TEST_SOCKET`. The launcher claims the owner through that socket, and the proof uses it to mint a separate ordinary key with `connectors.manage` and `keys.manage` for report inspection and key administration. It narrows the working key to the seven existing permissions, removing management access. Stop the server afterward:
+A release server is built without test hooks, so it cannot shorten the connector hold, which two proof groups need. Run `scripts/monorepo.sh hooks` to build the pinned commit's server with test hooks into `vendor/marfa-server-hooks`, or set `MARFA_HOOKS_SERVER_BIN` to one you built. This needs Rust.
 
-```bash
-scripts/monorepo.sh
-(cd vendor/marfa && pnpm --filter "@withmarfa/server..." build)
-env_text="$(vendor/marfa/core/scripts/server-up.sh)" && eval "${env_text}"
-vendor/marfa/core/scripts/server-down.sh "${MARFA_SERVER_ENV}"
-```
-
-That first key holds every permission, so it is for minting the connector's key, and a connector refuses to run on it.
-
-To use a server of your own, follow the Quick start in the Marfa repository's README. Either way you need the CLI, `marfa`, built from the same checkout so its commands match the server:
-
-```bash
-cargo install --locked --path vendor/marfa/core/marfa-cli
-```
+To run a connector against a server of your own, follow the Quick start in the Marfa repository's README, and use the `marfa` command line from the same release so its commands match the server.
 
 Mint the connector's own key with `marfa keys create`, as [the template's README](./template/README.md#the-key) describes. Then run the connector once with the connector's key:
 
