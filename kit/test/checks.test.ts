@@ -141,6 +141,7 @@ describe("the type check", () => {
     ).toEqual({
       missing: [],
       presentation: [],
+      tables: [],
       other: ['field "extra" is required on the server and not here'],
     });
   });
@@ -152,6 +153,7 @@ describe("the type check", () => {
     ).toEqual({
       missing: ["link", "note"],
       presentation: [],
+      tables: [],
       other: [],
     });
     const { note, link } = served.fields;
@@ -163,6 +165,7 @@ describe("the type check", () => {
     ).toEqual({
       missing: [],
       presentation: [],
+      tables: [],
       other: ['field "title" is required here and missing on the server'],
     });
   });
@@ -201,7 +204,10 @@ describe("the type check", () => {
       ).toHaveLength(1);
       const longer = {
         ...table,
-        columns: { ...table.columns, name: { type: "string", max_length: 5 } },
+        columns: {
+          ...table.columns,
+          name: { type: "string", required: true, max_length: 5 },
+        },
       };
       expect(
         compare(withTables({ checks: longer }), holding({ checks: table }))
