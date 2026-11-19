@@ -327,6 +327,9 @@ export class Rows {
     skipped: 0,
     conflicts: 0,
   };
+  /** The rows this run has counted as updated, which it counts once
+   *  whichever of its writes reached them. */
+  private readonly counted = new Set<string>();
   held = 0;
   seeded = 0;
   remembered = 0;
@@ -359,6 +362,12 @@ export class Rows {
     private readonly signal: AbortSignal,
     private readonly hooks: Hooks,
   ) {}
+
+  private countUpdated(id: string): void {
+    if (this.counted.has(id)) return;
+    this.counted.add(id);
+    this.counts.updated += 1;
+  }
 
   known(id: string): Item | undefined {
     return this.byId.get(id);
@@ -717,8 +726,8 @@ export class Rows {
       if (!merged.write && rekey === undefined) {
         this.agree(row.id, merged.agreement, entry);
         this.report(row.id, merged);
-        if (moved) this.counts.updated += 1;
-        else this.counts.unchanged += 1;
+        if (moved) this.countUpdated(row.id);
+        else if (!this.counted.has(row.id)) this.counts.unchanged += 1;
         return;
       }
       this.checkStopped();
@@ -735,7 +744,7 @@ export class Rows {
         this.index(written);
         this.agree(row.id, merged.agreement, entry);
         this.report(row.id, merged);
-        this.counts.updated += 1;
+        this.countUpdated(row.id);
         return;
       } catch (error) {
         if (
@@ -1013,7 +1022,7 @@ export class Rows {
         }
         this.store.set(row.id, { ...agreement, vendor, marfa });
       }
-      this.counts.updated += 1;
+      this.countUpdated(row.id);
     }
   }
 
@@ -1245,7 +1254,7 @@ export class Rows {
         await this.absorb(error, row.source_id ?? row.id);
         return [];
       }
-      this.counts.updated += 1;
+      this.countUpdated(row.id);
       return found;
     }
     return [];
@@ -1335,7 +1344,7 @@ export class Rows {
           this.kind.policy !== undefined,
         );
         this.index(written);
-        this.counts.updated += 1;
+        this.countUpdated(row.id);
       } catch (error) {
         if (
           attempt === 0 &&

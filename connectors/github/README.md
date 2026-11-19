@@ -157,10 +157,10 @@ Nothing is archived in a run that does not read the whole tree, and each case is
 
 A fine-grained personal access token needs Contents read access on the repositories `GITHUB_FILES` names. The App's manifest asks for the Contents read permission; an App registered before needs its owner to add Contents read in the App's settings on GitHub, and each installation's owner to accept it. Until then, the run names `files-unlisted` for each such repository.
 
-The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up. The connector declares these types whether or not `GITHUB_FILES` is set, so after an upgrade the start refuses a key minted before them until it holds `write` on both types and on `in-collection`. Its first start after the upgrade also needs `edge_types=write`, since `github.in-repository` widens to the new types. Widen the key in place as the owner, through the private socket, since a key holding `keys.manage` can only narrow one. An update replaces each map it names whole, so the command names every type, connection, and metadata entry the key holds:
+The connector's key needs `write` on the types `github.repository_file` and `github.directory`, and on the edge types `in-collection` and `parent-of`, besides those under Setting it up. The connector declares these types whether or not `GITHUB_FILES` is set, so after an upgrade the start refuses a key minted before them until it holds `write` on both types and on `in-collection`. Its first start after the upgrade also needs `edge_types=write`, since `github.in-repository` widens to the new types. Widen the key in place as the owner, from any computer signed in as the owner (the private socket still works on the server's machine); a key holding `keys.manage` without `keys.mint` can only narrow one. An update replaces each map it names whole, so the command names every type, connection, and metadata entry the key holds:
 
 ```bash
-marfa --socket <socket-path> keys update <key-id> \
+marfa keys update <key-id> \
   --type-permission github.repository=write --type-permission github.issue=write \
   --type-permission github.discussion=write --type-permission github.comment=write \
   --type-permission github.pull_request=write --type-permission github.notification=write \

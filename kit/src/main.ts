@@ -92,6 +92,14 @@ function startBackoff(intervalMs: number, attempts: number): number {
   return Math.min(intervalMs, 60_000) * Math.min(2 ** (attempts - 1), 8);
 }
 
+/** An app's key stays that app's, so the connector refuses it before it
+ *  registers anything. */
+function appKeyProblem(key: Key, guide: string): string | undefined {
+  return key.oauth_client_id === undefined
+    ? undefined
+    : `the key ${key.id} is refused: an app made it, and it stays that app's. Mint the connector a key of its own as ${guide} says: run \`marfa keys create\` from any computer signed in as the owner.`;
+}
+
 /** Where an owner is told to mint the connector's key. */
 function keyGuide(connector: Pick<Connector, "readme">): string {
   return connector.readme ?? "the template's README";
@@ -99,20 +107,16 @@ function keyGuide(connector: Pick<Connector, "readme">): string {
 
 /** The connector's rows carry its source, so a key writes under it as its
  *  own or as a claim, a second account's key the latter; any other claim
- *  reaches rows that are not the connector's, and an app's key is the
- *  app's. */
+ *  reaches rows that are not the connector's. */
 function keySourceProblem(
   key: Key,
   source: string,
   guide: string,
 ): string | undefined {
-  if (key.oauth_client_id !== undefined) {
-    return `the key ${key.id} is refused: an app made it, and it stays that app's. Mint the connector a key of its own as ${guide} says.`;
-  }
   const own = key.source === source;
   const others = key.sources.filter((claim) => claim !== source);
   if (!own && !key.sources.includes(source)) {
-    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it through the private socket with \`marfa --socket <socket-path> keys update ${key.id} --claim ${source}\`, or mint a key as ${guide} says.`;
+    return `the key ${key.id} writes under its own source ${key.source} and does not claim the connector's, ${source}, so every row it wrote would be refused: claim it with \`marfa keys update ${key.id} --claim ${source}\` as the owner, or mint a key as ${guide} says.`;
   }
   if (others.length > 0) {
     return `the key ${key.id} claims sources besides the connector's, ${source}, and is refused: ${others.join(", ")}. Narrow it with \`marfa keys update ${key.id} ${own ? "--no-claims" : `--claim ${source}`}\`.`;
@@ -323,7 +327,10 @@ async function registerAndCheck<E extends EnvDeclaration>(
   environment: Environment,
   again: boolean,
   logger: Logger,
-): Promise<Started> {
+): Promise<Started | Unregistered> {
+  const key = await marfa.currentKey();
+  const refusal = appKeyProblem(key, keyGuide(connector));
+  if (refusal !== undefined) return { refusal };
   const id = await marfa.register(
     connector.name,
     connector.description,
@@ -335,7 +342,6 @@ async function registerAndCheck<E extends EnvDeclaration>(
       ).values(),
     ),
   );
-  const key = await marfa.currentKey();
   const problems = keyProblems(connector, key);
   const stopped = (problem: string): Started => ({
     id,
@@ -370,6 +376,12 @@ async function registerAndCheck<E extends EnvDeclaration>(
     narrowed: step.narrowed,
     problem: undefined,
   };
+}
+
+/** A key refused before the connector registered, so there is no
+ *  registration to report the failure against. */
+interface Unregistered {
+  readonly refusal: string;
 }
 
 interface Started {
@@ -731,7 +743,7 @@ async function serve<E extends EnvDeclaration>(
   const stopped = (): boolean => stop.signal.aborted;
   const intervalMs = schedule.mode === "every" ? schedule.intervalMs : 0;
 
-  let started: Started | undefined;
+  let started: Started | Unregistered | undefined;
   for (let failures = 1; started === undefined; failures += 1) {
     try {
       started = await registerAndCheck(
@@ -763,6 +775,10 @@ async function serve<E extends EnvDeclaration>(
       await clock.sleep(wait, stop.signal);
       if (stopped()) return 0;
     }
+  }
+  if ("refusal" in started) {
+    cannotStart(logger, started.refusal);
+    return 1;
   }
   const connectorId = started.id;
   logger.info(`registered as ${connectorId}`);

@@ -329,6 +329,18 @@ describe("a field Marfa mirrors", () => {
     );
     expect(harness.server.agreements.get(row.id)?.waiting).toBe(false);
   });
+
+  it("is counted once in a run that puts it back and then finds the row matching the vendor", async () => {
+    await harness.once(vendor([one, two]));
+    harness.server.edit(harness.server.row("a:1").id, {
+      title: "One, by a person",
+    });
+    expect(await harness.once(vendor([one, two]))).toBe(0);
+    expect(harness.server.row("a:1").properties["title"]).toBe("One");
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 1, archived 0, unchanged 1, skipped 0/,
+    );
+  });
 });
 
 describe("the state", () => {
