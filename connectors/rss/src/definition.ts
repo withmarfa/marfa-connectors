@@ -39,11 +39,14 @@ import {
   manifestsHeld,
   pictureKind,
   picturesSetting,
+  picturesSettings,
   savePictures,
   type Manifest,
   type PicturesSetting,
 } from "./pictures.js";
 import rssEntry from "./rss.entry.json" with { type: "json" };
+
+type Settings = Readonly<Record<string, string | undefined>>;
 
 interface FeedState {
   validators?: Validators;
@@ -111,20 +114,26 @@ function refusal(error: unknown): string | undefined {
   return undefined;
 }
 
+/** The settings that add a type, and each value they take: the connector list
+ *  builds the connector under every one to name every type it can write. */
+export const settingsAddingTypes = { RSS_PICTURES: picturesSettings };
+
 // A process that saves no pictures declares no picture type, connection or
 // manifest field, so its key needs, and holds, nothing for them. A value
 // checkEnv refuses is read as the default here; the start stops before any
 // feed is read.
-const saving = ((): PicturesSetting => {
+function savingOf(settings: Settings): PicturesSetting {
   try {
-    return picturesSetting(process.env["RSS_PICTURES"]);
+    return picturesSetting(settings["RSS_PICTURES"]);
   } catch {
     return "addresses";
   }
-})();
-const savesPictures = saving !== "addresses";
+}
 
-export function connector() {
+/** The connector for the settings a process holds, which `main.ts` reads from
+ *  its environment. */
+export function connector(settings: Settings) {
+  const savesPictures = savingOf(settings) !== "addresses";
   return defineConnector({
     name: "rss",
     description: "Entries from Atom, RSS and JSON feeds.",

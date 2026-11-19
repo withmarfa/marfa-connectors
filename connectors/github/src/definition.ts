@@ -84,13 +84,16 @@ function appOf(values: {
   };
 }
 
-// A process that reads no stars holds no star field, so it never writes or
-// puts back the marks another process sets on the rows it syncs. A value
-// checkEnv refuses holds them here; the start stops before any row is read.
-const starFields =
-  process.env["GITHUB_STARS"] === "false" ? [] : ["starred", "starred_at"];
+type Settings = Readonly<Record<string, string | undefined>>;
 
-export function connector() {
+/** The connector for the settings a process holds, which `main.ts` reads from
+ *  its environment. */
+export function connector(settings: Settings) {
+  // A process that reads no stars holds no star field, so it never writes or
+  // puts back the marks another process sets on the rows it syncs. A value
+  // checkEnv refuses holds them here; the start stops before any row is read.
+  const starFields =
+    settings["GITHUB_STARS"] === "false" ? [] : ["starred", "starred_at"];
   return defineConnector<typeof env>({
     name: "github",
     description:
@@ -521,7 +524,7 @@ export function connector() {
         remake(change, context, app)
       );
     },
-    ...(process.env["GITHUB_PERSONAL_TOKEN"]?.trim()
+    ...(settings["GITHUB_PERSONAL_TOKEN"]?.trim()
       ? {}
       : {
           inbound: {
