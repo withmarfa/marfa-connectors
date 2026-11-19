@@ -40,6 +40,16 @@ function earlier(entry: Entry): string[] {
   return [entry.movedFrom ?? []].flat().filter((before) => before !== "");
 }
 
+type Counted = "created" | "archived" | "updated" | "unchanged";
+
+/** Which count wins when a run reaches one row more than once. */
+const STRENGTH: Readonly<Record<Counted, number>> = {
+  created: 4,
+  archived: 3,
+  updated: 2,
+  unchanged: 1,
+};
+
 export class Stopped extends Error {
   override name = "Stopped";
   override message = "stopped before the run finished";
@@ -327,9 +337,9 @@ export class Rows {
     skipped: 0,
     conflicts: 0,
   };
-  /** The rows this run has counted as updated, which it counts once
-   *  whichever of its writes reached them. */
-  private readonly counted = new Set<string>();
+  /** What this run has counted each row as. A row is counted once, in
+   *  the strongest state any of its writes reached. */
+  private readonly counted = new Map<string, Counted>();
   held = 0;
   seeded = 0;
   remembered = 0;
@@ -363,10 +373,14 @@ export class Rows {
     private readonly hooks: Hooks,
   ) {}
 
-  private countUpdated(id: string): void {
-    if (this.counted.has(id)) return;
-    this.counted.add(id);
-    this.counts.updated += 1;
+  private count(id: string, state: Counted): void {
+    const before = this.counted.get(id);
+    if (before !== undefined) {
+      if (STRENGTH[before] >= STRENGTH[state]) return;
+      this.counts[before] -= 1;
+    }
+    this.counted.set(id, state);
+    this.counts[state] += 1;
   }
 
   known(id: string): Item | undefined {
@@ -726,8 +740,8 @@ export class Rows {
       if (!merged.write && rekey === undefined) {
         this.agree(row.id, merged.agreement, entry);
         this.report(row.id, merged);
-        if (moved) this.countUpdated(row.id);
-        else if (!this.counted.has(row.id)) this.counts.unchanged += 1;
+        if (moved) this.count(row.id, "updated");
+        else this.count(row.id, "unchanged");
         return;
       }
       this.checkStopped();
@@ -744,7 +758,7 @@ export class Rows {
         this.index(written);
         this.agree(row.id, merged.agreement, entry);
         this.report(row.id, merged);
-        this.countUpdated(row.id);
+        this.count(row.id, "updated");
         return;
       } catch (error) {
         if (
@@ -1022,7 +1036,7 @@ export class Rows {
         }
         this.store.set(row.id, { ...agreement, vendor, marfa });
       }
-      this.countUpdated(row.id);
+      this.count(row.id, "updated");
     }
   }
 
@@ -1107,7 +1121,7 @@ export class Rows {
         continue;
       }
       if (row.state === "archived") {
-        this.counts.unchanged += 1;
+        this.count(row.id, "unchanged");
         this.hooks.archived?.(this.kind.type, key);
         continue;
       }
@@ -1126,7 +1140,7 @@ export class Rows {
           stateBy: "vendor",
           stateAt: archived.updated_at,
         });
-        this.counts.archived += 1;
+        this.count(row.id, "archived");
         this.hooks.archived?.(this.kind.type, key);
       } catch (error) {
         await this.absorb(error, key);
@@ -1254,7 +1268,7 @@ export class Rows {
         await this.absorb(error, row.source_id ?? row.id);
         return [];
       }
-      this.countUpdated(row.id);
+      this.count(row.id, "updated");
       return found;
     }
     return [];
@@ -1344,7 +1358,7 @@ export class Rows {
           this.kind.policy !== undefined,
         );
         this.index(written);
-        this.countUpdated(row.id);
+        this.count(row.id, "updated");
       } catch (error) {
         if (
           attempt === 0 &&
@@ -1590,7 +1604,7 @@ export class Rows {
         entry,
       });
       this.agree(result.id, merged.agreement, entry);
-      this.counts.created += 1;
+      this.count(result.id, "created");
       return;
     }
     if (result.outcome === "skipped") {
