@@ -144,8 +144,8 @@ importers:
         specifier: 3.1.1
         version: 3.1.1(@opentelemetry/api@1.10.0)
       '@withmarfa/client':
-        specifier: 0.0.81
-        version: 0.0.81
+        specifier: 0.0.82
+        version: 0.0.82
       eventsource-parser:
         specifier: 4.1.3
         version: 4.1.3
@@ -166,8 +166,8 @@ importers:
   scripts:
     dependencies:
       '@withmarfa/client':
-        specifier: 0.0.81
-        version: 0.0.81
+        specifier: 0.0.82
+        version: 0.0.82
       '@withmarfa/connector':
         specifier: workspace:*
         version: link:../kit
@@ -654,8 +654,8 @@ packages:
   '@vitest/spy@5.1.0':
     resolution: {integrity: sha512-2DPO5OMHWKrBngC+fCmTQqemNF0gidRhp3lxbBmRhW+M1XJrfgPpqNqWVevXtn2f2ufD5ZaR1B6B641aAlcX5A==}
 
-  '@withmarfa/client@0.0.81':
-    resolution: {integrity: sha512-AxbzEjFC7gINtQdxk9kJWO6xUIpDZQkug/0KaottRjc+4MEt6uyCi5tGtuO8rlWML3XSsWnbnGQLIfiiq+SL/w==}
+  '@withmarfa/client@0.0.82':
+    resolution: {integrity: sha512-OkCKGE2FDp1bfbhy9dHp0O+obG72iJ041H118aiv/0xpHp0iwG8/wsmd/G7zH4XoZ7SUGElrCO9cxH2P8XtvdA==}
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
@@ -1746,7 +1746,7 @@ snapshots:
 
   '@vitest/spy@5.1.0': {}
 
-  '@withmarfa/client@0.0.81':
+  '@withmarfa/client@0.0.82':
     dependencies:
       openapi-fetch: 0.17.0
 
