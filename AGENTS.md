@@ -51,7 +51,7 @@ A connector reads its secrets from the environment, and nothing here holds a val
 - Every action is pinned by commit with its tag in a comment, and the Dockerfile's base image by digest; Dependabot keeps them current and `scripts/test/tree.test.ts` refuses one that is not.
 - No personal detail of any machine or person in this repository: no absolute paths, hostnames, account names or credentials. Configuration comes from the environment.
 - Removed means gone: no shims, no aliases, no compatibility paths.
-- TypeScript, strict, on Node 22 or later. The transport to Marfa is `@withmarfa/client` and nothing else. The kit sends nothing of its own unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set: telemetry export is a separate, optional channel to the endpoint the OpenTelemetry settings name, and its code is loaded only then. It sends nothing to PostHog; a failure reaches the owner as a run recorded in Marfa, with its error. Failures found before telemetry starts, including missing variables and malformed settings, are logged only.
+- TypeScript, strict, on Node 22 or later. The transport to Marfa is `@withmarfa/client` and nothing else. The kit sends nothing of its own unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set: telemetry export is a separate, optional channel to the endpoint the OpenTelemetry settings name, and its code is loaded only then. It sends nothing to PostHog; a failed run reaches the owner as a run recorded in Marfa, with its error, and a start that fails before the connector is registered is logged, and exported over OTLP when that is on. Failures found before telemetry starts, including missing variables and malformed settings, are logged only.
 
 ## Code Review Rules
 
