@@ -213,7 +213,7 @@ export async function proveKeys(
           refused.code !== 1 ||
           !error.includes("own source proof-foreign") ||
           !error.includes(
-            `marfa --socket <socket-path> keys update ${foreign.id} --claim proof-inbound`,
+            `marfa keys update ${foreign.id} --claim proof-inbound`,
           )
         ) {
           throw new Error(

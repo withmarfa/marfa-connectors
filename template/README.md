@@ -181,7 +181,7 @@ The answer carries the address in full this once, as `path` and as `url`, the ad
 
 ## The key
 
-One key per connector per account, minted with the `marfa` binary by a credential that holds `keys.mint`. Run it from any computer signed in as the owner with `marfa login`; on the server's machine it also works through the private socket (`marfa --socket <socket-path> keys create ...`):
+One key per connector per account, minted with the `marfa` binary by a credential that holds `keys.mint`. Run it from any computer signed in as the owner with `marfa login`, and approve `keys.mint` and `keys.manage` at the sign-in. The command sends `owner_key` only when the sign-in holds `keys.manage`, and without it the key is an app's key, which the kit refuses. On the server's machine it also works through the private socket (`marfa --socket <socket-path> keys create ...`):
 
 ```bash
 marfa keys create --label <name> --source <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
@@ -220,7 +220,7 @@ Read on `edge_types` registers nothing, and is the narrowing the kit's warning n
 marfa keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
 ```
 
-Run this from any computer signed in as the owner; the private socket still works on the server's machine. An ordinary key can pass on only its own source and existing claims, and only map entries it currently holds. A credential that holds `keys.manage` may grant any source as a claim, and one that holds `keys.manage` without `keys.mint` can narrow a key but not widen it. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state on the instance, under its own source. For a connector that carries changes back, one account per instance: a row of the type without a link would be created in whichever account's connector ran first, and the other could not tell that account's item from one gone.
+Run this from any computer signed in as the owner; the private socket still works on the server's machine. An ordinary key can pass on only its own source and existing claims, and only map entries it currently holds. A credential that holds `keys.manage` and `keys.mint` may grant any source as a claim, and one that holds `keys.manage` without `keys.mint` can narrow a key but not widen it, which includes adding a claim. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state on the instance, under its own source. For a connector that carries changes back, one account per instance: a row of the type without a link would be created in whichever account's connector ran first, and the other could not tell that account's item from one gone.
 
 ### When the connector's type changes
 
