@@ -11,12 +11,6 @@ export const exportTimeoutMs = 1500;
  *  under way, then the last one. */
 export const telemetryBoundMs = 2 * exportTimeoutMs;
 
-export interface ExceptionSettings {
-  readonly host: string;
-  /** The PostHog project token, which is a secret. */
-  readonly token: string;
-}
-
 /**
  * The settings, read as Marfa's server reads them: present only when
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is set, which is what turns telemetry on.
@@ -29,19 +23,11 @@ export interface TelemetrySettings {
   readonly logsHeaders: Readonly<Record<string, string>>;
   /** The share of succeeded runs whose trace is exported. */
   readonly sampleRatio: number;
-  /** Where the error of a failed run, or of a start that ends the process, is
-   *  sent for PostHog's error tracking, when both of its settings are
-   *  given. */
-  readonly exceptions: ExceptionSettings | undefined;
 }
 
 export interface Telemetry {
   /** Does the run inside a trace of its own, which records how it ended. */
   run(trigger: Trigger, work: () => Promise<RunResult>): Promise<RunResult>;
-  /** Reports, to error tracking only, that the connector cannot start and
-   *  the process is ending. `problem` is the text the log carries. Waiting
-   *  for it to be sent is {@link Telemetry.shutdown}'s. */
-  startFailed(problem: string): void;
   /** Sends what waits, giving up after {@link telemetryBoundMs}. */
   shutdown(): Promise<void>;
 }
@@ -49,7 +35,6 @@ export interface Telemetry {
 /** Off: nothing is loaded, and a run is only the run. */
 export const noTelemetry: Telemetry = {
   run: (_trigger, work) => work(),
-  startFailed: () => undefined,
   shutdown: () => Promise.resolve(),
 };
 
@@ -134,37 +119,22 @@ export function readTelemetry(
   const shared = headers("OTEL_EXPORTER_OTLP_HEADERS");
   const tracesHeaders = headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
   const logsHeaders = headers("OTEL_EXPORTER_OTLP_LOGS_HEADERS");
-  const posthogHost = url("MARFA_POSTHOG_HOST");
-  const posthogToken = present("MARFA_POSTHOG_PROJECT_TOKEN");
   const ratioText = present("MARFA_OTEL_SAMPLE_RATIO");
   const ratio = ratioText === undefined ? 1 : ratioOf(ratioText);
   if (ratio === undefined) {
     problems.push("MARFA_OTEL_SAMPLE_RATIO must be a number from 0 to 1");
   }
-  // A signal's own endpoint and the exception settings only refine or extend
-  // the general endpoint, which turns telemetry on.
+  // A signal's own endpoint only refines the general endpoint, which turns
+  // telemetry on.
   if (general === undefined) {
     for (const [name, value] of [
       ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", traces],
       ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", logs],
-      ["MARFA_POSTHOG_HOST", posthogHost],
-      ["MARFA_POSTHOG_PROJECT_TOKEN", posthogToken],
     ] as const) {
       if (value !== undefined) {
         problems.push(`${name} needs OTEL_EXPORTER_OTLP_ENDPOINT set too`);
       }
     }
-  }
-  // With one alone no exception could be reported.
-  if (posthogHost !== undefined && posthogToken === undefined) {
-    problems.push(
-      "MARFA_POSTHOG_HOST needs MARFA_POSTHOG_PROJECT_TOKEN set too",
-    );
-  }
-  if (posthogToken !== undefined && posthogHost === undefined) {
-    problems.push(
-      "MARFA_POSTHOG_PROJECT_TOKEN needs MARFA_POSTHOG_HOST set too",
-    );
   }
   if (problems.length > 0) throw new ConfigurationError(problems.join("; "));
   if (general === undefined) return undefined;
@@ -175,22 +145,17 @@ export function readTelemetry(
     tracesHeaders: { ...shared, ...tracesHeaders },
     logsHeaders: { ...shared, ...logsHeaders },
     sampleRatio: ratio ?? 1,
-    exceptions:
-      posthogHost === undefined || posthogToken === undefined
-        ? undefined
-        : { host: posthogHost, token: posthogToken },
   };
 }
 
-/** A header usually carries the collector's credential, and the PostHog
- *  token is one. One too short to redact without redacting ordinary words is
- *  left out, as the kit's own secrets are refused. */
+/** A header usually carries the collector's credential. One too short to
+ *  redact without redacting ordinary words is left out, as the kit's own
+ *  secrets are refused. */
 export function telemetrySecrets(settings: TelemetrySettings): string[] {
   return [
     ...new Set([
       ...Object.values(settings.tracesHeaders),
       ...Object.values(settings.logsHeaders),
-      ...(settings.exceptions === undefined ? [] : [settings.exceptions.token]),
     ]),
   ].filter((value) => value.length >= shortestSecret);
 }
@@ -209,7 +174,7 @@ export async function startTelemetry(
 ): Promise<Telemetry> {
   try {
     const sdk = await import("./telemetry-sdk.js");
-    return await sdk.exporting(settings, connectorName, logger, clock, random);
+    return sdk.exporting(settings, connectorName, logger, clock, random);
   } catch (error) {
     logger.warn(
       `telemetry could not be started, so the connector runs without it: ${error instanceof Error ? error.message : String(error)}`,
