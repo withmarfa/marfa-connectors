@@ -1,3 +1,4 @@
 import { main } from "@withmarfa/connector";
-import { readerConnector } from "./definition.js";
-await main(readerConnector());
+import { connector } from "./definition.js";
+
+await main(connector());

@@ -56,7 +56,7 @@ function names(value: string | undefined): Set<string> {
 }
 
 /** The connector; a test passes the address of its stub of Google. */
-export function createConnector(options?: GoogleOptions) {
+export function connector(options?: GoogleOptions) {
   const base = `${options?.endpoints?.api ?? "https://www.googleapis.com"}/calendar/v3`;
   const now = options?.now ?? Date.now;
   const writing: Writing = { options, base };

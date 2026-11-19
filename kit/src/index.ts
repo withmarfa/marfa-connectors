@@ -41,6 +41,7 @@ export {
   type WatchContext,
 } from "./define.js";
 export { main } from "./main.js";
+export { carriedTypes } from "./run.js";
 export { Declined, LinkTaken, Refused, Unreachable } from "./rows.js";
 export {
   rowId,

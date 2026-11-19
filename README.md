@@ -14,6 +14,7 @@ Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a sma
   - [`readwise-reader`](./connectors/readwise-reader/README.md): Reader documents, highlights, retained content, and supported two-way edits, with independent registration and shared identities.
   - [`rss`](./connectors/rss/README.md): the entries of the feeds it is given, read only, and on request the pictures they point to, saved as files.
   - [`google-calendar`](./connectors/google-calendar/README.md): a Google account's calendars and events, with series, changed occurrences and cancellations, and changes to events carried back.
+- [`connectors.json`](./connectors.json): the list of the connectors above, generated from each connector's own definition, for anything that needs to know which connectors exist, what they write and whether they carry changes back. `pnpm build`, then `pnpm connectors:list` regenerates it, and CI fails when it is out of date.
 - [`scripts/`](./scripts): prepares the pinned Marfa server, holds the proof, which boots the pinned server and drives every connector against it, and holds the tests that guard the repository itself.
 
 [`AGENTS.md`](./AGENTS.md) holds the rules the repository is worked under.

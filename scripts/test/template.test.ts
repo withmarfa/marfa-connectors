@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { expect, it } from "vitest";
 import { ScriptedServer } from "../../kit/test/scripted-server.js";
+import { connectorList } from "../connector-list.js";
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
@@ -62,6 +63,14 @@ it("builds and runs once copied to a connector's place", async () => {
       },
     });
     expect(marfa.types.has("example.item")).toBe(true);
+    // Copying the template into connectors/ is all it takes to be listed.
+    expect(
+      (await connectorList(place)).connectors.map((one) => [
+        one.directory,
+        one.name,
+        one.types,
+      ]),
+    ).toEqual([["connectors/copied", "example", ["example.item"]]]);
     expect(marfa.rows.map((row) => [row.source_id, row.properties])).toEqual([
       ["acct:1", { example_id: "1", title: "One" }],
     ]);

@@ -15,7 +15,7 @@ import {
   eventType,
   inCalendar,
 } from "../src/config.js";
-import { createConnector } from "../src/connector.js";
+import { connector } from "../src/definition.js";
 import { CalendarStub, type Call } from "./calendar-stub.js";
 
 const me = "me@example.com";
@@ -84,7 +84,7 @@ async function once(
   token = freshToken(),
 ): Promise<number> {
   return start(
-    createConnector({
+    connector({
       endpoints: { ...google.endpoints, api: calendar.url },
     }),
     harness.runtime(["--once"], {

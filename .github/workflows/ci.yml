@@ -78,6 +78,8 @@ jobs:
       - if: ${{ needs.changes.outputs.code != 'false' }}
         run: pnpm build
       - if: ${{ needs.changes.outputs.code != 'false' }}
+        run: pnpm connectors:check
+      - if: ${{ needs.changes.outputs.code != 'false' }}
         run: pnpm typecheck
       - if: ${{ needs.changes.outputs.code != 'false' }}
         run: pnpm lint
