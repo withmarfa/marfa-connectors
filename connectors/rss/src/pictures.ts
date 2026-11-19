@@ -22,12 +22,20 @@ import rssPicture from "./rss.picture.json" with { type: "json" };
  * - `save-in-library`: saves the pictures of each entry that is in the
  *   library, and of none that is in the feed.
  */
-export type PicturesSetting = "addresses" | "save" | "save-in-library";
+export const picturesSettings = [
+  "addresses",
+  "save",
+  "save-in-library",
+] as const;
+export type PicturesSetting = (typeof picturesSettings)[number];
 
 export function picturesSetting(value: string | undefined): PicturesSetting {
-  if (value === undefined || value === "addresses") return "addresses";
-  if (value === "save" || value === "save-in-library") return value;
-  throw new Error("RSS_PICTURES must be addresses, save or save-in-library");
+  if (value === undefined) return "addresses";
+  const setting = picturesSettings.find((one) => one === value);
+  if (setting === undefined) {
+    throw new Error("RSS_PICTURES must be addresses, save or save-in-library");
+  }
+  return setting;
 }
 
 /** A picture's type, the entry's property that accounts for its pictures,

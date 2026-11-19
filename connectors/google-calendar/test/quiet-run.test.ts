@@ -14,7 +14,7 @@ import {
   eventType,
   inCalendar,
 } from "../src/config.js";
-import { createConnector } from "../src/connector.js";
+import { connector } from "../src/definition.js";
 import { CalendarStub } from "./calendar-stub.js";
 
 const me = "me@example.com";
@@ -58,7 +58,7 @@ quietRun({
       marfa,
       async run() {
         const code = await start(
-          createConnector({
+          connector({
             endpoints: { ...google.endpoints, api: calendar.url },
           }),
           harness.runtime(["--once"], {

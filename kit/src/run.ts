@@ -236,17 +236,25 @@ function sending(change: Change): string {
 /** How long a refused purge waits before it is asked again. */
 const purgeAgainMs = 24 * 3_600_000;
 
-export function specsOf<E extends EnvDeclaration>(
+/** The types whose changes go back to the vendor for an environment. */
+export function carriedTypes<E extends EnvDeclaration>(
   connector: Connector<E>,
   env: EnvValues<E>,
-  narrowed: Narrowed | undefined,
-): Map<string, Spec> {
-  const carried = new Set(
+): ReadonlySet<string> {
+  return new Set(
     connector.onChange === undefined
       ? []
       : (connector.carries?.(env) ??
           connector.types.map((kind) => kind.type.id)),
   );
+}
+
+export function specsOf<E extends EnvDeclaration>(
+  connector: Connector<E>,
+  env: EnvValues<E>,
+  narrowed: Narrowed | undefined,
+): Map<string, Spec> {
+  const carried = carriedTypes(connector, env);
   return new Map(
     connector.types.map((kind) => {
       const twoWay = carried.has(kind.type.id);

@@ -89,9 +89,12 @@ export const RULES: readonly (readonly [RegExp, readonly Job[], Connector?])[] =
     [/^connectors\/([a-z0-9-]+)\/test\//, ["code", "tests"], connectorOf],
     [/^(kit|shared\/[^/]+)\/test\//, ["code", "tests"]],
     [
-      /^scripts\/(test\/|no-skipped-tests\.ts$|retried-tests\.ts$|check-pr-description\.ts$)/,
+      /^scripts\/(test\/|no-skipped-tests\.ts$|retried-tests\.ts$|check-pr-description\.ts$|connector-list\.ts$)/,
       ["code", "tests"],
     ],
+    // Generated from the connectors' definitions; `Checks` builds them and
+    // fails when the file is out of date.
+    [/^connectors\.json$/, ["code"]],
     // The proof is built and linted like the rest of the code. Its stubs and
     // helpers are also what the unit tests import; its scenarios are not.
     [

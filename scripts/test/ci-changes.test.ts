@@ -125,6 +125,12 @@ describe("what a change runs beyond formatting and the scan", () => {
       ["code", "tests", "proof", "image"],
     ],
     ["a repository test", ["scripts/test/tree.test.ts"], ["code", "tests"]],
+    [
+      "the script that generates the list of connectors",
+      ["scripts/connector-list.ts"],
+      ["code", "tests"],
+    ],
+    ["the generated list of connectors", ["connectors.json"], ["code"]],
     ["lint settings", ["eslint.config.js"], ["code", "tests"]],
     ["a dependency", ["pnpm-lock.yaml"], ["code", "tests", "proof", "image"]],
     [
@@ -443,6 +449,7 @@ describe("each job reads its answer", () => {
     expect(code.map((step) => step.run)).toEqual([
       "pnpm install --frozen-lockfile",
       "pnpm build",
+      "pnpm connectors:check",
       "pnpm typecheck",
       "pnpm lint",
     ]);

@@ -1,4 +1,4 @@
 import { main } from "@withmarfa/connector";
-import { createConnector } from "./connector.js";
+import { connector } from "./definition.js";
 
-await main(createConnector());
+await main(connector());

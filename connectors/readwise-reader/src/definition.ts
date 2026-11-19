@@ -14,7 +14,7 @@ import { env, parseConfig } from "./config.js";
 import { sync, readerArchived } from "./sync.js";
 import { onChange, preflight } from "./outbound.js";
 import { readerPolicy } from "./policy.js";
-export function readerConnector() {
+export function connector() {
   let account: string | undefined;
   let inboundOnly = false;
   return defineConnector({
