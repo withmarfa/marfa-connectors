@@ -56,7 +56,7 @@ const runners: Record<GroupName, (c: Context) => Promise<void>> = {
   readwise: (c) => proveReadwise(c.marfa, c.url),
   todoist: (c) => proveTodoist(c.marfa, c.url, c.manager),
   inbound: (c) => proveInbound(c.marfa, c.url, c.manager),
-  keys: (c) => proveKeys(c.marfa, c.url, c.manager, c.mintKey, c.updateKey),
+  keys: (c) => proveKeys(c.marfa, c.url, c.manager, c.mintKey),
   tracker: (c) => proveTracker(c.marfa, c.url, c.manager, c.mintKey),
   github: (c) => proveGitHub(c.marfa, c.url, c.manager),
   "github-coverage": (c) => proveGitHubCoverage(c.url, c.manager, c.mintKey),

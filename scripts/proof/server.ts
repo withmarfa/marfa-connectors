@@ -20,6 +20,7 @@ const hooked = join(root, "vendor/marfa-server-hooks");
 
 /** The throwaway owner of every proof instance, which is gone with it. */
 const owner = {
+  username: "proof-owner",
   email: "proof-owner@example.com",
   password: "throwaway-proof-owner-password",
 };
