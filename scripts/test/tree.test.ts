@@ -107,12 +107,44 @@ function secretsBinding(path: string): boolean {
 }
 
 function trackedPaths(): string[] {
-  return execFileSync("git", ["ls-files", "--cached"], {
+  return execFileSync("git", ["ls-files", "-z", "--cached"], {
     cwd: root,
     encoding: "utf8",
   })
-    .split("\n")
+    .split("\0")
     .filter((path) => path !== "");
+}
+
+// Assembled, so this file does not hold the names it looks for.
+const vendorName = ["post", "hog"].join("");
+const vendorKey = ["phc", ""].join("_");
+const vendorPattern = new RegExp(`${vendorName}|${vendorKey}`, "i");
+
+/** Documentation and instructions for agents are not shipped code. */
+function shippedCode(path: string): boolean {
+  return !/\.md$|^LICENSE$|^\.(claude|agents|codex|githooks)\//.test(path);
+}
+
+/**
+ * Exact paths that may name the analytics vendor, each with its reason. A
+ * path that no longer exists fails the check, so the list cannot go stale.
+ */
+const vendorAllowlist: Readonly<Record<string, string>> = {};
+
+/** The files of shipped code that name the analytics vendor or carry its
+ *  project key, in their path or their text, outside the allowlist. A vendor
+ *  SDK in a manifest or a lockfile is found the same way: by its name. */
+function vendorHits(
+  files: readonly { path: string; text: string }[],
+): string[] {
+  return files
+    .filter(
+      (file) =>
+        shippedCode(file.path) &&
+        !Object.hasOwn(vendorAllowlist, file.path) &&
+        (vendorPattern.test(file.path) || vendorPattern.test(file.text)),
+    )
+    .map((file) => file.path);
 }
 
 /** `uses:` references that name a tag or branch where a commit belongs. */
@@ -336,6 +368,38 @@ describe("the tree", () => {
         offHosted(file.text).map((job) => `${file.path} ${job}`),
       ),
     ).toEqual([]);
+  });
+
+  it("names no analytics vendor in shipped code and carries no vendor dependency", () => {
+    const manifest = JSON.stringify({
+      dependencies: { [`${vendorName}-node`]: "5.0.0" },
+    });
+    const key = `const key = "${vendorKey}abc";`;
+    expect(
+      vendorHits([
+        { path: "kit/src/a.ts", text: "export const a = 1;" },
+        { path: "kit/src/b.ts", text: `import "${vendorName.toUpperCase()}"` },
+        { path: "kit/src/c.ts", text: key },
+        { path: `kit/src/${vendorName}.ts`, text: "" },
+        { path: "kit/package.json", text: manifest },
+        { path: "pnpm-lock.yaml", text: `'${vendorName}-js@1.0.0':` },
+        { path: "AGENTS.md", text: `no ${vendorName}` },
+        { path: ".claude/settings.json", text: vendorName },
+      ]),
+    ).toEqual([
+      "kit/src/b.ts",
+      "kit/src/c.ts",
+      `kit/src/${vendorName}.ts`,
+      "kit/package.json",
+      "pnpm-lock.yaml",
+    ]);
+    const files = tree();
+    expect(files.length).toBeGreaterThan(0);
+    expect(vendorHits(files)).toEqual([]);
+    const present = new Set(files.map((file) => file.path));
+    expect(Object.keys(vendorAllowlist).filter((p) => !present.has(p))).toEqual(
+      [],
+    );
   });
 
   it("tracks no secrets workspace binding", () => {
