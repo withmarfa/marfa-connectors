@@ -14,7 +14,7 @@ export interface ClientIdentity {
 
 interface ClientPackage {
   version: string;
-  exports: { ".": { import: string; types: string } };
+  exports: { ".": { import: { types: string; default: string } } };
 }
 
 export async function clientIdentity(
@@ -23,8 +23,8 @@ export async function clientIdentity(
   const pkg = JSON.parse(
     readFileSync(join(directory, "package.json"), "utf8"),
   ) as ClientPackage;
-  const entry = pkg.exports["."];
-  const runtime = join(directory, entry.import);
+  const entry = pkg.exports["."].import;
+  const runtime = join(directory, entry.default);
   const { CONTRACT_VERSION } = (await import(pathToFileURL(runtime).href)) as {
     CONTRACT_VERSION: number;
   };
@@ -61,8 +61,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const dir = join(realpathSync("node_modules/@withmarfa/connector"), "..", "client");
 const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-const entry = pkg.exports["."];
-const runtime = join(dir, entry.import);
+const entry = pkg.exports["."].import;
+const runtime = join(dir, entry.default);
 const { CONTRACT_VERSION } = await import(pathToFileURL(runtime).href);
 const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 console.log(JSON.stringify({ version: pkg.version, contract: CONTRACT_VERSION,
