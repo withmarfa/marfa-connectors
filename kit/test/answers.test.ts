@@ -262,6 +262,23 @@ describe("an answer written onto the row", () => {
     ]);
   });
 
+  it("is counted once, as updated, where the same run's upsert found the row unchanged", async () => {
+    const held = vendor([one]);
+    held.readOnly = ["note"];
+    await harness.twoWay(held);
+    const row = harness.server.row("a:1");
+    harness.server.edit(row.id, { title: "Mine" });
+    held.answer = (change) => ({
+      source_id: "a:1",
+      properties: { ...change.item.properties, note: "answered" },
+    });
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.byId(row.id).properties["note"]).toBe("answered");
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 1, archived 0, unchanged 0, skipped 0/,
+    );
+  });
+
   it("is counted as an update", async () => {
     const held = vendor([]);
     await made(held);

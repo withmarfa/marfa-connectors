@@ -40,7 +40,7 @@ A connector does four things, and the kit carries all but the vendor's side of e
 
 The example vendor lists every item on `GET items` as `{ account, items }`, answers one on `GET items/<id>`, and takes `POST items`, `PUT items/<id>` and `DELETE items/<id>`. Replace those calls with the vendor's; keep the behavior:
 
-- **The source has a name and, where Marfa's icon sets have one, a mark.** `sourceName: "Example"` is what an app shows for the source instead of its code, and `sourceMark` is an icon ID from the `simple-icons` or `lucide` set Marfa accepts, such as `simple-icons:github`; the example declares no mark, since neither set has one for it. On every start the kit reads the source (`GET /source`) and sets with `PATCH /source` only what the owner has not set, so a name or mark chosen in an app outlasts a restart. If Marfa refuses the call, for example a mark outside its sets, the kit logs a warning, the connector still starts and syncs, and the next start tries again; an answer that does not come ends the attempt like any other call of the start. The name is the system, not the route the data came by and not an account.
+- **The source has a name and, where Marfa's icon sets have one, a mark.** `sourceName: "Example"` is what an app shows for the source instead of its code, and `sourceMark` is an icon ID from the `simple-icons` or `lucide` set Marfa accepts, such as `simple-icons:github`; the example declares no mark, since neither set has one for it. On every start the kit reads the source (`GET /sources/{source}`) and sets with `PATCH /sources/{source}` only what the owner has not set, so a name or mark chosen in an app outlasts a restart. If Marfa refuses the call, for example a mark outside its sets, the kit logs a warning, the connector still starts and syncs, and the next start tries again; an answer that does not come ends the attempt like any other call of the start. The name is the system, not the route the data came by and not an account.
 - **Every vendor call has a time limit.** `EXAMPLE_TIMEOUT_MS`, 30000 milliseconds unless it is set, covers the answer and its body, beside the kit's `signal`. A vendor that does not answer in time is treated as one that did not answer at all: from `onChange` or `remake` that is `Unreachable`, so the change is sent again next run, and from `run` it fails the run, which the next scheduled run tries again. Without a limit, a vendor that never answers stalls the run, and nothing in the kit but a stop ends the call.
 - **The environment is checked on start.** `checkEnv` refuses an `EXAMPLE_URL` that is not an http or https address and an `EXAMPLE_TIMEOUT_MS` that is not a whole number of milliseconds from 1 to 2147483647, naming the variable and never its value. The process exits with code 2 before it reaches the instance.
 - **A base address with or without a trailing slash reaches the same place.** `new URL(path, base)` drops the base's last segment when the base lacks the slash, so the example adds one: `https://vendor.example.com/api` and `https://vendor.example.com/api/` both reach `/api/items`.
@@ -181,7 +181,7 @@ The answer carries the address in full this once, as `path` and as `url`, the ad
 
 ## The key
 
-One key per connector per account, minted with the `marfa` binary by a credential that holds `keys.mint`:
+One key per connector per account, minted with the `marfa` binary by a credential that holds `keys.mint`. Run it from any computer signed in as the owner with `marfa login`, and approve `keys.mint` and `keys.manage` at the sign-in. The command sends `owner_key` only when the sign-in holds `keys.manage`, and without it the key is an app's key, which the kit refuses. On the server's machine it also works through the private socket (`marfa --socket <socket-path> keys create ...`):
 
 ```bash
 marfa keys create --label <name> --source <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
@@ -195,7 +195,7 @@ marfa keys create --label <name> --source <name> --type-permission <type>=write 
 
 Naming the maps, the key holds no permission: it cannot mint keys, purge, delete a type, or change the instance's settings, and it reads and writes no other type's rows. A key minted naming no permission and no map takes the minter's whole set instead, and is refused. The key holds no `schema.write`, which would let a leaked key delete the connector's types. Its type map confines `types=write` to the connector's own types: the instance registers a type only under an id the map grants write on, and replaces one only within what it allows a key without `schema.write`, as below.
 
-The kit reads the key back on every start (`GET /keys/current`), before it registers a type or writes a row, and names the key and what to change when it refuses one. The refusal is the registration's failed run. It refuses a key that:
+The kit reads the key back on every start (`GET /keys/current`), before it registers a type or writes a row, and names the key and what to change when it refuses one. The refusal is the registration's failed run, except that a key an app made is refused before the connector registers, so it is only logged. It refuses a key that:
 
 - holds any permission, including management permissions and `schema.write`;
 - holds any level on a type other than the connector's own, or on a connection other than the ones it declares (the key names the edge type, so `parent-of` for a declared `child-of`), or on an extension or profile field, or any enforcement override;
@@ -217,10 +217,10 @@ Read on `edge_types` registers nothing, and is the narrowing the kit's warning n
 "One key per connector per account" means a second account's key carries its own source and claims the connector's. A key's own source is unique among unrevoked keys, so the second key takes `<name>-<account>` as its own and claims `<name>`, which the kit names on every write:
 
 ```bash
-marfa --socket <socket-path> keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
+marfa keys create --label <name>-<account> --source <name>-<account> --claim <name> --type-permission <type>=write --metadata-permission types=write --default-tier feed
 ```
 
-Mint this key through the server's private socket, as shown, or as the directly signed-in owner. An ordinary key can pass on only its own source and existing claims, and only map entries it currently holds. `keys.manage` does not remove those limits or allow widening a key. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state on the instance, under its own source. For a connector that carries changes back, one account per instance: a row of the type without a link would be created in whichever account's connector ran first, and the other could not tell that account's item from one gone.
+Run this from any computer signed in as the owner; the private socket still works on the server's machine. An ordinary key can pass on only its own source and existing claims, and only map entries it currently holds. A credential that holds `keys.manage` and `keys.mint` may grant any source as a claim, and one that holds `keys.manage` without `keys.mint` can narrow a key but not widen it, which includes adding a claim. The two keys then write under one source, each account's rows kept apart by the account inside the `source_id`, and each keeps its own state on the instance, under its own source. For a connector that carries changes back, one account per instance: a row of the type without a link would be created in whichever account's connector ran first, and the other could not tell that account's item from one gone.
 
 ### When the connector's type changes
 

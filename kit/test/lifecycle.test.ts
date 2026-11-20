@@ -300,6 +300,31 @@ describe("a kind that revives", () => {
     );
   });
 
+  it("counts a row the upsert found unchanged and the derive then updated once, as updated", async () => {
+    const held = vendor([one, two]);
+    held.readOnly = ["note"];
+    held.derived = ["note"];
+    await harness.twoWay(held);
+    held.derive = { keys: ["v1"], values: { note: "unreadable" } };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["note"]).toBe("unreadable");
+    expect(harness.lastRun().summary).toMatch(
+      /^created 0, updated 1, archived 0, unchanged 1, skipped 0/,
+    );
+  });
+
+  it("counts a row created in the run and then derived once, as created", async () => {
+    const held = vendor([one]);
+    held.readOnly = ["note"];
+    held.derived = ["note"];
+    held.derive = { keys: ["v1"], values: { note: "unreadable" } };
+    expect(await harness.twoWay(held)).toBe(0);
+    expect(harness.server.row("a:1").properties["note"]).toBe("unreadable");
+    expect(harness.lastRun().summary).toMatch(
+      /^created 1, updated 0, archived 0, unchanged 0, skipped 0/,
+    );
+  });
+
   it("brings a row back as the vendor has it, its close among the fields, and carries nothing", async () => {
     const held = vendor([one]);
     held.revive = true;

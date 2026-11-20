@@ -377,23 +377,33 @@ describe("the key check on start", () => {
     expect(await harness.once(vendor([entry]))).toBe(1);
     const error = harness.lastRun().error ?? "";
     expect(error).toContain("elsewhere");
-    expect(error).toContain(
-      "marfa --socket <socket-path> keys update key-1 --claim test",
-    );
+    expect(error).toContain("marfa keys update key-1 --claim test");
     expect(harness.server.rows).toEqual([]);
     expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
   });
 
-  it("refuses a key an app made, however narrow", async () => {
+  it("refuses a key an app made, however narrow, before it registers anything, saying how to mint another", async () => {
     harness.server.grants = {
       oauth_client_id: "client-1",
       type_permissions: { "test.entry": "write" },
     };
     expect(await harness.once(vendor([entry]))).toBe(1);
-    const error = harness.lastRun().error ?? "";
-    expect(error).toContain("key-1");
-    expect(error).toContain("an app made it");
+    const said = harness.lines.join("\n");
+    expect(said).toContain("key-1");
+    expect(said).toContain("an app made it");
+    expect(said).toContain(
+      "run `marfa keys create` from any computer signed in as the owner",
+    );
+    expect(harness.server.requestsTo("POST", "/connectors")).toEqual([]);
+    expect(harness.server.requestsTo("POST", "/types")).toEqual([]);
+    expect(harness.server.runs).toEqual([]);
     expect(harness.server.rows).toEqual([]);
+  });
+
+  it("registers on the same key where no app made it", async () => {
+    harness.server.grants = { type_permissions: { "test.entry": "write" } };
+    expect(await harness.once(vendor([entry]))).toBe(0);
+    expect(harness.server.requestsTo("POST", "/connectors")).toHaveLength(1);
   });
 
   it("stops, saying what the server said, when it refuses to show the key", async () => {

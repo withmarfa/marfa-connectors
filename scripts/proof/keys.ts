@@ -48,7 +48,6 @@ export async function proveKeys(
   url: string,
   manager: MarfaClient,
   mintKey: ProofServer["mintKey"],
-  updateKey: ProofServer["updateKey"],
 ): Promise<void> {
   const vendor = await serveThings();
   try {
@@ -64,9 +63,10 @@ export async function proveKeys(
         entry,
       );
 
-    // A source a connector registration names is held, and only direct owner,
-    // local authority or `keys.manage` mints a key that takes it as its own, so
-    // the key that may mint keys claiming it comes from the local command.
+    // A source a connector registration names is held, and only local
+    // authority, or a credential holding `keys.manage` with `keys.mint`, mints
+    // a key that takes it as its own, so the key that may mint keys claiming it
+    // comes from the local command.
     // The group mints its own, so it needs no other group to have run.
     let minter = marfa;
     let elsewhere = "";
@@ -204,7 +204,7 @@ export async function proveKeys(
     );
 
     await check(
-      "keys: a key of another source claiming nothing is refused at start, saying how to claim the connector's, management cannot widen it, and it starts once local authority grants the claim",
+      "keys: a key of another source claiming nothing is refused at start, saying how to claim the connector's, keys.manage alone cannot widen it and says keys.mint is needed, and it starts once a credential holding keys.mint and keys.manage grants the claim",
       async () => {
         const foreign = await mint(minter, "proof-foreign", []);
         const refused = await runner(foreign).once();
@@ -213,7 +213,7 @@ export async function proveKeys(
           refused.code !== 1 ||
           !error.includes("own source proof-foreign") ||
           !error.includes(
-            `marfa --socket <socket-path> keys update ${foreign.id} --claim proof-inbound`,
+            `marfa keys update ${foreign.id} --claim proof-inbound`,
           )
         ) {
           throw new Error(
@@ -224,22 +224,37 @@ export async function proveKeys(
           params: { path: { id: foreign.id } },
           body: { sources: ["proof-inbound"] },
         });
+        const said = JSON.stringify(widened.error);
         if (
           widened.response.status !== 403 ||
-          widened.error?.error.code !== "forbidden"
+          widened.error?.error.code !== "forbidden" ||
+          !said.includes("proof-inbound") ||
+          !said.includes("keys.mint")
         ) {
           throw new Error(
-            "keys.manage widened the connector key's source claims",
+            `keys.manage alone answered ${String(widened.response.status)}: ${said}`,
           );
         }
-        await updateKey(foreign.id, { sources: ["proof-inbound"] });
+        const owner = await mintKey({
+          ...keyBody({
+            label: "proof-claim-owner",
+            source: "proof-claim-owner",
+            typePermission: "proof.thing",
+          }),
+          permissions: ["keys.mint", "keys.manage"],
+        });
+        await update(
+          createClient({ baseUrl: url, credential: owner.key }),
+          foreign.id,
+          { sources: ["proof-inbound"] },
+        );
         const claimed = await runner(foreign).once();
         if (claimed.code !== 0) {
           throw new Error(
             `claiming it, it exited ${String(claimed.code)}: ${claimed.output}`,
           );
         }
-        return `exited 1, reporting: ${error}; management widening refused; local claim granted, exited 0`;
+        return `exited 1, reporting: ${error}; keys.manage alone refused: ${said}; keys.mint with keys.manage granted the claim, exited 0`;
       },
     );
   } finally {
