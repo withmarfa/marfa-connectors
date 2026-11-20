@@ -20,7 +20,7 @@ const hooked = join(root, "vendor/marfa-server-hooks");
 
 /** The throwaway owner of every proof instance, which is gone with it. */
 const owner = {
-  email: "proof-owner@example.com",
+  username: "proof-owner",
   password: "throwaway-proof-owner-password",
 };
 
@@ -232,7 +232,7 @@ export class ProofServer {
       "/_control/setup/claim",
       owner,
     );
-    if (typeof (claimed as { email?: unknown }).email !== "string")
+    if (typeof (claimed as { username?: unknown }).username !== "string")
       throw new Error("the owner claim returned no owner");
   }
 
