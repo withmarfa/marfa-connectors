@@ -147,7 +147,6 @@ export async function fieldsOf(marfa: MarfaClient, id: string) {
   return {
     fields: Object.keys(data.fields),
     parent: data.parent,
-    compatible_with: data.compatible_with,
   };
 }
 
@@ -158,7 +157,6 @@ export async function witnessTypeAnswers(marfa: MarfaClient): Promise<string> {
       id,
       label: "Proof Witness",
       parent: "core.bookmark",
-      compatible_with: ["core.bookmark"],
       fields: { witness: { type: "string" } },
     },
   });
@@ -169,15 +167,14 @@ export async function witnessTypeAnswers(marfa: MarfaClient): Promise<string> {
   const bookmark = await fieldsOf(marfa, "core.bookmark");
   if (
     served.parent !== "core.bookmark" ||
-    JSON.stringify(served.compatible_with) !== '["core.bookmark"]' ||
     !served.fields.includes("witness") ||
     !bookmark.fields.every((field) => served.fields.includes(field))
   ) {
     throw new Error(
-      `parent ${String(served.parent)}, compatible_with ${JSON.stringify(served.compatible_with)}, fields ${served.fields.join(", ")}`,
+      `parent ${String(served.parent)}, fields ${served.fields.join(", ")}`,
     );
   }
-  return `${id} answers parent ${served.parent}, compatible_with ${JSON.stringify(served.compatible_with)}, and its own witness field beside its parent's ${String(bookmark.fields.length)}`;
+  return `${id} answers parent ${served.parent} and its own witness field beside its parent's ${String(bookmark.fields.length)}`;
 }
 
 export async function typeHeld(marfa: MarfaClient, id: string) {
@@ -201,10 +198,8 @@ export async function registeredAsKindOf(
   }
   const served = await fieldsOf(marfa, type);
   const core = await fieldsOf(marfa, parent);
-  if (served.parent !== parent || served.compatible_with !== undefined) {
-    throw new Error(
-      `parent ${String(served.parent)}, compatible_with ${JSON.stringify(served.compatible_with)}`,
-    );
+  if (served.parent !== parent) {
+    throw new Error(`parent ${String(served.parent)}`);
   }
   const missing = core.fields.filter((field) => !served.fields.includes(field));
   const unknown = [...rows]

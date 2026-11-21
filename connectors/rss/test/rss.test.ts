@@ -2105,7 +2105,6 @@ describe("the connector, run as a process", () => {
     const registered = marfa.types.get("rss.entry");
     expect(registered?.["parent"]).toBe("core.bookmark");
     expect(registered?.["label"]).toBe("RSS Entry");
-    expect(registered).not.toHaveProperty("compatible_with");
     expect(Object.keys(registered?.["fields"] as object)).toEqual([
       "entry_id",
       "feed_origin",

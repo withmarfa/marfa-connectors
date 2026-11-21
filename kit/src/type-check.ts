@@ -233,13 +233,6 @@ export function typeDifferences(
       `parent is ${show(carried.parent)} here and ${show(served["parent"])} on the server`,
     );
   }
-  const compatible = names(carried.compatible_with);
-  const compatibleThere = names(served["compatible_with"]);
-  if (JSON.stringify(compatible) !== JSON.stringify(compatibleThere)) {
-    other.push(
-      `compatible_with is ${show(compatible)} here and ${show(compatibleThere)} on the server`,
-    );
-  }
   const linkThere = served["link_field"] ?? undefined;
   if (carried.link_field !== linkThere) {
     other.push(

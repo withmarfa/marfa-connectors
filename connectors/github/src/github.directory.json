@@ -1,7 +1,7 @@
 {
   "id": "github.directory",
   "label": "GitHub Directory",
-  "description": "A directory that holds Markdown files the GitHub connector syncs from a repository, as a collection of those files. Read only: GitHub is the source, and a change made in Marfa is put back on the next run. It is a child of its parent directory where that is synced too.",
+  "description": "A directory of Markdown files the GitHub connector syncs from a repository, as a collection of those files. Read only: GitHub is the source, and a change made in Marfa is put back on the next run.",
   "parent": "core.collection",
   "fields": {
     "repository": {

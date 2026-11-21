@@ -168,9 +168,8 @@ try {
       return `contract ${String(data.contract)}, features include connectors`;
     });
 
-    await check(
-      "the server answers a type's parent, its fields and its compatible_with",
-      () => witnessTypeAnswers(context.marfa),
+    await check("the server answers a type's parent and its fields", () =>
+      witnessTypeAnswers(context.marfa),
     );
     if (statementsHeld() !== setupStatements) {
       throw new Error(

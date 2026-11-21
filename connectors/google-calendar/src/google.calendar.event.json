@@ -1,7 +1,7 @@
 {
   "id": "google.calendar.event",
   "label": "Google Calendar Event",
-  "description": "An event of a Google calendar, as the Google Calendar connector reads it through the Calendar API: the core event's title, times, place and recurrence, with Google's own facts beside them. A series is one row carrying its rule, and a changed occurrence is its own row, connected to the series.",
+  "description": "An event of a Google calendar, as the Google Calendar connector reads it: the core event's title, times, place and recurrence, with Google's own facts beside them. A series is one row.",
   "parent": "core.event",
   "link_field": "google_id",
   "fields": {

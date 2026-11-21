@@ -1,7 +1,7 @@
 {
   "id": "github.pull_request",
   "label": "GitHub Pull Request",
-  "description": "A pull request in a repository the GitHub connector syncs: a read-only task whose title, body and status come from GitHub. Its status is draft or open while the pull request is open, merged once merged, and closed when closed without merging.",
+  "description": "A pull request in a repository the GitHub connector syncs: a read-only task whose title, body and status come from GitHub. Its status is draft, open, merged, or closed without merging.",
   "parent": "core.task",
   "link_field": "github_id",
   "fields": {
@@ -61,7 +61,7 @@
     },
     "checks": {
       "type": "object",
-      "description": "A summary of the checks on the pull request's head commit: the rollup state, non-zero check run counts by state (check_runs), and non-zero commit status counts by state (statuses). Null when the commit has no checks. When GitHub refuses the token the checks, the summary read last is kept, and a pull request first read then has none."
+      "description": "A summary of the checks on the pull request's head commit: the rollup state, non-zero check run counts by state (check_runs), and non-zero commit status counts by state (statuses). Null when the commit has no checks; kept as last read if GitHub refuses the token the checks."
     },
     "github_updated_at": {
       "type": "datetime",
