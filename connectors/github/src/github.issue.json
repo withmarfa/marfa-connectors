@@ -1,7 +1,7 @@
 {
   "id": "github.issue",
   "label": "GitHub Issue",
-  "description": "An issue in a repository the GitHub connector syncs: a task whose title, body, status, labels and assignees travel both ways. Its status is open until GitHub closes it as completed, canceled (not planned) or duplicate.",
+  "description": "An issue in a repository the GitHub connector syncs: a task whose title, body, status, labels and assignees travel both ways. Closed on GitHub as completed, canceled (not planned) or duplicate.",
   "parent": "core.task",
   "link_field": "github_id",
   "fields": {

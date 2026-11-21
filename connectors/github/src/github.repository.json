@@ -1,7 +1,7 @@
 {
   "id": "github.repository",
   "label": "GitHub Repository",
-  "description": "A repository the GitHub connector syncs through a personal access token or GitHub App, or one the person has starred. Read only; the issues, discussions, comments and pull requests of a synced one are connected to it.",
+  "description": "A repository the GitHub connector syncs through a token or GitHub App, or one the person has starred. Read only; its issues, discussions, comments and pull requests are connected to it.",
   "parent": "core.entity",
   "link_field": "github_id",
   "fields": {

@@ -1,7 +1,7 @@
 {
   "id": "rss.picture",
   "label": "RSS Picture",
-  "description": "A picture the RSS connector saved from an entry's text or image, attached to the entry by an attached-to connection. Its source_url is the web address it was saved from, and its title is p- followed by twelve characters of a hash of that address and the extension of its type.",
+  "description": "A picture the RSS connector saved from an entry's text or image, attached to the entry. Its title is p- followed by twelve characters of a hash of its source_url and the extension of its type.",
   "parent": "core.file.image",
   "fields": {
     "source_url": {

@@ -1,7 +1,7 @@
 {
   "id": "github.repository_file",
   "label": "GitHub Repository File",
-  "description": "A Markdown file under a path that GITHUB_FILES names, read from the repository's default branch. Read only: GitHub is the source, and a change made in Marfa is put back on the next run. It joins the collection of its directory.",
+  "description": "A Markdown file under a path that GITHUB_FILES names, read from the repository's default branch. Read only: GitHub is the source, and a change made in Marfa is put back on the next run.",
   "parent": "core.note",
   "merge_policy": {
     "fields": { "body": "last_writer_wins", "notes": "last_writer_wins" },
