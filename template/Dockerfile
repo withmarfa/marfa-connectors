@@ -6,7 +6,7 @@
 # package's package.json, tsconfig.json and src, since .dockerignore leaves
 # out everything else under shared/, so no other file in the checkout, such
 # as one of secrets, reaches the build.
-FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS build
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS build
 ARG CONNECTOR
 ARG CONNECTOR_DIR=connectors/${CONNECTOR}
 WORKDIR /repo
@@ -21,7 +21,7 @@ RUN pnpm install --frozen-lockfile --filter "${CONNECTOR}..." --filter plugins \
   && pnpm exec tsc -b "${CONNECTOR_DIR}" \
   && pnpm --filter "${CONNECTOR}" deploy --prod --legacy /out
 
-FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 WORKDIR /connector
 COPY --from=build /out .
 USER node
