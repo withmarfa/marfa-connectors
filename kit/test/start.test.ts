@@ -528,7 +528,7 @@ describe("the type check on start", () => {
         note: { type: "integer" },
         extra: { type: "string" },
       },
-      compatible_with: ["core.note"],
+      parent: "core.note",
     };
     harness.server.types.set("test.entry", served);
     harness.server.grants = {
@@ -543,7 +543,7 @@ describe("the type check on start", () => {
       '"note"',
       '"link"',
       '"title"',
-      "compatible_with",
+      "parent is",
       "marfa types replace test.entry --file",
     ]) {
       expect(run.error).toContain(difference);
