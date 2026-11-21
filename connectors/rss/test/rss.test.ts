@@ -2133,7 +2133,7 @@ describe("the connector, run as a process", () => {
     ]);
     for (const request of asked) {
       expect(request.headers["user-agent"]).toBe(
-        "MarfaRSS (+https://github.com/withmarfa/marfa-connectors)",
+        "MarfaRSS (+https://github.com/withmarfa/plugins)",
       );
     }
   });

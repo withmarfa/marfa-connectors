@@ -12,7 +12,7 @@
     <string>run</string>
     <string>--</string>
     <string>/path/to/node</string>
-    <string>/path/to/marfa-connectors/connectors/example/dist/main.js</string>
+    <string>/path/to/plugins/connectors/example/dist/main.js</string>
     <string>--once</string>
   </array>
 
@@ -25,7 +25,7 @@
   </dict>
 
   <key>WorkingDirectory</key>
-  <string>/path/to/marfa-connectors/connectors/example</string>
+  <string>/path/to/plugins/connectors/example</string>
 
   <key>RunAtLoad</key>
   <true/>

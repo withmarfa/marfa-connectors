@@ -258,7 +258,7 @@ describe("pull request reading", () => {
     const repo = github.addRepository("someone/tracker");
     const issue = github.addIssue(repo);
     const pr = github.addPullRequest(repo);
-    const comment = github.addComment(issue, "Before", "marfa-connectors[bot]");
+    const comment = github.addComment(issue, "Before", "marfa[bot]");
     comment.app = true;
     const env = { GITHUB_READ_ONLY: "pull_request" };
     await ok(env);

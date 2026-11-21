@@ -167,7 +167,7 @@ describe("scripts/report-scheduled-failure.sh", () => {
         '      if [ "$1" = --body-file ]; then cp "$2" "$FAKE_DIR/body"; fi',
         "      shift",
         "    done",
-        '    echo "https://github.com/withmarfa/marfa-connectors/issues/9999" ;;',
+        '    echo "https://github.com/withmarfa/plugins/issues/9999" ;;',
         '  "issue comment") ;;',
         '  *) echo "unexpected: $*" >&2; exit 97 ;;',
         "esac",
@@ -204,7 +204,7 @@ describe("scripts/report-scheduled-failure.sh", () => {
           FAKE_JOBS: JOBS,
           FAKE_ISSUES: "[]",
           GH_TOKEN: "test-token",
-          GITHUB_REPOSITORY: "withmarfa/marfa-connectors",
+          GITHUB_REPOSITORY: "withmarfa/plugins",
           GITHUB_WORKFLOW: "Audit",
           GITHUB_RUN_ID: "424242",
           GITHUB_SERVER_URL: "https://github.com",
@@ -246,7 +246,7 @@ describe("scripts/report-scheduled-failure.sh", () => {
     expect(result.status).toBe(0);
     const creates = result.calls.filter(isCall("issue create"));
     expect(creates).toHaveLength(1);
-    expect(creates[0]).toContain("--repo withmarfa/marfa-connectors");
+    expect(creates[0]).toContain("--repo withmarfa/plugins");
     expect(creates[0]).toContain("--title Scheduled run failed: Audit");
     expect(creates[0]).toContain("--label needs-triage");
     expect(creates[0]).toContain("--label ci");
@@ -261,7 +261,7 @@ describe("scripts/report-scheduled-failure.sh", () => {
       "Notes",
     ]);
     expect(result.body).toContain(
-      "https://github.com/withmarfa/marfa-connectors/actions/runs/424242",
+      "https://github.com/withmarfa/plugins/actions/runs/424242",
     );
     expect(result.body).toContain("0123456789abcdef0123456789abcdef01234567");
     expect(result.body).toContain("- Dependency audit");
@@ -305,9 +305,9 @@ describe("scripts/report-scheduled-failure.sh", () => {
     const comments = result.calls.filter(isCall("issue comment"));
     expect(comments).toHaveLength(1);
     expect(comments[0]).toContain("issue comment 77");
-    expect(comments[0]).toContain("--repo withmarfa/marfa-connectors");
+    expect(comments[0]).toContain("--repo withmarfa/plugins");
     expect(comments[0]).toContain(
-      "https://github.com/withmarfa/marfa-connectors/actions/runs/424242",
+      "https://github.com/withmarfa/plugins/actions/runs/424242",
     );
   });
 

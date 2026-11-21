@@ -21,7 +21,7 @@ export const pictureTimeoutMs = 30_000;
 /** A product token and where to read about it, as sites ask of a crawler.
  *  It carries no version: a version exists only as a git tag. */
 export const pictureUserAgent =
-  "MarfaPictures (+https://github.com/withmarfa/marfa-connectors)";
+  "MarfaPictures (+https://github.com/withmarfa/plugins)";
 
 /** The types a picture may have, as its first bytes name them. */
 export type PictureType =

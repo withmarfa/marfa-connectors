@@ -297,7 +297,7 @@ export class GitHubStub {
   onAsked: ((asked: Asked) => void) | undefined;
   appId = 12345;
   appClientId = "Iv1.test";
-  appSlug = "marfa-connectors";
+  appSlug = "marfa";
   loseNextCreate = false;
   // With `loseNextCreate`, what the create made is missing from the next
   // listing, as one GitHub has not indexed yet.

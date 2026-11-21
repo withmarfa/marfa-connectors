@@ -178,7 +178,7 @@ describe("related and duplicate issues", () => {
     const c = github.addIssue(repo);
     a.relates_to = [b.node];
     b.relates_to = [a.node];
-    const comment = github.addComment(a, "Before", "marfa-connectors[bot]");
+    const comment = github.addComment(a, "Before", "marfa[bot]");
     comment.app = true;
     await once();
     const canonical = marfa.edges.find(

@@ -1,9 +1,14 @@
-# marfa-connectors
+# plugins
 
-Connectors for [Marfa](https://github.com/withmarfa/marfa). A connector is a small process that holds a key to a Marfa instance. It registers itself, heartbeats, pulls from a vendor, receives what the vendor posts to its inbound endpoints, writes what it finds, by default into the instance's feed, under its own type, carries changes made in Marfa back to the vendor where it is meant to, and reports each run. A connector never puts what it reads from a vendor into the library on its own. It may name the library tier only for a row that belongs to something already in the library, such as the picture files of an entry the owner has kept; moving a vendor's row to the library is a person's or an app's act.
+WithMarfa's plugins for [Marfa](https://github.com/withmarfa/marfa). What an owner adds to a Marfa is a plugin: a connector, a family of common types with guidance on using them, or both. This repository holds both kinds: the connectors, with the kit and template they are built from, and the common type families.
+
+## Connectors
+
+A connector is a small process that holds a key to a Marfa instance. It registers itself, heartbeats, pulls from a vendor, receives what the vendor posts to its inbound endpoints, writes what it finds, by default into the instance's feed, under its own type, carries changes made in Marfa back to the vendor where it is meant to, and reports each run. A connector never puts what it reads from a vendor into the library on its own. It may name the library tier only for a row that belongs to something already in the library, such as the picture files of an entry the owner has kept; moving a vendor's row to the library is a person's or an app's act.
 
 ## What is here
 
+- [`types/`](./types/README.md): the common type families, one folder each. The first, Tickets, is on its way.
 - [`kit/`](./kit): the package `@withmarfa/connector`, which makes a connector a page of code.
 - [`shared/`](./shared): private packages that related connectors share: Readwise's schemas and mappings, and the Google sign-in in [`shared/google`](./shared/google/README.md). They are never published.
 - [`template/`](./template): what a new connector starts from. Its [README](./template/README.md) is the guide to writing one, minting its key, running it, and deploying it with launchd or Docker.

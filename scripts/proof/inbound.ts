@@ -531,7 +531,7 @@ async function proveSetup(
   runner: ConnectorUnderProof,
   connectorId: string,
 ): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "marfa-connectors-setup-"));
+  const dir = await mkdtemp(join(tmpdir(), "plugins-setup-"));
   try {
     await check(
       "setup: refuses to write its file inside a git working tree, and makes nothing",

@@ -90,7 +90,7 @@ async function ok(env: Record<string, string> = {}): Promise<string> {
   }
 }
 
-const bot = "marfa-connectors[bot]";
+const bot = "marfa[bot]";
 
 describe("per-kind read-only App runs", () => {
   it.each(["issue", "comment"])(
@@ -513,9 +513,7 @@ describe("a row made in Marfa", () => {
       (one) => unmarked(one.body) === "From Marfa",
     );
     expect(comment?.issue).toBe(issue.node);
-    expect(marfa.byId(made.id).properties["from"]).toBe(
-      "marfa-connectors[bot]",
-    );
+    expect(marfa.byId(made.id).properties["from"]).toBe("marfa[bot]");
     marfa.edit(made.id, { body: "From Marfa, edited" });
     await settled();
     expect(unmarked(comment?.body ?? "")).toBe("From Marfa, edited");

@@ -358,7 +358,7 @@ describe("a transferred issue", () => {
   it("carries a waiting edit to the issue in its new repository", async () => {
     repositories(true);
     const moving = github.addIssue(source, { title: "Original" });
-    const comment = github.addComment(moving, "Said", "marfa-connectors[bot]");
+    const comment = github.addComment(moving, "Said", "marfa[bot]");
     comment.app = true;
     await once();
     const moved = github.transfer(moving, target);
@@ -471,7 +471,7 @@ describe("a transferred issue whose transfer record is late", () => {
       title,
       created_at: earlier(60),
     });
-    const said = github.addComment(moving, "Said", "marfa-connectors[bot]");
+    const said = github.addComment(moving, "Said", "marfa[bot]");
     said.app = true;
     // A comment changes the issue; the issue was last changed long ago.
     moving.updated_at = earlier(59);
