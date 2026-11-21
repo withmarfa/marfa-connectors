@@ -8,7 +8,7 @@ A connector is a small process that holds a key to a Marfa instance. It register
 
 ## What is here
 
-- [`types/`](./types/README.md): the common type families, one folder each. The first, Tickets, is on its way.
+- [`types/`](./types/README.md): empty for now. It will hold the common type families, one folder each, starting with Tickets.
 - [`kit/`](./kit): the package `@withmarfa/connector`, which makes a connector a page of code.
 - [`shared/`](./shared): private packages that related connectors share: Readwise's schemas and mappings, and the Google sign-in in [`shared/google`](./shared/google/README.md). They are never published.
 - [`template/`](./template): what a new connector starts from. Its [README](./template/README.md) is the guide to writing one, minting its key, running it, and deploying it with launchd or Docker.
