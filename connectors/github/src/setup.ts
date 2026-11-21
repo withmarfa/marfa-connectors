@@ -23,7 +23,7 @@ export interface SetupEnv {
 
 /** The App's name unless the setup names another; GitHub holds each
  *  name once, so a second person's setup names its own. */
-export const defaultName = "Marfa Connectors";
+export const defaultName = "Marfa";
 
 interface Conversion {
   id: number;
@@ -104,7 +104,7 @@ export function manifest(options: {
 }): Record<string, unknown> {
   return {
     name: options.name,
-    url: "https://github.com/withmarfa/marfa-connectors",
+    url: "https://github.com/withmarfa/plugins",
     description:
       "Syncs issues, discussions and their comments with Marfa and reads pull requests, closing links and checks.",
     hook_attributes: { url: options.hook, active: options.active },

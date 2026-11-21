@@ -1,9 +1,12 @@
-# marfa-connectors
+# plugins
 
-The connectors for Marfa: a small kit that makes a connector a page of code, a template to copy, and the connectors themselves, one folder each. A connector is a process with a key: it registers itself with an instance, heartbeats, pulls from its vendor, reads what its vendor posts to its inbound endpoints, writes what it finds, by default at the feed tier, under its own type, carries changes made in Marfa back to the vendor where its brief says so, and reports each run. It writes to the vendor only through the kit's watch phase, and never puts what it reads from a vendor into the library on its own: it may name the library tier only for a row that belongs to something already in the library, such as the picture files of an entry the owner has kept, and moving a vendor's row to the library is a person's or an app's act.
+WithMarfa's plugins for Marfa. What an owner adds to a Marfa is a plugin: a connector, a family of common types (`common.*`) with guidance on using them, or both. This repository holds both kinds: the connectors, with the kit and template they are built from, and the common type families. Never call this a directory, registry or marketplace; Marfa's docs keep their Catalog as the reference of everything a Marfa can hold. The Marfa plugin for Claude Code and Codex is withmarfa/marfa-plugin, a different thing.
+
+For connectors: a small kit makes a connector a page of code, a template to copy, and the connectors themselves, one folder each. A connector is a process with a key: it registers itself with an instance, heartbeats, pulls from its vendor, reads what its vendor posts to its inbound endpoints, writes what it finds, by default at the feed tier, under its own type, carries changes made in Marfa back to the vendor where its brief says so, and reports each run. It writes to the vendor only through the kit's watch phase, and never puts what it reads from a vendor into the library on its own: it may name the library tier only for a row that belongs to something already in the library, such as the picture files of an entry the owner has kept, and moving a vendor's row to the library is a person's or an app's act.
 
 ## Layout
 
+- `types/`: the common type families, one folder each, with `types/README.md` saying what a family is. Empty of families until the first, Tickets, arrives.
 - `kit/`: the reusable connector runtime package `@withmarfa/connector`.
 - `shared/`: private workspace packages shared by related connectors: vendor schemas and mappings, and the Google sign-in in `shared/google`.
 - `template/`: what a new connector starts from. `template/connector/` is copied to `connectors/<name>/`; beside it are its README, a LaunchAgent and a Dockerfile.

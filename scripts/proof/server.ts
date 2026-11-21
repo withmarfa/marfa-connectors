@@ -84,7 +84,7 @@ export class ProofServer {
   async boot(): Promise<Booted> {
     const program = await this.program();
     const version = (await run(program, ["--version"])).stdout.trim();
-    this.dir = await mkdtemp(join(tmpdir(), "marfa-connectors-proof-"));
+    this.dir = await mkdtemp(join(tmpdir(), "plugins-proof-"));
     // A socket path has a short limit, and a temporary folder here can pass it.
     this.controlDir = await mkdtemp(
       join(await realpath("/tmp"), "marfa-proof-control-"),

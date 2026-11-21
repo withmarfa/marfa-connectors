@@ -17,7 +17,7 @@ COPY kit/src kit/src
 COPY shared shared
 COPY ${CONNECTOR_DIR}/package.json ${CONNECTOR_DIR}/tsconfig.json ${CONNECTOR_DIR}/
 COPY ${CONNECTOR_DIR}/src ${CONNECTOR_DIR}/src
-RUN pnpm install --frozen-lockfile --filter "${CONNECTOR}..." --filter marfa-connectors \
+RUN pnpm install --frozen-lockfile --filter "${CONNECTOR}..." --filter plugins \
   && pnpm exec tsc -b "${CONNECTOR_DIR}" \
   && pnpm --filter "${CONNECTOR}" deploy --prod --legacy /out
 

@@ -13,7 +13,7 @@ import {
 
 const run = promisify(execFile);
 const built = resolve(import.meta.dirname, "../dist/main.js");
-const bot = "marfa-connectors[bot]";
+const bot = "marfa[bot]";
 const personalToken = "github_pat_test_12345678";
 
 let key: string;

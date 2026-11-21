@@ -6,7 +6,7 @@ On every start the connector gives its source `rss` the name RSS and the mark `s
 
 ## What it does
 
-Each run fetches every feed in `RSS_FEEDS`, reads the entries it finds, and writes the ones that are new or changed. A feed that has not changed since the last run, as its server says by answering 304, is not read again. That progress is saved for each feed once Marfa has taken all of that feed's entries. When Marfa refuses an entry, only its feed keeps the progress it had before, so the next run reads that feed again, and the other feeds keep theirs. Every request carries the `User-Agent` `MarfaRSS (+https://github.com/withmarfa/marfa-connectors)`, so a feed's owner can tell who is reading. A run reports its counts, such as `created 4, updated 0, archived 0, unchanged 0, skipped 0`, and the conditions it raised. Read them with `marfa connectors runs <connector-id>`; `marfa connectors list` shows the id.
+Each run fetches every feed in `RSS_FEEDS`, reads the entries it finds, and writes the ones that are new or changed. A feed that has not changed since the last run, as its server says by answering 304, is not read again. That progress is saved for each feed once Marfa has taken all of that feed's entries. When Marfa refuses an entry, only its feed keeps the progress it had before, so the next run reads that feed again, and the other feeds keep theirs. Every request carries the `User-Agent` `MarfaRSS (+https://github.com/withmarfa/plugins)`, so a feed's owner can tell who is reading. A run reports its counts, such as `created 4, updated 0, archived 0, unchanged 0, skipped 0`, and the conditions it raised. Read them with `marfa connectors runs <connector-id>`; `marfa connectors list` shows the id.
 
 ## Set it up
 

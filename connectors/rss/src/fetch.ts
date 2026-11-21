@@ -22,8 +22,7 @@ export const maxRedirects = 5;
 
 /** A product token and where to read about it, as sites ask of a crawler.
  *  It carries no version: a version exists only as a git tag. */
-export const userAgent =
-  "MarfaRSS (+https://github.com/withmarfa/marfa-connectors)";
+export const userAgent = "MarfaRSS (+https://github.com/withmarfa/plugins)";
 
 export class TooLarge extends Error {
   override name = "TooLarge";
