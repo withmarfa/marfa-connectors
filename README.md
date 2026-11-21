@@ -1,6 +1,6 @@
 # plugins
 
-WithMarfa's plugins for [Marfa](https://github.com/withmarfa/marfa). What an owner adds to a Marfa is a plugin: a connector, a family of common types with guidance on using them, or both. This repository holds both kinds: the connectors, with the kit and template they are built from, and the common type families.
+WithMarfa's plugins for [Marfa](https://github.com/withmarfa/marfa). What an owner adds to a Marfa is a plugin: a connector, a family of common types with guidance on using them, or both. This repository holds the connectors, built from source today, and the kit and template they are built from. It will also hold the common type families: the first, Tickets, is on its way, and installing a plugin into a Marfa arrives with it.
 
 ## Connectors
 
